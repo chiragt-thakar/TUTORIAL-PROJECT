@@ -1,0 +1,95 @@
+---
+id: advanced-contract
+title: Versioning, OpenAPI, and Security
+description: Evolve contracts and customize documentation deliberately.
+module: fastapi-advanced
+order: 4
+estimatedMinutes: 50
+prerequisites: [advanced-io]
+learningObjectives:
+  - Version an API
+  - Customize OpenAPI
+---
+
+## Version for breaking contracts
+
+Path versioning such as `/api/v1` is explicit and easy to route. Header/media-type versioning keeps URLs clean but complicates discovery and caching. Choose one policy; do not create v2 for every additive field.
+
+Maintain separate routers or adapter schemas when behavior diverges while sharing services beneath them.
+
+```python
+app.include_router(v1_router, prefix="/api/v1")
+app.include_router(v2_router, prefix="/api/v2")
+```
+
+Publish deprecation dates and migration guidance. Avoid keeping versions forever; define support windows.
+
+## OpenAPI customization
+
+Customize only stable needs: title, description, servers, tags, security schemes, examples, and operation IDs. Cache a custom schema after building it with FastAPI's OpenAPI utility; avoid hand-writing a second schema.
+
+Contract tests should assert unique operation IDs, authentication requirements, public error models, and absence of internal routes. Generated clients amplify bad naming, so review the document as a product.
+
+## Security layers
+
+Use TLS at the edge, narrow CORS origins, trusted hosts, safe security headers, bounded bodies, dependency-pinned packages, and platform-managed secrets. CORS is a browser policy, not authentication. CSRF matters when browsers automatically attach credentials such as cookies; bearer tokens manually placed in headers change the threat model but create XSS/storage concerns.
+
+Validate redirects and outbound URLs to prevent open redirects and SSRF. Never put secrets in URLs. Disable debug tracebacks in production.
+
+<CommonMistake>
+
+`allow_origins=["*"]` combined with credentials does not create a safe universal frontend configuration. List intended origins and understand browser credential rules.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Security is a set of enforced boundaries, not an OpenAPI padlock icon. Test authorization, content limits, CORS, error redaction, and dependency updates.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="advanced-contract-1">
+
+Classify adding an optional response field versus renaming an existing field.
+
+<Solution>
+
+An optional additive field is normally backward-compatible for tolerant clients. Renaming removes the old contract and is breaking unless an alias/deprecation bridge is provided.
+
+</Solution>
+</Exercise>
+
+<Exercise id="advanced-contract-2">
+
+Why does CORS not protect a curl client from calling your API?
+
+<Solution>
+
+CORS is enforced by browsers for cross-origin frontend scripts. Non-browser clients are not blocked; server-side authentication and authorization remain required.
+
+</Solution>
+</Exercise>
+
+<Exercise id="advanced-contract-3">
+
+Write three OpenAPI contract assertions.
+
+<Solution>
+
+Assert operation IDs are unique, protected operations declare the bearer scheme, and response schemas do not contain fields such as `password_hash` or `internal_notes`.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can distinguish a breaking change from an addition and identify controls for browser, transport, application, and outbound-request threats.
+
+</Checkpoint>
+
+## Summary
+
+Version only genuine breaking contracts, generate rather than duplicate OpenAPI, and treat security as layered enforcement across origins, identity, data, resources, and outbound behavior.
+

@@ -1,0 +1,93 @@
+---
+id: advanced-context
+title: Synchronization, Queues, and Context Variables
+description: Coordinate work without leaking request state.
+module: advanced-python-backends
+order: 6
+estimatedMinutes: 55
+prerequisites: [advanced-parallel]
+learningObjectives: [Use synchronization primitives, Manage context-local state]
+---
+
+## A single event loop can still have races
+
+An async task runs until it reaches an await. If a read-modify-write sequence awaits between steps, another task can change the same state.
+
+```python
+lock = asyncio.Lock()
+
+async def reserve_slot() -> None:
+    async with lock:
+        if capacity.remaining < 1:
+            raise NoCapacity
+        capacity.remaining -= 1
+```
+
+The lock protects only tasks using that same in-process lock. It does not coordinate other processes or servers. Durable cross-process invariants belong in database constraints, transactions, atomic Redis operations, or another shared coordinator.
+
+## Queues separate production from consumption
+
+An `asyncio.Queue` coordinates tasks inside one event loop. A bounded `maxsize` provides backpressure because producers wait when consumers fall behind.
+
+```python
+queue: asyncio.Queue[TaskCommand] = asyncio.Queue(maxsize=100)
+
+async def worker() -> None:
+    while True:
+        command = await queue.get()
+        try:
+            await handle(command)
+        finally:
+            queue.task_done()
+```
+
+This queue is not durable and disappears with the process. Use it for internal pipelines whose work may be abandoned, not critical email or billing.
+
+## Context variables carry request-local context
+
+`ContextVar` provides values local to the current execution context. It is useful for request IDs in logs without passing the ID through every function.
+
+```python
+request_id_var: ContextVar[str | None] = ContextVar("request_id", default=None)
+
+token = request_id_var.set(request_id)
+try:
+    await call_next(request)
+finally:
+    request_id_var.reset(token)
+```
+
+Always reset with the returned token. Context usually copies into newly created async tasks, which is helpful for tracing but can surprise long-lived detached work. Pass durable job context explicitly in the job payload.
+
+## Production note
+
+Keep critical sections short and never hold a lock while awaiting slow external I/O unless that serialized behavior is intentional and bounded.
+
+<Exercise id="context-lock-scope" title="Find a lock that does not work">
+Two API worker processes each use their own `asyncio.Lock` to protect a unique username. Is uniqueness safe?
+<Solution>
+No. The locks do not cross processes. Enforce uniqueness with a database unique constraint and handle the conflict transactionally.
+</Solution>
+</Exercise>
+
+<Exercise id="context-queue" title="Choose a queue">
+Should an in-memory `asyncio.Queue` deliver password-reset email?
+<Solution>
+No. A process crash loses queued work. Persist intent and use a durable queue/worker with idempotency and retry handling.
+</Solution>
+</Exercise>
+
+<Exercise id="context-reset" title="Prevent request-ID leakage">
+Why store and reset the token returned by `ContextVar.set()`?
+<Solution>
+Reset restores the previous context value even when an exception occurs. Without it, later work in a reused context can receive the wrong request ID.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can identify the boundary of a lock or queue and manage context-local values without treating them as durable state.
+
+## Summary
+
+Synchronization tools solve problems only inside their scope. Make process and durability boundaries explicit.

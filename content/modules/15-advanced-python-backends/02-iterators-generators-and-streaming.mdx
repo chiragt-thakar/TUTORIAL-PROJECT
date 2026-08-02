@@ -1,0 +1,91 @@
+---
+id: advanced-generators
+title: Iterators, Generators, and Streaming
+description: Process data lazily and control resource lifetime.
+module: advanced-python-backends
+order: 2
+estimatedMinutes: 60
+prerequisites: [advanced-callables]
+learningObjectives: [Implement iteration, Use generators for bounded streaming]
+---
+
+## Iterable and iterator are different roles
+
+An iterable can produce an iterator. An iterator produces one value at a time and remembers its current position. `iter(value)` asks for the iterator; `next(iterator)` asks for the next item and eventually raises `StopIteration`.
+
+```python
+class TaskIds:
+    def __init__(self, values: list[int]) -> None:
+        self.values = values
+
+    def __iter__(self):
+        return iter(self.values)
+```
+
+`TaskIds` is reusable because every loop gets a new list iterator. An iterator that returns itself from `__iter__` is normally one-shot.
+
+## Generators implement the state machine for you
+
+Any function containing `yield` returns a generator object when called. The body starts only when iteration asks for a value.
+
+```python
+def batches[T](items: list[T], size: int):
+    if size < 1:
+        raise ValueError("size must be positive")
+    for start in range(0, len(items), size):
+        yield items[start : start + size]
+```
+
+Each `yield` pauses local state. The next request resumes immediately after it. This supports pipelines that do not hold every result at once.
+
+Lazy does not mean free. A generator can still fetch all database rows before yielding them, keep a connection open too long, or perform slow work during response streaming. Make ownership and cleanup explicit with `try/finally` or a context manager.
+
+## Async iteration
+
+An async iterator uses `async for` and can await between items. It fits paged I/O or a streamed source.
+
+```python
+async def task_pages(repository, page_size: int = 100):
+    cursor = None
+    while True:
+        page = await repository.page(after=cursor, limit=page_size)
+        if not page.items:
+            return
+        yield page.items
+        cursor = page.next_cursor
+```
+
+Do not keep a database transaction open while a slow client downloads a large HTTP response. Often the safer design is to build an export in a worker, close the transaction, and serve the completed file.
+
+## Production note
+
+Test early termination. If the consumer stops after one item, files, sessions, and HTTP responses must still close.
+
+<Exercise id="generators-lazy" title="Find when code runs">
+When does the first line inside a generator function execute?
+<Solution>
+Not when the function is called. Calling creates the generator object. Execution begins when `next`, a loop, or another consumer requests the first item.
+</Solution>
+</Exercise>
+
+<Exercise id="generators-reuse" title="Explain an empty second loop">
+Why does looping twice over the same generator produce values only once?
+<Solution>
+A generator is an iterator with one advancing state. Create a new generator for the second pass or expose a reusable iterable whose `__iter__` creates one.
+</Solution>
+</Exercise>
+
+<Exercise id="generators-stream" title="Bound an export">
+How can you export one million tasks without loading them all into memory?
+<Solution>
+Read stable database pages in bounded batches, transform and write each batch, then release references. Keep pagination order deterministic and avoid a transaction that remains open for the whole client download.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can distinguish iterable, iterator, generator, and async iterator, including when work starts and who owns cleanup.
+
+## Summary
+
+Lazy iteration controls memory and timing. Its safety depends on clear resource lifetime and early-stop behavior.

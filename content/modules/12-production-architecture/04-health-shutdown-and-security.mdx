@@ -1,0 +1,48 @@
+---
+id: arch-health
+title: Health, Shutdown, and Security
+description: Readiness, liveness, graceful shutdown, headers, and rate-limit concepts.
+module: production-architecture
+order: 4
+estimatedMinutes: 60
+prerequisites: [arch-errors]
+learningObjectives: [Build health checks, Harden service lifecycle]
+---
+
+## Health endpoints answer different questions
+
+Liveness asks whether the process event loop can respond. Readiness asks whether this instance should receive traffic. A readiness check may perform a short database probe; liveness should not fail because a dependency briefly fails or a restart storm can result.
+
+Use lifespan to create shared clients on startup and close them on shutdown:
+
+```python
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.http = httpx.AsyncClient(timeout=3)
+    yield
+    await app.state.http.aclose()
+```
+
+Graceful shutdown stops new work, allows bounded in-flight work to finish, and closes pools. Background work that must survive process exit belongs in a durable queue, not an in-process task.
+
+## Security baseline
+
+Validate hosts and origins, set appropriate security headers at the edge/application, cap body and upload sizes, rate-limit expensive or credential endpoints, and pin/scan dependencies. Rate limiting supplements authentication; it does not replace it.
+
+## Production note
+
+Readiness probes need strict timeouts and shallow checks. A deep dependency tour can overload an already failing system.
+
+<Exercise id="health-split" title="Classify a probe">Should Redis failure break liveness?<Solution>Usually no. It may break readiness if Redis is required for serving requests, while liveness confirms the process itself can respond.</Solution></Exercise>
+
+<Exercise id="health-shutdown" title="Protect a job">An email task must not vanish during restart. Where should it run?<Solution>Enqueue it durably with retry/idempotency and let a worker acknowledge completion; do not rely on `BackgroundTasks` for durable delivery.</Solution></Exercise>
+
+<Exercise id="health-rate" title="Choose a rate-limit key">What keys help protect login?<Solution>Combine normalized account identity and source/network signals with bounded windows; avoid trusting a spoofable header without proxy configuration.</Solution></Exercise>
+
+## Checkpoint
+
+You can distinguish liveness/readiness, describe graceful shutdown, and apply a layered API security baseline.
+
+## Summary
+
+Operational lifecycle and security are application behavior, not last-minute infrastructure decoration.

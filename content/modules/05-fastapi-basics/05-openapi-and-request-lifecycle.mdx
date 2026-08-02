@@ -1,0 +1,103 @@
+---
+id: api-openapi
+title: OpenAPI and the Request Lifecycle
+description: Trace validation through execution and documentation.
+module: fastapi-basics
+order: 5
+estimatedMinutes: 45
+prerequisites: [api-routers]
+learningObjectives:
+  - Inspect OpenAPI
+  - Explain request processing
+---
+
+## OpenAPI is generated behavior
+
+FastAPI builds `/openapi.json` from registered routes, types, Pydantic schemas, dependencies, status codes, and metadata. Swagger UI normally appears at `/docs` and ReDoc at `/redoc`. The document is a useful contract artifact, but generation does not guarantee good naming or semantics.
+
+```python
+@router.get(
+    "/{task_id}",
+    response_model=TaskRead,
+    summary="Get a task",
+    responses={404: {"model": ErrorResponse}},
+)
+async def get_task(task_id: UUID) -> TaskRead:
+    ...
+```
+
+Set stable operation IDs if generated clients depend on them. Keep descriptions useful but close to code; do not reproduce a second manual API specification that drifts.
+
+## One request, step by step
+
+At a high level, the server parses HTTP and calls the ASGI app. Middleware wraps the request. Routing selects an operation. FastAPI solves dependencies, extracts and validates parameters/body, then calls the operation. The returned value is validated/serialized against the response model. Middleware processes the response, and the server writes HTTP bytes.
+
+Validation can stop execution before the operation. Dependency failures can stop it after some resources were acquired; yield cleanup still matters. Exceptions pass through registered handlers. Understanding these stages tells you where to log, authorize, transact, and translate errors.
+
+<Concept>
+
+Framework convenience is a pipeline, not magic. Debug by locating the failing stage: route match, dependency resolution, request validation, service call, response validation, or serialization.
+
+</Concept>
+
+## Contract discipline
+
+Check the generated schema in tests for critical paths, security schemes, and response shapes. Prefer backward-compatible additions. Removing fields, tightening accepted values, renaming aliases, or changing status codes can break clients even when Python code compiles.
+
+<CommonMistake>
+
+Do not expose internal diagnostic details in documented error models. Public errors need stable codes and safe messages; tracebacks belong in protected logs.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Interactive docs may reveal sensitive endpoints. They are not an authorization boundary. Disable or protect them when policy requires, while still producing an OpenAPI artifact for controlled consumers.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="api-openapi-1">
+
+Find where a 422 response can occur without your operation function running.
+
+<Solution>
+
+Path, query, header, dependency-input, or body validation may fail during FastAPI's request parsing/dependency stage before the operation is called.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-openapi-2">
+
+Name two breaking API changes that do not produce a Python type error inside the server.
+
+<Solution>
+
+Examples include renaming a serialization alias, changing 200 to 204, making an optional request field required, removing an enum value, or changing error payload shape.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-openapi-3">
+
+Add a stable operation ID for `GET /tasks/{task_id}`.
+
+<Solution>
+
+Pass `operation_id="getTask"` to the route decorator and assert uniqueness in the generated OpenAPI document.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can narrate the lifecycle from socket to response and identify which annotations contribute to the generated contract.
+
+</Checkpoint>
+
+## Summary
+
+OpenAPI reflects registered runtime declarations. Treat it as a versioned contract and debug FastAPI by locating work within routing, dependencies, validation, application execution, and response serialization.
+

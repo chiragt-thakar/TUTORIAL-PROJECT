@@ -1,0 +1,112 @@
+---
+id: sa-core-orm
+title: Core versus ORM
+description: Choose the right query and mapping surface.
+module: sqlalchemy-core
+order: 5
+estimatedMinutes: 40
+prerequisites: [sa-state]
+learningObjectives:
+  - Write select statements
+  - Choose Core or ORM
+---
+
+## One expression language, two result styles
+
+SQLAlchemy Core builds SQL expressions around tables and columns. The ORM maps rows to identity-managed objects. SQLAlchemy 2 uses `select()` for both.
+
+```python
+from sqlalchemy import select
+
+statement = select(TaskModel).where(TaskModel.project_id == project_id)
+tasks = session.scalars(statement).all()
+```
+
+`session.execute(select(TaskModel.id, TaskModel.title))` returns row-like results. `session.scalars(select(TaskModel))` extracts the first selected element—ORM entities here.
+
+Core is strong for bulk operations, reporting, aggregates, explicit projections, and SQL-centric work. ORM is strong when entity state, relationships, identity, and unit-of-work changes matter. A repository may use both.
+
+## Explicit statements
+
+```python
+from sqlalchemy import update
+
+result = session.execute(
+    update(TaskModel)
+    .where(TaskModel.project_id == project_id, TaskModel.status == "open")
+    .values(status="archived")
+)
+```
+
+Bulk SQL bypasses ordinary per-object domain methods and may affect identity-map state. Use it when semantics permit set-based changes and choose synchronization/expiration behavior deliberately.
+
+## Avoid leaking persistence expressions
+
+Do not accept a SQLAlchemy clause from the HTTP layer. Convert a typed application query into repository-owned expressions. This keeps authorization predicates mandatory and prevents transport code from becoming database code.
+
+<TypeScriptComparison>
+
+Core resembles a typed SQL builder; ORM resembles entity/unit-of-work tooling. SQLAlchemy intentionally lets them interoperate rather than forcing one abstraction across every query.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Calling `.all()` on an unbounded select materializes every result. Define bounded page or stream behavior before production data exists.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Inspect emitted SQL and query plans. Fluent Python expressions can still generate expensive joins, missing predicates, or full scans.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="sa-core-orm-1">
+
+Select only task IDs and titles for one project.
+
+<Solution>
+
+```python
+stmt = select(TaskModel.id, TaskModel.title).where(TaskModel.project_id == project_id)
+rows = session.execute(stmt).all()
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-core-orm-2">
+
+Choose Core-style projection or ORM entities for a read-only dashboard count by status.
+
+<Solution>
+
+Use a Core/ORM SQL projection with `GROUP BY`; entity identity and unit-of-work behavior add no value to aggregate rows.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-core-orm-3">
+
+Why might bulk update violate domain behavior?
+
+<Solution>
+
+It changes rows without calling entity methods or producing per-entity events. Use it only when the set-based operation itself is the approved business behavior and synchronize affected state.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can choose entity, projection, aggregate, or bulk statement based on required behavior—not ideological preference.
+
+</Checkpoint>
+
+## Summary
+
+Core and ORM share SQL expressions. Use ORM for behavioral entity work, projections for read models, and set-based statements only when their bypassed object behavior is intentional.
+

@@ -1,0 +1,95 @@
+---
+id: rel-loading
+title: Loading Strategies and N+1
+description: Lazy, joined, and select-in loading trade-offs.
+module: relationships-queries
+order: 4
+estimatedMinutes: 55
+prerequisites: [rel-pages]
+learningObjectives:
+  - Detect N+1
+  - Choose eager loading
+---
+
+## Attribute access can be I/O
+
+Default lazy relationships may issue a SELECT when first accessed. Listing 100 projects and reading each `.tasks` can create one parent query plus 100 child queries: N+1.
+
+```python
+stmt = select(ProjectModel).options(selectinload(ProjectModel.tasks))
+projects = session.scalars(stmt).all()
+```
+
+`selectinload` loads parents, then children with one or more `IN` queries and works well for collections. `joinedload` uses one joined query and is often useful for many-to-one or small scalar relationships, but collection joins multiply parent rows and require result uniqueness handling.
+
+## Make unexpected I/O fail
+
+Configure `lazy="raise"` or `raise_on_sql` where accidental loading should be an error. Repositories should load the graph their return contract promises while the session is open.
+
+```python
+project: Mapped[ProjectModel] = relationship(lazy="raise")
+```
+
+Loader strategy is query-specific. A detail page may need children; a list response may need only counts. Do not eager-load every relationship globally.
+
+## Measure query counts
+
+Use SQL logging in development and a test query counter for critical endpoints. Assert a bounded number of statements as page size grows. Query count alone is not performance—one enormous joined query can also be poor—so inspect rows and plans.
+
+<CommonMistake>
+
+Serializing ORM objects after the session closes can trigger detached-instance failures or hide earlier N+1 behavior when the session remains open too long.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Async SQLAlchemy cannot safely hide arbitrary implicit I/O behind normal attribute access. Prefer explicit eager-loading contracts now; Module 10 makes this mandatory.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="rel-loading-1">
+
+Choose a loader for 50 tasks where each needs its one project name.
+
+<Solution>
+
+`joinedload(TaskModel.project)` is often appropriate for a scalar many-to-one relationship; measure the resulting query.
+
+</Solution>
+</Exercise>
+
+<Exercise id="rel-loading-2">
+
+Choose a loader for 50 projects with variable task collections.
+
+<Solution>
+
+`selectinload(ProjectModel.tasks)` avoids parent-row multiplication and usually loads the collection in an additional bounded query.
+
+</Solution>
+</Exercise>
+
+<Exercise id="rel-loading-3">
+
+Design a regression test for N+1 on project listing.
+
+<Solution>
+
+Seed several projects/tasks, count SQL statements around the repository call and response mapping, and assert the count remains constant or bounded as projects increase.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can identify every relationship a response accesses and specify its query-time loading strategy and expected statement count.
+
+</Checkpoint>
+
+## Summary
+
+Lazy loading makes attribute access conditional I/O. Select relationships explicitly, use `selectinload` or `joinedload` from cardinality, and test query behavior under realistic page sizes.
+

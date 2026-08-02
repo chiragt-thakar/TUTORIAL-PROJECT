@@ -1,0 +1,99 @@
+---
+id: async-fastapi
+title: FastAPI Session Dependency
+description: Inject request-scoped sessions and transactions.
+module: async-sqlalchemy-alembic
+order: 2
+estimatedMinutes: 50
+prerequisites: [async-engine]
+learningObjectives:
+  - Scope sessions
+  - Handle commits
+---
+
+## Session dependency versus transaction policy
+
+A dependency can own session cleanup while a unit of work owns commit semantics.
+
+```python
+async def get_session() -> AsyncIterator[AsyncSession]:
+    async with session_factory() as session:
+        yield session
+
+def get_uow(session: SessionDep) -> SqlAlchemyUnitOfWork:
+    return SqlAlchemyUnitOfWork(session)
+```
+
+Avoid an unconditional “commit after every route” dependency if some routes need read-only behavior, streaming, or service-controlled rollback. A clear unit-of-work context is often better:
+
+```python
+async with uow:
+    task = await service.complete(command, uow=uow)
+    await uow.commit()
+```
+
+Cleanup still closes the session. Exceptions trigger rollback before reuse/close. Use a dependency scope that ensures commit or rollback finishes before a successful response is irrevocably sent.
+
+## Do not leak ORM objects
+
+Map responses while the session and required loaded relationships are available. Prefer domain/read models rather than returning an ORM object that serialization might traverse and lazily load.
+
+For streaming, do not casually keep the normal request transaction open for the entire stream. Create a dedicated bounded iterator/session or generate an artifact asynchronously.
+
+<CommonMistake>
+
+A broad dependency that catches all exceptions, rolls back, and raises a new 500 can erase domain exceptions and HTTP translation. Roll back, then re-raise the original failure.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Set transaction boundaries in services and measure their duration. A request-scoped session does not require a transaction to remain open for unrelated validation or remote calls.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="async-fastapi-1">
+
+Why should a GET route not necessarily commit at dependency cleanup?
+
+<Solution>
+
+It normally performs no intentional mutation. Automatic commits hide accidental writes and blur transaction policy; close or roll back read-only work according to the chosen unit of work.
+
+</Solution>
+</Exercise>
+
+<Exercise id="async-fastapi-2">
+
+Place response mapping relative to session closure.
+
+<Solution>
+
+Load the required graph and map to a detached response/domain value before the session closes. Better, avoid response traversal of ORM relationships entirely.
+
+</Solution>
+</Exercise>
+
+<Exercise id="async-fastapi-3">
+
+What should cleanup do after a service raises `TaskConflictError`?
+
+<Solution>
+
+Rollback the session and re-raise. The API exception handler then maps the domain conflict to 409.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can draw session acquisition, transaction begin, flush, commit/rollback, response mapping, and close for one request.
+
+</Checkpoint>
+
+## Summary
+
+Use dependencies for session lifetime and a unit of work for business transactions. Finish database outcomes before success responses and avoid ORM objects escaping into later lazy access.
+

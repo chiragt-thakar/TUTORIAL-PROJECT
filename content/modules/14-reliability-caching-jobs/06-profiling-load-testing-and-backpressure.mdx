@@ -1,0 +1,68 @@
+---
+id: reliability-performance
+title: Profiling, Load Testing, and Backpressure
+description: Measure bottlenecks and keep overload bounded.
+module: reliability-caching-jobs
+order: 6
+estimatedMinutes: 60
+prerequisites: [reliability-http]
+learningObjectives: [Profile and load test, Design backpressure]
+---
+
+## Measure before optimizing
+
+Latency is a distribution. Report median and tail percentiles such as p95/p99 alongside throughput and error rate. An average hides the slow requests users remember. Separate wall time into application CPU, event-loop blocking, database query/pool wait, Redis, and outbound HTTP.
+
+Profile the suspected resource with production-like behavior. Sampling CPU profilers find hot Python frames with lower distortion than tracing every call. Database query plans and slow-query logs explain SQL. Event-loop lag reveals accidental blocking in async applications. Memory profiles distinguish retained objects from a temporary peak.
+
+## Design a meaningful load test
+
+Model realistic endpoint mix, authentication, data volume, cache state, and arrival pattern. Warm-up is different from cold-start behavior. Increase load gradually, hold it, and observe the saturation point. Record application and dependency metrics together.
+
+```python
+async def bounded_fetch(ids: list[UUID]) -> list[Result]:
+    semaphore = asyncio.Semaphore(10)
+    async def one(item_id: UUID) -> Result:
+        async with semaphore:
+            return await fetch(item_id)
+    return await asyncio.gather(*(one(item_id) for item_id in ids))
+```
+
+## Backpressure preserves a bound
+
+When work arrives faster than it completes, an unbounded queue converts overload into rising latency and memory. Bound request concurrency, database pools, HTTP pools, job queues, upload sizes, and fan-out. Reject excess work quickly with a documented 429/503 and retry guidance, or shed optional work.
+
+Optimize only after correctness tests exist. Common high-value fixes are removing N+1 queries, adding a validated index, batching I/O, reducing serialization, reusing clients, and moving CPU work to an appropriate bounded worker.
+
+## Production note
+
+Never load-test a shared production system without authorization, an abort threshold, and owner coordination. A local or isolated environment is the default for this course.
+
+<Exercise id="performance-metric" title="Read a latency report">
+Median is 40 ms and p99 is 8 seconds. Is the service healthy?
+<Solution>
+Not for the slowest one percent. Correlate p99 routes with pool wait, slow queries, external calls, and request size. Do not let the good average/median dismiss tail impact.
+</Solution>
+</Exercise>
+
+<Exercise id="performance-async" title="Find event-loop blocking">
+CPU usage is modest but all concurrent requests pause during password hashing. What is likely wrong?
+<Solution>
+The blocking CPU/hash call is running on the event loop. Use the library's recommended bounded thread/process execution and cap concurrency so expensive hashes cannot exhaust workers.
+</Solution>
+</Exercise>
+
+<Exercise id="performance-overload" title="Choose overload behavior">
+The job queue grows without limit during a dependency outage. Repair the boundary.
+<Solution>
+Apply admission limits, pause or reject optional producers, expose queue-age/capacity, retry with budgets, and quarantine terminal failures. Preserve durable required work only within a planned storage bound.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can define a workload, read tail latency, select the relevant profiler, and identify where the system applies backpressure.
+
+## Summary
+
+Performance engineering is controlled measurement followed by the smallest verified change; backpressure keeps failure finite.

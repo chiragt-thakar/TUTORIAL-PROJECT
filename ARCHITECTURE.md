@@ -13,4 +13,4 @@ content files → validated loader → server routes → rendered MDX
 curriculum IDs → client progress provider → localStorage
 ```
 
-Planned modules have complete outline metadata but no `.mdx` bodies or generated lesson routes. This makes availability an explicit product state rather than an empty-page convention.
+All 15 modules currently have complete `.mdx` bodies and generated lesson routes. Availability remains an explicit metadata state, so a future planned module can expose its outline without creating empty lesson pages.

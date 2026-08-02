@@ -1,0 +1,48 @@
+---
+id: architecture-assignment
+title: "Assignment: Production Hardening Review"
+description: Restructure and harden the Task API with explicit operational acceptance evidence.
+module: production-architecture
+order: 7
+estimatedMinutes: 180
+prerequisites: [arch-tradeoffs]
+learningObjectives: [Apply maintainable boundaries, Add operational safeguards, Defend every architectural layer]
+---
+
+<Assignment id="architecture-assignment" title="Production Hardening Review">
+
+## Scenario
+
+The Task API has features and tests but unclear ownership and weak operational behavior. Prepare it for a production review without deploying it.
+
+## Requirements
+
+- Draw the actual router-to-database dependency path and simplify unjustified pass-through layers.
+- Centralize typed settings and prove secrets are absent from source, responses, and logs.
+- Add stable error envelopes, structured logs, and validated correlation IDs.
+- Add liveness/readiness endpoints and lifespan cleanup for shared resources.
+- Document graceful shutdown, body limits, CORS, hosts, headers, and rate-limit policy.
+- Define request/error/latency metrics and trace a create-task request.
+- Write two ADRs: one kept boundary and one rejected abstraction.
+
+## Acceptance criteria
+
+- Unit and integration tests remain green after restructuring.
+- A forced unexpected exception produces a generic response and a correlated diagnostic log.
+- Readiness fails within a bounded timeout when the required database is unavailable; liveness remains responsive.
+- Logs and metric labels contain no secrets or unbounded identifiers.
+- Every layer has a one-sentence responsibility and concrete reason to exist.
+
+## Stretch goal
+
+Add a local failure drill that exhausts the database pool and records the observable signals and recovery behavior.
+
+<Solution>
+Keep one application factory/composition root. Let routers own HTTP, services own use cases, repositories own persistence, and a unit of work own transactions. Inject validated settings, register error handlers and correlation middleware, expose shallow health probes, and close clients through lifespan. Use ADRs and test evidence to remove ceremony rather than move it.
+</Solution>
+
+## Capstone connection
+
+This review establishes the final repository structure and operations checklist used in Module 13.
+
+</Assignment>

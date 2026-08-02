@@ -1,0 +1,49 @@
+---
+id: capstone-data
+title: Data Model, Authentication, and Authorization
+description: Users, projects, tasks, roles, and permissions.
+module: capstone
+order: 2
+estimatedMinutes: 120
+prerequisites: [capstone-spec]
+learningObjectives: [Model the database, Define access rules]
+---
+
+## Model invariants in data and policy
+
+Core tables are `users`, `projects`, `project_members`, and `tasks`. Membership has a composite uniqueness rule on project and user. Tasks reference project, creator, and optional assignee. Enforce valid status/priority and unique normalized email in the database as well as request validation.
+
+```text
+users 1---* project_members *---1 projects
+projects 1---* tasks
+users 1---* tasks (creator)
+users 1---* tasks (assignee, optional)
+```
+
+Authentication verifies a password hash and issues a short-lived access token with stable subject, expiry, issuer/audience if used, and token version or revocation policy. Authorization loads current membership and evaluates action-specific policy.
+
+| Action | Owner | Member | Viewer |
+| --- | --- | --- | --- |
+| Read project/tasks | yes | yes | yes |
+| Create/update task | yes | yes | no |
+| Manage members/project | yes | no | no |
+
+Never trust a role sent in the request body or a project ID in a token as permanent authorization. Resource state in the database remains authoritative.
+
+## Production note
+
+Use an established password hashing library with current parameters, protect login from enumeration and abuse, and define token rotation/revocation before claiming logout semantics.
+
+<Exercise id="cap-data-constraint" title="Add membership integrity">Name key constraints.<Solution>Primary key, foreign keys to users/projects, unique `(project_id, user_id)`, constrained role values, and appropriate cascade/restrict behavior.</Solution></Exercise>
+
+<Exercise id="cap-data-assignee" title="Protect assignment">What must be checked before assigning a task?<Solution>Task and target user must belong to the same project, and the actor must have update permission. Enforce within one transaction.</Solution></Exercise>
+
+<Exercise id="cap-data-token" title="Limit token claims">What belongs in an access token?<Solution>A minimal stable subject and security metadata such as expiry/issuer/audience/token version. Fetch mutable roles/memberships when authorizing sensitive resource actions.</Solution></Exercise>
+
+## Checkpoint
+
+You can draw the relational model, state its invariants, and evaluate every endpoint through an identity-resource-action policy.
+
+## Summary
+
+Database constraints protect durable truth; authentication establishes identity; authorization makes a fresh resource-specific decision.

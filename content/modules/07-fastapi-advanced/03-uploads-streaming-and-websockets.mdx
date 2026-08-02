@@ -1,0 +1,120 @@
+---
+id: advanced-io
+title: Uploads, Streaming, and WebSockets
+description: Handle non-JSON protocols and resource limits.
+module: fastapi-advanced
+order: 3
+estimatedMinutes: 55
+prerequisites: [security-rbac]
+learningObjectives:
+  - Stream responses
+  - Bound file uploads
+---
+
+## Upload without loading everything
+
+`UploadFile` uses a spooled file interface and is preferable to raw `bytes` for large uploads. Multipart form handling requires the multipart package supported by FastAPI.
+
+```python
+from fastapi import File, UploadFile
+
+@router.post("/{task_id}/attachments", status_code=201)
+async def upload_attachment(task_id: UUID, file: Annotated[UploadFile, File()]):
+    validate_media_type(file.content_type)
+    stored = await storage.write_stream(file.file, max_bytes=10_000_000)
+    return AttachmentRead.from_domain(stored)
+```
+
+Client-supplied filename and content type are untrusted. Enforce size while reading, inspect content when security requires, generate server-side storage keys, and scan dangerous files asynchronously before exposing them.
+
+## Streaming responses
+
+`StreamingResponse` consumes a sync or async iterator. It can reduce memory and latency, but the source must actually stream and cleanup when the client disconnects.
+
+```python
+from fastapi.responses import StreamingResponse
+
+async def export_rows():
+    yield "id,title\n"
+    async for task in repository.iter_export():
+        yield f"{task.id},{csv_escape(task.title)}\n"
+
+return StreamingResponse(export_rows(), media_type="text/csv")
+```
+
+Do not hold a database transaction open for minutes if an export can snapshot to object storage or a job artifact.
+
+## WebSockets are long-lived connections
+
+A WebSocket endpoint accepts a connection, authenticates it, receives/sends frames, handles disconnects, and applies backpressure. Each process only knows its own connections; multi-instance broadcasts require a broker or shared pub/sub layer.
+
+```python
+@app.websocket("/ws/projects/{project_id}")
+async def project_events(websocket: WebSocket, project_id: UUID):
+    user = await authenticate_websocket(websocket)
+    await authorize_project(user, project_id)
+    await websocket.accept()
+    try:
+        async for event in subscriptions.project(project_id):
+            await websocket.send_json(event.model_dump(mode="json"))
+    except WebSocketDisconnect:
+        pass
+```
+
+<CommonMistake>
+
+Do not trust an upload extension or keep every WebSocket connection in an unbounded global list. Both are attacker-controlled resource inputs.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Define upload quotas, timeouts, connection limits, maximum message size, heartbeat policy, and behavior during rolling shutdown.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="advanced-io-1">
+
+List four validations before persisting an attachment.
+
+<Solution>
+
+Authenticate/authorize, enforce byte limit while reading, validate permitted media/content, generate a safe storage key, and optionally malware-scan before making it available.
+
+</Solution>
+</Exercise>
+
+<Exercise id="advanced-io-2">
+
+Why can `StreamingResponse(iter([huge_bytes]))` still use huge memory?
+
+<Solution>
+
+The entire payload was already materialized as one bytes object. Streaming requires incremental production from the source.
+
+</Solution>
+</Exercise>
+
+<Exercise id="advanced-io-3">
+
+What breaks when WebSocket broadcasts use only an in-process connection dictionary across four workers?
+
+<Solution>
+
+Each worker sees only its own connections, so events reach a subset. Use broker-backed fan-out and keep per-process connection registries bounded.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can describe limits, trust checks, cleanup, and multi-instance behavior for uploads, streams, and WebSockets.
+
+</Checkpoint>
+
+## Summary
+
+Non-JSON I/O is primarily a resource-lifecycle problem. Stream genuinely, bound attacker-controlled input, and design long-lived connections for backpressure and multiple processes.
+

@@ -1,0 +1,46 @@
+---
+id: arch-errors
+title: Errors, Structured Logging, and Correlation IDs
+description: Make failures consistent and diagnosable.
+module: production-architecture
+order: 3
+estimatedMinutes: 60
+prerequisites: [arch-config]
+learningObjectives: [Design an error strategy, Emit structured logs]
+---
+
+## Translate errors at boundaries
+
+Domain/application code raises meaningful exceptions such as `TaskNotFound` or `PermissionDenied`. FastAPI handlers translate them into one stable envelope:
+
+```json
+{"error":{"code":"task_not_found","message":"Task not found","request_id":"01J..."}}
+```
+
+Unexpected failures return a generic 500 message while logs retain the exception and stack trace. Never expose SQL, tokens, paths, or internal class names to clients.
+
+Structured logs use named fields rather than interpolated prose:
+
+```python
+logger.info("task.created", extra={"task_id": task.id, "actor_id": actor.id})
+```
+
+A middleware accepts a valid incoming request ID or generates one, binds it to request context, returns it in a response header, and includes it in every log. Clear context after the request to prevent cross-request contamination.
+
+## Production note
+
+Log identifiers and outcomes, not passwords, tokens, full request bodies, or sensitive personal data. Define retention and access controls.
+
+<Exercise id="errors-map" title="Map three errors">Choose statuses for missing credentials, denied permission, and missing task.<Solution>Use 401, 403, and 404 respectively, unless a documented concealment policy intentionally maps unauthorized resource knowledge to 404.</Solution></Exercise>
+
+<Exercise id="errors-request-id" title="Handle an invalid ID">A client sends a 5,000-character request ID. What should middleware do?<Solution>Reject or ignore it according to a bounded format/length rule and generate a safe internal ID; never copy arbitrary input into every log.</Solution></Exercise>
+
+<Exercise id="errors-log" title="Design a failure log">List useful fields for a failed task update.<Solution>Event name, request ID, actor ID, task ID, error code/type, duration, environment, and stack trace for unexpected failures—without secrets or full payloads.</Solution></Exercise>
+
+## Checkpoint
+
+You can keep client errors stable, preserve diagnostic detail privately, and follow one request across structured logs.
+
+## Summary
+
+Consistent translation and correlation make failures safe for clients and actionable for operators.

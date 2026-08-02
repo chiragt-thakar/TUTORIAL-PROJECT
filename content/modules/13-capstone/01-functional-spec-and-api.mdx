@@ -1,0 +1,50 @@
+---
+id: capstone-spec
+title: Functional Specification and API Contract
+description: Requirements, endpoints, pagination, filtering, and acceptance cases.
+module: capstone
+order: 1
+estimatedMinutes: 90
+prerequisites: [architecture-assignment]
+learningObjectives: [Freeze the scope, Define endpoints]
+---
+
+## Freeze a buildable scope
+
+The capstone serves users, projects, memberships, and tasks. Users register and authenticate; project owners manage membership; members create and update tasks; viewers read project work. A task has title, description, status, priority, assignee, due time, creator, and timestamps.
+
+Define the HTTP contract before implementation:
+
+```text
+POST   /v1/auth/register       POST /v1/auth/token
+GET    /v1/projects            POST /v1/projects
+GET    /v1/projects/{id}       PATCH /v1/projects/{id}
+POST   /v1/projects/{id}/members
+GET    /v1/projects/{id}/tasks POST /v1/projects/{id}/tasks
+GET    /v1/tasks/{id}          PATCH /v1/tasks/{id}
+DELETE /v1/tasks/{id}
+```
+
+Collections support bounded `limit`, cursor or offset pagination, stable ordering, and filters for status, assignee, priority, and due range. Document validation, success status, error codes, authorization, and idempotency expectations for each operation.
+
+## Stop rule
+
+Do not add comments, attachments, chat, notifications, or analytics until every core acceptance case passes. A finished narrow system teaches more than an endless feature list.
+
+## Production note
+
+Version the public contract and record compatibility decisions. Generated OpenAPI is evidence, but examples and permission rules still need human review.
+
+<Exercise id="spec-acceptance" title="Write an acceptance case">Specify task creation by a project member.<Solution>Given an authenticated member and valid project, posting a valid task returns 201 with its ID and public fields; it persists creator/project links. A non-member receives the documented 403 or concealment 404.</Solution></Exercise>
+
+<Exercise id="spec-pagination" title="Define stable ordering">Choose a task-list order.<Solution>Use a business key plus unique tiebreaker, such as `created_at DESC, id DESC`, and encode both in a cursor if using cursor pagination.</Solution></Exercise>
+
+<Exercise id="spec-scope" title="Reject scope creep">A stakeholder requests email reminders now. What do you do?<Solution>Record it as a stretch goal with prerequisites, then keep it out until the core API, permissions, migrations, tests, and operations checklist pass.</Solution></Exercise>
+
+## Checkpoint
+
+You have a bounded endpoint table and testable acceptance cases for success, validation, authentication, authorization, and absence.
+
+## Summary
+
+The capstone begins with a frozen contract and stopping rule so implementation can converge on evidence.

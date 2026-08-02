@@ -1,0 +1,85 @@
+---
+id: alembic-flow
+title: Alembic Setup, Generation, and Review
+description: Generate migrations and review every operation.
+module: async-sqlalchemy-alembic
+order: 4
+estimatedMinutes: 55
+prerequisites: [async-queries]
+learningObjectives:
+  - Configure Alembic
+  - Review autogenerate
+---
+
+## Schema history is source code
+
+Alembic compares the database schema with SQLAlchemy metadata, but it cannot infer intent. Configure `target_metadata` from the one metadata object containing every model:
+
+```python
+from app.db.base import Base
+
+target_metadata = Base.metadata
+```
+
+Typical commands are:
+
+```text
+alembic revision --autogenerate -m "add task priority"
+alembic upgrade head
+alembic downgrade -1
+alembic current
+alembic history
+```
+
+## Review the generated revision
+
+Open every revision before running it. Confirm table and column names, nullability, indexes, foreign-key behavior, server defaults, and downgrade symmetry.
+
+```python
+def upgrade() -> None:
+    op.add_column("tasks", sa.Column("priority", sa.Integer(), nullable=True))
+    op.create_check_constraint("ck_tasks_priority", "tasks", "priority BETWEEN 1 AND 5")
+
+def downgrade() -> None:
+    op.drop_constraint("ck_tasks_priority", "tasks", type_="check")
+    op.drop_column("tasks", "priority")
+```
+
+Autogenerate can mistake a rename for drop-and-create, omit application data transformations, and generate unsafe constraints for existing rows. Edit the revision to express the real transition.
+
+## Async application, migration connection
+
+Your application may use an async engine while migrations use Alembic's async template or a separate synchronous driver. Either is valid; keep one authoritative URL and test the chosen path in CI.
+
+## Production note
+
+Run upgrade and downgrade against a disposable database during review. Merely importing the revision does not prove its SQL works.
+
+<Exercise id="alembic-rename-review" title="Repair a rename">
+Autogenerate drops `name` and adds `title`. Replace it with the intent-preserving operation.
+<Solution>
+Use `op.alter_column("tasks", "name", new_column_name="title")`, with existing type details required by the target database. Its downgrade renames `title` back to `name`.
+</Solution>
+</Exercise>
+
+<Exercise id="alembic-nullable-review" title="Plan a required column">
+Existing tasks need a non-null `status`. List the safe sequence.
+<Solution>
+Add it nullable or with a temporary server default, backfill existing rows, verify no nulls remain, make it non-null, then remove the temporary default if the application should provide the value.
+</Solution>
+</Exercise>
+
+<Exercise id="alembic-metadata" title="Diagnose an empty revision">
+Autogenerate finds no changes although a model was added. What should you inspect?
+<Solution>
+Verify the model module is imported before `target_metadata` is inspected and that Alembic uses the same `Base.metadata` and database URL as the application environment.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can configure metadata, inspect revision history, and explain why autogenerate output is only a draft.
+
+## Summary
+
+Alembic records deliberate schema transitions. Generate for speed, review for intent, and execute in a disposable database for evidence.

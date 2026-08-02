@@ -1,0 +1,74 @@
+---
+id: advanced-memory
+title: Memory, Profiling, and Python Performance
+description: Find real Python bottlenecks before optimizing.
+module: advanced-python-backends
+order: 7
+estimatedMinutes: 55
+prerequisites: [advanced-context]
+learningObjectives: [Reason about object lifetime, Profile before optimizing]
+---
+
+## Names point to objects
+
+Python variables hold references. An object normally remains alive while something can still reach it. CPython commonly reclaims objects immediately when their reference count reaches zero, while cyclic garbage collection handles unreachable reference cycles.
+
+```python
+tasks = load_tasks()
+selected = tasks[:100]  # a new list, but the same task objects
+```
+
+The slice copies references, not the task objects. Mutating a shared task is visible through both lists. This is also why a cache, global registry, callback, or completed-task collection can accidentally keep a large object graph alive.
+
+## Measure the right resource
+
+Use timing for latency, a sampling profiler for CPU hotspots, allocation/memory tools for growth, database tools for queries, and event-loop lag for blocking async code. A line that appears frequently in a CPU profile is not automatically wrong; verify whether changing it improves the user-visible workload.
+
+```python
+from time import perf_counter
+
+started = perf_counter()
+result = build_projection(tasks)
+duration = perf_counter() - started
+```
+
+Use `timeit` for small isolated comparisons and repeated end-to-end measurements for application decisions. Include warm-up, realistic data, and output verification so an “optimization” does not remove required work.
+
+## Prefer simple high-value changes
+
+Generators can reduce peak memory. Sets can turn repeated membership checks into near-constant-time lookups. Better SQL avoids Python work entirely. `slots=True` can reduce per-instance overhead for many small objects, but it adds restrictions and should follow measurement.
+
+Do not reach first for clever comprehensions, manual object pooling, or implementation-specific tricks. Readability and correct I/O boundaries usually matter more.
+
+## Production note
+
+Compare before and after under the same workload. Record tail latency, throughput, memory, CPU, database calls, and error rate so improvement in one dimension does not hide damage elsewhere.
+
+<Exercise id="memory-shared" title="Predict a mutation">
+After `copy = original[:]`, you change `copy[0].title`. Can `original[0].title` change?
+<Solution>
+Yes. The list is new, but both lists point to the same first object. Create a new object or use immutable values when independent state is required.
+</Solution>
+</Exercise>
+
+<Exercise id="memory-leak" title="Find retained work">
+A global set stores every completed asyncio task and memory grows. What is missing?
+<Solution>
+Remove finished tasks, for example with a done callback, or use an owned task group. Completed task objects can retain results, exceptions, and referenced data.
+</Solution>
+</Exercise>
+
+<Exercise id="memory-profile" title="Choose a tool">
+Requests are slow, but CPU is low and database pool wait is high. Should you micro-optimize Python loops?
+<Solution>
+No. Investigate connection usage, transaction length, query latency, and pool sizing first. The observed bottleneck is waiting for database capacity.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can explain reference sharing, choose a profiler from the suspected resource, and demand before/after evidence.
+
+## Summary
+
+Python performance work begins with object lifetime and measured bottlenecks. Simple data and I/O choices usually beat clever syntax.

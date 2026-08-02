@@ -1,0 +1,51 @@
+---
+id: async-alembic-assignment
+title: "Assignment: Async Persistence and Migration History"
+description: Convert the repository to async sessions and deliver reviewed schema migrations.
+module: async-sqlalchemy-alembic
+order: 6
+estimatedMinutes: 160
+prerequisites: [alembic-deploy]
+learningObjectives:
+  - Wire async request transactions
+  - Eliminate implicit ORM I/O
+  - Demonstrate upgrade and downgrade
+---
+
+<Assignment id="async-alembic-assignment" title="Async Persistence and Migration History">
+
+## Scenario
+
+The Task API must use PostgreSQL asynchronously and add task priority without breaking existing rows.
+
+## Requirements
+
+- Create one async engine and an `async_sessionmaker` with request-scoped sessions.
+- Put commit and rollback policy in an explicit unit-of-work boundary.
+- Convert repository methods to awaited SQLAlchemy 2.x statements.
+- Eager-load every relationship required by response mapping.
+- Add and review a migration for priority values 1 through 5.
+- Demonstrate upgrade, downgrade, and re-upgrade on a disposable local database.
+- Write a short expand/migrate/contract plan; do not perform a hosted deployment.
+
+## Acceptance criteria
+
+- Concurrent requests never share a session.
+- Failure tests prove the transaction rolls back.
+- SQL inspection shows no N+1 query on the project-task endpoint.
+- Alembic reaches `head`, returns one revision, and reaches `head` again.
+- Existing tasks receive a valid priority before the constraint becomes mandatory.
+
+## Stretch goal
+
+Add a batch backfill command with a stable primary-key cursor, progress logging, and safe restart behavior.
+
+<Solution>
+Keep the engine and factory in infrastructure wiring, yield one session per request, and let a unit of work control transaction completion. Repository statements use explicit result accessors and `selectinload`. The migration adds a nullable column, backfills, applies its constraint, and reverses operations in safe order. Record terminal output from the local migration cycle and a query-count test as evidence.
+</Solution>
+
+## Capstone connection
+
+This becomes the capstone's persistence lifecycle and schema history. Preserve it instead of rebuilding database wiring later.
+
+</Assignment>

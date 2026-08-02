@@ -1,0 +1,50 @@
+---
+id: capstone-docker
+title: Docker, Deployment, and Final Review
+description: Development environment, deployment considerations, stretch goals, and final acceptance.
+module: capstone
+order: 5
+estimatedMinutes: 120
+prerequisites: [capstone-quality]
+learningObjectives: [Run in Docker, Complete acceptance review]
+---
+
+## Reproducible local runtime
+
+Containerize the capstone API and run it locally with PostgreSQL. Use a non-root runtime user, pinned dependencies, a small runtime image, an exec-form command, and a `.dockerignore`. Configuration enters at runtime; secrets never enter image layers.
+
+```text
+services:
+  api: application image, local port, health check, database URL
+  db: pinned PostgreSQL image, local volume, health check
+```
+
+Run migrations as an explicit local command or one controlled release step, not independently in every web worker. Verify graceful termination and readiness behavior with local containers.
+
+## Deployment considerations—not deployment
+
+Write a release plan covering TLS/proxy assumptions, managed database and backups, secrets, migrations, process count, health checks, logs/metrics, rollback signals, and data recovery. Do not create cloud resources, publish an image, configure DNS, or deploy this learning site/capstone as part of this module.
+
+## Final review
+
+From a clean checkout, follow the README, apply migrations, run tests, start locally, complete a smoke-test script, and record results. Review OpenAPI, dependency/security scan findings, schema history, architecture decisions, and known risks.
+
+Stretch goals are optional only after acceptance: refresh tokens, optimistic locking, durable notifications, search, or CI automation.
+
+## Production note
+
+A container that starts is not production proof. Recovery drills, observability, capacity behavior, and ownership matter more than a successful image build.
+
+<Exercise id="cap-docker-secret" title="Find a secret leak">Why is `COPY .env /app/.env` unsafe?<Solution>The secret becomes part of image history and distribution. Ignore the file and inject secrets at runtime through the environment or a secret manager.</Solution></Exercise>
+
+<Exercise id="cap-docker-migration" title="Choose migration ownership">Why not migrate from every API replica?<Solution>Replicas can race or fail inconsistently. Use one explicit, observable migration job/step before compatible application traffic proceeds.</Solution></Exercise>
+
+<Exercise id="cap-docker-review" title="Define a smoke test">List the minimum local flow.<Solution>Check liveness/readiness, register/login, create project, add member if needed, create/list/update task, verify forbidden access, and confirm correlated error behavior.</Solution></Exercise>
+
+## Checkpoint
+
+The service builds and runs locally from documented steps, and a written production plan identifies dependencies, release order, recovery, and risks without performing deployment.
+
+## Summary
+
+The final review proves reproducibility and behavior locally. Deployment remains a documented operational decision outside this implementation.

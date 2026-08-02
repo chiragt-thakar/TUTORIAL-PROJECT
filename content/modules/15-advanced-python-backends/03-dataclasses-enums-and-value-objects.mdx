@@ -1,0 +1,84 @@
+---
+id: advanced-values
+title: Dataclasses, Enums, and Value Objects
+description: Represent backend concepts with small explicit types.
+module: advanced-python-backends
+order: 3
+estimatedMinutes: 55
+prerequisites: [advanced-generators]
+learningObjectives: [Choose a value representation, Protect invariants]
+---
+
+## Give important values a name
+
+Passing strings for every concept makes invalid combinations easy. A value object represents a small domain concept and validates it once.
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True, slots=True)
+class TaskTitle:
+    value: str
+
+    def __post_init__(self) -> None:
+        cleaned = self.value.strip()
+        if len(cleaned) < 3:
+            raise ValueError("title must contain at least 3 characters")
+        object.__setattr__(self, "value", cleaned)
+```
+
+`frozen=True` prevents normal reassignment after creation. `slots=True` removes the per-instance attribute dictionary and can reduce memory, but use it for measured value-heavy paths rather than as a ritual.
+
+A dataclass generates routine methods such as `__init__`, comparison, and representation. It does not validate types at runtime. Pydantic fits untrusted input boundaries; dataclasses fit trusted internal values and domain behavior.
+
+## Enums define a closed set
+
+```python
+from enum import StrEnum
+
+class TaskStatus(StrEnum):
+    TODO = "todo"
+    IN_PROGRESS = "in_progress"
+    DONE = "done"
+```
+
+An enum prevents spelling variants inside the application. The database should still enforce allowed durable values, and an API should serialize the stable value rather than a Python member name.
+
+Do not turn every integer or string into a class. Create a value object when it protects a rule, prevents argument mix-ups, owns behavior, or gives a concept a stable contract.
+
+## Equality and hashing
+
+Frozen value objects usually compare by their fields and can be dictionary keys or set members. If equality depends on identity rather than value, model an entity instead. A task can change while remaining the same task ID; a task title is simply equal to another title with the same normalized value.
+
+## Production note
+
+Keep API, domain, and database conversions at clear boundaries. Silent enum or timezone conversions can create data that appears valid but changes meaning.
+
+<Exercise id="values-choice" title="Choose the representation">
+Would you use Pydantic or a dataclass for an incoming create-task JSON body?
+<Solution>
+Use a Pydantic request schema at the untrusted HTTP boundary. Convert validated fields into domain value objects when those objects own additional business meaning.
+</Solution>
+</Exercise>
+
+<Exercise id="values-enum" title="Handle an unknown stored value">
+The database contains `archived`, but the current enum lacks it. What should happen?
+<Solution>
+Fail visibly during mapping and repair the schema/migration compatibility. Do not silently map the unknown value to another status.
+</Solution>
+</Exercise>
+
+<Exercise id="values-identity" title="Entity or value object">
+Is `ProjectId` a value object even though it identifies an entity?
+<Solution>
+Yes. The ID wrapper itself is an immutable value. `Project` is the entity whose identity remains stable while its other state changes.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can choose among Pydantic models, dataclasses, enums, entities, and primitive values based on responsibility.
+
+## Summary
+
+Small types improve backend code when they protect meaning. Add them where they remove invalid states, not everywhere a string appears.

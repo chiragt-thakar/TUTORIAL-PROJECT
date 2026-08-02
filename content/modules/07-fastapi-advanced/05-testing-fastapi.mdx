@@ -1,0 +1,106 @@
+---
+id: advanced-testing
+title: Testing FastAPI Applications
+description: Exercise routes, dependencies, and security boundaries.
+module: fastapi-advanced
+order: 5
+estimatedMinutes: 50
+prerequisites: [advanced-contract]
+learningObjectives:
+  - Use test clients
+  - Override dependencies
+---
+
+## Test through ASGI, not a real port
+
+FastAPI's synchronous `TestClient` drives the ASGI app in process. Use it as a context manager when lifespan behavior matters.
+
+```python
+from fastapi.testclient import TestClient
+
+def test_create_task(app: FastAPI) -> None:
+    with TestClient(app) as client:
+        response = client.post("/api/v1/tasks", json={"title": "Ship API", "projectId": PROJECT_ID})
+    assert response.status_code == 201
+    assert response.json()["title"] == "Ship API"
+```
+
+For async tests, use an async HTTP client with an ASGI transport and the project's chosen lifespan strategy. Do not mix synchronous client calls inside async tests without understanding their event loops.
+
+## Override at declared boundaries
+
+FastAPI stores dependency overrides on the application:
+
+```python
+app.dependency_overrides[get_task_service] = lambda: fake_service
+try:
+    yield app
+finally:
+    app.dependency_overrides.clear()
+```
+
+Override the dependency callable used by the route, not an arbitrary internal import. Restore overrides so tests do not leak state.
+
+## Test public behavior and security
+
+Cover successful schema/status/headers, validation failures, not-found/conflict translation, authentication absence/invalidity, and authorization denial. Assert secrets are absent. A route test need not re-test every service branch already covered by unit tests; it proves adapter wiring.
+
+Use test token creation through the same signing implementation with test keys, or override current identity when testing non-auth route behavior. Keep dedicated tests for the real token verification dependency.
+
+<CommonMistake>
+
+Overriding `get_current_user` in every test can leave the actual bearer extraction and JWT verification completely untested. Separate adapter tests from security integration tests.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Avoid asserting the entire OpenAPI document as one brittle snapshot. Assert security-critical and client-critical fragments, plus a reviewed artifact when useful.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="advanced-testing-1">
+
+Why should `TestClient` be a context manager for an app that initializes services in lifespan?
+
+<Solution>
+
+Entering/exiting the client runs startup and shutdown, so the test observes the same resource lifecycle and cleanup as the application.
+
+</Solution>
+</Exercise>
+
+<Exercise id="advanced-testing-2">
+
+Design separate tests for route authorization and JWT verification.
+
+<Solution>
+
+Override current user to test route/service permission outcomes deterministically. Separately call protected endpoints with valid, expired, wrong-audience, and invalid-signature tokens through the real auth dependency.
+
+</Solution>
+</Exercise>
+
+<Exercise id="advanced-testing-3">
+
+Prevent dependency overrides from leaking across tests.
+
+<Solution>
+
+Set overrides in a function-scoped fixture and clear or restore them in `finally` after yielding the app/client.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can state exactly whether a test proves route wiring, dependency behavior, service policy, token verification, or full persistence integration.
+
+</Checkpoint>
+
+## Summary
+
+Drive the ASGI app in process, honor lifespan, override explicit dependencies narrowly, and preserve dedicated tests for real authentication and authorization boundaries.
+

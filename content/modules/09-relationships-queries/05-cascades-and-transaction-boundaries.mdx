@@ -1,0 +1,95 @@
+---
+id: rel-cascade
+title: Cascades and Transaction Boundaries
+description: Control related writes and deletion semantics.
+module: relationships-queries
+order: 5
+estimatedMinutes: 45
+prerequisites: [rel-loading]
+learningObjectives:
+  - Configure cascades
+  - Define transaction boundaries
+---
+
+## Cascade is an ownership decision
+
+ORM cascade controls how session operations propagate across object relationships. Database `ON DELETE` controls what the database does when a referenced row is deleted. They must represent the same domain policy.
+
+```python
+tasks: Mapped[list[TaskModel]] = relationship(
+    back_populates="project",
+    cascade="all, delete-orphan",
+    passive_deletes=True,
+)
+# TaskModel.project_id uses ForeignKey(..., ondelete="CASCADE")
+```
+
+`delete-orphan` means removing a child from its owning relationship can delete it; use it only for truly owned children that cannot belong elsewhere. Many-to-many relationships rarely own the related entity itself.
+
+## Transaction boundaries follow use cases
+
+“Move task to another project” may require authorization in both projects, position updates, an audit record, and an outbox event. One service transaction should cover all database changes. Repository methods must not commit early.
+
+For concurrent edits, use constraints, appropriate locking, or optimistic version checks. Retrying a transaction is safe only when the operation is idempotent or retry-aware.
+
+## Delete policy
+
+Hard delete, soft delete, archival, and anonymization have different compliance and query consequences. Soft delete requires every relevant uniqueness, authorization, relationship, and list query to account for deleted state; it is not a free reversible delete.
+
+<CommonMistake>
+
+Cascade delete on both sides of a many-to-many graph can recursively delete far more than intended. Delete association rows, not shared users or labels.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Test deletion using the real database with foreign keys enabled. SQLite test defaults can mask PostgreSQL constraint and cascade behavior.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="rel-cascade-1">
+
+Should removing a label from one task delete the shared label entity?
+
+<Solution>
+
+Normally no. Delete the task-label association row. The shared label may still belong to other tasks.
+
+</Solution>
+</Exercise>
+
+<Exercise id="rel-cascade-2">
+
+Define the atomic boundary for completing a task and writing an audit/outbox event.
+
+<Solution>
+
+Load/authorize, update task, add audit event, add outbox event, and commit once. A worker publishes after commit.
+
+</Solution>
+</Exercise>
+
+<Exercise id="rel-cascade-3">
+
+Why can a uniqueness constraint behave unexpectedly with soft-deleted projects?
+
+<Solution>
+
+A deleted row still occupies its unique slug. Decide whether slugs can be reused and implement an appropriate partial unique index or archival naming policy.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can explain ownership and delete behavior at ORM, database, query, and business-operation layers.
+
+</Checkpoint>
+
+## Summary
+
+Cascades encode ownership, not convenience. Align ORM and database behavior, keep use-case changes atomic, and treat soft deletion as a pervasive data-policy choice.
+

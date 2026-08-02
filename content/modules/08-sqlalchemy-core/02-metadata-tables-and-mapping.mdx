@@ -1,0 +1,107 @@
+---
+id: sa-mapping
+title: Metadata, Tables, and Declarative Mapping
+description: Relational structures and Python mappings.
+module: sqlalchemy-core
+order: 2
+estimatedMinutes: 50
+prerequisites: [sa-engine]
+learningObjectives:
+  - Define tables
+  - Map ORM classes
+---
+
+## Metadata describes a schema model
+
+`MetaData` collects table definitions. Declarative mapping connects Python attributes to tables while retaining SQLAlchemy Core table objects underneath.
+
+```python
+from datetime import datetime
+from uuid import UUID
+from sqlalchemy import DateTime, ForeignKey, String, func
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
+
+class Base(DeclarativeBase):
+    pass
+
+class TaskModel(Base):
+    __tablename__ = "tasks"
+
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"), index=True)
+    title: Mapped[str] = mapped_column(String(120))
+    status: Mapped[str] = mapped_column(String(20), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+```
+
+`Mapped[...]` describes ORM-managed attributes. Database constraints remain essential because other processes and race conditions bypass Python validation. Name constraints consistently so migration diffs and errors are understandable.
+
+## Domain model versus database model
+
+The mapped class models persistence state and relationships. The domain model may use value objects, methods, and invariants independent of SQLAlchemy. A repository maps between them when that separation protects meaningful change. Small CRUD applications may use mapped models directly, but do so consciously.
+
+`Base.metadata.create_all()` is useful for disposable tests or tutorials; Alembic should own production schema history.
+
+<TypeScriptComparison>
+
+Declarative mapping resembles an ORM entity definition, but SQLAlchemy exposes the underlying SQL expression system. `Mapped` annotations are runtime ORM configuration plus static typing—not Pydantic validation.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+An ORM column `nullable=False` does not replace request validation, and a Pydantic required field does not replace a database `NOT NULL` constraint. They protect different entry paths.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Use database enums only when their migration trade-offs fit your release process. A checked string column can be easier to evolve; document the choice.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="sa-mapping-1">
+
+Add a unique project slug of at most 80 characters.
+
+<Solution>
+
+Declare `slug: Mapped[str] = mapped_column(String(80), unique=True, index=True)`. For tenant-scoped uniqueness, use a composite `UniqueConstraint` instead.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-mapping-2">
+
+Why should creation time have a server default even if Python also sets it?
+
+<Solution>
+
+The database protects writes from every client and provides a value when another path omits it. Decide whether database or application time is authoritative and map consistently.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-mapping-3">
+
+When is a composite uniqueness constraint needed for task position?
+
+<Solution>
+
+If position must be unique only within a project, define uniqueness over `(project_id, position)`, not global uniqueness on `position`.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can identify which invariants belong in transport validation, domain construction, ORM mapping, and database constraints.
+
+</Checkpoint>
+
+## Summary
+
+Declarative mappings connect typed Python attributes to Core tables. Keep the database authoritative for durable constraints and let migrations—not startup—manage production schema evolution.
+

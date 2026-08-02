@@ -1,0 +1,101 @@
+---
+id: rel-mapping
+title: One-to-One, One-to-Many, and Many-to-Many
+description: Foreign keys and relationship configuration.
+module: relationships-queries
+order: 1
+estimatedMinutes: 55
+prerequisites: [sqlalchemy-core-assignment]
+learningObjectives:
+  - Map relationships
+  - Choose ownership
+---
+
+## Foreign keys are truth; relationships are navigation
+
+A foreign key enforces a database relationship. `relationship()` tells the ORM how objects navigate and synchronize it.
+
+```python
+class ProjectModel(Base):
+    __tablename__ = "projects"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    tasks: Mapped[list["TaskModel"]] = relationship(back_populates="project")
+
+class TaskModel(Base):
+    __tablename__ = "tasks"
+    id: Mapped[UUID] = mapped_column(primary_key=True)
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id", ondelete="CASCADE"))
+    project: Mapped[ProjectModel] = relationship(back_populates="tasks")
+```
+
+One-to-one is usually one-to-many plus a unique foreign key and scalar relationship. Many-to-many uses an association table; when the association has attributes such as role or joined time, map it as an association object.
+
+```python
+class ProjectMemberModel(Base):
+    __tablename__ = "project_members"
+    project_id: Mapped[UUID] = mapped_column(ForeignKey("projects.id"), primary_key=True)
+    user_id: Mapped[UUID] = mapped_column(ForeignKey("users.id"), primary_key=True)
+    role: Mapped[str] = mapped_column(String(20))
+```
+
+## Ownership and nullability
+
+Decide whether a child may exist without a parent, who creates/removes it, and whether deleting a parent deletes, restricts, or detaches children. Encode the answer in foreign-key nullability, database `ON DELETE`, and ORM cascade settings.
+
+<CommonMistake>
+
+`relationship()` does not create a database constraint by itself. A model can look connected in Python while invalid rows remain possible without a foreign key.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Index foreign-key columns used in joins and deletes. Verify database cascade and ORM cascade cooperate; duplicate assumptions can cause unnecessary SELECTs or surprising deletes.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="rel-mapping-1">
+
+Model one optional profile per user.
+
+<Solution>
+
+Put a nullable or required `user_id` foreign key on profiles with a unique constraint, then map scalar `profile`/`user` relationships with `uselist=False` inferred from typed scalar annotations where supported.
+
+</Solution>
+</Exercise>
+
+<Exercise id="rel-mapping-2">
+
+Why should project membership be an association object rather than a bare many-to-many table?
+
+<Solution>
+
+Membership has domain data—role, joined time, inviter, status—so it deserves a mapped object and behavior.
+
+</Solution>
+</Exercise>
+
+<Exercise id="rel-mapping-3">
+
+Choose delete behavior for projects with tasks in this course.
+
+<Solution>
+
+Either restrict deletion or cascade according to product policy. If cascading, use a database foreign-key cascade and configure ORM behavior deliberately; test that audit/compliance requirements are still met.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can state cardinality, optionality, ownership, database constraint, navigation direction, and deletion behavior for each relationship.
+
+</Checkpoint>
+
+## Summary
+
+Foreign keys enforce relational truth; ORM relationships navigate it. Model association data explicitly and make ownership, nullability, indexing, and deletion policy agree.
+

@@ -1,0 +1,55 @@
+---
+id: test-api
+title: FastAPI Clients and Dependency Overrides
+description: Test routes with controlled wiring.
+module: testing
+order: 4
+estimatedMinutes: 55
+prerequisites: [test-db]
+learningObjectives: [Use test clients, Override dependencies]
+---
+
+## Test through HTTP
+
+Route tests should verify status, headers, validation, serialization, and dependency wiring:
+
+```python
+def test_get_task_returns_public_shape(client):
+    response = client.get("/tasks/42")
+    assert response.status_code == 200
+    assert response.json() == {"id": 42, "title": "Ship", "completed": False}
+```
+
+Override dependencies to control identity or persistence without patching FastAPI internals:
+
+```python
+app.dependency_overrides[get_current_user] = lambda: User(id=7, role="member")
+try:
+    response = client.delete("/projects/1")
+finally:
+    app.dependency_overrides.clear()
+```
+
+Use `TestClient` for ordinary synchronous test functions. Use HTTPX with ASGI transport when your test itself must be async. Ensure lifespan runs when startup creates required resources.
+
+## Common mistakes
+
+Clear overrides after every test, avoid asserting only status codes, and never let a fake response shape diverge from real schemas. A passing route test with a completely mocked service is not a persistence integration test.
+
+## Production note
+
+Test error envelopes and correlation headers as contracts. Clients often depend on failure formats as strongly as success bodies.
+
+<Exercise id="api-validation" title="Test invalid input">What should a blank title API test assert?<Solution>Assert the documented validation status and a stable error field/path that identifies `title`; avoid snapshotting every framework-generated word.</Solution></Exercise>
+
+<Exercise id="api-override-cleanup" title="Prevent override leakage">Turn override cleanup into fixture behavior.<Solution>Yield the configured app/client from a fixture and call `app.dependency_overrides.clear()` in its teardown, preferably inside `try/finally`.</Solution></Exercise>
+
+<Exercise id="api-contract" title="Protect secret fields">Test that a user response does not leak password data.<Solution>Assert allowed response fields and explicitly assert `password` and `password_hash` are absent.</Solution></Exercise>
+
+## Checkpoint
+
+You can choose a client, override application dependencies safely, and assert the public HTTP contract.
+
+## Summary
+
+FastAPI route tests exercise the boundary clients see while dependency overrides keep identity and infrastructure controlled.

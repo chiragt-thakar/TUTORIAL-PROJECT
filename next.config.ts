@@ -1,9 +1,8 @@
 import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
-  outputFileTracingIncludes: {
-    "/learn/**/*": ["./content/modules/**/*"],
-  },
+  output: "export",
+  trailingSlash: true,
 };
 
 export default nextConfig;

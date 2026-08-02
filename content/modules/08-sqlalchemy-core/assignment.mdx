@@ -1,0 +1,62 @@
+---
+id: sqlalchemy-core-assignment
+title: "Assignment: Transaction-Safe Task Persistence"
+description: Replace the in-memory adapter with a synchronous SQLAlchemy repository and explicit unit of work.
+module: sqlalchemy-core
+order: 6
+estimatedMinutes: 145
+prerequisites: [sa-core-orm]
+learningObjectives:
+  - Map task and project tables
+  - Implement a repository without hidden commits
+  - Test rollback and identity behavior
+---
+
+## Scenario
+
+Persist the existing domain without changing the service contract or letting repositories own commits.
+
+<Assignment id="sqlalchemy-core-assignment-work">
+
+## Requirements
+
+Add PostgreSQL-ready project and task mappings, an engine/session factory, SQLAlchemy repository implementations, and a unit-of-work boundary. Use database constraints for durable invariants and explicit domain↔ORM mapping.
+
+## Acceptance criteria
+
+1. One engine/session factory is created at application startup.
+2. Sessions are short-lived and never shared concurrently.
+3. Repository methods add/flush/query but never commit.
+4. Creating a task plus audit event commits atomically.
+5. A known uniqueness constraint maps to a domain conflict after rollback.
+6. List queries are bounded and deterministic.
+7. Tests demonstrate rollback and identity-map behavior.
+
+### Stretch goals
+
+Implement an optimistic version column and demonstrate a conflicting update from two sessions.
+
+<Solution>
+
+Map persistence separately, translate in the repository, and use `with SessionFactory.begin()` around one service command. Flush when generated identifiers are required; commit once. Use Core projections for counts and ORM entities for changes. Constraint names provide narrow error translation.
+
+```python
+with SessionFactory() as session:
+    uow = SqlAlchemyUnitOfWork(session)
+    try:
+        task = service.create(command, uow=uow)
+        session.commit()
+    except Exception:
+        session.rollback()
+        raise
+```
+
+In a cleaner design, the unit-of-work context owns this transaction template and services operate through its repositories.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+This is the durable persistence adapter. Module 9 adds relational behavior and query efficiency; Module 10 converts the same boundaries to async and introduces migration history.
+

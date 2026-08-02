@@ -1,0 +1,115 @@
+---
+id: api-middleware
+title: Middleware, Errors, and Background Tasks
+description: Cross-cutting behavior and post-response work.
+module: fastapi-intermediate
+order: 4
+estimatedMinutes: 50
+prerequisites: [api-async]
+learningObjectives:
+  - Add middleware
+  - Centralize API errors
+---
+
+## Middleware wraps every request
+
+Middleware is appropriate for request IDs, timing, security headers, and coarse logging. It should be cheap and should not contain resource-specific business rules.
+
+```python
+from time import perf_counter
+from uuid import uuid4
+from fastapi import Request
+
+@app.middleware("http")
+async def request_context(request: Request, call_next):
+    request_id = request.headers.get("X-Request-Id") or str(uuid4())
+    started = perf_counter()
+    response = await call_next(request)
+    response.headers["X-Request-Id"] = request_id
+    logger.info("request_complete", extra={"request_id": request_id, "duration_ms": (perf_counter() - started) * 1000})
+    return response
+```
+
+Use `try/finally` when timing must be logged on exceptions. Never log authorization headers or full request bodies by default.
+
+## Exception translation
+
+Application exceptions should remain protocol-neutral. Register handlers at the API boundary:
+
+```python
+@app.exception_handler(TaskNotFoundError)
+async def task_not_found(request: Request, exc: TaskNotFoundError):
+    return JSONResponse(status_code=404, content={"code": "task_not_found", "message": "Task not found"})
+```
+
+Return a stable machine code, safe message, and request ID. Log unexpected exceptions with stack traces; send clients a generic 500.
+
+## Background tasks are small after-response work
+
+FastAPI `BackgroundTasks` runs work after the response in the same application process. It suits small best-effort actions such as sending a non-critical notification through a reliable local client. It does not provide durability, retries, distributed coordination, or survival across process termination.
+
+```python
+@router.post("/{task_id}/complete")
+async def complete(task_id: UUID, background: BackgroundTasks):
+    task = service.complete(...)
+    background.add_task(audit_sink.write, task.id, "completed")
+    return task
+```
+
+<CommonMistake>
+
+Do not put critical email, billing, large exports, or retryable integrations in in-process background tasks. Persist an outbox/job and let a worker own delivery.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Middleware ordering matters: the last added layer may wrap earlier layers. Test request IDs and security headers on both success and error responses.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="api-middleware-1">
+
+Ensure request duration is logged even when `call_next` raises.
+
+<Solution>
+
+Put the duration log in `finally`, store response-dependent values only when available, and re-raise the exception for the registered handler.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-middleware-2">
+
+Design a safe conflict error body for duplicate project membership.
+
+<Solution>
+
+Return 409 with fields such as `{"code":"member_exists","message":"User is already a project member","request_id":"..."}`. Do not include SQL or stack details.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-middleware-3">
+
+Classify thumbnail generation taking 30 seconds with required retries.
+
+<Solution>
+
+Use a durable queued job, not `BackgroundTasks`. Respond with 202 and a job/resource status when asynchronous completion is part of the API.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can place cross-cutting transport work in middleware, map application failures in handlers, and reject background work that needs durability.
+
+</Checkpoint>
+
+## Summary
+
+Middleware wraps transport concerns, exception handlers stabilize public failures, and in-process background tasks are only for short non-critical work.
+

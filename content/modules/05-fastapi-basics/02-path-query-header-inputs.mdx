@@ -1,0 +1,114 @@
+---
+id: api-inputs
+title: Path, Query, and Header Inputs
+description: Model request inputs and reusable validation.
+module: fastapi-basics
+order: 2
+estimatedMinutes: 45
+prerequisites: [api-app-routes]
+learningObjectives:
+  - Declare parameter sources
+  - Constrain input
+---
+
+## Sources come from the signature
+
+A name present in the route path is a path parameter. Scalar parameters not in the path are usually query parameters. Use `Header()` for headers and `Annotated` to keep the Python type separate from FastAPI metadata.
+
+```python
+from typing import Annotated, Literal
+from uuid import UUID
+from fastapi import Header, Path, Query
+
+@app.get("/projects/{project_id}/tasks")
+async def list_tasks(
+    project_id: Annotated[UUID, Path()],
+    status: Annotated[Literal["open", "done"] | None, Query()] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    x_request_id: Annotated[str | None, Header()] = None,
+) -> dict:
+    ...
+```
+
+FastAPI converts a UUID string or returns a 422 validation response. Header parameter underscores map to hyphens by default, so `x_request_id` reads `X-Request-Id`.
+
+## Required, optional, and repeated values
+
+As in Pydantic, a default controls omission and a union with `None` controls nullability. Query strings do not normally carry JSON null; absence maps to the default. A `list[str]` query parameter can collect repeated keys when declared with `Query()`.
+
+```python
+tags: Annotated[list[str] | None, Query()] = None
+# ?tags=backend&tags=urgent
+```
+
+Path parameters are always required. Validate format in the type or declarative constraints; perform resource existence and authorization in dependencies or services.
+
+<TypeScriptComparison>
+
+Express exposes stringly typed `req.params`, `req.query`, and `req.headers`. FastAPI uses the signature to extract, convert, validate, document, and type those sources before your function runs.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Do not accept pagination without upper bounds. A client-controlled `limit=1000000` can turn a valid endpoint into a memory and database incident.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Treat correlation IDs as untrusted strings: validate length and allowed characters, or generate a new value. Never reflect arbitrary header content into logs without structured encoding.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="api-inputs-1">
+
+Add an `offset` query parameter from 0 through 10,000 with default 0.
+
+<Solution>
+
+```python
+offset: Annotated[int, Query(ge=0, le=10_000)] = 0
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-inputs-2">
+
+Declare a required `If-Match` header as a string.
+
+<Solution>
+
+```python
+if_match: Annotated[str, Header()]
+```
+
+With no default it is required, and the underscore maps to a hyphen.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-inputs-3">
+
+Why should a path UUID's database lookup not be implemented as a field validator?
+
+<Solution>
+
+UUID parsing is deterministic input validation. Existence requires I/O and request context, so it belongs in a dependency or service where failure and authorization can be handled explicitly.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can predict which request source supplies every parameter and where conversion ends and application lookup begins.
+
+</Checkpoint>
+
+## Summary
+
+FastAPI signatures are executable request contracts. Use typed path values, bounded query parameters, explicit headers, and move I/O-dependent rules beyond validation.
+

@@ -1,0 +1,53 @@
+---
+id: test-db
+title: Repository Tests and Database Isolation
+description: Transactions, cleanup, and realistic persistence tests.
+module: testing
+order: 3
+estimatedMinutes: 60
+prerequisites: [test-unit]
+learningObjectives: [Isolate database tests, Test repositories]
+---
+
+## Test the database behavior you depend on
+
+Repository tests should use the same database family as production when constraints, transactions, JSON, time zones, or locking matter. SQLite is useful but is not a drop-in PostgreSQL substitute.
+
+One isolation strategy creates a transaction per test and rolls it back:
+
+```python
+@pytest.fixture
+async def session(engine):
+    async with engine.connect() as connection:
+        transaction = await connection.begin()
+        session = AsyncSession(bind=connection, expire_on_commit=False)
+        yield session
+        await session.close()
+        await transaction.rollback()
+```
+
+If application code commits, use nested transactions/savepoints or truncate tables between tests. The fixture and application must share the exact connection for rollback isolation to work.
+
+Test constraints, sorting, pagination boundaries, eager-loading behavior, and concurrent update rules—not SQLAlchemy itself.
+
+## Common mistakes
+
+Do not reuse state across tests, silently point tests at a developer database, apply migrations once months ago, or let parallel workers collide in the same schema.
+
+## Production note
+
+Build the test schema from migrations in CI. That proves the migration history, not only current metadata, can create a working database.
+
+<Exercise id="db-constraint" title="Prove uniqueness">Write the essential assertion for duplicate user emails.<Solution>Insert and commit one user, attempt a second with the same email, assert `IntegrityError`, and roll back the failed transaction before further use.</Solution></Exercise>
+
+<Exercise id="db-isolation" title="Diagnose leaked rows">A row from the previous test remains. Name two likely causes.<Solution>The app opened a different connection than the fixture transaction, or it committed outside a savepoint. Shared/session-scoped mutable data is another cause.</Solution></Exercise>
+
+<Exercise id="db-pagination" title="Test stable pages">How do you prevent duplicate or missing rows across pages?<Solution>Insert rows with tied primary sort values and require a unique secondary order such as `(created_at, id)`; assert the concatenated pages contain every ID exactly once.</Solution></Exercise>
+
+## Checkpoint
+
+You can select an isolation strategy and prove repository behavior against realistic database semantics.
+
+## Summary
+
+Database tests earn their cost by verifying real constraints and transactions while rigorous isolation keeps every case independent.

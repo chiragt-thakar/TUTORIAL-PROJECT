@@ -1,0 +1,56 @@
+---
+id: test-async-auth
+title: Async and Authentication Tests
+description: Exercise async paths, identities, roles, and failure cases.
+module: testing
+order: 5
+estimatedMinutes: 55
+prerequisites: [test-api]
+learningObjectives: [Write async tests, Test authorization matrices]
+---
+
+## Async tests await real async boundaries
+
+With an async test plugin, mark or configure async tests and use HTTPX's ASGI transport:
+
+```python
+@pytest.mark.anyio
+async def test_list_tasks(app):
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://test") as client:
+        response = await client.get("/tasks")
+    assert response.status_code == 200
+```
+
+## Authentication and authorization are different suites
+
+Authentication cases include missing, malformed, expired, incorrectly signed, and valid tokens. Authorization cases combine identity, resource relationship, action, and expected result.
+
+```python
+@pytest.mark.parametrize(("role", "owner", "status"), [
+    ("admin", False, 204),
+    ("member", True, 204),
+    ("member", False, 403),
+])
+async def test_delete_project_permissions(role, owner, status): ...
+```
+
+Do not test only happy paths or encode roles directly into route-test setup everywhere. Central fixtures can mint tokens, but assertions should still reveal the permission rule.
+
+## Production note
+
+Use deliberately short-lived tokens with a fixed clock in expiry tests. Never place real secrets or production signing keys in test configuration.
+
+<Exercise id="auth-matrix" title="Complete a permission matrix">Add the unauthenticated delete-project case.<Solution>Expect `401` before ownership policy runs. Keep it distinct from authenticated-but-forbidden `403` cases.</Solution></Exercise>
+
+<Exercise id="auth-expiry" title="Make expiry deterministic">How should an expired-token test avoid sleeping?<Solution>Inject/freeze the verification clock and mint a token whose `exp` is before that fixed instant.</Solution></Exercise>
+
+<Exercise id="async-mock" title="Assert an awaited call">A notifier is an `AsyncMock`. What assertion proves it ran correctly?<Solution>Use `notifier.send.assert_awaited_once_with(...)`, not only `assert_called`, so the test detects a forgotten `await`.</Solution></Exercise>
+
+## Checkpoint
+
+You can run an async request test and distinguish identity failures from permission failures across a case matrix.
+
+## Summary
+
+Async and security tests must cover failure timing, awaited behavior, and every meaningful identity-resource-action combination.

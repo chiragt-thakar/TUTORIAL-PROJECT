@@ -1,0 +1,76 @@
+---
+id: async-queries
+title: Async Queries and Common Mistakes
+description: Execute statements without implicit I/O surprises.
+module: async-sqlalchemy-alembic
+order: 3
+estimatedMinutes: 55
+prerequisites: [async-fastapi]
+learningObjectives:
+  - Execute async queries
+  - Avoid implicit lazy loads
+---
+
+## Await database work, not query construction
+
+Building a `select()` is synchronous; sending it to the driver is asynchronous.
+
+```python
+statement = select(Task).where(Task.project_id == project_id).order_by(Task.id)
+result = await session.execute(statement)
+tasks = result.scalars().all()
+```
+
+Use `scalar_one()` when exactly one row must exist, `scalar_one_or_none()` for zero-or-one, and `scalars().all()` for collections. Those choices document cardinality and surface bad assumptions early.
+
+## Prevent implicit I/O
+
+Async ORM code cannot safely perform surprise network access during ordinary attribute access. Load relationships explicitly:
+
+```python
+statement = (
+    select(Project)
+    .options(selectinload(Project.tasks))
+    .where(Project.id == project_id)
+)
+project = (await session.execute(statement)).scalar_one_or_none()
+```
+
+Common mistakes include sharing one `AsyncSession` across concurrent tasks, forgetting `await`, accessing an expired attribute after commit, and calling sync-only APIs through an async driver. A session is a mutable transaction workspace: keep it local to one request or background job.
+
+## TypeScript comparison
+
+This resembles awaiting a Prisma query, but SQLAlchemy separates statement construction, execution, row shaping, and relationship loading. The extra control is useful only if the loading policy remains explicit.
+
+## Production note
+
+Turn on SQL logging in development and inspect query counts. Correct-looking async code can still serialize database calls or create N+1 queries.
+
+<Exercise id="async-query-cardinality" title="Choose the result method">
+Write a query for an email address that may match no user but must never match two.
+<Solution>
+Execute `select(User).where(User.email == email)` and call `scalar_one_or_none()`. Add a database unique constraint because the result method detects duplicates but does not prevent them.
+</Solution>
+</Exercise>
+
+<Exercise id="async-query-loading" title="Load project tasks">
+Modify a project query so rendering `project.tasks` performs no later database access.
+<Solution>
+Add `.options(selectinload(Project.tasks))` to the statement and access the collection only after the awaited execution has completed.
+</Solution>
+</Exercise>
+
+<Exercise id="async-query-session-scope" title="Spot unsafe concurrency">
+Explain why passing the same session into two coroutines used by `asyncio.gather()` is unsafe.
+<Solution>
+Both coroutines mutate the same transaction and identity-map state. Give each concurrent task its own session, or execute the operations sequentially in one transaction.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can select an appropriate result accessor, define loading up front, and keep a session out of concurrent coroutines.
+
+## Summary
+
+Async ORM reliability comes from explicit awaits, explicit cardinality, explicit loading, and narrow session ownership.

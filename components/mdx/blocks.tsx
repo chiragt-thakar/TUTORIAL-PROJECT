@@ -1,4 +1,5 @@
 import { Assignment, Exercise } from "./interactive";
+import { CopyCodeBlock } from "./CopyCodeBlock";
 
 function Block({ kind, title, children }: { kind: string; title: string; children: React.ReactNode }) { return <aside className={`mdx-block ${kind}`}><p className="mdx-block-title">{title}</p><div>{children}</div></aside>; }
 export const Callout = ({ children }: { children: React.ReactNode }) => <Block kind="callout" title="Note">{children}</Block>;
@@ -12,4 +13,4 @@ export const FurtherReading = ({ children }: { children: React.ReactNode }) => <
 export const CodeExample = ({ title, children }: { title?: string; children: React.ReactNode }) => <section className="code-example">{title && <p className="code-title">{title}</p>}{children}</section>;
 export function Solution({ children }: { children: React.ReactNode }) { return <details className="solution"><summary>Reveal solution</summary><div>{children}</div></details>; }
 
-export const mdxComponents = { Callout, Concept, WhyItMatters, TypeScriptComparison, CommonMistake, ProductionNote, Checkpoint, FurtherReading, CodeExample, Exercise, Solution, Assignment };
+export const mdxComponents = { Callout, Concept, WhyItMatters, TypeScriptComparison, CommonMistake, ProductionNote, Checkpoint, FurtherReading, CodeExample, Exercise, Solution, Assignment, pre: CopyCodeBlock };

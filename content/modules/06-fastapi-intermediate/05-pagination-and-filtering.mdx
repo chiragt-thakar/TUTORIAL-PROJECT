@@ -1,0 +1,119 @@
+---
+id: api-listing
+title: Pagination, Filtering, and Reusable Validation
+description: Design stable collection endpoints.
+module: fastapi-intermediate
+order: 5
+estimatedMinutes: 45
+prerequisites: [api-middleware]
+learningObjectives:
+  - Model filters
+  - Return page metadata
+---
+
+## Collection endpoints are query contracts
+
+Group related query parameters in a Pydantic dependency. This centralizes bounds and makes the route signature readable.
+
+```python
+from typing import Annotated, Literal
+from fastapi import Depends, Query
+from pydantic import BaseModel, Field
+
+class TaskFilters(BaseModel):
+    status: Literal["open", "done"] | None = None
+    project_id: UUID | None = None
+    limit: int = Field(default=50, ge=1, le=100)
+    offset: int = Field(default=0, ge=0, le=10_000)
+    sort: Literal["created_at", "due_at"] = "created_at"
+
+@router.get("", response_model=TaskPage)
+async def list_tasks(filters: Annotated[TaskFilters, Query()]):
+    return service.list(filters.to_query())
+```
+
+The exact support for grouped query models depends on the FastAPI version; a dependency function returning `TaskFilters` is a portable alternative.
+
+## Offset and cursor pagination
+
+Offset pagination is simple and supports page jumping, but large offsets can be expensive and concurrent inserts can shift results. Cursor/keyset pagination uses the last ordered key and is stable for feeds, but cursors are opaque and arbitrary page jumping is harder.
+
+Always define deterministic ordering with a unique tie-breaker:
+
+```sql
+ORDER BY created_at DESC, id DESC
+```
+
+A response should include items and enough metadata or links to continue. Avoid an expensive exact total when the product does not need it.
+
+## Filtering policy
+
+Whitelist filter and sort fields. Normalize search carefully, parameterize database values, and define how multiple filters combine. Authorization must constrain the query itself; filtering unauthorized rows after pagination leaks counts and produces sparse pages.
+
+<TypeScriptComparison>
+
+The same query-object pattern is common in TypeScript services. Pydantic adds runtime conversion and documentation, but it does not make arbitrary sort-column interpolation safe.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Never pass a client-supplied sort string directly into SQL text. Map allowed public sort names to known SQLAlchemy expressions.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Cap page size, measure worst-case queries, and index columns used by authorization, filtering, and ordering together—not each field in isolation.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="api-listing-1">
+
+Define deterministic descending task ordering when two tasks share `created_at`.
+
+<Solution>
+
+Order by `created_at DESC, id DESC`. Include both values in a keyset cursor if cursor pagination is used.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-listing-2">
+
+Why must project authorization be included before limit/offset?
+
+<Solution>
+
+Filtering after pagination can reveal global counts, return short pages, and skip authorized rows. The database query must restrict rows to those visible to the actor before pagination.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-listing-3">
+
+Map public sort values without dynamic SQL strings.
+
+<Solution>
+
+```python
+SORT_COLUMNS = {"created_at": TaskModel.created_at, "due_at": TaskModel.due_at}
+column = SORT_COLUMNS[filters.sort]
+statement = statement.order_by(column.desc(), TaskModel.id.desc())
+```
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can specify filters, bounds, deterministic order, authorization position, and continuation metadata for a list endpoint.
+
+</Checkpoint>
+
+## Summary
+
+Collection endpoints need explicit query policy. Bound inputs, whitelist expressions, authorize in the query, order deterministically, and choose offset or cursor pagination from product behavior.
+

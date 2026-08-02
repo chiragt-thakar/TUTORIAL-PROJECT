@@ -1,0 +1,97 @@
+---
+id: advanced-callables
+title: Closures, Decorators, and Callable Objects
+description: Wrap behavior while preserving readable contracts.
+module: advanced-python-backends
+order: 1
+estimatedMinutes: 55
+prerequisites: [reliability-assignment]
+learningObjectives: [Explain closures and decorators, Build transparent wrappers]
+---
+
+## Start with the simple idea
+
+Functions are values in Python. You can store one in a variable, pass it to another function, or return it. A closure is a returned inner function that remembers names from the surrounding scope.
+
+```python
+from collections.abc import Callable
+
+def require_length(minimum: int) -> Callable[[str], str]:
+    def validate(value: str) -> str:
+        if len(value) < minimum:
+            raise ValueError(f"must contain at least {minimum} characters")
+        return value
+    return validate
+
+validate_title = require_length(3)
+```
+
+`validate` keeps access to `minimum` after `require_length` returns. This is useful for small configured behavior. If the remembered state becomes large or changes over time, a normal class is often clearer.
+
+## A decorator performs the same kind of wrapping
+
+A decorator receives a function and returns the function that callers will use. Keep the wrapper's behavior narrow and visible.
+
+```python
+from functools import wraps
+
+def logged(function):
+    @wraps(function)
+    async def wrapper(*args, **kwargs):
+        logger.info("call.started", extra={"operation": function.__name__})
+        try:
+            return await function(*args, **kwargs)
+        finally:
+            logger.info("call.finished", extra={"operation": function.__name__})
+    return wrapper
+```
+
+`@wraps` copies useful metadata such as the original name and signature information. This matters to debugging, documentation tools, and frameworks that inspect callables.
+
+Decorators are a poor place for hidden transactions, authorization, or retries whose behavior changes the meaning of a use case. Prefer explicit service code when order and failure policy need to be read in one place.
+
+## Callable objects
+
+A class with `__call__` acts like a function and can hold explicit state. It is often easier to type and test than several nested closures.
+
+```python
+@dataclass
+class RetryDelay:
+    base_seconds: float
+
+    def __call__(self, attempt: int) -> float:
+        return self.base_seconds * (2 ** (attempt - 1))
+```
+
+## Production note
+
+Do not catch and hide exceptions in a generic decorator. Preserve tracebacks, cancellation, function metadata, and the difference between sync and async callables.
+
+<Exercise id="callables-closure" title="Predict the remembered value">
+Create two validators with minimum lengths 3 and 10. Do they share one `minimum`?
+<Solution>
+No. Each call creates a new closure cell, so each returned validator remembers its own value.
+</Solution>
+</Exercise>
+
+<Exercise id="callables-wraps" title="Repair a decorator">
+A decorated FastAPI dependency is displayed as `wrapper` and loses its documentation. What is the first repair?
+<Solution>
+Apply `@functools.wraps(original_function)` to the wrapper. Then verify that the wrapper's signature and sync/async behavior still fit the framework.
+</Solution>
+</Exercise>
+
+<Exercise id="callables-choice" title="Choose closure or class">
+A retry policy tracks attempts, jitter configuration, and metrics. Which representation is clearer?
+<Solution>
+Use a callable class with named fields and methods. Its state and collaborators are visible, typeable, and easy to replace in tests.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can explain what a closure remembers, how a decorator replaces a function, and when a callable class makes state clearer.
+
+## Summary
+
+Python callables make behavior composable. Use them to remove small repetition, not to hide important control flow.

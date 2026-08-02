@@ -1,0 +1,124 @@
+---
+id: api-routers
+title: Routers, Status Codes, and Basic Errors
+description: Split routes and express HTTP outcomes.
+module: fastapi-basics
+order: 4
+estimatedMinutes: 45
+prerequisites: [api-bodies]
+learningObjectives:
+  - Compose routers
+  - Choose status codes
+---
+
+## Routers organize one API
+
+`APIRouter` groups related operations, shared prefixes, tags, dependencies, and response metadata. It is not a separate application.
+
+```python title="src/task_api/api/routers/tasks.py"
+from fastapi import APIRouter
+
+router = APIRouter(prefix="/tasks", tags=["tasks"])
+
+@router.get("/{task_id}", response_model=TaskRead)
+async def get_task(task_id: UUID) -> TaskRead:
+    ...
+```
+
+```python title="src/task_api/main.py"
+from task_api.api.routers import tasks
+
+app.include_router(tasks.router, prefix="/api/v1")
+```
+
+Group by domain capability rather than one file per HTTP verb. Keep business decisions in services so routers remain adapters.
+
+## Status codes communicate outcomes
+
+Start with this small status-code map:
+
+- `200 OK`: a successful read or update that returns a body.
+- `201 Created`: a new resource was created.
+- `204 No Content`: the action succeeded and there is no response body.
+- `401 Unauthorized`: credentials are missing or invalid.
+- `403 Forbidden`: identity is known, but the action is not allowed.
+- `404 Not Found`: the resource is unavailable to this caller.
+- `409 Conflict`: the request clashes with current state, such as duplicate membership.
+
+Use `400 Bad Request` for request problems that do not fit your normal validation response. The exact choice matters less than using one documented rule consistently.
+
+Raise `HTTPException` in the API layer for simple HTTP failures:
+
+```python
+from fastapi import HTTPException
+
+try:
+    task = service.require(TaskId(str(task_id)))
+except TaskNotFoundError as exc:
+    raise HTTPException(status_code=404, detail="Task not found") from exc
+```
+
+Larger applications should translate domain exceptions centrally so repeated routes do not drift.
+
+<TypeScriptComparison>
+
+An Express router provides similar grouping, but FastAPI composes router metadata into one OpenAPI document and runs typed dependencies declared on routers and operations.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Do not return `{"error": ...}` with HTTP 200. Monitoring, clients, caches, and retry policies interpret the status code independently of the JSON body.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Returning 404 instead of 403 can hide resource existence from unauthorized users. Make that an explicit security policy and test it consistently.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="api-routers-1">
+
+Create a projects router mounted at `/api/v1/projects` and tagged `projects`.
+
+<Solution>
+
+Define `APIRouter(prefix="/projects", tags=["projects"])`, then include it with `app.include_router(router, prefix="/api/v1")`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-routers-2">
+
+Choose the status for attempting to add an already-existing project member.
+
+<Solution>
+
+409 Conflict communicates that the request conflicts with current resource state. Document the stable error code in the response body as well.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-routers-3">
+
+Move task-not-found translation out of three route functions.
+
+<Solution>
+
+Define an application exception handler that maps `TaskNotFoundError` to a consistent 404 payload, register it once, and let routes call the service normally.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can place an operation in the correct router and select a status based on HTTP semantics rather than convenience.
+
+</Checkpoint>
+
+## Summary
+
+Routers modularize one application; services own business behavior; status codes express protocol outcomes; and centralized exception translation prevents inconsistent APIs.

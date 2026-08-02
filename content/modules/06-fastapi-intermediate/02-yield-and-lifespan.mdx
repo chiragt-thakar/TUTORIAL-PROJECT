@@ -1,0 +1,120 @@
+---
+id: api-yield
+title: Yield Dependencies and Lifespan
+description: Manage request and application resources.
+module: fastapi-intermediate
+order: 2
+estimatedMinutes: 45
+prerequisites: [api-di]
+learningObjectives:
+  - Clean up resources
+  - Use lifespan events
+---
+
+## Two resource lifetimes
+
+Request resources belong in dependencies with one `yield`. Application resources belong in the app lifespan. This mirrors context managers at two scopes.
+
+```python
+async def get_session() -> AsyncIterator[AsyncSession]:
+    async with session_factory() as session:
+        try:
+            yield session
+        except Exception:
+            await session.rollback()
+            raise
+```
+
+Code before `yield` acquires; the yielded value is injected; code after it releases. Do not suppress an exception during cleanup. FastAPI unwinds nested yield dependencies in an order that respects their dependency relationships.
+
+For transactions, decide whether cleanup must finish before the response is sent. Current FastAPI supports dependency scope controls; transaction finalization is usually easier to reason about when it completes before success is committed to the client.
+
+## Application lifespan
+
+Use an async context manager for startup and shutdown:
+
+```python
+from contextlib import asynccontextmanager
+from fastapi import FastAPI
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    app.state.task_service = build_services()
+    yield
+    await app.state.engine.dispose()
+
+app = FastAPI(lifespan=lifespan)
+```
+
+Create connection pools, clients, and immutable service graphs once; dispose them once. Do not create a database connection and hold one transaction for the whole process—the engine owns a pool, while requests borrow sessions/connections.
+
+<TypeScriptComparison>
+
+Lifespan corresponds to application bootstrap/shutdown hooks; yield dependencies resemble request-scoped `try/finally`. Python's context-manager model makes acquisition and cleanup one callable.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Do not perform schema migrations in every API process startup. Multiple replicas can race, and application readiness becomes coupled to privileged DDL. Run migrations as a controlled release step.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Shutdown has a deadline. Stop accepting work, let in-flight requests finish, close clients, and dispose pools. Cleanup must be idempotent because process managers may repeat signals.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="api-yield-1">
+
+Write a dependency that opens and always closes a synchronous repository resource.
+
+<Solution>
+
+```python
+def get_repository():
+    repository = Repository()
+    try:
+        yield repository
+    finally:
+        repository.close()
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-yield-2">
+
+Classify an HTTP connection pool, authenticated user, and database session by lifetime.
+
+<Solution>
+
+The pool is application-scoped; the authenticated user and session are request-scoped. A session must not be shared by concurrent requests.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-yield-3">
+
+A yield dependency catches `Exception`, logs it, and returns. What is wrong?
+
+<Solution>
+
+It suppresses the request failure, so FastAPI cannot handle it correctly. Cleanup may log, but must re-raise unless it intentionally translates the exception.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can assign a resource to request or application lifetime and show its acquisition, successful path, failure path, and cleanup.
+
+</Checkpoint>
+
+## Summary
+
+Yield dependencies own request resources; lifespan owns process resources. Keep transactions and cleanup explicit, propagate failures, and never share stateful sessions across requests.
+

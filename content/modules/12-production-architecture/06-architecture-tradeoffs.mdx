@@ -1,0 +1,52 @@
+---
+id: arch-tradeoffs
+title: When Layers Help—and When They Don’t
+description: Use complexity only where change and testing justify it.
+module: production-architecture
+order: 6
+estimatedMinutes: 45
+prerequisites: [arch-observe]
+learningObjectives: [Evaluate boundaries, Remove unnecessary abstraction]
+---
+
+## Pay complexity only for pressure
+
+Add a boundary when it isolates volatile infrastructure, centralizes a real policy, makes an important unit independently testable, or prevents framework details from spreading. Do not add one because a diagram looks symmetrical.
+
+A small internal CRUD tool may responsibly use router, schema, and SQLAlchemy model together. A service coordinating permissions, billing, and multiple repositories benefits from an application layer and unit of work.
+
+Evaluate each abstraction with four questions:
+
+1. What distinct responsibility does it own?
+2. Which likely change does it contain?
+3. Which test becomes simpler?
+4. What cognitive and runtime cost does it add?
+
+Warning signs include pass-through methods, `BaseRepository[T]` leaking ORM expressions, mappings duplicated without a boundary benefit, and circular dependencies between “layers.”
+
+```python
+# Keep the direct dependency until orchestration or policy appears.
+async def get_task(task_id: UUID, tasks: TaskRepositoryDep) -> TaskResponse:
+    task = await tasks.get(task_id)
+    return TaskResponse.model_validate(task)
+```
+
+This is not under-engineered merely because it lacks a service class. The route has one boundary operation and the repository remains replaceable in tests. Introduce an application service when the use case coordinates authorization, transactions, multiple repositories, events, or other policy.
+
+## Production note
+
+Architecture is reversible in small steps. Measure file navigation, change blast radius, defect location, and test speed; refactor from evidence.
+
+<Exercise id="tradeoff-service" title="Keep or remove">A service has five pass-through methods and no policy. Decide.<Solution>Remove or collapse it for now. Preserve direct, testable repository contracts and reintroduce a service when orchestration or policy appears.</Solution></Exercise>
+
+<Exercise id="tradeoff-schema" title="Separate models">When should HTTP and ORM models differ?<Solution>When public fields, validation, versioning, security, or domain meaning diverges from storage. Separation prevents accidental column exposure and storage-driven API changes.</Solution></Exercise>
+
+<Exercise id="tradeoff-record" title="Write a decision record">What belongs in a short ADR?<Solution>Context, decision, considered alternatives, consequences/tradeoffs, status, and a trigger for revisiting the choice.</Solution></Exercise>
+
+## Checkpoint
+
+You can defend a layer using concrete change/test pressure and remove one whose cost exceeds its value.
+
+## Summary
+
+Production-grade does not mean maximum layering. It means sufficient boundaries, explicit tradeoffs, and simple paths through the code.

@@ -1,0 +1,112 @@
+---
+id: async-engine
+title: Async Engine and Session Factory
+description: Configure async drivers and factories.
+module: async-sqlalchemy-alembic
+order: 1
+estimatedMinutes: 50
+prerequisites: [relationships-assignment]
+learningObjectives:
+  - Create async engines
+  - Configure sessionmaker
+---
+
+## Async all the way to the driver
+
+An `AsyncEngine` wraps SQLAlchemy's synchronous core with an async driver integration. Use an async-capable URL such as `postgresql+asyncpg://...` or another supported driver.
+
+```python
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
+
+engine = create_async_engine(
+    settings.database_url.get_secret_value(),
+    pool_size=10,
+    max_overflow=5,
+    pool_pre_ping=True,
+)
+
+SessionFactory = async_sessionmaker(
+    engine,
+    class_=AsyncSession,
+    expire_on_commit=False,
+    autoflush=False,
+)
+```
+
+`expire_on_commit=False` avoids implicit reload attempts when reading already-loaded attributes after commit—especially important in async code. Disabling autoflush makes flush timing explicit but requires discipline before queries that depend on pending changes.
+
+## One session per task
+
+`AsyncSession` is mutable transaction state and must not be shared across concurrent asyncio tasks. If one request uses `asyncio.gather`, each independently transactional branch needs its own session; more often, keep one service operation sequential inside one session.
+
+Dispose the engine during lifespan shutdown:
+
+```python
+await engine.dispose()
+```
+
+Do not create the engine in a request dependency. The pool is application-scoped; sessions are request/use-case-scoped.
+
+<TypeScriptComparison>
+
+An async driver resembles promise-based database access, but the session adds identity and unit-of-work state. Sharing it across `gather()` calls is unsafe even if the driver itself supports concurrency.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Changing imports from `Session` to `AsyncSession` without using an async driver leaves blocking I/O or incompatible calls. Convert the complete persistence call chain and its tests.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Async increases possible concurrent waits, not database capacity. Keep pool budgets and query timeouts; backpressure is still required.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="async-engine-1">
+
+Why use `async_sessionmaker` instead of creating `AsyncSession(engine)` throughout the codebase?
+
+<Solution>
+
+The factory centralizes binding and policy such as expiration/autoflush and makes consistent request-scoped construction and testing easier.
+
+</Solution>
+</Exercise>
+
+<Exercise id="async-engine-2">
+
+Can two concurrent coroutines share one AsyncSession if they only read?
+
+<Solution>
+
+No general guarantee. The session is stateful and unsynchronized; use a separate session per concurrent task or keep operations sequential.
+
+</Solution>
+</Exercise>
+
+<Exercise id="async-engine-3">
+
+Where should engine construction and disposal occur?
+
+<Solution>
+
+Construct once in application composition/lifespan and dispose during shutdown. Inject the session factory or request sessions below it.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can state the scope and concurrency rule for engine, pool, session factory, session, connection, and transaction.
+
+</Checkpoint>
+
+## Summary
+
+Configure one async engine and factory, create one session per sequential transaction context, prevent implicit post-commit reloads, and never confuse async concurrency with extra database capacity.
+

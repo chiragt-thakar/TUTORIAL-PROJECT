@@ -1,0 +1,77 @@
+---
+id: advanced-parallel
+title: Threads, the GIL, and Processes
+description: Match execution models to blocking and CPU-bound work.
+module: advanced-python-backends
+order: 5
+estimatedMinutes: 65
+prerequisites: [advanced-asyncio]
+learningObjectives: [Choose threads or processes, Explain GIL implications]
+---
+
+## Separate concurrency from parallelism
+
+Concurrency means several jobs make progress during the same period. Parallelism means instructions truly run at the same instant on different CPU cores.
+
+In a standard CPython build, the Global Interpreter Lock (GIL) normally allows one thread at a time to execute Python bytecode. Threads are still useful for blocking I/O because the waiting thread releases the CPU, and many extension libraries release the GIL during native work.
+
+```python
+result = await asyncio.to_thread(blocking_library_call, argument)
+```
+
+`to_thread` keeps a blocking call away from the event loop. It does not make an unbounded or thread-unsafe library safe. Limit thread work and confirm whether the called library supports concurrent use.
+
+## Use processes for isolated CPU work
+
+Separate processes have separate interpreters and memory, so they can use several CPU cores for Python-heavy computation.
+
+```python
+from concurrent.futures import ProcessPoolExecutor
+
+with ProcessPoolExecutor(max_workers=2) as pool:
+    reports = list(pool.map(render_report, report_inputs))
+```
+
+Arguments and results must cross the process boundary, usually through serialization. Large objects can make that transfer more expensive than the computation. Process startup, worker crashes, and shutdown also require handling.
+
+For web applications, running more server worker processes is often the simplest way to use multiple cores. Each process has its own connection pool and memory, so multiply resource budgets by the worker count.
+
+## Choose from the workload
+
+- Async tasks: many waits handled by async libraries.
+- Threads: a bounded amount of blocking I/O or native work that releases the GIL.
+- Processes: substantial Python CPU work with serializable inputs.
+- Durable job worker: work that must outlive the request or be retried.
+
+## Production note
+
+Do not create a new thread or process pool per request. Own pools at application/worker scope, bound their queues, and shut them down deliberately.
+
+<Exercise id="parallel-choice" title="Choose an execution model">
+A legacy SDK performs blocking HTTP calls. You cannot replace it yet. What is the smallest safe bridge?
+<Solution>
+Run it in a bounded thread pool or `asyncio.to_thread`, set SDK timeouts, and limit concurrent calls. Plan replacement with an async client if call volume justifies it.
+</Solution>
+</Exercise>
+
+<Exercise id="parallel-cpu" title="Move CPU work">
+Large pure-Python PDF calculations freeze each async worker. What should change?
+<Solution>
+Move the calculation to a bounded process/durable worker and return or poll for the result. Threads normally do not provide parallel Python-bytecode execution under the standard GIL build.
+</Solution>
+</Exercise>
+
+<Exercise id="parallel-pools" title="Calculate a pool budget">
+Four web processes each configure a database pool of 20. What is the possible application total?
+<Solution>
+Up to 80 pooled connections, plus overflow or other processes. Set per-process pools from the database's total connection budget.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can choose async, threads, processes, or durable jobs and explain the cost behind that choice.
+
+## Summary
+
+Match the execution model to waiting, CPU work, durability, and resource limits. “Async” and “faster” are not synonyms.

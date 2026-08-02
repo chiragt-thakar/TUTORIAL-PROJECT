@@ -1,0 +1,52 @@
+---
+id: advanced-python-assignment
+title: "Assignment: Concurrent Export Pipeline"
+description: Build a bounded streaming export with decorators, async fetching, context propagation, and measured behavior.
+module: advanced-python-backends
+order: 8
+estimatedMinutes: 150
+prerequisites: [advanced-memory]
+learningObjectives: [Combine advanced Python tools, Prove cancellation and memory bounds, Explain execution-model choices]
+---
+
+<Assignment id="advanced-python-assignment" title="Concurrent Export Pipeline">
+
+## Scenario
+
+The Task API needs a local export command that reads project tasks, enriches them through independent I/O, and writes CSV without loading every row into memory.
+
+## Requirements
+
+- Represent export options and task status with explicit dataclasses/value objects and enums.
+- Read stable database pages through a generator or async iterator.
+- Enrich records with a bounded `TaskGroup`-owned concurrency pattern.
+- Give every export a context-local correlation ID and reset it safely.
+- Wrap timing/logging with one transparent decorator that preserves metadata.
+- Send any blocking CSV/file adapter through a justified bounded thread boundary.
+- Make cancellation close database, HTTP, file, and task resources.
+- Profile time and peak memory for 100, 10,000, and 100,000 generated rows.
+
+## Acceptance criteria
+
+- Peak memory remains bounded by page/concurrency size rather than total rows.
+- No detached task survives successful completion, failure, or cancellation.
+- A failed enrichment cancels sibling work and closes resources.
+- Request/export context does not leak into the next run.
+- The chosen async, thread, and process boundaries are explained from workload evidence.
+- Unit tests cover generators, value invariants, decorator metadata, and context reset.
+- Integration tests cover early stop, timeout, cancellation, and partial-file cleanup.
+- Profiling results include correctness checks and a short before/after conclusion.
+
+## Stretch goal
+
+Add a process-worker option for a deliberately CPU-heavy transformation and measure when serialization cost makes it worthwhile.
+
+<Solution>
+Build a reusable async iterator that fetches ordered pages and yields small batches. A fixed number of workers enrich each batch inside a task group, preserving input order only if the contract requires it. A context manager owns the output file, while `finally` closes all clients and removes partial output. Use a callable/decorator only for timing and correlation, not hidden retries or transactions. Compare CPU, wall time, peak memory, and output equality across data sizes before choosing further optimization.
+</Solution>
+
+## Capstone extension
+
+This assignment reinforces Python mechanics behind the existing API architecture. It is complete when the local evidence passes; it does not require deployment or a new external service.
+
+</Assignment>

@@ -1,0 +1,124 @@
+---
+id: pydantic-settings
+title: Settings and Model Boundaries
+description: Separate configuration, transport validation, and static typing concerns.
+module: pydantic-foundations
+order: 4
+estimatedMinutes: 45
+prerequisites: [pydantic-serialization]
+learningObjectives:
+  - Separate settings and requests
+  - Explain runtime versus static guarantees
+---
+
+## Models should follow trust boundaries
+
+Request models validate client-controlled transport data. Settings models validate process configuration. Domain models encode business invariants. Database models map persistence. They may share concepts, but they should not become one universal class.
+
+```python
+from functools import lru_cache
+from pydantic import SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="TASK_API_",
+        env_file=".env",
+        extra="ignore",
+    )
+
+    environment: str = "development"
+    database_url: SecretStr
+    log_level: str = "INFO"
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+```
+
+`SecretStr` reduces accidental display; it does not encrypt memory. Load settings at an application composition boundary, not during import of every domain module. Caching is useful in production and must be cleared or overridden in tests.
+
+## Convert between representations
+
+Map request data into an application command, then map domain results into responses. Explicit mapping documents which layer owns defaults and prevents transport-only fields from entering domain behavior.
+
+```python
+command = CreateTask(
+    title=request.title,
+    project_id=ProjectId(str(request.project_id)),
+    actor_id=current_user.id,
+)
+task = service.create(command)
+return TaskRead.model_validate(task, from_attributes=True)
+```
+
+The checker proves the mapping code uses compatible Python types. Pydantic proves the incoming runtime values fit the request schema. Domain construction proves business rules. These guarantees are complementary.
+
+<TypeScriptComparison>
+
+Using one TypeScript type for a DTO and domain entity is tempting because types are erased. In Python, reusing one Pydantic class also imports runtime validation, serialization configuration, and framework concerns into every layer.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Do not instantiate settings as a module global in files imported by migrations and tests. Missing production configuration can make unrelated commands impossible to import.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Validate all required configuration before accepting traffic, log only safe setting names and modes, and source secrets from the deployment platform rather than committed `.env` files.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="pydantic-settings-1">
+
+Define settings for a required database URL and integer pool size between 1 and 50, using prefix `TASK_API_`.
+
+<Solution>
+
+```python
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="TASK_API_")
+    database_url: SecretStr
+    pool_size: int = Field(default=10, ge=1, le=50)
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-settings-2">
+
+Why should `actor_id` normally be supplied by authentication rather than a task request body?
+
+<Solution>
+
+The authenticated identity is trusted request context. Accepting it from the client lets callers impersonate another actor. Map it separately into the application command.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-settings-3">
+
+A unit test changes an environment variable but still gets old cached settings. Repair the test boundary.
+
+<Solution>
+
+Clear `get_settings.cache_clear()` after changing the environment, or override the settings dependency with an explicitly constructed test instance.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can locate validation at transport, configuration, domain, and persistence boundaries and explain the distinct guarantee at each.
+
+</Checkpoint>
+
+## Summary
+
+Use dedicated settings, request, response, domain, and persistence types. Map explicitly between them so runtime validation, static checking, business invariants, and security context remain visible.
+

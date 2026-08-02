@@ -1,0 +1,42 @@
+---
+id: capstone-quality
+title: Tests, Logging, and Error Handling
+description: Meet unit, integration, security, and operational requirements.
+module: capstone
+order: 4
+estimatedMinutes: 150
+prerequisites: [capstone-build]
+learningObjectives: [Prove behavior, Instrument failures]
+---
+
+## Turn the specification into evidence
+
+Create a traceability table connecting each requirement to at least one test. Use unit tests for domain and permission decisions, PostgreSQL integration tests for repositories and constraints, and API tests for validation, auth, serialization, and error contracts.
+
+High-value cases include duplicate email, cross-project assignment, forbidden membership changes, expired tokens, stable pagination ties, transaction rollback, concurrent conflicting updates, secret-field exclusion, and migration-from-empty.
+
+Every request receives a bounded correlation ID. Logs record event, outcome, actor/resource identifiers where safe, duration, and error code. Expected domain failures use controlled log levels; unexpected failures capture a stack trace but return the standard generic envelope.
+
+```python
+assert response.json() == {
+    "error": {"code": "permission_denied", "message": "Permission denied", "request_id": ANY}
+}
+```
+
+## Production note
+
+Coverage percentage is a clue, not acceptance. Review untested risk and mutation/change survival rather than chasing lines with trivial assertions.
+
+<Exercise id="cap-quality-table" title="Trace a requirement">Map “viewers cannot edit tasks” to evidence.<Solution>Add service policy cases and HTTP cases for viewer identity, expecting no write and the documented 403/404 envelope with request ID.</Solution></Exercise>
+
+<Exercise id="cap-quality-failure" title="Force rollback">How do you prove an audit failure rolls back the task update?<Solution>Make the second repository operation raise, assert the API error, then query in a fresh session and verify neither change committed.</Solution></Exercise>
+
+<Exercise id="cap-quality-log" title="Review sensitive data">Which fields must not appear in an auth failure log?<Solution>Password, raw token, signing secret, full authorization header, and sensitive request body. Log bounded identity hints and failure category instead.</Solution></Exercise>
+
+## Checkpoint
+
+Every frozen acceptance rule maps to executable evidence and every failure can be correlated without exposing sensitive data.
+
+## Summary
+
+Quality is a linked chain from requirement to test to observable runtime outcome—not a single coverage number.

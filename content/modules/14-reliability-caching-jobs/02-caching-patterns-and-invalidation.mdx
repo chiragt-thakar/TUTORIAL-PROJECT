@@ -1,0 +1,72 @@
+---
+id: reliability-cache
+title: Caching Patterns and Invalidation
+description: Use cache-aside safely and know when caching is the wrong fix.
+module: reliability-caching-jobs
+order: 2
+estimatedMinutes: 60
+prerequisites: [reliability-redis]
+learningObjectives: [Implement cache-aside, Plan invalidation and stampede control]
+---
+
+## Cache only after measuring
+
+A cache trades consistency and complexity for lower latency or reduced downstream load. First inspect query plans, indexes, payload size, and repeated work. Caching a bad query can hide the bottleneck while adding stale-data bugs.
+
+Cache-aside keeps the database authoritative:
+
+```python
+async def get_project(project_id: UUID) -> ProjectView:
+    key = f"task-api:v2:project:{project_id}"
+    if cached := await redis.get(key):
+        return ProjectView.model_validate_json(cached)
+
+    project = await projects.get_view(project_id)
+    await redis.set(key, project.model_dump_json(), ex=60)
+    return project
+```
+
+On update, commit the database transaction first and then delete the cached key. Deleting before commit allows another request to repopulate stale data. Even delete-after-commit has a small failure window, so TTL remains the recovery bound. For stronger requirements, emit invalidation through a transactional outbox.
+
+## Define acceptable staleness
+
+Cache public project summaries more readily than authorization decisions, inventory, balances, or rapidly changing task state. Cache keys must include every input that changes the result: tenant, identity/permission scope, locale, filters, schema version, and pagination.
+
+Negative caching can protect repeated misses, but use a short TTL so a newly created resource becomes visible promptly. Do not confuse “not found” with “not authorized,” or a shared cache can leak existence.
+
+## Prevent stampedes
+
+When a hot key expires, many requests can rebuild it simultaneously. Use jittered TTLs, stale-while-revalidate, request coalescing, or a short single-flight lease. The fallback must remain bounded; a lock whose owner dies should expire.
+
+## Production note
+
+Measure hit ratio together with end-to-end latency, stale-read impact, eviction rate, and database load. A 99% hit rate can still be harmful if the 1% miss path collapses the database.
+
+<Exercise id="cache-key-scope" title="Find a data leak">
+A key uses only `project:{id}` for a response whose fields depend on the viewer role. What is wrong?
+<Solution>
+One user's richer response can be served to another. Cache a permission-independent public projection, or include a stable authorization scope in the key and invalidate every affected variant.
+</Solution>
+</Exercise>
+
+<Exercise id="cache-update-order" title="Order an update">
+Place these steps: update database, commit, invalidate cache, return response.
+<Solution>
+Update inside the transaction, commit, invalidate, then return. If invalidation reliability matters, write an outbox event in the database transaction and let a worker retry deletion.
+</Solution>
+</Exercise>
+
+<Exercise id="cache-stampede" title="Protect a hot report">
+A report takes five seconds and expires every minute. Propose two controls.
+<Solution>
+Add TTL jitter so replicas do not expire together, and use single-flight/stale-while-revalidate so one worker refreshes while others receive a bounded stale value.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can state why a value is cached, its consistency budget, full key scope, invalidation order, and miss-storm protection.
+
+## Summary
+
+A cache is a consistency policy. Optimize only measured repetition and make stale, missing, and unavailable behavior deliberate.

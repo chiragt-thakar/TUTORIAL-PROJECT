@@ -1,0 +1,78 @@
+---
+id: alembic-deploy
+title: Data and Deployment Migrations
+description: Upgrade, downgrade, backfill, and deploy safely.
+module: async-sqlalchemy-alembic
+order: 5
+estimatedMinutes: 50
+prerequisites: [alembic-flow]
+learningObjectives:
+  - Write data migrations
+  - Plan zero-downtime changes
+---
+
+## Separate schema shape from data state
+
+A data migration transforms existing rows so a new invariant can hold. Keep transformations deterministic and bounded:
+
+```python
+task = sa.table("tasks", sa.column("status", sa.String()))
+
+def upgrade() -> None:
+    op.add_column("tasks", sa.Column("status", sa.String(), nullable=True))
+    op.execute(task.update().where(task.c.status.is_(None)).values(status="todo"))
+    op.alter_column("tasks", "status", nullable=False)
+```
+
+For millions of rows, a single transaction can lock too much data. Deploy a backward-compatible schema first, backfill in resumable batches using an application job, verify it, then enforce the constraint in a later revision.
+
+## Expand, migrate, contract
+
+Zero-downtime thinking uses three phases:
+
+1. Expand: add structures old and new code can tolerate.
+2. Migrate: dual-read or dual-write briefly and backfill data.
+3. Contract: remove the obsolete structure only after every process is compatible.
+
+A downgrade is not automatically safe. Once new writes lose information under an old schema, restoring a backup or shipping a forward fix may be safer than reversing the revision.
+
+## Local planning boundary
+
+This course asks you to document release ordering and rollback signals. It does not require deploying this learning site or the capstone to a hosting provider.
+
+## Common mistakes
+
+Do not import changing ORM models into old revisions, assume transactional DDL is identical across databases, or combine a destructive schema change with code that immediately depends on it.
+
+## Production note
+
+Back up data, measure locks on production-like volume, designate ownership, and monitor error rate, latency, and migration progress during a real release.
+
+<Exercise id="migration-expand-contract" title="Rename without downtime">
+Plan a safe transition from `due_date` to `due_at`.
+<Solution>
+Add nullable `due_at`; deploy code that writes both and reads the new value with an old-value fallback; backfill in batches; verify; switch reads to `due_at`; later stop writing and remove `due_date`.
+</Solution>
+</Exercise>
+
+<Exercise id="migration-batch" title="Design a resumable backfill">
+Describe a cursor for updating ten million rows.
+<Solution>
+Process stable primary-key ranges such as `id > last_id ORDER BY id LIMIT batch_size`, commit each batch, persist the last completed ID, and make repeated updates idempotent.
+</Solution>
+</Exercise>
+
+<Exercise id="migration-rollback" title="Choose rollback strategy">
+A revision drops a populated column and the application fails. Why might downgrade be insufficient?
+<Solution>
+Recreating the column cannot recover its values. Restore from a verified backup or roll the application forward with a corrective migration, according to the rehearsed recovery plan.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can distinguish reversible DDL from recoverable data, stage a compatible rollout, and design a resumable backfill.
+
+## Summary
+
+Safe evolution is a sequence, not one command: expand compatibility, migrate data with evidence, and contract only after the old path is unused.

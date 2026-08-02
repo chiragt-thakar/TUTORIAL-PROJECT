@@ -1,0 +1,116 @@
+---
+id: api-bodies
+title: Request Bodies and Response Models
+description: Validate bodies and publish intentional response shapes.
+module: fastapi-basics
+order: 3
+estimatedMinutes: 45
+prerequisites: [api-inputs]
+learningObjectives:
+  - Accept request models
+  - Filter responses
+---
+
+## Bodies are Pydantic boundaries
+
+A Pydantic-typed parameter is read from the JSON body. FastAPI validates before calling the operation and documents the schema.
+
+```python
+from fastapi import status
+
+@app.post(
+    "/tasks",
+    response_model=TaskRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_task(body: TaskCreate) -> TaskRead:
+    task = service.create(to_command(body, actor_id=current_user.id))
+    return TaskRead.model_validate(task, from_attributes=True)
+```
+
+The request model describes what clients may send. The response model describes what the server promises and filters the returned value to that shape. These are separate contracts even when fields overlap.
+
+## Response status and headers
+
+Use decorator status for the normal outcome. Return `Response` or a response subclass when you need dynamic status, headers, streaming, or non-JSON content. Creation commonly returns 201 and a `Location` header pointing at the new resource.
+
+```python
+from fastapi import Response
+
+async def create_task(body: TaskCreate, response: Response) -> TaskRead:
+    task = service.create(...)
+    response.headers["Location"] = f"/tasks/{task.id}"
+    return TaskRead.model_validate(task, from_attributes=True)
+```
+
+Avoid returning a `JSONResponse` for every route; doing so bypasses some automatic response handling and makes types less useful.
+
+<TypeScriptComparison>
+
+Express handlers usually serialize whatever object is passed to `res.json`. FastAPI response models validate and filter output, making accidental extra fields observable before clients receive them.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Never reuse a model containing `password` as the response model. Filtering only protects fields absent from the response schema; it cannot rescue a schema that declares secrets public.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Response validation failures usually indicate a server bug and should surface in monitoring. Do not convert them into client 422 responses—the client already sent valid input.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="api-bodies-1">
+
+Define a DELETE operation that returns no body with status 204.
+
+<Solution>
+
+```python
+@app.delete("/tasks/{task_id}", status_code=204)
+async def delete_task(task_id: UUID) -> None:
+    service.delete(TaskId(str(task_id)))
+```
+
+Do not return JSON with a 204 response.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-bodies-2">
+
+The domain task has `internal_notes`; guarantee it never appears publicly.
+
+<Solution>
+
+Create `TaskRead` without `internal_notes` and set it as the operation's response model. Add a response-contract test for defense in depth.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-bodies-3">
+
+Why is `dict` a weak return annotation for a public endpoint?
+
+<Solution>
+
+It communicates no field contract, produces weak OpenAPI, and offers no output filtering or validation. Return a response model for a stable public resource.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can trace raw JSON through a request model, application mapping, domain result, response model, and HTTP serialization.
+
+</Checkpoint>
+
+## Summary
+
+Request and response models are separate allowlists. Choose semantic status codes, use normal model returns by default, and treat response validation as a server correctness check.
+

@@ -1,0 +1,70 @@
+---
+id: reliability-redis
+title: Redis Mental Model and Key Design
+description: Choose data structures, lifetimes, and keys from access patterns.
+module: reliability-caching-jobs
+order: 1
+estimatedMinutes: 55
+prerequisites: [capstone-assignment]
+learningObjectives: [Choose Redis data structures, Design bounded keys and TTLs]
+---
+
+## Redis is a fast shared data-structure server
+
+Redis is not simply “a faster database.” It keeps working data in memory and provides atomic operations over strings, hashes, sets, sorted sets, streams, and other structures. Its value comes from matching one structure to one access pattern.
+
+- Strings fit cached JSON, counters, locks, and small tokens.
+- Hashes fit independently updated fields, but per-field expiry requires extra design.
+- Sets answer membership and uniqueness questions.
+- Sorted sets maintain ranked or time-ordered members.
+- Streams model append-only event/job consumption when their delivery semantics fit.
+
+```python
+project_key = f"task-api:v1:project:{project_id}:summary"
+await redis.set(project_key, summary.model_dump_json(), ex=60)
+```
+
+The key includes application, schema version, resource type, ID, and purpose. A version prevents old serialized shapes from colliding with new code. Never place secrets or raw personal data in keys because keys appear in diagnostics.
+
+## Bound memory and lifetime
+
+Every ephemeral key needs an ownership and expiry decision. TTL is not exact scheduling: an item can disappear before or after your business process checks it, and eviction can remove data under memory pressure. Therefore, Redis must not be the only copy of durable business truth unless persistence and recovery have been deliberately configured and tested.
+
+Use atomic commands instead of read-modify-write races. `INCR`, conditional `SET ... NX`, and Lua/server-side operations can preserve small coordination invariants. A distributed lock is a lease with failure cases—not a replacement for database constraints or idempotency.
+
+## FastAPI lifecycle
+
+Create one bounded Redis client/pool during lifespan, inject it where needed, and close it during shutdown. Add strict connection and command timeouts. Do not create a new pool per request.
+
+## Production note
+
+Track memory, evictions, command latency, connection count, rejected connections, and hot keys. Define behavior for Redis unavailability before making it a readiness dependency.
+
+<Exercise id="redis-structure" title="Choose a structure">
+You need the top 100 most active projects by task count. Which structure fits?
+<Solution>
+Use a sorted set whose members are project IDs and scores are activity counts. Increment atomically with `ZINCRBY` and query descending ranges. Keep PostgreSQL authoritative if the ranking must be reconstructable.
+</Solution>
+</Exercise>
+
+<Exercise id="redis-key" title="Design a safe key">
+Create a key for a cached page of open project tasks.
+<Solution>
+Use a bounded normalized form such as `task-api:v1:project:{id}:tasks:status=open:page:{cursor_hash}`. Hash an unbounded cursor/filter string rather than placing raw input in the key, and apply a TTL.
+</Solution>
+</Exercise>
+
+<Exercise id="redis-counter-race" title="Remove a race">
+Two requests read a counter, add one, and write it back. Repair the operation.
+<Solution>
+Use Redis `INCR`/`INCRBY`, which is atomic. If the counter is durable business truth, update it transactionally in PostgreSQL and treat Redis as a derived view.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can choose a structure from an access pattern, name a key and expiry policy, and explain the fallback when Redis is unavailable.
+
+## Summary
+
+Redis is safest when data purpose, lifetime, memory bound, atomic operation, and source of truth are all explicit.

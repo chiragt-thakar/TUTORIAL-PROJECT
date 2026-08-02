@@ -1,0 +1,65 @@
+---
+id: reliability-http
+title: Resilient Outbound HTTP
+description: Use timeouts, limits, retry budgets, and circuit-breaking concepts.
+module: reliability-caching-jobs
+order: 5
+estimatedMinutes: 55
+prerequisites: [reliability-idempotency]
+learningObjectives: [Set timeout budgets, Prevent dependency failure amplification]
+---
+
+## Every network call needs a budget
+
+An HTTP client call can wait while acquiring a connection, connecting, writing, and reading. Configure each timeout and keep their total inside the request's remaining deadline.
+
+```python
+timeout = httpx.Timeout(connect=1.0, read=2.0, write=1.0, pool=0.5)
+limits = httpx.Limits(max_connections=50, max_keepalive_connections=20)
+client = httpx.AsyncClient(timeout=timeout, limits=limits)
+```
+
+Create and close the shared client through lifespan so requests reuse connections. A client per request wastes handshakes and sockets; an unlimited shared client can overwhelm the dependency.
+
+## Prevent failure amplification
+
+Retries multiply calls at the worst time. Retry only idempotent/safely keyed operations and transient failures, using jitter and a total deadline. Limit concurrent calls with the pool or a semaphore. When capacity is full, fail or queue within a bound instead of allowing memory and latency to grow indefinitely.
+
+A circuit breaker stops new calls temporarily after a sustained failure threshold, allowing the dependency to recover. It has closed, open, and limited-probe half-open states. Use it only after timeouts and limits are correct; a breaker is not a substitute for them.
+
+## Decide fallback semantics
+
+Some reads may return a marked stale cache. A required permission or payment check should fail closed. Never invent a successful response merely to keep an availability graph green. Document which dependency failures map to 502, 503, 504, or a domain-specific accepted state.
+
+## Production note
+
+Record dependency name, operation, outcome, attempt count, and duration without full URLs containing secrets. Trace each attempt while reporting the logical call once in service metrics.
+
+<Exercise id="http-budget" title="Fit a deadline">
+Your route deadline is three seconds. Is a five-second read timeout acceptable?
+<Solution>
+No. Allocate a smaller connect/pool/read budget within the remaining route deadline, leaving time to translate the failure and send the response. Propagate cancellation where supported.
+</Solution>
+</Exercise>
+
+<Exercise id="http-retry-post" title="Retry a POST">
+When can an outbound POST be retried?
+<Solution>
+Only when the provider documents idempotency or accepts a stable idempotency key and the retry remains inside attempt/time budgets. Otherwise the first uncertain result can be duplicated.
+</Solution>
+</Exercise>
+
+<Exercise id="http-fallback" title="Choose fail-open or closed">
+Redis contains a stale authorization decision while the policy service is down. What should happen?
+<Solution>
+For a sensitive write, fail closed. Availability does not justify granting uncertain permission. A separately documented low-risk read may use bounded stale policy only if the security model permits it.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can budget a call, bound connections and retries, and choose a fallback based on correctness rather than convenience.
+
+## Summary
+
+Resilient integration limits waiting, concurrency, repetition, and fallback so one dependency cannot consume the entire service.

@@ -1,0 +1,63 @@
+---
+id: capstone-assignment
+title: "Final Delivery: Production-Structured Task Management API"
+description: Complete the service, demonstrate every acceptance criterion, and record deployment considerations without deploying it.
+module: capstone
+order: 6
+estimatedMinutes: 420
+prerequisites: [capstone-docker]
+learningObjectives: [Deliver the complete application, Present validation evidence, Document remaining production risks]
+---
+
+<Assignment id="capstone-assignment" title="Production-Structured Task Management API">
+
+## Scenario
+
+Deliver the cumulative Task API as a reviewable local project. The reviewer must be able to reproduce the database, run tests, inspect the API, and evaluate operational decisions without any hosted deployment.
+
+## Required product
+
+- Versioned FastAPI endpoints for registration/login, projects, membership, and tasks.
+- PostgreSQL model with constraints, async SQLAlchemy repositories, request units of work, and reviewed Alembic history.
+- Password hashing, token authentication, and centralized project-role authorization.
+- Filtering, bounded stable pagination, consistent schemas, and error envelopes.
+- Layered unit, repository, migration, API, async, and authorization tests.
+- Typed settings, secret handling, structured correlated logs, health endpoints, lifespan cleanup, and security controls.
+- Local Docker environment, README, architecture map, ADRs, API examples, and known-risk register.
+
+## Acceptance criteria and evidence
+
+- A clean local setup reaches Alembic `head` and starts successfully.
+- The full automated suite passes twice with database isolation.
+- A scripted smoke test proves the main success and forbidden flows.
+- OpenAPI contains only intended public schemas and security definitions.
+- Forced database and application failures produce bounded health/error behavior and correlated logs.
+- A migration upgrade/downgrade/re-upgrade rehearsal is recorded.
+- No real credentials, hosted resources, domain, or production deployment are created.
+
+## Delivery order
+
+1. Freeze the endpoint and permission matrix.
+2. Complete one vertical task slice.
+3. Add project, membership, and remaining task behavior.
+4. Finish migrations and the layered test suite.
+5. Add operational safeguards and local containers.
+6. Run the final review from a clean checkout and record evidence.
+
+## Stopping rules
+
+Fix acceptance failures before adding stretch goals. Stop when the required product and evidence pass; record optional features and deployment work as future tasks.
+
+## Stretch goals
+
+Choose at most one: refresh-token rotation, optimistic concurrency, durable notifications, or CI quality gates. Keep it behind the same architecture and tests.
+
+<Solution>
+A strong delivery uses a single application factory, explicit settings and lifespan, routers limited to HTTP concerns, application services for policy, domain objects for invariants, repositories for explicit async statements, and a unit of work for transaction ownership. Migrations create the test schema. A traceability matrix points from each permission and invariant to focused tests, while local smoke-test output, health behavior, and structured logs provide operational evidence. The release document discusses hosting and recovery but performs no deployment.
+</Solution>
+
+## Final reflection
+
+Explain three decisions: one abstraction that paid for itself, one you deliberately omitted, and one production risk that requires evidence outside a local learning environment.
+
+</Assignment>

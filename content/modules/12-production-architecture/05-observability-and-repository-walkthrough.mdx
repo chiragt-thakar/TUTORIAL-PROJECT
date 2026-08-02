@@ -1,0 +1,48 @@
+---
+id: arch-observe
+title: Observability and Repository Walkthrough
+description: Trace one request through the production folder structure.
+module: production-architecture
+order: 5
+estimatedMinutes: 60
+prerequisites: [arch-health]
+learningObjectives: [Plan observability, Navigate the architecture]
+---
+
+## Three signals, one request
+
+Logs explain events, metrics show aggregate behavior, and traces show causal timing across components. Start with questions: Which endpoints fail? Where is time spent? Are database pools saturated? Which release changed behavior?
+
+Useful service metrics include request count, error count, latency histograms, active requests, pool wait time, and queue depth. Keep metric labels low-cardinality: route templates and status classes are safe; raw user IDs and URLs are not.
+
+## Walk a create-task request
+
+```text
+app/main.py                 application factory and lifespan
+app/api/routes/tasks.py     HTTP parsing and response mapping
+app/application/tasks.py    authorization and use-case policy
+app/domain/task.py          invariants and state transitions
+app/infrastructure/tasks.py SQLAlchemy repository
+app/db/models.py            persistence mapping
+app/core/observability.py   logs, metrics, correlation
+```
+
+The trace begins at middleware, route parsing creates a command, the service checks identity and constructs a domain object, the repository flushes it inside the request unit of work, and response mapping returns a schema. Each span/log uses the same request/trace identity.
+
+## Production note
+
+Define service-level indicators before alerts. Alert on user-visible symptoms and sustained budget burn, not every single exception.
+
+<Exercise id="observe-label" title="Find cardinality risk">Which metric label is dangerous: route template, method, status code, or task ID?<Solution>Task ID is unbounded and creates a time series per task. Put it in sampled logs/traces instead.</Solution></Exercise>
+
+<Exercise id="observe-trace" title="Name spans">Propose spans for task creation.<Solution>Use spans such as `POST /tasks`, `task.create`, `db.tasks.insert`, and any external notification enqueue, with errors and durations attached.</Solution></Exercise>
+
+<Exercise id="observe-walk" title="Locate a change">A title length rule changes. Which files likely change?<Solution>The domain rule and its unit tests; request schema may also change if it provides earlier validation. Repository and route should remain stable unless their contracts change.</Solution></Exercise>
+
+## Checkpoint
+
+You can trace a request through the repository and choose signals without creating high-cardinality telemetry.
+
+## Summary
+
+Observability should mirror architecture: stable boundaries create understandable spans, metrics, and diagnostic events.

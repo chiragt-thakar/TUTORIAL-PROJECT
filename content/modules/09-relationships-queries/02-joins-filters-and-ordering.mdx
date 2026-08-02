@@ -1,0 +1,95 @@
+---
+id: rel-query
+title: Joins, Filtering, and Ordering
+description: Compose clear select statements.
+module: relationships-queries
+order: 2
+estimatedMinutes: 50
+prerequisites: [rel-mapping]
+learningObjectives:
+  - Join entities
+  - Build filters
+---
+
+## Build statements from trusted pieces
+
+SQLAlchemy statements are immutable-style expression trees. Start with mandatory authorization predicates, then add optional filters and deterministic order.
+
+```python
+stmt = (
+    select(TaskModel)
+    .join(ProjectMemberModel, ProjectMemberModel.project_id == TaskModel.project_id)
+    .where(ProjectMemberModel.user_id == actor_id)
+)
+if query.status is not None:
+    stmt = stmt.where(TaskModel.status == query.status.value)
+if query.search:
+    stmt = stmt.where(TaskModel.title.ilike(f"%{escape_like(query.search)}%", escape="\\"))
+stmt = stmt.order_by(TaskModel.created_at.desc(), TaskModel.id.desc())
+```
+
+Join only what the query needs. `join()` affects SQL row selection; eager-loading options affect how relationships are populated. They solve different problems.
+
+## AND, OR, and empty inputs
+
+Multiple `.where()` criteria combine with AND. Use `or_()` for explicit alternatives. Define empty-list semantics before using `IN`: should no selected statuses mean no filter or no results? Avoid truthiness that accidentally changes policy.
+
+Case-insensitive search behavior differs across databases and collations. For serious search, define indexes and search technology rather than wrapping every column in `lower()`.
+
+<CommonMistake>
+
+An outer join followed by a WHERE predicate on the right table often acts like an inner join. Put the condition in the join expression or explicitly allow null when unmatched rows must remain.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Review generated SQL with representative parameters and run `EXPLAIN`/`EXPLAIN ANALYZE` in a safe environment. Query-builder readability does not prove index use.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="rel-query-1">
+
+Add a filter for tasks assigned to either of two user IDs.
+
+<Solution>
+
+Join the assignment table and use `AssignmentModel.user_id.in_(user_ids)`. Define an empty list explicitly rather than relying on accidental SQL.
+
+</Solution>
+</Exercise>
+
+<Exercise id="rel-query-2">
+
+Why must ID break ties after ordering by due date?
+
+<Solution>
+
+Many rows share due dates. Without a unique tie-breaker, pagination order is nondeterministic and rows may repeat or disappear between pages.
+
+</Solution>
+</Exercise>
+
+<Exercise id="rel-query-3">
+
+Repair a query that fetches all tasks, then filters project membership in Python.
+
+<Solution>
+
+Join or use `EXISTS` against membership and include actor visibility in SQL before ordering and limiting.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can distinguish selection joins from loader strategies and prove authorization applies before filtering, ordering, and pagination.
+
+</Checkpoint>
+
+## Summary
+
+Build queries from mandatory scoped predicates and whitelisted optional expressions. Join for SQL semantics, order uniquely, and verify the actual database plan.
+

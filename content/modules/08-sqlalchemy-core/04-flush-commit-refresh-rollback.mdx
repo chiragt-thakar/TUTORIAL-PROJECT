@@ -1,0 +1,105 @@
+---
+id: sa-state
+title: Flush, Commit, Refresh, and Rollback
+description: Control object and transaction state explicitly.
+module: sqlalchemy-core
+order: 4
+estimatedMinutes: 55
+prerequisites: [sa-session]
+learningObjectives:
+  - Distinguish flush and commit
+  - Recover with rollback
+---
+
+## Flush writes inside the transaction
+
+`session.add()` makes an object pending. `flush()` emits pending SQL without ending the transaction. It obtains database-generated values and reveals constraint failures early. `commit()` flushes if needed, then commits the transaction.
+
+```python
+task = TaskModel(project_id=project_id, title="Ship API", status="open")
+session.add(task)
+session.flush()
+assert task.id is not None
+# more atomic work
+session.commit()
+```
+
+Never call `commit()` merely to obtain an ID; flush is the correct boundary.
+
+## Refresh, expire, and rollback
+
+`refresh(task)` immediately re-reads mapped state from the database. Expiration marks attributes so later access reloads them; synchronous lazy reloads can hide I/O. `expire_on_commit=False` keeps loaded values usable after commit, commonly helpful in service code and async usage.
+
+When flush fails, the database transaction is rolled back internally, but the session still requires an explicit `rollback()` before reuse.
+
+```python
+try:
+    session.flush()
+except IntegrityError as exc:
+    session.rollback()
+    raise DuplicateTaskError() from exc
+```
+
+Translate only recognized constraints. A generic `IntegrityError` could represent a programming defect or different invariant.
+
+## Object states
+
+Objects move through transient, pending, persistent, deleted, detached, and expired states. Closing a session detaches instances; accessing an unloaded relationship afterward fails. Return fully loaded domain/response data rather than relying on a closed session to fetch later.
+
+<CommonMistake>
+
+Catching an integrity error and continuing without rollback leaves the session in a failed transaction state. Every later statement fails until rollback.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Use constraints to arbitrate races, then translate a known constraint name to a domain conflict. “Check then insert” alone is not concurrency-safe.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="sa-state-1">
+
+Choose flush or commit when an audit row needs the new task's generated ID in the same atomic operation.
+
+<Solution>
+
+Flush the task, read its ID, add the audit row, then commit once at the operation boundary.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-state-2">
+
+Why can `refresh()` be required after a database trigger changes a field?
+
+<Solution>
+
+The in-memory object may not know a trigger-computed value unless the dialect returns it. Refresh explicitly re-selects current database state.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-state-3">
+
+Handle a duplicate project slug without masking other integrity failures.
+
+<Solution>
+
+Rollback, inspect the database-specific constraint identifier, translate only the named slug uniqueness constraint to `ProjectSlugConflict`, and re-raise unknown integrity failures.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can locate an ORM object in its state lifecycle and choose add, flush, refresh, rollback, or commit for a specific purpose.
+
+</Checkpoint>
+
+## Summary
+
+Flush synchronizes inside a transaction; commit makes it durable; refresh reloads; rollback restores session usability after failure. Translate database conflicts narrowly.
+

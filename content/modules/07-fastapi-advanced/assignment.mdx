@@ -1,0 +1,51 @@
+---
+id: fastapi-advanced-assignment
+title: "Assignment: Secure and Test the Task API"
+description: Add JWT authentication, resource authorization, versioning, and endpoint tests.
+module: fastapi-advanced
+order: 6
+estimatedMinutes: 155
+prerequisites: [advanced-testing]
+learningObjectives:
+  - Implement a complete authentication flow
+  - Enforce project-scoped permissions
+  - Test success and denial paths
+---
+
+## Scenario
+
+The Task API needs real identities and project-scoped access before persistent multi-user data can be safe.
+
+<Assignment id="fastapi-advanced-assignment-work">
+
+## Requirements
+
+Implement password registration/login, short-lived JWT access tokens, current-user resolution, project roles, task action permissions, versioned routers, and a focused endpoint/security test suite. Uploads may be represented by one bounded attachment endpoint; do not add object storage yet.
+
+## Acceptance criteria
+
+1. Passwords use a maintained adaptive hashing library and are never returned.
+2. JWT verification fixes allowed algorithms and checks issuer, audience, expiry, and subject.
+3. Missing/invalid credentials return 401 with the appropriate bearer challenge.
+4. Project authorization is enforced in service code and scoped queries.
+5. Cross-project access follows one tested concealment policy.
+6. Endpoint tests cover valid, expired, invalid-signature, forbidden, and not-found cases.
+7. OpenAPI declares security only where required and has unique operation IDs.
+
+### Stretch goals
+
+Add refresh-token rotation with replay detection and an audit event model. Write a threat model for token storage in a browser client.
+
+<Solution>
+
+Separate `PasswordHasher`, `TokenService`, `CurrentUser` dependency, and application authorization policies. The login route verifies credentials and issues a minimal token. The dependency verifies claims and loads an active user. Services accept an `Actor` and enforce resource actions. Tests use test keys and explicit time control; only non-auth adapter tests override identity.
+
+Do not add revocation state unless the chosen logout/incident requirements demand it. Document key rotation and token lifetime.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+The security model is now fixed before SQLAlchemy persistence arrives. Later repository queries must preserve the same project-scoped policy rather than reinterpreting it.
+

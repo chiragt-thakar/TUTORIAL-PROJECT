@@ -1,0 +1,119 @@
+---
+id: sa-session
+title: Session, Unit of Work, and Identity Map
+description: The stateful transaction boundary that differs from a Node query client.
+module: sqlalchemy-core
+order: 3
+estimatedMinutes: 60
+prerequisites: [sa-mapping]
+learningObjectives:
+  - Explain session scope
+  - Use identity maps
+---
+
+## A session is one stateful work context
+
+`Session` tracks ORM objects, pending changes, and one logical database transaction at a time. It is not thread-safe and must not be shared across concurrent requests.
+
+```python
+from sqlalchemy.orm import sessionmaker
+
+SessionFactory = sessionmaker(bind=engine, expire_on_commit=False)
+
+with SessionFactory.begin() as session:
+    task = session.get(TaskModel, task_id)
+    if task is None:
+        raise TaskNotFoundError(str(task_id))
+    task.status = "done"
+```
+
+The unit of work observes changes and flushes SQL in dependency order. The transaction boundary should surround one application operation, not one repository method.
+
+## Identity map
+
+Within a session, one database identity normally maps to one Python object. Repeated `get()` calls can return the identical instance without another query when present in the identity map.
+
+```python
+first = session.get(TaskModel, task_id)
+second = session.get(TaskModel, task_id)
+assert first is second
+```
+
+This is not a general query cache. Arbitrary selects still execute, and external database changes are not automatically merged into already-loaded objects. Expiration/refresh controls synchronization.
+
+<TypeScriptComparison>
+
+A Node query client often returns independent row objects per query. SQLAlchemy's session coordinates object identity and pending changes, so its lifetime materially changes behavior.
+
+</TypeScriptComparison>
+
+## Repository and unit of work
+
+Repositories issue queries and stage mutations. A service or unit-of-work boundary decides commit/rollback so several repository calls remain atomic.
+
+```python
+with uow:
+    project = uow.projects.require(project_id)
+    task = Task.create(project, title)
+    uow.tasks.add(task)
+    uow.audit.add(AuditEvent.for_task(task))
+    uow.commit()
+```
+
+<CommonMistake>
+
+Do not store a session in a singleton repository. That shares identity and transaction state across requests and eventually produces stale data or concurrency failures.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Keep transactions short and free of remote network calls when possible. Waiting on another service while holding locks and a pooled connection reduces throughput and increases deadlock risk.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="sa-session-1">
+
+Why should “create task and audit event” use one session/transaction?
+
+<Solution>
+
+Both changes represent one business outcome. One transaction ensures either both persist or neither does; per-repository commits permit partial state.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-session-2">
+
+Is the identity map proof that no second SELECT will run for any repeated query?
+
+<Solution>
+
+No. Primary-key `get` can reuse identity, but selects generally execute to determine matching rows. Existing identities are reused when rows are materialized.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-session-3">
+
+Place an outbound email API call relative to the database transaction.
+
+<Solution>
+
+Persist an outbox event in the transaction, commit, then deliver asynchronously. Do not hold the transaction open across the remote call or risk a sent email with rolled-back state.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can define the session's concurrency boundary, transaction boundary, identity behavior, and repository responsibility.
+
+</Checkpoint>
+
+## Summary
+
+The session is a stateful unit of work with an identity map. Scope it to one sequential application operation and commit at the business boundary.
+

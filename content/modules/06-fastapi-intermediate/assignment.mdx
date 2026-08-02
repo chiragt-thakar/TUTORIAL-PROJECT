@@ -1,0 +1,59 @@
+---
+id: fastapi-intermediate-assignment
+title: "Assignment: Production-Shaped Task Routes"
+description: Add dependency wiring, pagination, errors, lifecycle management, and safe async choices.
+module: fastapi-intermediate
+order: 6
+estimatedMinutes: 135
+prerequisites: [api-listing]
+learningObjectives:
+  - Wire request-scoped services
+  - Standardize errors and list responses
+  - Prove blocking work is isolated
+---
+
+## Scenario
+
+The Task API works but constructs services globally and handles failures inconsistently. Reshape the adapter around explicit dependency and resource lifetimes.
+
+<Assignment id="fastapi-intermediate-assignment-work">
+
+## Requirements
+
+Add dependencies for settings, current actor, repository, and task service. Add application lifespan, request ID middleware, centralized exception handlers, bounded filters, deterministic pagination, and one appropriate non-critical background action.
+
+## Acceptance criteria
+
+1. Shared application clients are created/disposed in lifespan.
+2. Each request receives one cached service graph and one repository/session resource.
+3. Domain failures map to stable error codes with request IDs.
+4. Task listing authorizes before pagination and has a unique tie-breaker.
+5. No blocking SDK call runs directly on the event loop.
+6. Critical work is not placed in `BackgroundTasks`.
+7. Success and error responses both contain `X-Request-Id`.
+
+### Stretch goals
+
+Implement an opaque cursor signed against tampering and compare its query plan with a high-offset query.
+
+<Solution>
+
+Compose dependencies from the outside inward: request resource → repository → service → operation. Use lifespan only for factories and pools. Add middleware for correlation/timing and exception handlers for protocol translation. Represent filters as a validated object, then map public sort names to database expressions. Document any synchronous library and isolate it explicitly.
+
+```python
+TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
+
+@router.get("", response_model=TaskPage)
+async def list_tasks(filters: TaskFiltersDep, service: TaskServiceDep, user: CurrentUserDep):
+    return TaskPage.from_domain(await service.list(actor=user.id, query=filters.to_query()))
+```
+
+The completed adapter now has visible lifetimes and failure policy, ready for authentication and advanced transports.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+These dependency and lifecycle boundaries will carry the async SQLAlchemy session and authenticated user later without rewriting every route.
+

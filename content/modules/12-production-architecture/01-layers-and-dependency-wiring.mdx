@@ -1,0 +1,50 @@
+---
+id: arch-layers
+title: Layers and Dependency Wiring
+description: Routers, services, repositories, domain models, DB models, and schemas.
+module: production-architecture
+order: 1
+estimatedMinutes: 65
+prerequisites: [testing-assignment]
+learningObjectives: [Separate boundaries, Wire dependencies]
+---
+
+## Make change boundaries visible
+
+A practical request path is `router -> service -> repository -> database`. Schemas translate HTTP data, domain objects hold business rules, and ORM models represent persistence. They may be combined in a small CRUD service; split them when their reasons to change diverge.
+
+```python
+class CreateTask:
+    def __init__(self, tasks: TaskRepository, uow: UnitOfWork):
+        self.tasks, self.uow = tasks, uow
+
+    async def execute(self, command: CreateTaskCommand) -> Task:
+        task = Task.create(command.title, command.project_id)
+        await self.tasks.add(task)
+        await self.uow.commit()
+        return task
+```
+
+The composition root creates concrete infrastructure and supplies it at the edge. Business code depends on narrow protocols, not FastAPI's `Depends` or a global session.
+
+## Common mistakes
+
+Avoid routers containing transactions and rules, repositories returning HTTP exceptions, generic `BaseService` hierarchies, and one interface per class with no alternative or test seam.
+
+## Production note
+
+Trace ownership of a transaction and an error from one file. If that requires jumping through ceremonial wrappers, simplify.
+
+<Exercise id="layers-place-rule" title="Place a rule">Where should “only a project owner may archive it” live?<Solution>In application/domain policy invoked by the service. The router supplies identity and maps errors; the repository supplies data.</Solution></Exercise>
+
+<Exercise id="layers-wiring" title="Find the composition root">Describe what it should create.<Solution>Settings, engine/session factory, concrete repositories/unit of work, external clients, services, and FastAPI dependencies that expose request-scoped instances.</Solution></Exercise>
+
+<Exercise id="layers-remove" title="Remove a useless layer">A service only calls `repo.get(id)` and returns it. What evidence justifies keeping it?<Solution>Keep it only if it is a stable policy boundary or expected seam; otherwise call the repository from the route dependency and add a service when behavior appears.</Solution></Exercise>
+
+## Checkpoint
+
+You can assign HTTP, policy, transaction, and storage responsibilities without inventing layers preemptively.
+
+## Summary
+
+Architecture is useful when boundaries isolate real changes and tests. Explicit wiring keeps those dependencies inspectable.

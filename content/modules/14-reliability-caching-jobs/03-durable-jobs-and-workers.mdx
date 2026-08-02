@@ -1,0 +1,69 @@
+---
+id: reliability-jobs
+title: Durable Jobs and Workers
+description: Move critical asynchronous work out of request processes.
+module: reliability-caching-jobs
+order: 3
+estimatedMinutes: 60
+prerequisites: [reliability-cache]
+learningObjectives: [Model durable jobs, Operate workers safely]
+---
+
+## Background does not automatically mean durable
+
+FastAPI `BackgroundTasks` runs work in the web process after sending a response. It is useful for short, non-critical cleanup, but a restart can lose the work. Email, billing, exports, webhooks, and retried integrations belong in a durable queue with separate workers.
+
+A job payload is a versioned command, not a serialized ORM object:
+
+```python
+class SendTaskReminder(BaseModel):
+    version: Literal[1] = 1
+    task_id: UUID
+    expected_due_at: datetime
+    idempotency_key: str
+```
+
+Store identifiers and the minimum immutable context. The worker loads fresh state, rechecks whether the action is still valid, performs a bounded side effect, and records outcome. This prevents a queued stale object from bypassing current permissions or status.
+
+## Delivery semantics
+
+Most practical queues are at-least-once: a worker can complete the side effect but crash before acknowledging the message, so the job is delivered again. “Exactly once” is usually achieved at the business boundary through idempotency, not by trusting the transport never to repeat.
+
+Workers need concurrency limits, graceful shutdown, per-job timeouts, retry policy, dead-letter/quarantine handling, and observable queue depth/age. Prioritize job types when a slow export must not delay password email.
+
+## Scheduling and ownership
+
+Delayed work should survive restarts. Store the durable due state and use a scheduler that enqueues deterministically. Multiple schedulers require a lease or unique job identity so they do not create unbounded duplicates. The handler must still be idempotent.
+
+## Production note
+
+Alert on oldest job age, sustained failures, retry exhaustion, and dead-letter growth—not only total queue length. A short queue containing one ancient stuck job is unhealthy.
+
+<Exercise id="job-payload" title="Shrink a payload">
+A job contains a full user object and password hash. Redesign it.
+<Solution>
+Send a version, user ID, event purpose, and idempotency key. The worker loads current allowed fields. Never place password hashes, tokens, or unnecessary personal data in the queue.
+</Solution>
+</Exercise>
+
+<Exercise id="job-duplicate" title="Handle redelivery">
+A reminder email job runs twice after a worker crash. Where should duplication be stopped?
+<Solution>
+Record/claim the stable idempotency key in durable storage and have the email provider accept the same key when supported. Repeated handler execution then returns the recorded outcome.
+</Solution>
+</Exercise>
+
+<Exercise id="job-shutdown" title="Stop a worker safely">
+What should happen after a termination signal?
+<Solution>
+Stop claiming new jobs, allow current jobs a bounded grace period, acknowledge only completed jobs, release/requeue unfinished leases, close clients, and expose the shutdown outcome.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can decide when in-process work is insufficient and define job payload, delivery, timeout, retry, duplicate, and shutdown behavior.
+
+## Summary
+
+Durable workers turn asynchronous work into an explicit subsystem whose core assumptions are redelivery and partial failure.

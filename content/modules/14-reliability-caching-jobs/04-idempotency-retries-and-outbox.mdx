@@ -1,0 +1,69 @@
+---
+id: reliability-idempotency
+title: Idempotency, Retries, and the Outbox Pattern
+description: Make repeated requests and deliveries safe under failure.
+module: reliability-caching-jobs
+order: 4
+estimatedMinutes: 65
+prerequisites: [reliability-jobs]
+learningObjectives: [Design idempotent operations, Apply bounded retries and outbox delivery]
+---
+
+## Retries repeat uncertainty
+
+When a client times out, it does not know whether the server performed the operation. An idempotency key lets repeated equivalent requests return one logical result.
+
+```text
+POST /v1/projects/42/tasks
+Idempotency-Key: 01J...
+```
+
+Scope the key to actor, route, and operation. Store a hash of the normalized request and the resulting status/body or resource ID under a unique database constraint. If the same key arrives with a different payload, reject it. Insert the claim and business change in one transaction so two concurrent requests cannot both win.
+
+Do not blindly retry permanent failures such as validation, permission denial, or most 4xx responses. Retry only transient categories, with exponential backoff, jitter, attempt and elapsed-time limits. Every retry consumes capacity during an incident, so it needs a budget.
+
+## Close the dual-write gap with an outbox
+
+Writing PostgreSQL and publishing to a queue are two independent operations. If the process commits the task and crashes before publishing, the notification is lost. Store an outbox record in the same database transaction:
+
+```python
+async with uow:
+    task = await tasks.create(command)
+    await outbox.add(Event(type="task.created", payload={"task_id": str(task.id)}))
+    await uow.commit()
+```
+
+A relay reads unpublished events, publishes them, and marks them delivered. A crash between publish and mark can duplicate delivery, so consumers remain idempotent. Keep event type/version stable and never build old-event deserialization from mutable ORM models.
+
+## Production note
+
+Measure retries by dependency and reason, outbox age, duplicate-key hits, publish failures, and terminal outcomes. Expire idempotency records only after the business retry window.
+
+<Exercise id="idempotency-race" title="Stop concurrent duplicates">
+Two requests with one key arrive together. What enforces one winner?
+<Solution>
+A unique database constraint on the scoped key plus a transaction. The loser reloads the winning record and returns its result, or waits/polls while the first is still processing.
+</Solution>
+</Exercise>
+
+<Exercise id="retry-classify" title="Classify failures">
+Should a worker retry 400, 429, connection reset, and invalid credentials?
+<Solution>
+Do not retry 400 or invalid credentials without configuration change. Retry 429 according to `Retry-After` and policy, and retry a connection reset only for an idempotent operation within the retry budget.
+</Solution>
+</Exercise>
+
+<Exercise id="outbox-crash" title="Analyze a crash window">
+The relay publishes, then crashes before marking delivered. What happens?
+<Solution>
+It can publish again after restart. The consumer must deduplicate by event/message identity or make the side effect idempotent; the outbox removes loss, not all duplication.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can identify an uncertainty window, define an idempotency record, bound retries, and explain both guarantees and duplicates in an outbox flow.
+
+## Summary
+
+Reliability comes from making repetition safe, classifying failure, limiting retry amplification, and persisting intent beside business state.

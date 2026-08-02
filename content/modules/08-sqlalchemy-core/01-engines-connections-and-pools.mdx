@@ -1,0 +1,108 @@
+---
+id: sa-engine
+title: Engines, Connections, and Pools
+description: Database connectivity and resource management.
+module: sqlalchemy-core
+order: 1
+estimatedMinutes: 50
+prerequisites: [fastapi-advanced-assignment]
+learningObjectives:
+  - Configure engines
+  - Explain pooling
+---
+
+## Engine means connectivity policy
+
+An SQLAlchemy `Engine` combines a database dialect, DBAPI driver, URL, and connection pool. It is normally application-scoped and safe to share; a `Connection` represents one checked-out connection and is short-lived.
+
+```python
+from sqlalchemy import create_engine
+
+engine = create_engine(
+    settings.database_url.get_secret_value(),
+    pool_size=10,
+    max_overflow=5,
+    pool_pre_ping=True,
+)
+```
+
+Creating an engine is usually lazy; the first database operation opens a connection. `pool_pre_ping` detects stale pooled connections at checkout but adds a small round trip. Pool sizes must be budgeted across every process and replica.
+
+## Connections and transactions
+
+```python
+from sqlalchemy import text
+
+with engine.begin() as connection:
+    connection.execute(text("UPDATE tasks SET status=:status WHERE id=:id"), {"status": "done", "id": task_id})
+```
+
+`engine.begin()` checks out a connection, begins a transaction, commits on success, rolls back on failure, and returns it. Always bind data through parameters. SQL identifiers such as column names cannot be treated as values; map them from an allowlist.
+
+<TypeScriptComparison>
+
+The engine resembles a configured `pg` pool plus dialect behavior. Unlike a singleton query client, an ORM `Session` later adds a unit of work and identity map over connections.
+
+</TypeScriptComparison>
+
+## Pool operational math
+
+If four API workers each allow 15 connections, the application may request 60 database connections before migrations, jobs, and administration. Database limits and proxy behavior determine safe values. Long transactions monopolize connections; leaks exhaust the pool.
+
+<CommonMistake>
+
+Do not create an engine per request. Each engine owns a pool, so this defeats reuse and can flood the database.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Set connection acquisition, statement, and transaction timeouts at appropriate layers. Dispose the engine during graceful shutdown and after process forking where required by the server model.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="sa-engine-1">
+
+Calculate the maximum base pool connections for 6 workers with `pool_size=8`, excluding overflow.
+
+<Solution>
+
+Forty-eight connections. Add migration, worker, and administrative budgets before comparing with the server limit.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-engine-2">
+
+Repair SQL constructed with an interpolated task ID.
+
+<Solution>
+
+Use `text("... WHERE id=:id")` and pass `{"id": task_id}`. For dynamic identifiers, map a public enum to known SQLAlchemy columns.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-engine-3">
+
+What does `pool_pre_ping` solve and not solve?
+
+<Solution>
+
+It detects a dead connection during checkout. It does not retry arbitrary transactions, fix slow queries, or make a connection survive failure mid-transaction.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can distinguish engine, pool, checked-out connection, and transaction and calculate their process-wide database cost.
+
+</Checkpoint>
+
+## Summary
+
+Create one engine per process configuration, borrow connections briefly, parameterize values, and size the aggregate pool against the database—not one worker in isolation.
+

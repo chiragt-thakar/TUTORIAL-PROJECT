@@ -1,0 +1,49 @@
+---
+id: relationships-assignment
+title: "Assignment: Project and Task Query Layer"
+description: Add project membership, relationships, filtered pages, aggregates, and explicit loading.
+module: relationships-queries
+order: 6
+estimatedMinutes: 135
+prerequisites: [rel-cascade]
+learningObjectives:
+  - Model project membership safely
+  - Build stable list queries
+  - Prove query-count behavior
+---
+
+## Scenario
+
+Expand the persistence model to users, projects, memberships, tasks, labels, and assignments without creating hidden queries or cross-project leaks.
+
+<Assignment id="relationships-assignment-work">
+
+## Requirements
+
+Map all relationship types, make membership an association object, implement authorized task filtering, deterministic offset and cursor pages, status aggregates, and explicit loader strategies. Define deletion behavior in writing before configuring cascades.
+
+## Acceptance criteria
+
+1. Foreign keys, nullability, uniqueness, and indexes match the stated cardinality.
+2. Membership role/joined time live on an association object.
+3. Actor visibility is applied inside queries before pagination.
+4. Every list order ends in a unique key.
+5. Aggregates do not double-count joined tasks.
+6. A query-count test prevents N+1 as page size grows.
+7. Project deletion behavior matches both ORM and database configuration.
+
+### Stretch goals
+
+Add optimistic task versions and demonstrate safe conflict handling. Compare offset and cursor query plans with a seeded large table.
+
+<Solution>
+
+Design the relational invariants first, then map them. Build repository statements from required membership predicates and whitelisted filters. Use `selectinload` for collections, `joinedload` for measured scalar cases, and `lazy="raise"` to expose accidental I/O. Count distinct entities after multiplying joins. Keep all mutation steps within the service unit of work.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+The full relational shape and query policy are now established. The next module changes the execution model to async and adds an auditable migration chain without changing API semantics.
+

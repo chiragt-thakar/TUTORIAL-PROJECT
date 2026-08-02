@@ -1,0 +1,122 @@
+---
+id: pydantic-serialization
+title: Serialization and Aliases
+description: Control output, aliases, and public API shapes.
+module: pydantic-foundations
+order: 3
+estimatedMinutes: 40
+prerequisites: [pydantic-nested]
+learningObjectives:
+  - Serialize models safely
+  - Map external and internal names
+---
+
+## Dump for the destination
+
+`model_dump()` returns Python values; `model_dump_json()` returns JSON text. JSON mode converts types such as UUID and datetime into JSON-compatible values.
+
+```python
+payload = task.model_dump(mode="json", exclude_none=True)
+json_text = task.model_dump_json(exclude_none=True)
+```
+
+`exclude_unset=True` is essential for PATCH semantics: it preserves the distinction between a field omitted by the client and one explicitly supplied as `None`. `exclude_defaults` removes values equal to their defaults; it answers a different question.
+
+## Input and output aliases
+
+Aliases translate boundary vocabulary without contaminating internal names.
+
+```python
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+
+class TaskRead(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    task_id: str = Field(
+        validation_alias=AliasChoices("taskId", "id"),
+        serialization_alias="taskId",
+    )
+```
+
+This can accept a legacy `id` or current `taskId`, while emitting one canonical key with `model_dump(by_alias=True)`. Use compatibility aliases during deliberate migrations, not to accept arbitrary spellings forever.
+
+## Response schemas are allowlists
+
+Never serialize database models with `__dict__`. Define response models containing exactly the public fields. Pydantic can validate from attributes with `ConfigDict(from_attributes=True)`, but that does not make ORM objects safe to expose.
+
+```python
+class UserRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    display_name: str
+```
+
+The absence of `password_hash` is a security property. Separate read, create, update, and internal schemas when their fields and permissions differ.
+
+<TypeScriptComparison>
+
+Renaming keys in TypeScript usually requires explicit mapping at runtime. Pydantic aliases integrate parsing, serialization, and generated JSON Schema, but the public wire name still needs intentional stability.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Do not use `exclude_none=True` for PATCH updates when explicit `null` means “clear this field.” Use `exclude_unset=True` and keep supplied `None` values.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Changing serialization aliases is an API change even when Python field names remain stable. Version and test the wire contract, not only the model class.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="pydantic-serialization-1">
+
+A patch model has `description: str | None = None`. Extract only keys the client supplied while preserving explicit `None`.
+
+<Solution>
+
+```python
+changes = patch.model_dump(exclude_unset=True)
+```
+
+Do not add `exclude_none=True` because it would erase the request to clear the description.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-serialization-2">
+
+Accept `projectId` and emit `projectId` while using `project_id` internally.
+
+<Solution>
+
+Declare `project_id: str = Field(alias="projectId")`, enable population by name if internal construction needs it, and dump with `by_alias=True`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-serialization-3">
+
+Explain why a response model is safer than returning an ORM user directly.
+
+<Solution>
+
+It is an explicit public allowlist, validates the response shape, avoids leaking unloaded/internal attributes, and keeps persistence changes from silently changing the API.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can choose Python or JSON dump mode, distinguish unset/default/`None`, and treat aliases as versioned wire-contract decisions.
+
+</Checkpoint>
+
+## Summary
+
+Serialization is boundary design. Dump in the correct mode, preserve PATCH intent, use aliases for controlled translation, and publish dedicated response models rather than object internals.
+

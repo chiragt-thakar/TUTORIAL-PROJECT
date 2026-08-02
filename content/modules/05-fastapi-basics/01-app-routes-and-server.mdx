@@ -1,0 +1,117 @@
+---
+id: api-app-routes
+title: Application, Routes, and Development Server
+description: Create the app, run it, and understand route decorators.
+module: fastapi-basics
+order: 1
+estimatedMinutes: 40
+prerequisites: [pydantic-assignment]
+learningObjectives:
+  - Create a FastAPI app
+  - Register routes
+---
+
+## The ASGI application
+
+`FastAPI()` creates an ASGI callable. An ASGI server such as Uvicorn owns sockets, concurrency, and process lifecycle; FastAPI owns routing, dependency resolution, validation, and response generation.
+
+```python title="src/task_api/main.py"
+from fastapi import FastAPI
+
+app = FastAPI(title="Task API", version="1.0.0")
+
+@app.get("/health")
+async def health() -> dict[str, str]:
+    return {"status": "ok"}
+```
+
+```bash
+uv run fastapi dev src/task_api/main.py
+# or: uv run uvicorn task_api.main:app --reload
+```
+
+The import string means “import `task_api.main`, then retrieve `app`.” The development reloader starts extra process machinery and must not be used in production.
+
+## Route registration
+
+`@app.get(...)` executes at import time and registers the decorated callable plus metadata. The path and method identify an operation. Static routes should be registered before overlapping dynamic routes when ambiguity is possible.
+
+```python
+@app.get("/tasks/me")
+async def my_tasks() -> list[dict]:
+    ...
+
+@app.get("/tasks/{task_id}")
+async def get_task(task_id: str) -> dict:
+    ...
+```
+
+Returning a dictionary or Pydantic model lets FastAPI build a response. This convenience does not remove the need to choose a response schema and status code.
+
+<TypeScriptComparison>
+
+The ASGI server/FastAPI split resembles Node's HTTP runtime plus Express router, but Python module import performs decorator registration. The callable type and generated OpenAPI are derived from runtime annotations.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Do not start Uvicorn at module import. Export `app`; let the command or process manager start it. This keeps tests, migrations, and tooling import-safe.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Use an application factory only when environments or tests truly require multiple differently configured app instances. A simple exported app with explicit lifespan and wiring is easier until then.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="api-app-routes-1">
+
+Add `GET /` returning the service name and semantic version.
+
+<Solution>
+
+```python
+@app.get("/")
+async def root() -> dict[str, str]:
+    return {"name": "task-api", "version": "1.0.0"}
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-app-routes-2">
+
+Explain why `uvicorn src.task_api.main:app` is usually wrong for an installed src-layout package.
+
+<Solution>
+
+`src` is a source directory, not part of the installed package name. Use `task_api.main:app` after installing the project.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-app-routes-3">
+
+A module calls `uvicorn.run(app)` at top level and tests hang during collection. Repair the boundary.
+
+<Solution>
+
+Remove the top-level call and start the server through the CLI. If a script is required, guard it with `if __name__ == "__main__":`.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can identify the responsibilities of the ASGI server, FastAPI application, imported module, and registered operation.
+
+</Checkpoint>
+
+## Summary
+
+Export an import-safe ASGI app, run it through a development server command, and remember that decorators register operations when modules load.
+

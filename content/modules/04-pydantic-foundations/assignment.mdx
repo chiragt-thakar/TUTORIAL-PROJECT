@@ -1,0 +1,67 @@
+---
+id: pydantic-assignment
+title: "Assignment: Validate the Task API Boundary"
+description: Add trusted request, response, and settings models to the cumulative project.
+module: pydantic-foundations
+order: 5
+estimatedMinutes: 70
+prerequisites: [pydantic-settings]
+learningObjectives:
+  - Design separate transport schemas
+  - Validate cross-field rules
+  - Map validated data into domain commands
+---
+
+## Scenario
+
+The service layer is typed, but the future HTTP boundary will receive arbitrary JSON. Add Pydantic schemas without turning them into domain or database models.
+
+<Assignment id="pydantic-assignment-work">
+
+## Requirements
+
+Create `TaskCreate`, `TaskPatch`, `TaskRead`, `PageMeta`, `TaskPage`, and `Settings`. Forbid extra write fields. Normalize task titles, constrain priority, validate due dates, preserve PATCH omission versus explicit `None`, and keep internal fields out of responses.
+
+```text
+src/task_api/
+  api/schemas/tasks.py
+  application/commands.py
+  config.py
+```
+
+## Acceptance criteria
+
+1. Invalid UUIDs and blank titles produce structured validation errors.
+2. A due date cannot precede a supplied start date.
+3. PATCH mapping uses `exclude_unset=True`.
+4. Response models never contain internal notes or authentication data.
+5. Settings use a prefix, typed pool bounds, and a secret database URL.
+6. Mapping into `CreateTask` includes the authenticated actor separately from body data.
+
+### Stretch goals
+
+Add a compatibility input alias for one renamed field and prove output always uses the canonical alias. Generate and inspect JSON Schema for the request model.
+
+<Solution>
+
+A strong solution keeps four boundaries visible: raw input → Pydantic request → application command → domain result → Pydantic response. Use field constraints before validators, an after-model validator for date ordering, and an explicit mapper rather than `CreateTask(**request.model_dump())`. Configure settings once at application composition and override them in tests.
+
+```python
+def to_command(body: TaskCreate, actor_id: UserId) -> CreateTask:
+    return CreateTask(
+        title=body.title,
+        project_id=ProjectId(str(body.project_id)),
+        priority=Priority(body.priority),
+        actor_id=actor_id,
+    )
+```
+
+This mapping prevents future transport-only fields from flowing into the service by accident.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+These schemas become the FastAPI adapter in Module 5. The domain and repository contracts remain unchanged, demonstrating why transport validation belongs at the edge.
+

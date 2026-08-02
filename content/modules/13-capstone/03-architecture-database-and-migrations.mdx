@@ -1,0 +1,50 @@
+---
+id: capstone-build
+title: Architecture, Database, and Migrations
+description: Implement boundaries, PostgreSQL, repositories, and schema history.
+module: capstone
+order: 3
+estimatedMinutes: 180
+prerequisites: [capstone-data]
+learningObjectives: [Implement architecture, Ship migrations]
+---
+
+## Build one vertical slice first
+
+Implement create-and-read task end to end before creating every empty layer. The slice should include schema, route, service policy, domain construction, repository statement, transaction, response mapping, migration, and tests. Repeat its proven structure for projects and membership.
+
+```text
+app/
+  api/routes/       HTTP boundary
+  application/      commands, queries, policy
+  domain/           entities and invariants
+  infrastructure/   SQLAlchemy repositories, security clients
+  db/               ORM mappings, engine, migrations
+  core/             settings, errors, observability
+```
+
+Use one async session per request/unit of work, explicit eager loading, and mapping that never triggers I/O during serialization. Keep migration revisions immutable after sharing; add a new corrective revision instead.
+
+Build schema history incrementally: identity tables, projects/membership, then tasks and indexes. Review upgrade and downgrade and generate the integration-test database from `alembic upgrade head`.
+
+## Common mistakes
+
+Avoid creating all folders before behavior, committing in repositories and services simultaneously, exposing ORM models, and letting `create_all()` replace migration tests.
+
+## Production note
+
+Analyze real list queries and add indexes based on filter/order patterns, then verify with query plans rather than indexing every column.
+
+<Exercise id="cap-build-slice" title="Order a slice">What is the smallest useful task slice?<Solution>An authenticated member creates a valid task and can retrieve it; include denied non-member behavior, persistence, migration, and HTTP tests.</Solution></Exercise>
+
+<Exercise id="cap-build-transaction" title="Set transaction ownership">A service writes task and audit row. Who commits?<Solution>The unit of work wrapping the use case commits both together. Individual repositories only flush/add within that transaction.</Solution></Exercise>
+
+<Exercise id="cap-build-index" title="Design a list index">Tasks filter by project/status and sort newest first. Suggest an index.<Solution>A composite index beginning `(project_id, status, created_at DESC, id DESC)` is a candidate; validate selectivity and query plan with production-like data.</Solution></Exercise>
+
+## Checkpoint
+
+One vertical slice crosses every real boundary, runs from migration-created PostgreSQL, and passes policy, repository, and HTTP tests.
+
+## Summary
+
+Build architecture by repeating proven vertical behavior, not by filling an abstract folder diagram.

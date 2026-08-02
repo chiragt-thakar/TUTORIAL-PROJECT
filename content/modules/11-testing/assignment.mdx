@@ -1,0 +1,47 @@
+---
+id: testing-assignment
+title: "Assignment: Task API Test Suite"
+description: Build a layered test suite with isolated unit, database, API, async, and authorization coverage.
+module: testing
+order: 6
+estimatedMinutes: 160
+prerequisites: [test-async-auth]
+learningObjectives: [Design a maintainable test pyramid, Prove database isolation, Cover permission failures systematically]
+---
+
+<Assignment id="testing-assignment" title="Task API Test Suite">
+
+## Scenario
+
+The Task API works manually, but the team cannot change it confidently. Build a suite that identifies whether a failure belongs to policy, persistence, HTTP wiring, or security.
+
+## Requirements
+
+- Unit-test task creation and completion with fake repositories and a fixed clock.
+- Repository-test constraints, stable pagination, rollback, and relationship loading against PostgreSQL.
+- Route-test validation, success bodies, error envelopes, and secret-field exclusion.
+- Add async request tests and a table-driven authentication/authorization matrix.
+- Create the schema from Alembic history and isolate every test.
+- Document commands for fast unit tests and the full suite.
+
+## Acceptance criteria
+
+- Tests pass in random order and on two consecutive runs.
+- A failed database test leaves no rows for the next test.
+- At least one test detects an N+1 regression or asserts query count/loading policy.
+- The security matrix distinguishes 401, 403, and 404 concealment policy.
+- No test uses live credentials, networks, or wall-clock sleeps.
+
+## Stretch goal
+
+Run safe parallel test workers using a schema or database per worker and report the timing difference.
+
+<Solution>
+Organize tests by unit, repository, and API layers. Compose small fixtures for clocks, identities, database connections, and clients. Use fakes for service policy, PostgreSQL transactions or savepoints for repositories, and dependency overrides for HTTP cases. Generate permission cases from a readable table and include negative token cases.
+</Solution>
+
+## Capstone connection
+
+This suite becomes the capstone's executable acceptance evidence. Keep each layer fast enough to run during development.
+
+</Assignment>

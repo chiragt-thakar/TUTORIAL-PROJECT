@@ -1,0 +1,100 @@
+---
+id: security-rbac
+title: Authorization and Permission Checks
+description: Centralize role and resource-level authorization.
+module: fastapi-advanced
+order: 2
+estimatedMinutes: 50
+prerequisites: [security-oauth]
+learningObjectives:
+  - Implement RBAC
+  - Enforce ownership
+---
+
+## Identity is not permission
+
+Authentication answers who; authorization answers whether that actor may perform this action on this resource now. A global role alone rarely captures project membership and ownership.
+
+```python
+class TaskService:
+    async def complete(self, task_id: TaskId, *, actor: Actor) -> Task:
+        task = await self.tasks.require(task_id)
+        membership = await self.memberships.find(task.project_id, actor.id)
+        if membership is None or not membership.can_edit_tasks:
+            raise ForbiddenError("task.complete")
+        return await self.tasks.save(task.complete(actor.id))
+```
+
+Enforce resource rules in the application service so HTTP, jobs, and scripts share them. A dependency may establish an actor or enforce coarse scopes, but it should not be the only place a resource invariant lives.
+
+## RBAC, permissions, and ownership
+
+Roles bundle permissions for administration: owner, manager, member. Check permissions/actions in application code rather than scattering role-name comparisons. Resource ownership and membership are contextual attributes.
+
+Build an authorization matrix:
+
+| Action | Owner | Manager | Member |
+| --- | --- | --- | --- |
+| Edit project | yes | yes | no |
+| Create task | yes | yes | yes |
+| Delete task | yes | conditional | own only |
+
+Deny by default. Make tenant/project scoping part of repository queries to prevent insecure direct object references.
+
+<CommonMistake>
+
+`GET /tasks/{id}` that loads by ID and only later checks project membership may leak timing or error distinctions. Prefer a query scoped by both task ID and actor-visible project.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Log authorization decisions with actor ID, action, resource type/ID, and result—but not secrets. Test every matrix row and cross-tenant denial.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="security-rbac-1">
+
+Why is `if user.role == "admin"` insufficient for project-level management?
+
+<Solution>
+
+It ignores which project the role applies to and encourages global privilege. Load the actor's membership for the target project and check an action permission.
+
+</Solution>
+</Exercise>
+
+<Exercise id="security-rbac-2">
+
+Design a repository method that prevents cross-project task access.
+
+<Solution>
+
+Accept both `task_id` and an authorized `project_id`/actor constraint and include them in one query. Return absence for rows outside the visible scope.
+
+</Solution>
+</Exercise>
+
+<Exercise id="security-rbac-3">
+
+Choose 403 or 404 for an authenticated user requesting another tenant's task.
+
+<Solution>
+
+Use the application's documented concealment policy—commonly 404—to avoid confirming existence. Apply it consistently; do not reveal a different message or timing path.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can trace an authorization decision from actor to action, resource, membership, policy result, and audited outcome.
+
+</Checkpoint>
+
+## Summary
+
+Use roles to manage permissions, but authorize concrete actions against resource context. Deny by default, scope repository queries, and enforce policy in reusable application services.
+

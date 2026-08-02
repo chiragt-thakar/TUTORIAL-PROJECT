@@ -1,0 +1,125 @@
+---
+id: api-di
+title: Dependency Injection and Caching
+description: Nested dependencies, reuse, and per-request caching.
+module: fastapi-intermediate
+order: 1
+estimatedMinutes: 50
+prerequisites: [fastapi-basics-assignment]
+learningObjectives:
+  - Compose dependencies
+  - Explain caching
+---
+
+## Dependencies are request-time call graphs
+
+A FastAPI dependency is a callable whose result is supplied to another dependency or operation. FastAPI inspects its signature, solves sub-dependencies, validates their inputs, and includes relevant requirements in OpenAPI.
+
+```python
+from typing import Annotated
+from fastapi import Depends
+
+def get_repository() -> TaskRepository:
+    return InMemoryTaskRepository()
+
+def get_task_service(
+    repository: Annotated[TaskRepository, Depends(get_repository)],
+) -> TaskService:
+    return TaskService(repository)
+
+TaskServiceDep = Annotated[TaskService, Depends(get_task_service)]
+
+@router.get("/{task_id}")
+async def get_task(task_id: UUID, service: TaskServiceDep) -> TaskRead:
+    ...
+```
+
+The type alias removes repeated annotation noise without hiding construction. Dependencies are excellent for request context, authentication, transactions, and adapter wiring—not general-purpose service location inside domain code.
+
+## Per-request caching
+
+FastAPI caches a dependency result within one request by default. If two branches require `get_current_user`, it normally runs once for that dependency key. This shares request-scoped objects such as a session and avoids repeated token decoding.
+
+Use `Depends(dependency, use_cache=False)` only when every occurrence must execute independently. Caching is not cross-request storage and does not replace `lru_cache` for immutable application configuration.
+
+## Parameterized dependencies
+
+Callable objects can carry configuration while remaining inspectable:
+
+```python
+class RequirePermission:
+    def __init__(self, permission: str) -> None:
+        self.permission = permission
+
+    def __call__(self, user: CurrentUser) -> None:
+        if self.permission not in user.permissions:
+            raise ForbiddenError(self.permission)
+
+require_task_write = RequirePermission("task:write")
+```
+
+<TypeScriptComparison>
+
+Unlike a NestJS-style container, FastAPI DI is primarily a graph of callables declared in signatures. There is no need for global reflection metadata or decorator-based class registration.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Returning a new in-memory repository from every request loses prior data. Construction scope must match state ownership; later, database sessions are request-scoped while the engine and session factory are application-scoped.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Dependency overrides make testing convenient, but production dependencies should remain explicit enough that you can trace which session, identity, and service each operation receives.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="api-di-1">
+
+Create an `Annotated` alias for a current user dependency.
+
+<Solution>
+
+```python
+CurrentUserDep = Annotated[CurrentUser, Depends(get_current_user)]
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-di-2">
+
+Two dependencies both require the same database session. How many sessions should the default graph create?
+
+<Solution>
+
+One per request because dependency results are cached by default. Both branches receive the same yielded session when they reference the same dependency configuration.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-di-3">
+
+Where should a permission dependency stop and service authorization begin?
+
+<Solution>
+
+The dependency may establish identity and coarse permission. Resource ownership and state-dependent rules belong in the application service so every adapter enforces them, not only HTTP.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can draw the dependency graph for one route and identify which nodes are cached, request-scoped, or application-scoped.
+
+</Checkpoint>
+
+## Summary
+
+FastAPI DI is explicit request-time composition. Use it for adapters and context, rely on per-request caching deliberately, and keep business authorization in reusable application code.
+

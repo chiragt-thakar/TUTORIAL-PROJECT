@@ -1,0 +1,132 @@
+---
+id: pydantic-nested
+title: Nested Models and Validation
+description: Compose models and enforce cross-field invariants.
+module: pydantic-foundations
+order: 2
+estimatedMinutes: 45
+prerequisites: [pydantic-models]
+learningObjectives:
+  - Compose nested models
+  - Write field and model validators
+---
+
+## Validation follows the object graph
+
+Nested Pydantic models validate recursively and produce precise error locations. Model reusable value shapes instead of leaving inner dictionaries untyped.
+
+```python
+from pydantic import BaseModel, Field
+
+class AssigneeInput(BaseModel):
+    user_id: str
+    display_name: str = Field(min_length=1)
+
+class TaskCreate(BaseModel):
+    title: str
+    assignees: list[AssigneeInput] = Field(default_factory=list)
+```
+
+Use `default_factory` for lists, dictionaries, timestamps, and generated IDs. It runs per model instance and states intent even though Pydantic protects many mutable defaults.
+
+## Field and model validators
+
+A field validator normalizes or validates one field. A model validator handles relationships between fields. Prefer built-in constraints first because they produce standard schema and errors.
+
+```python
+from datetime import datetime
+from typing import Self
+from pydantic import BaseModel, field_validator, model_validator
+
+class TaskWindow(BaseModel):
+    title: str
+    starts_at: datetime | None = None
+    due_at: datetime | None = None
+
+    @field_validator("title")
+    @classmethod
+    def normalize_title(cls, value: str) -> str:
+        value = value.strip()
+        if not value:
+            raise ValueError("title cannot be blank")
+        return value
+
+    @model_validator(mode="after")
+    def due_after_start(self) -> Self:
+        if self.starts_at and self.due_at and self.due_at < self.starts_at:
+            raise ValueError("due_at must not precede starts_at")
+        return self
+```
+
+Before validators see raw input and are easy to overuse. After validators operate on typed fields and are usually safer for cross-field rules. Validators should be deterministic: no database calls, HTTP calls, or current-user authorization.
+
+<TypeScriptComparison>
+
+Nested TypeScript interfaces preserve static shapes only. Pydantic recursively constructs nested runtime models and reports locations such as `assignees.2.user_id`, similar to a schema-validation library.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Do not check whether an assignee exists in the database inside a model validator. That couples parsing to I/O, complicates async execution, and turns validation errors into stale authorization decisions. Put it in the service layer.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Normalize only when the contract promises normalization. Lowercasing an email may be appropriate; lowercasing a case-sensitive external identifier silently corrupts data.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="pydantic-nested-1">
+
+Model a task with a list of labels where every label has a non-empty `name` and optional six-digit hex `color`.
+
+<Solution>
+
+```python
+class LabelInput(BaseModel):
+    name: str = Field(min_length=1)
+    color: str | None = Field(default=None, pattern=r"^#[0-9a-fA-F]{6}$")
+
+class TaskInput(BaseModel):
+    labels: list[LabelInput] = Field(default_factory=list)
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-nested-2">
+
+Reject a task whose `completed_at` is set while status is not `done`.
+
+<Solution>
+
+Use an after model validator, compare the typed fields, raise `ValueError` on the invalid combination, and return `self` otherwise.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-nested-3">
+
+Why is `assignees: list[dict[str, object]]` weaker than a nested model?
+
+<Solution>
+
+It validates only that each item is a dictionary. It does not require named keys, construct typed values, produce a useful JSON Schema, or give precise inner-field errors.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can decide whether an invariant belongs to a built-in constraint, field validator, model validator, or service operation.
+
+</Checkpoint>
+
+## Summary
+
+Nested models make object graphs explicit. Use factories for per-instance defaults, standard constraints for simple rules, and after-model validators for deterministic relationships between typed fields.
+

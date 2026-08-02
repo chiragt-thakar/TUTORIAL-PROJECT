@@ -1,0 +1,69 @@
+---
+id: reliability-ci
+title: CI Quality Gates and Supply-Chain Hygiene
+description: Make validation reproducible without performing deployment.
+module: reliability-caching-jobs
+order: 7
+estimatedMinutes: 45
+prerequisites: [reliability-performance]
+learningObjectives: [Design a CI pipeline, Protect dependencies and secrets]
+---
+
+## CI repeats the project contract
+
+Continuous integration should execute the same documented commands developers run locally. A useful Python backend pipeline checks formatting/linting, static types, unit tests, migration-created PostgreSQL integration tests, API/security cases, and image construction if containers are part of the deliverable.
+
+```text
+install locked dependencies
+lint and type-check
+run fast unit tests
+start isolated PostgreSQL/Redis services
+alembic upgrade head
+run integration and API tests
+build the local container artifact
+```
+
+Fail fast on cheap checks, but preserve enough test output to diagnose failures. Cache downloaded packages, not mutable virtual environments or test databases whose hidden state harms reproducibility. Pin the Python version and dependency lockfile.
+
+## Protect the supply chain
+
+Keep workflow permissions minimal, pin third-party actions/tools to trusted immutable versions, review automated dependency updates, and scan direct/transitive dependencies and container packages. A scanner finding is a triage input: consider exploitability and available fix rather than blindly suppressing or blocking forever.
+
+CI receives test-only credentials through its secret mechanism. Forked/untrusted changes must not gain production secrets. Prevent logs, test reports, and artifacts from capturing tokens or `.env` files.
+
+## No deployment in this course task
+
+The pipeline ends after validation and local artifact construction. It does not publish images, create infrastructure, change DNS, or deploy the learning site or capstone.
+
+## Production note
+
+Protect the main branch with required checks and code review, but keep the fast feedback path short enough that developers do not bypass it.
+
+<Exercise id="ci-order" title="Order the pipeline">
+Why run lint/type checks before database integration tests?
+<Solution>
+They are cheap and catch failures without provisioning services. Integration tests remain required, but ordering improves feedback and resource use.
+</Solution>
+</Exercise>
+
+<Exercise id="ci-secret" title="Review a pull request workflow">
+Should an untrusted fork receive a real package or cloud token?
+<Solution>
+No. Run untrusted code without privileged secrets. Use tightly controlled trusted workflows for any privileged action, which is outside this local-only course implementation.
+</Solution>
+</Exercise>
+
+<Exercise id="ci-migrations" title="Prove schema history">
+Why run Alembic instead of `Base.metadata.create_all()` in CI?
+<Solution>
+Users apply the migration history, so CI must prove that history creates the expected schema. `create_all()` checks only current model metadata and can hide broken revisions.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can order repeatable quality gates, isolate service dependencies, and state how workflow code, dependencies, artifacts, and secrets are protected.
+
+## Summary
+
+CI makes local quality evidence reproducible. It earns trust through locked inputs, realistic migrations/tests, minimal privilege, and clear failure output.

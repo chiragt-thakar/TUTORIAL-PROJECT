@@ -1,0 +1,52 @@
+---
+id: reliability-assignment
+title: "Assignment: Reliable Task Notifications"
+description: Add cached reads and durable task-notification jobs with failure and performance evidence.
+module: reliability-caching-jobs
+order: 8
+estimatedMinutes: 170
+prerequisites: [reliability-ci]
+learningObjectives: [Integrate Redis and a worker, Prove idempotency and recovery, Automate quality evidence]
+---
+
+<Assignment id="reliability-assignment" title="Reliable Task Notifications">
+
+## Scenario
+
+Project task lists are repeatedly read, and due-task reminders must survive restarts without sending duplicate messages. Extend the local capstone with Redis and a durable worker.
+
+## Requirements
+
+- Add a lifespan-owned Redis client with strict timeouts and a documented unavailable mode.
+- Cache one measured project-task read using versioned, permission-safe keys, bounded TTL, invalidation, and stampede protection.
+- Persist a reminder/outbox event in the same transaction as the task change.
+- Relay events to a durable local queue and process them with a separately runnable worker.
+- Make the handler idempotent and use bounded retry/backoff with terminal failure handling.
+- Add dependency HTTP timeouts/concurrency limits if the notification adapter performs outbound calls.
+- Record a small local load test comparing uncached, warm-cache, and Redis-unavailable behavior.
+- Add a CI definition that runs quality checks and integration tests but performs no deployment.
+
+## Acceptance criteria
+
+- Database data remains authoritative and the endpoint remains correct when Redis is unavailable.
+- Cache keys cannot mix tenants, roles, filter variants, or serialized schema versions.
+- Updating a task cannot leave stale cached data beyond the documented consistency window.
+- A crash after message delivery and before acknowledgement does not duplicate the logical notification.
+- Transient failures retry within a fixed attempt/time budget; permanent failures do not loop.
+- Queue age, retries, failures, cache hits/misses, and dependency latency are observable.
+- Tests prove duplicate delivery, transaction rollback, invalidation failure, worker restart, and overload behavior.
+- The local quality pipeline passes without publishing or deploying anything.
+
+## Stretch goal
+
+Implement stale-while-revalidate for the task-list projection and prove only one refresh runs during a concurrent expiry burst.
+
+<Solution>
+Keep PostgreSQL as source of truth. Cache only a permission-safe read model using cache-aside and delete-after-commit, backed by TTL and optional outbox invalidation. The task transaction writes a versioned outbox event; a relay publishes with stable identity; an idempotent worker claims the event outcome and uses bounded retries. Shared Redis/HTTP clients are lifespan resources with connection limits. Tests inject crashes at every dual-write boundary and the load report includes tail latency and downstream load—not only cache hit ratio.
+</Solution>
+
+## Capstone extension
+
+This assignment adds the reliability layer intentionally left out of the core capstone. Stop after the acceptance evidence passes; do not add brokers or distributed patterns without a measured need.
+
+</Assignment>

@@ -1,0 +1,77 @@
+---
+id: advanced-asyncio
+title: asyncio Task Groups and Cancellation
+description: Structure concurrent I/O and clean it up correctly.
+module: advanced-python-backends
+order: 4
+estimatedMinutes: 65
+prerequisites: [advanced-values]
+learningObjectives: [Use structured concurrency, Handle cancellation and timeouts]
+---
+
+## A coroutine is not running work
+
+Calling an `async def` function creates a coroutine object. It runs when awaited or scheduled as a task. The event loop switches tasks when they await operations that can pause.
+
+Concurrency helps independent I/O overlap. It does not make CPU-heavy Python code faster, and it does not increase database or API capacity.
+
+```python
+async def load_dashboard(project_id: UUID):
+    async with asyncio.TaskGroup() as group:
+        tasks_job = group.create_task(load_tasks(project_id))
+        members_job = group.create_task(load_members(project_id))
+    return Dashboard(tasks=tasks_job.result(), members=members_job.result())
+```
+
+`TaskGroup` gives related tasks one lifetime. Exiting waits for all of them. If one fails, the group cancels the remaining tasks and raises the grouped failure. This is easier to reason about than detached “fire-and-forget” work.
+
+## Cancellation is a cleanup request
+
+Cancellation appears at an `await`. Use `try/finally` or async context managers so leases, responses, and other resources close. Do not broadly catch `BaseException` or suppress `CancelledError` unless you complete cleanup and deliberately propagate cancellation.
+
+```python
+async def use_lease(lease):
+    try:
+        await perform_work()
+    finally:
+        await lease.release()
+```
+
+Timeouts cancel the work inside their scope. A timeout therefore needs the same cancellation-safe cleanup as client disconnect or process shutdown.
+
+## Bound fan-out
+
+Creating one task per user-controlled item can exhaust connections and memory. Use a semaphore, worker pool, or bounded batches. Ensure the downstream HTTP and database pools agree with the concurrency limit.
+
+## Production note
+
+Give important tasks names and trace IDs. Log cancellation as an expected outcome when a client disconnects or deadline expires, not automatically as an application error.
+
+<Exercise id="asyncio-coroutine" title="Find the missing execution">
+Code calls `save_task(command)` without `await`. What value does it receive?
+<Solution>
+It receives a coroutine object. The function body has not completed and may never start. Await it or schedule it within an owned task group.
+</Solution>
+</Exercise>
+
+<Exercise id="asyncio-cancel" title="Preserve cleanup">
+A timeout occurs while holding a lease. Where should release logic live?
+<Solution>
+Put it in `finally` or an async context manager surrounding the awaited work. The cleanup should be idempotent and cancellation-aware.
+</Solution>
+</Exercise>
+
+<Exercise id="asyncio-fanout" title="Bound 10,000 calls">
+Why is `gather(*(fetch(x) for x in ids))` risky, and what replaces it?
+<Solution>
+It creates 10,000 tasks and can overwhelm sockets, memory, and the dependency. Use bounded workers, batches, or a semaphore sized from real downstream capacity.
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You can explain coroutine versus task, use one task group for related work, and trace timeout/cancellation cleanup.
+
+## Summary
+
+Structured concurrency keeps child work inside an owner. Bounds and cancellation-safe cleanup make that concurrency reliable.

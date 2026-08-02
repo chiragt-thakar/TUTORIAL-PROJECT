@@ -1,0 +1,107 @@
+---
+id: api-async
+title: Sync, Async, and Blocking Work
+description: Choose endpoints and prevent event-loop stalls.
+module: fastapi-intermediate
+order: 3
+estimatedMinutes: 50
+prerequisites: [api-yield]
+learningObjectives:
+  - Explain coroutine scheduling
+  - Isolate blocking work
+---
+
+## Async is cooperative waiting
+
+Calling an `async def` function creates a coroutine; `await` lets that coroutine pause while an awaitable completes. The event loop can then run other tasks. It cannot preempt arbitrary Python code.
+
+```python
+@router.get("/{task_id}")
+async def get_task(task_id: UUID, service: AsyncTaskServiceDep) -> TaskRead:
+    task = await service.get(TaskId(str(task_id)))
+    return TaskRead.model_validate(task, from_attributes=True)
+```
+
+Use `async def` when the libraries you call expose awaitable I/O. A synchronous path operation declared with `def` is run by FastAPI in a thread pool. But a blocking function called directly inside your own `async def` runs on the event-loop thread and blocks other requests.
+
+## Choose from the deepest I/O boundary
+
+- Async database/HTTP client: use `async def` and `await` through the call chain.
+- Synchronous blocking library: use a normal `def` operation or explicitly run the blocking call in a worker thread.
+- CPU-heavy work: use a process/job system; threads do not make Python CPU work scale predictably.
+
+```python
+from anyio import to_thread
+
+result = await to_thread.run_sync(blocking_pdf_parser, payload)
+```
+
+Do not add `async` to pure functions. Call them normally from async code. `await` is only for awaitables.
+
+<TypeScriptComparison>
+
+JavaScript promises and Python coroutines both enable cooperative I/O, but Python `async def` does not execute until awaited or scheduled. A blocking Python library remains blocking even inside an async function.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+`async def endpoint(): time.sleep(2)` freezes the event loop thread. Use `await asyncio.sleep(2)` for an async wait or isolate a genuinely blocking library.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Concurrency amplifies downstream pressure. Bound fan-out, configure client and pool limits, use timeouts, and avoid launching unbounded `gather()` calls from user-controlled input.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="api-async-1">
+
+Classify `requests.get`, `httpx.AsyncClient.get`, and password hashing inside an async endpoint.
+
+<Solution>
+
+`requests.get` is blocking and must be replaced or moved to a thread. `AsyncClient.get` is awaited. Password hashing is CPU-expensive blocking work and should run in a bounded worker thread/process according to the hashing library and load profile.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-async-2">
+
+Why does merely changing `def repository_call` to `async def` not make a synchronous driver non-blocking?
+
+<Solution>
+
+The driver still performs blocking I/O on the calling thread. Async behavior requires an awaitable driver or explicit isolation.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-async-3">
+
+You must call a legacy synchronous SDK from an async service. Show the safe call shape.
+
+<Solution>
+
+```python
+result = await anyio.to_thread.run_sync(lambda: sdk.fetch(task_id))
+```
+
+Also bound concurrency and apply a timeout around the operation.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can inspect every I/O call on a route and state whether it awaits, uses FastAPI's thread pool, blocks the loop, or belongs in a job worker.
+
+</Checkpoint>
+
+## Summary
+
+Async improves concurrency only when waiting is cooperative. Match the endpoint to its libraries, isolate blocking calls deliberately, and treat CPU-heavy or unbounded work as a separate capacity problem.
+

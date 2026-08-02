@@ -1,0 +1,55 @@
+---
+id: test-unit
+title: Unit Tests and Mocking
+description: Test services without reproducing framework internals.
+module: testing
+order: 2
+estimatedMinutes: 50
+prerequisites: [test-pytest]
+learningObjectives: [Isolate units, Mock at boundaries]
+---
+
+## Isolate policy, not syntax
+
+A service unit test replaces slow or external boundaries with simple fakes:
+
+```python
+class FakeTasks:
+    def __init__(self): self.saved = []
+    async def add(self, task): self.saved.append(task)
+
+async def test_create_saves_new_task():
+    repo = FakeTasks()
+    result = await CreateTask(repo).execute(title="Ship")
+    assert repo.saved == [result]
+```
+
+Prefer a stateful fake when behavior matters. Use a mock when verifying a specific interaction is the contract. Patch where a name is looked up, not where it originally came from:
+
+```python
+monkeypatch.setattr("app.services.notifications.send", fake_send)
+```
+
+Do not mock Pydantic, FastAPI, or SQLAlchemy internals. Their integration belongs in narrower integration tests. Over-mocking produces a second imaginary application that can pass while production wiring fails.
+
+## TypeScript comparison
+
+The boundary is similar to injecting a Jest mock through a constructor, but Python protocols and duck typing make a tiny handwritten fake especially effective.
+
+## Production note
+
+Inject clocks, ID generators, and external clients. Deterministic seams improve both tests and operational control.
+
+<Exercise id="unit-clock" title="Remove wall-clock dependence">A service calls `datetime.now()` directly. Make it testable.<Solution>Inject a callable or `Clock` protocol and use `clock.now()`; the test supplies a fixed clock.</Solution></Exercise>
+
+<Exercise id="unit-patch-location" title="Patch the correct name">`service.py` imports `send_email` from `mailer`. Which name should be patched?<Solution>Patch `service.send_email` (its full module path), because that is where execution looks up the bound name.</Solution></Exercise>
+
+<Exercise id="unit-fake-or-mock" title="Choose a test double">You need to prove tasks can be retrieved after saving. Fake or mock?<Solution>Use an in-memory fake repository because state and retrieval behavior are central. A mock call assertion would not prove the result can be read.</Solution></Exercise>
+
+## Checkpoint
+
+You can identify a unit boundary, inject nondeterminism, and choose a fake, stub, or mock for a stated reason.
+
+## Summary
+
+Unit tests protect business decisions. Replace true boundaries and leave library internals to their maintainers.

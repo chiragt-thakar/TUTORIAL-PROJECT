@@ -1,0 +1,66 @@
+---
+id: fastapi-basics-assignment
+title: "Assignment: Task API HTTP Adapter"
+description: Expose task creation, retrieval, listing, and completion through FastAPI.
+module: fastapi-basics
+order: 6
+estimatedMinutes: 110
+prerequisites: [api-openapi]
+learningObjectives:
+  - Build a router around the service layer
+  - Publish accurate schemas and status codes
+  - Verify the OpenAPI contract
+---
+
+## Scenario
+
+Expose the existing TaskService through a versioned HTTP API while keeping HTTP knowledge out of the domain and service layers.
+
+<Assignment id="fastapi-basics-assignment-work">
+
+## Requirements
+
+Implement create, retrieve, list, complete, and delete operations under `/api/v1/tasks`. Use request/response models, UUID path parameters, bounded pagination, semantic status codes, and safe not-found translation.
+
+```text
+src/task_api/
+  main.py
+  api/routers/tasks.py
+  api/schemas/tasks.py
+  api/errors.py
+```
+
+## Acceptance criteria
+
+1. `POST /api/v1/tasks` returns 201, a `TaskRead`, and `Location`.
+2. Retrieve returns 404 with a stable safe error body when absent.
+3. List uses `limit` 1–100 and non-negative `offset`.
+4. Complete returns the updated task; delete returns 204 without JSON.
+5. Internal fields never appear in responses.
+6. `/openapi.json` contains all five operations with intentional operation IDs.
+
+### Stretch goals
+
+Add optimistic-version input through `If-Match`, document 409 conflicts, and write one schema snapshot test.
+
+<Solution>
+
+Keep route functions thin: translate validated transport values into service commands, call the service, then construct response models. Register one exception handler for task absence. Mount one tasks router with `/api/v1` at the app composition root. Inspect the generated schema rather than assuming annotations created the intended contract.
+
+```python
+@router.post("", response_model=TaskRead, status_code=201, operation_id="createTask")
+async def create_task(body: TaskCreate, response: Response) -> TaskRead:
+    task = service.create(to_command(body, actor_id=SYSTEM_USER))
+    response.headers["Location"] = f"/api/v1/tasks/{task.id}"
+    return TaskRead.model_validate(task, from_attributes=True)
+```
+
+Module 6 will replace module-level service access with dependencies and introduce lifecycle-safe resources.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+This is the first real HTTP adapter for the cumulative API. Its paths and response contracts become the baseline that later authentication, persistence, and tests must preserve.
+

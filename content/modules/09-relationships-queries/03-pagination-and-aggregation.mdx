@@ -1,0 +1,103 @@
+---
+id: rel-pages
+title: Pagination and Aggregation
+description: Return stable pages and computed data.
+module: relationships-queries
+order: 3
+estimatedMinutes: 45
+prerequisites: [rel-query]
+learningObjectives:
+  - Paginate safely
+  - Aggregate data
+---
+
+## Offset queries
+
+```python
+items = session.scalars(stmt.limit(limit).offset(offset)).all()
+total = session.scalar(select(func.count()).select_from(stmt.order_by(None).subquery()))
+```
+
+Keep the count's filters and authorization identical to the item query. Remove irrelevant order before counting. Exact counts can dominate latency, so return them only when the product needs them.
+
+## Keyset queries
+
+For descending `(created_at, id)` ordering, the next page selects rows below the last pair:
+
+```python
+stmt = stmt.where(
+    tuple_(TaskModel.created_at, TaskModel.id) < tuple_(cursor.created_at, cursor.id)
+).order_by(TaskModel.created_at.desc(), TaskModel.id.desc()).limit(limit + 1)
+```
+
+Fetch one extra row to determine `has_more`; encode the last visible key in an opaque, validated cursor. Null sort fields need explicit ordering semantics.
+
+## Aggregates without duplication
+
+Joins can multiply rows. Counting tasks after joining labels may count one task several times. Use `count(distinct(TaskModel.id))`, a subquery, or aggregate the child table separately depending on the intended metric.
+
+```python
+stmt = (
+    select(TaskModel.status, func.count(TaskModel.id))
+    .where(TaskModel.project_id == project_id)
+    .group_by(TaskModel.status)
+)
+```
+
+<CommonMistake>
+
+Do not compute page metadata by loading every matching entity and calling `len`. The database should aggregate, and the item page should stay bounded.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Cursor tokens should be tamper-evident or fully validated. Never deserialize arbitrary Python objects from client cursors.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="rel-pages-1">
+
+Why fetch `limit + 1` rows for cursor pagination?
+
+<Solution>
+
+The extra row proves another page exists without an exact count. Return only the first `limit` and build the cursor from the last returned row.
+
+</Solution>
+</Exercise>
+
+<Exercise id="rel-pages-2">
+
+Count unique tasks after joining their labels.
+
+<Solution>
+
+Use `func.count(func.distinct(TaskModel.id))` or count from a subquery of unique task IDs.
+
+</Solution>
+</Exercise>
+
+<Exercise id="rel-pages-3">
+
+What must a cursor include for `due_at ASC NULLS LAST, id ASC`?
+
+<Solution>
+
+It must encode enough state to reproduce null positioning plus the due date and unique ID tie-breaker. Simpler APIs may forbid nullable cursor sort fields.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can choose offset/count or keyset/has-more and prevent joins from corrupting aggregate meaning.
+
+</Checkpoint>
+
+## Summary
+
+Pagination depends on deterministic order and consistent visibility filters. Aggregate in the database, account for join multiplicity, and avoid expensive totals when continuation is sufficient.
+

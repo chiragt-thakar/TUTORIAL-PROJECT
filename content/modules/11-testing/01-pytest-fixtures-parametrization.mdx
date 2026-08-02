@@ -1,0 +1,57 @@
+---
+id: test-pytest
+title: pytest, Fixtures, and Parametrization
+description: Test discovery, assertions, fixtures, and focused cases.
+module: testing
+order: 1
+estimatedMinutes: 50
+prerequisites: [async-alembic-assignment]
+learningObjectives: [Write pytest tests, Compose fixtures]
+---
+
+## Tests describe observable behavior
+
+Use arrange-act-assert and name the condition and result:
+
+```python
+def test_complete_rejects_an_already_completed_task():
+    task = Task(title="Ship", completed=True)
+    with pytest.raises(AlreadyCompleted):
+        task.complete()
+```
+
+Fixtures supply reusable state through dependency injection. Keep them small and return values rather than hiding assertions or many unrelated setup steps.
+
+```python
+@pytest.fixture
+def task() -> Task:
+    return Task(title="Ship")
+```
+
+Parametrization expresses the same rule over multiple cases:
+
+```python
+@pytest.mark.parametrize(("title", "valid"), [("Write", True), ("", False), ("   ", False)])
+def test_title_rule(title, valid):
+    assert Task.is_valid_title(title) is valid
+```
+
+Common mistakes are fixture chains nobody can read, mutable session-scoped state, tests that verify implementation details, and one test containing several behaviors.
+
+## Production note
+
+Tests must be deterministic: freeze time or inject a clock, seed randomness, and never depend on execution order.
+
+<Exercise id="pytest-naming" title="Improve a test name">Rename `test_task_1` for the rule that blank titles are rejected.<Solution>`test_create_task_rejects_blank_title` states the action, condition, and expected outcome.</Solution></Exercise>
+
+<Exercise id="pytest-fixture" title="Extract a fixture">Create a project fixture reused by membership tests.<Solution>Define `@pytest.fixture def project(): return Project(name="API")`; each test receives a fresh function-scoped object.</Solution></Exercise>
+
+<Exercise id="pytest-params" title="Parametrize priorities">Test that 1 and 5 pass while 0 and 6 fail.<Solution>Parametrize `(value, expected)` and assert the validator result, or split valid and invalid cases when exceptions differ.</Solution></Exercise>
+
+## Checkpoint
+
+You can write focused tests, choose fixture scope deliberately, and replace repetitive examples with readable parametrization.
+
+## Summary
+
+Good pytest suites are explicit specifications made economical by small fixtures and meaningful case tables.
