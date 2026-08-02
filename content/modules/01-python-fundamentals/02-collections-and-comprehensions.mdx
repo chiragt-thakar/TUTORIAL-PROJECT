@@ -1,0 +1,145 @@
+---
+id: py-collections
+title: Collections and Comprehensions
+description: Choose and transform lists, tuples, sets, and dictionaries with backend-oriented examples.
+module: python-fundamentals
+order: 2
+estimatedMinutes: 40
+prerequisites: [py-runtime]
+learningObjectives:
+  - Select collections by semantics
+  - Write readable comprehensions
+  - Avoid aliasing bugs
+---
+
+## Choose by invariant
+
+A `list` is ordered and mutable; use it for sequences whose membership changes. A `tuple` is ordered and immutable; it communicates a fixed record or return grouping. A `set` stores unique hashable values and makes membership checks efficient. A `dict` maps unique hashable keys to values and preserves insertion order.
+
+```python
+tasks = ["design", "build", "test"]
+coordinate = (12.4, 77.6)
+permissions = {"task:read", "task:write"}
+tasks_by_id = {"t-1": {"title": "Design schema"}}
+```
+
+Hashability usually requires stable equality and hash behavior. Lists and dictionaries are not hashable; strings, integers, and tuples of hashable values are. Do not use a set when order carries domain meaning.
+
+<TypeScriptComparison>
+
+Python's `dict` is closer to JavaScript's `Map` in intent, but string-keyed object literals often look similar. Python sets and dictionaries accept only hashable keys; equality and `__hash__` participate in lookup.
+
+</TypeScriptComparison>
+
+## Transformations and unpacking
+
+Comprehensions combine transformation and filtering without a callback boundary:
+
+```python
+open_titles = [
+    task["title"].strip()
+    for task in tasks
+    if task["status"] == "open"
+]
+
+counts_by_status = {
+    status: sum(task["status"] == status for task in tasks)
+    for status in {task["status"] for task in tasks}
+}
+```
+
+Use a loop when there are multiple state changes, logging, exception branches, or a long expression. Comprehensions should expose one transformation and an optional filter.
+
+Unpacking creates shallow containers: `copy = [*items]`, `merged = {**defaults, **overrides}`. Nested mutable objects remain shared. For domain models, prefer explicit construction over indiscriminate `deepcopy`, which can conceal ownership mistakes.
+
+## Collection tools for backend code
+
+`enumerate(items, start=1)` supplies stable display positions. `zip(ids, values, strict=True)` catches length mismatches. `sorted(items, key=lambda item: item.created_at)` returns a new list. `collections.defaultdict` and `Counter` express grouping and counting, but convert them to ordinary dictionaries at serialization boundaries if that keeps the contract clearer.
+
+```python
+from collections import defaultdict
+
+by_project: dict[str, list[dict]] = defaultdict(list)
+for task in tasks:
+    by_project[task["project_id"]].append(task)
+```
+
+<CommonMistake>
+
+`rows = [[]] * 3` repeats one inner-list reference. Appending to one row changes all three. Use `[[] for _ in range(3)]` to create three objects.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Collection choice affects query and API semantics. A set may be correct internally for permission checks but must become a deterministically sorted list before JSON serialization or snapshot testing.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="py-collections-1">
+
+Given task dictionaries, build a set of unique non-empty, lowercased labels in one readable comprehension.
+
+<Solution>
+
+```python
+labels = {
+    label.strip().lower()
+    for task in tasks
+    for label in task.get("labels", [])
+    if label.strip()
+}
+```
+
+The second `for` flattens each task's labels; the final condition rejects empty normalized values.
+
+</Solution>
+</Exercise>
+
+<Exercise id="py-collections-2">
+
+Fix the aliasing bug in `defaults = {"tags": []}; records = [defaults] * 5` so each record owns its tag list.
+
+<Solution>
+
+```python
+records = [{"tags": []} for _ in range(5)]
+```
+
+The expression creates a new dictionary and list on every iteration.
+
+</Solution>
+</Exercise>
+
+<Exercise id="py-collections-3">
+
+Build `tasks_by_id` from tasks and reject duplicate IDs instead of silently overwriting them.
+
+<Solution>
+
+```python
+tasks_by_id = {}
+for task in tasks:
+    task_id = task["id"]
+    if task_id in tasks_by_id:
+        raise ValueError(f"duplicate task id: {task_id}")
+    tasks_by_id[task_id] = task
+```
+
+A loop makes the invariant and failure branch clearer than a comprehension.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can justify a list, tuple, set, or dictionary from the domain invariant—not habit—and recognize when a comprehension has become harder to review than a loop.
+
+</Checkpoint>
+
+## Summary
+
+Python collections encode ordering, uniqueness, mutability, and lookup behavior. Comprehensions are excellent for one clear transformation; explicit loops win when the work carries state or failure semantics.
+

@@ -1,0 +1,118 @@
+---
+id: py-assignment
+title: "Assignment: In-Memory Task Repository"
+description: Create domain objects and a reliable in-memory repository for the cumulative Task API.
+module: python-fundamentals
+order: 6
+estimatedMinutes: 45
+prerequisites: [py-context]
+learningObjectives:
+  - Model backend state with Python objects
+  - Enforce repository invariants
+  - Connect this increment to the capstone
+---
+
+## Scenario
+
+The future Task Management API needs a domain core before it needs HTTP or PostgreSQL. Build a small in-memory repository that makes object ownership, errors, and collection behavior explicit.
+
+<Assignment id="py-assignment-work">
+
+## Requirements
+
+Create `Task`, `TaskStatus`, `TaskNotFoundError`, and `InMemoryTaskRepository`. A task has an immutable string ID, title, status, tuple of tags, and aware UTC creation time. The repository must create, retrieve, list, update status, and delete tasks. It must not expose its internal dictionary or let a caller mutate stored tags through an alias.
+
+Suggested structure:
+
+```text
+task_api/
+  __init__.py
+  domain.py
+  errors.py
+  repository.py
+tests/
+  test_repository.py
+```
+
+## Acceptance criteria
+
+1. Creating a task normalizes surrounding title whitespace and rejects an empty title.
+2. IDs are unique and created with `uuid.uuid4()`.
+3. Retrieval of an unknown ID raises `TaskNotFoundError` with exception chaining where appropriate.
+4. Listing can optionally filter by status and returns creation order.
+5. Updating a status does not mutate unrelated fields.
+6. At least four focused assertions demonstrate the behavior.
+
+## Hints
+
+Use a frozen, slotted dataclass, a `StrEnum`, and a dictionary keyed by ID. Returning immutable domain values makes repository ownership simpler. Keep persistence and HTTP concepts out of this increment.
+
+### Stretch goals
+
+Add label filtering and an iterator that yields tasks in fixed-size batches. Decide whether duplicate normalized titles are legal and document the decision.
+
+<Solution>
+
+A reference outline:
+
+```python
+from dataclasses import dataclass, replace
+from datetime import UTC, datetime
+from enum import StrEnum
+from uuid import uuid4
+
+class TaskStatus(StrEnum):
+    OPEN = "open"
+    DONE = "done"
+
+@dataclass(frozen=True, slots=True)
+class Task:
+    id: str
+    title: str
+    status: TaskStatus
+    tags: tuple[str, ...]
+    created_at: datetime
+
+class TaskNotFoundError(Exception):
+    pass
+
+class InMemoryTaskRepository:
+    def __init__(self) -> None:
+        self._tasks: dict[str, Task] = {}
+
+    def create(self, title: str, *, tags: tuple[str, ...] = ()) -> Task:
+        title = title.strip()
+        if not title:
+            raise ValueError("title is required")
+        task = Task(str(uuid4()), title, TaskStatus.OPEN, tuple(tags), datetime.now(UTC))
+        self._tasks[task.id] = task
+        return task
+
+    def get(self, task_id: str) -> Task:
+        try:
+            return self._tasks[task_id]
+        except KeyError as exc:
+            raise TaskNotFoundError(task_id) from exc
+
+    def list(self, *, status: TaskStatus | None = None) -> list[Task]:
+        return [task for task in self._tasks.values() if status is None or task.status is status]
+
+    def update_status(self, task_id: str, status: TaskStatus) -> Task:
+        updated = replace(self.get(task_id), status=status)
+        self._tasks[task_id] = updated
+        return updated
+
+    def delete(self, task_id: str) -> None:
+        self.get(task_id)
+        del self._tasks[task_id]
+```
+
+The frozen entity prevents accidental mutation, `replace` makes state transitions explicit, and the repository owns its mapping. Module 2 will replace the concrete dependency with a typed protocol and add a service layer.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+This domain vocabulary survives when storage changes. Later Pydantic schemas represent the HTTP boundary and SQLAlchemy models represent persistence; neither needs to become the domain object automatically.
+

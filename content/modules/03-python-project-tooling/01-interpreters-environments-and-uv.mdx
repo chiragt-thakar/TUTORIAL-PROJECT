@@ -1,0 +1,110 @@
+---
+id: tooling-env
+title: Interpreters, Environments, and uv
+description: Select Python, isolate dependencies, and use uv as the primary reproducible workflow.
+module: python-project-tooling
+order: 1
+estimatedMinutes: 45
+prerequisites: [types-assignment]
+learningObjectives:
+  - Distinguish interpreter and environment
+  - Use uv projects and lockfiles
+  - Compare venv, pip, uv, and Poetry
+---
+
+## Interpreter first, environment second
+
+Python is both a language and an executable interpreter. `python --version` reports the executable resolved by your shell; `python -c "import sys; print(sys.executable)"` reveals its exact path. A virtual environment is a directory containing an environment-specific interpreter entry point and package installation location. It isolates packages; it does not virtualize the OS.
+
+On Windows, the Python launcher `py` can select installed versions. On every platform, verify the interpreter rather than assuming `python` points where you expect.
+
+## The uv workflow
+
+Use uv as the primary course workflow because it can install Python, create environments, resolve dependencies, lock versions, and run commands with one fast tool.
+
+```bash
+uv init --package task-api
+cd task-api
+uv python pin 3.13
+uv add fastapi
+uv add --dev pytest ruff mypy
+uv run python -c "import sys; print(sys.executable)"
+uv run pytest
+```
+
+`uv.lock` records the resolved dependency graph. Commit it for an application. `uv sync --locked` reproduces the lock and fails rather than silently updating it. `uv run` synchronizes when necessary and runs inside the project environment.
+
+<TypeScriptComparison>
+
+Think of `pyproject.toml` as overlapping `package.json`, and `uv.lock` as the lockfile. A virtual environment is not `node_modules`: it also anchors an interpreter context, and Python imports packages from environment-specific site-packages.
+
+</TypeScriptComparison>
+
+## venv, pip, Poetry, and uv
+
+The standard library can create an environment with `python -m venv .venv`; activate it, then use `python -m pip install ...`. Prefer `python -m pip` over a bare `pip` because it proves which interpreter owns the installer. `requirements.txt` can be sufficient for small deployments but does not contain complete project metadata.
+
+Poetry provides project management, resolution, locking, and publishing with its own established workflow. It remains a valid team choice. Do not mix Poetry and uv lockfiles. Choose the repository's tool, not your personal favorite.
+
+<CommonMistake>
+
+If installation succeeds but imports fail, compare `where python`, `python -m pip --version`, and the editor-selected interpreter. The usual problem is two different interpreters, not a broken package.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Pin the supported Python minor version and test it in CI. A lockfile controls Python packages, not system libraries, database servers, or container base images.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="tooling-env-1">
+
+Write two commands that prove the running interpreter path and the pip installation target belong together.
+
+<Solution>
+
+```bash
+python -c "import sys; print(sys.executable)"
+python -m pip --version
+```
+
+Both outputs should point into the same intended environment.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-env-2">
+
+Describe the clean-checkout commands for a uv application without updating its lockfile.
+
+<Solution>
+
+Run `uv sync --locked`, then commands through `uv run`, such as `uv run pytest`. The locked flag turns unexpected resolution changes into a failure.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-env-3">
+
+A repository has `poetry.lock`; a new contributor runs `uv add`. What is the maintenance problem?
+
+<Solution>
+
+Two tools may produce conflicting sources of dependency truth. Follow the repository's Poetry workflow or explicitly migrate the whole team and CI in one reviewed change.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can identify the exact interpreter, explain what the environment isolates, and reproduce dependencies from a committed lock without re-resolving them.
+
+</Checkpoint>
+
+## Summary
+
+Interpreter selection determines the runtime; environments isolate packages; the lockfile records resolution. uv unifies these concerns, while venv/pip and Poetry remain valid workflows when used consistently.
+

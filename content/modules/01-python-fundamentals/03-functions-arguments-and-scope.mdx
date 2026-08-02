@@ -1,0 +1,146 @@
+---
+id: py-functions
+title: Functions, Arguments, and Scope
+description: Master Python call semantics, defaults, keyword arguments, variadics, closures, and exceptions.
+module: python-fundamentals
+order: 3
+estimatedMinutes: 45
+prerequisites: [py-collections]
+learningObjectives:
+  - Design explicit function signatures
+  - Avoid mutable defaults
+  - Use scope and exceptions deliberately
+---
+
+## Signatures are API design
+
+Python supports positional-only parameters before `/`, ordinary positional-or-keyword parameters, keyword-only parameters after `*`, and variadics.
+
+```python
+def list_tasks(
+    project_id: str,
+    /,
+    *,
+    status: str | None = None,
+    limit: int = 50,
+) -> list[dict]:
+    ...
+```
+
+Here `project_id` must be positional and filters must be named. Keyword-only inputs make service calls self-documenting and allow safer parameter evolution. `*args` collects extra positional arguments in a tuple; `**kwargs` collects keyword arguments in a dictionary. Do not use them to avoid designing a contract.
+
+<TypeScriptComparison>
+
+JavaScript options objects simulate keyword arguments. Python supports them directly, but also allows callers to use keywords for ordinary parameters unless `/` forbids it. Python has no TypeScript-style function overloading at runtime: only the last `def` survives.
+
+</TypeScriptComparison>
+
+## Defaults are created once
+
+Default expressions run when the `def` statement executes, usually during import—not on every call.
+
+```python
+def add_tag(tag: str, tags: list[str] | None = None) -> list[str]:
+    result = [] if tags is None else list(tags)
+    result.append(tag)
+    return result
+```
+
+Using `None` as a sentinel avoids shared mutable defaults. Copying the caller's list also makes a no-mutation contract explicit. Immutable defaults such as `None`, numbers, strings, and tuples are generally safe.
+
+## Closures, scope, and exceptions
+
+A closure retains bindings from an enclosing function. Use `nonlocal` only when intentionally rebinding an enclosing name; use `global` rarely. Simple closures are useful for configuration, but objects are often clearer once behavior grows.
+
+Exceptions separate the successful result from failure. Raise specific exceptions near the violated invariant and translate them at architectural boundaries.
+
+```python
+class TaskNotFoundError(Exception):
+    pass
+
+def get_task(task_id: str, tasks: dict[str, dict]) -> dict:
+    try:
+        return tasks[task_id]
+    except KeyError as exc:
+        raise TaskNotFoundError(task_id) from exc
+```
+
+`raise ... from exc` preserves causality. Catch only exceptions you can handle. `else` runs when the `try` block succeeds; `finally` runs regardless, typically for cleanup. Context managers are usually clearer for resource cleanup.
+
+<CommonMistake>
+
+`except Exception: return None` destroys the distinction between missing data, a programming bug, and infrastructure failure. It also erases tracebacks that operations need.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Domain and service code should raise meaningful application exceptions. A later FastAPI exception handler can map them to HTTP without coupling the service layer to HTTP status codes.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="py-functions-1">
+
+Make `create_task(title, project_id, priority="normal")` require `project_id` and `priority` as keywords.
+
+<Solution>
+
+```python
+def create_task(title: str, *, project_id: str, priority: str = "normal") -> dict:
+    return {"title": title, "project_id": project_id, "priority": priority}
+```
+
+Everything after bare `*` is keyword-only.
+
+</Solution>
+</Exercise>
+
+<Exercise id="py-functions-2">
+
+Explain and repair `def collect(value, bucket=[]): bucket.append(value); return bucket`.
+
+<Solution>
+
+```python
+def collect(value: str, bucket: list[str] | None = None) -> list[str]:
+    bucket = [] if bucket is None else bucket
+    bucket.append(value)
+    return bucket
+```
+
+The original default list was shared by every call that omitted `bucket`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="py-functions-3">
+
+Translate a missing dictionary key into `TaskNotFoundError` while preserving the original exception.
+
+<Solution>
+
+```python
+def require_task(tasks: dict[str, dict], task_id: str) -> dict:
+    try:
+        return tasks[task_id]
+    except KeyError as exc:
+        raise TaskNotFoundError(f"task {task_id} was not found") from exc
+```
+
+The caller sees a domain failure and logs retain the `KeyError` chain.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can read a Python signature left to right, explain when defaults are evaluated, and distinguish exception translation from exception suppression.
+
+</Checkpoint>
+
+## Summary
+
+Function signatures are enforceable interfaces. Prefer explicit keyword-only configuration, `None` sentinels for mutable defaults, and narrow exception translation that preserves the cause.
+

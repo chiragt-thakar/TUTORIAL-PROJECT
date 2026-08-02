@@ -1,0 +1,90 @@
+---
+id: types-assignment
+title: "Assignment: Typed Repository and Service Boundary"
+description: Refactor the in-memory project around typed entities, repository protocols, and a service layer.
+module: python-type-system
+order: 6
+estimatedMinutes: 30
+prerequisites: [types-tooling]
+learningObjectives:
+  - Apply structural typing to architecture
+  - Separate domain and service concerns
+  - Validate the design with a type checker
+---
+
+## Scenario
+
+The Task API will soon gain HTTP and database adapters. Refactor Module 1 so application behavior depends on a protocol, not the in-memory repository.
+
+<Assignment id="types-assignment-work">
+
+## Requirements
+
+Create a `TaskRepository` protocol, generic `Page[T]`, and `TaskService`. The service creates a task, completes a task, and lists a page of tasks. Use nominal `TaskId` and `ProjectId` types. Keep runtime payload validation out of this module.
+
+```text
+src/task_api/
+  domain/models.py
+  domain/errors.py
+  application/protocols.py
+  application/service.py
+  infrastructure/memory.py
+```
+
+## Acceptance criteria
+
+1. The service constructor accepts `TaskRepository`, not `InMemoryTaskRepository`.
+2. `get` returns `Task | None`; `require` behavior lives in the service or a clearly named helper.
+3. `Page[T]` preserves the item type and includes `total`, `limit`, and `offset`.
+4. No `Any` crosses a domain, service, or repository signature.
+5. The selected checker passes in strict mode.
+6. A small fake repository type-checks without inheriting from the protocol.
+
+### Stretch goals
+
+Split reader and writer protocols. Add a callable `TaskPolicy` protocol with a keyword-only `actor_id`. Observe whether that contract is clearer than `Callable`.
+
+<Solution>
+
+```python
+from dataclasses import dataclass
+from typing import Generic, NewType, Protocol, TypeVar
+
+TaskId = NewType("TaskId", str)
+ProjectId = NewType("ProjectId", str)
+T = TypeVar("T")
+
+@dataclass(frozen=True, slots=True)
+class Page(Generic[T]):
+    items: list[T]
+    total: int
+    limit: int
+    offset: int
+
+class TaskRepository(Protocol):
+    def add(self, task: Task) -> None: ...
+    def get(self, task_id: TaskId) -> Task | None: ...
+    def list(self, *, limit: int, offset: int) -> Page[Task]: ...
+
+class TaskService:
+    def __init__(self, repository: TaskRepository) -> None:
+        self._repository = repository
+
+    def complete(self, task_id: TaskId) -> Task:
+        task = self._repository.get(task_id)
+        if task is None:
+            raise TaskNotFoundError(str(task_id))
+        completed = task.complete()
+        self._repository.add(completed)
+        return completed
+```
+
+The protocol is consumer-owned, the generic page retains item type, and nominal IDs prevent accidental cross-entity calls. Module 3 will package and check this structure reproducibly.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+FastAPI dependencies will eventually provide a `TaskService`; SQLAlchemy will provide one `TaskRepository` implementation. This separation lets route and service tests avoid a database without pretending database integration is tested.
+

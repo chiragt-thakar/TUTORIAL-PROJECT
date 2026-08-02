@@ -1,0 +1,152 @@
+---
+id: py-runtime
+title: Runtime, Modules, Names, and References
+description: How Python executes code and why names are labels rather than typed storage slots.
+module: python-fundamentals
+order: 1
+estimatedMinutes: 40
+prerequisites: []
+learningObjectives:
+  - Run code as a script and module
+  - Explain name binding and object identity
+  - Predict mutation and rebinding
+---
+
+## The execution model
+
+Python reads source, compiles it to bytecode, and executes that bytecode in a Python virtual machine. Compilation is normally implicit; `__pycache__` files are an optimization, not deployable binaries. A `.py` file is a module. Importing it creates a module object, executes its top-level statements once per process, then caches it in `sys.modules`.
+
+```python title="task_api/domain.py"
+print("loading domain")
+DEFAULT_LIMIT = 50
+
+def normalize_title(value: str) -> str:
+    return value.strip()
+```
+
+`python task_api/domain.py` runs it as the special module `__main__`. `python -m task_api.domain` asks the import system to find it inside a package, establishes package context, and is usually safer for package code. Top-level side effects happen on import, so do not open sockets or start servers there.
+
+<TypeScriptComparison>
+
+Node resolves and evaluates modules too, but Python's `python -m package.module` is a crucial execution mode. Imports are statements that bind names; they are not merely TypeScript declarations erased before runtime.
+
+</TypeScriptComparison>
+
+## Names point to objects
+
+Python variables are names bound to objects. Assignment does not copy an object and an annotation does not reserve typed storage.
+
+```python
+task = {"title": "Ship API", "tags": []}
+alias = task
+alias["tags"].append("urgent")
+
+assert task["tags"] == ["urgent"]
+assert alias is task          # identity
+assert alias == task          # value equality
+```
+
+Rebinding `alias = {}` changes which object that name references. It does not change `task`. Mutation changes an object, so every name pointing at it observes the change. Integers, strings, tuples, and frozen dataclasses are immutable; operations produce new objects. Lists, dictionaries, sets, and most class instances are mutable.
+
+<Concept>
+
+Python passes arguments by sharing object references. A function receives a new local name bound to the caller's object. It can mutate a mutable object, but rebinding its local name cannot rebind the caller's name.
+
+</Concept>
+
+## Scope and module boundaries
+
+Name lookup follows LEGB: local, enclosing, global (module), builtins. A module's globals are not application-wide globals; they belong to that module object. Prefer passing dependencies over reaching into module state.
+
+```python
+MAX_TITLE = 120
+
+def validate_title(title: str) -> str:
+    cleaned = title.strip()
+    if not cleaned:
+        raise ValueError("title is required")
+    if len(cleaned) > MAX_TITLE:
+        raise ValueError("title is too long")
+    return cleaned
+```
+
+`if __name__ == "__main__":` protects an entry-point action while keeping definitions importable. It is useful for small tools; larger applications normally expose a console entry point or server command.
+
+<CommonMistake>
+
+Do not name files `typing.py`, `json.py`, or `fastapi.py`. The local file can shadow the standard-library or installed package and create circular-looking import failures.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Keep imports deterministic and top-level work cheap. Import-time network calls complicate worker startup, tests, migrations, and command-line tools.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="py-runtime-1">
+
+Predict the output and explain identity versus equality:
+
+```python
+a = [1, 2]
+b = a
+c = [1, 2]
+b.append(3)
+print(a, b, c, a is b, a == c)
+```
+
+<Solution>
+
+It prints `[1, 2, 3] [1, 2, 3] [1, 2] True False`. `a` and `b` share one mutated list. `c` is a distinct list whose value no longer equals it.
+
+</Solution>
+</Exercise>
+
+<Exercise id="py-runtime-2">
+
+Fix a module that starts an HTTP client during import. Keep `build_client()` importable and only print a demonstration when executed directly.
+
+<Solution>
+
+```python
+def build_client() -> object:
+    return object()
+
+if __name__ == "__main__":
+    print(build_client())
+```
+
+Importing now defines the function without performing the action.
+
+</Solution>
+</Exercise>
+
+<Exercise id="py-runtime-3">
+
+Write `add_label(task, label)` so it returns a new task dictionary and never mutates the input. Copy the nested label list as well.
+
+<Solution>
+
+```python
+def add_label(task: dict, label: str) -> dict:
+    return {**task, "labels": [*task.get("labels", []), label]}
+```
+
+Both the outer mapping and nested list are new objects.
+
+</Solution>
+</Exercise>
+
+<Checkpoint>
+
+You can explain why import executes code, why `python -m` preserves package context, and whether a line rebinds a name or mutates an object.
+
+</Checkpoint>
+
+## Summary
+
+Python executes modules at runtime. Names reference objects; mutation affects shared objects while rebinding affects one scope. Treat import time as application startup infrastructure, not a place for uncontrolled work.
+
