@@ -1,0 +1,170 @@
+---
+id: types-models
+title: TypedDict, Dataclass, and Pydantic
+description: Choose the right data-modeling tool for internal state, external payloads, and typed mappings.
+module: python-type-system
+order: 4
+estimatedMinutes: 45
+prerequisites: [types-generics]
+learningObjectives:
+  - Model mapping shapes
+  - Build dataclass entities
+  - Explain when runtime validation is required
+---
+
+## Three different jobs
+
+`TypedDict` describes the expected keys and value types of an ordinary dictionary to static checkers. It creates no validation and no special runtime object. A `dataclass` generates behavior for a Python class and is well suited to internal domain values. A Pydantic model validates and transforms runtime inputs and is suited to external boundaries.
+
+```python
+from typing import NotRequired, TypedDict
+
+class TaskPatch(TypedDict):
+    title: NotRequired[str]
+    status: NotRequired[str]
+```
+
+This is useful when an API or library already speaks dictionaries. It does not reject `{"status": 99}` at runtime.
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True, slots=True)
+class Task:
+    id: str
+    title: str
+    status: TaskStatus
+```
+
+A dataclass gives construction, representation, and equality. It does not coerce an incoming JSON string into an enum or generate an error response. Domain constructors may still enforce invariants through `__post_init__` or factory functions.
+
+<TypeScriptComparison>
+
+`TypedDict` resembles a TypeScript interface applied to a dictionary shape. Dataclasses create real runtime classes. Pydantic resembles a schema validator such as Zod more than a TypeScript interface: it executes and may transform input.
+
+</TypeScriptComparison>
+
+## Literal, required keys, and boundaries
+
+`Literal["open", "done"]` constrains values statically and can drive narrowing. An enum is often better when the value has domain behavior or is reused broadly. `Required` and `NotRequired` customize keys in a partially optional `TypedDict`; they do not mean the value can be `None`.
+
+Choose from the boundary inward:
+
+1. Validate untrusted HTTP/environment input with Pydantic.
+2. Convert to domain types when the domain deserves independence.
+3. Use dataclasses or normal classes for internal behavior.
+4. Use `TypedDict` for dictionary-shaped interoperability, not as validation.
+
+<CommonMistake>
+
+Do not use one Pydantic model as request schema, database row, domain entity, and response schema. Those shapes evolve for different reasons and may expose fields such as password hashes.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Conversion code is not waste when it protects a boundary. It is cheaper than coupling persistence changes directly to public API responses.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="types-models-1" difficulty="easy">
+
+Define a `TypedDict` for task creation with required `title` and optional `priority`.
+
+<Solution>
+
+```python
+from typing import NotRequired, TypedDict
+
+class CreateTaskData(TypedDict):
+    title: str
+    priority: NotRequired[str]
+```
+
+This describes dictionary use to the checker only.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-models-2" difficulty="medium">
+
+Choose a model for an immutable internal `ProjectId` value object and explain why.
+
+<Solution>
+
+A frozen, slotted dataclass is appropriate: it creates a real domain object with value equality and can validate its invariant in `__post_init__`. It does not need Pydantic's external parsing machinery.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-models-3" difficulty="hard">
+
+An HTTP handler receives `dict[str, object]`. Why does assigning it to `TaskPatch` not validate it, and what should validate it?
+
+<Solution>
+
+Annotations do not execute validation. A Pydantic request model should parse the payload at the boundary; the handler can then work with validated fields.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-models-4" difficulty="interview">
+
+Interview-style: "Why not just use one Pydantic model for the request schema, the domain entity, and the database row?" Answer in three sentences or fewer.
+
+<Solution>
+
+Those three shapes change for different reasons — an API contract change, a domain rule change, and a schema migration are independent events — so coupling them into one model means any one of those changes risks breaking the other two. It's also a security risk: a model shaped for persistence often carries fields (password hashes, internal flags) that should never round-trip into an API response.
+
+Separate models at each boundary cost some conversion code, but that code is what keeps the three concerns from silently leaking into each other.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-models-5" difficulty="real-world">
+
+A production incident: a `TaskPatch` TypedDict field was typed `status: NotRequired[str]`, but a client sent `{"status": 12345}` and it flowed all the way into a database write before failing with an obscure SQL error. Using only what this lesson covered, explain the root cause.
+
+<Solution>
+
+The root cause is treating `TypedDict` as if it validated anything — it's purely a static-checking annotation for dictionary shape, with zero runtime enforcement, so nothing ever actually checked that the incoming `status` was a string before it reached the database.
+
+The fix is a Pydantic model at the actual boundary (the HTTP handler), which would have rejected `12345` immediately with a clear validation error instead of letting it travel deep into the system first.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does TypedDict reject a dictionary with the wrong value type at runtime?">
+
+No, never — `TypedDict` has no runtime presence at all beyond being a plain `dict`. `TaskPatch(status=123)` (or just building the dict by hand) works fine at runtime even though the checker would flag it statically. Any real enforcement has to come from something that actually validates, like Pydantic.
+
+</Gotcha>
+
+<Gotcha question="Does NotRequired mean the value is allowed to be None?">
+
+No — `NotRequired` only means the key may be absent from the dictionary entirely. If the key is present, its value still has to match the declared type; `NotRequired[str]` doesn't permit `None` unless the type itself is `str | None`. Presence and nullability are separate dimensions, the same distinction from the Pydantic module in this track.
+
+</Gotcha>
+
+<Gotcha question="Is a frozen dataclass automatically hashable?">
+
+Only if its fields are all hashable themselves, and only combined with `eq=True` (the default) — `frozen=True` alone gives you immutability, but hashability additionally requires every field to be a hashable type. A frozen dataclass with a `list` field, for instance, still isn't hashable, because `list` itself isn't.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can choose among a typed mapping, internal value object, and runtime-validation model without treating them as interchangeable conveniences.
+
+</Checkpoint>
+
+## Summary
+
+`TypedDict` describes existing mappings, dataclasses model Python values, and Pydantic validates external data. Their overlap in field syntax does not erase their distinct responsibilities.
+

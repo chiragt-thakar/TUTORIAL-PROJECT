@@ -1,0 +1,181 @@
+---
+id: genai-prompt-testing
+title: Testing and Iterating on Prompts
+description: Treat a prompt like code — version it, test it, and catch regressions.
+module: prompt-engineering-in-production
+order: 4
+estimatedMinutes: 45
+prerequisites: [genai-structured-output]
+learningObjectives:
+  - Build a small prompt regression test set
+  - Compare two prompt versions objectively
+  - Version prompts alongside application code
+---
+
+## A prompt is a dependency, not a one-time draft
+
+Everything in this module — system prompts, few-shot examples, output schemas — is a design decision made in text, and text drifts. Someone tweaks a system prompt to fix one case and quietly breaks three others. Without a test set, nobody notices until a user does.
+
+The fix is the same discipline you'd apply to any other piece of behavior: a small, versioned set of representative cases, checked automatically before a prompt change ships.
+
+```python title="eval_cases.py"
+EVAL_CASES = [
+    {"input": "My invoice is wrong", "expected_category": "billing"},
+    {"input": "The app crashes on launch", "expected_category": "bug"},
+    {"input": "Oh great, ANOTHER outage. Fantastic.", "expected_category": "bug"},
+    {"input": "Can you add dark mode?", "expected_category": "feature_request"},
+]
+```
+
+Each case pairs a realistic input with the property you actually care about — not necessarily an exact string match, but the thing that would make the output wrong if it changed.
+
+<Concept>
+
+An **eval set** is a small, curated collection of test cases for a prompt, checked the way you'd check any other code path: before shipping a change, not after a user reports one. It doesn't need to be huge — a dozen well-chosen cases covering real edge cases catches far more regressions than a hundred near-duplicates.
+
+</Concept>
+
+## Comparing two prompt versions objectively
+
+"This new prompt feels better" isn't a comparison — it's a guess. Running both versions against the same eval set and counting pass/fail is.
+
+```python title="compare_versions.py"
+def score(prompt: str, cases: list[dict]) -> float:
+    correct = 0
+    for case in cases:
+        result = classify(prompt, case["input"])  # returns TicketTriage
+        if result.category == case["expected_category"]:
+            correct += 1
+    return correct / len(cases)
+
+score_a = score(PROMPT_V1, EVAL_CASES)
+score_b = score(PROMPT_V2, EVAL_CASES)
+print(f"v1: {score_a:.0%}  v2: {score_b:.0%}")
+```
+
+This is deliberately simple — exact match on one field. Real eval sets often check several properties per case (category *and* priority *and* whether a tag was included), but the core idea stays the same: score something you can put a number on.
+
+<WhyItMatters>
+
+The eval set is what turns "I improved the prompt" from a feeling into a claim you can defend. It also catches the failure mode where a fix for case 5 quietly breaks case 2 — something a single before/after comparison on one input would never reveal.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Testing a prompt change against the same one or two examples you were staring at while writing it. Those cases are the ones most likely to already work; the eval set's job is covering cases you weren't specifically thinking about when you made the change.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Store prompts as versioned text (a file, a database row with a version column) rather than an inline string edited in place — you want to be able to answer "what was the system prompt in production last Tuesday" the same way you can answer that about any other code.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-prompt-testing-1" difficulty="easy">
+
+Add one more case to `EVAL_CASES` covering a ticket that should classify as `"other"`.
+
+<Solution>
+
+```python
+{"input": "What are your office hours?", "expected_category": "other"}
+```
+
+A question with no billing, bug, or feature-request content is exactly the case that should land in the catch-all category.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-prompt-testing-2" difficulty="medium">
+
+`score()` returns 0.75 for prompt v1 and 0.75 for prompt v2 — tied. Explain why "tied on the aggregate score" doesn't necessarily mean "the two prompts behave the same," and what you'd check next.
+
+<Solution>
+
+Two prompts can hit the same overall accuracy while failing on completely different cases — v1 might miss the sarcasm case while v2 misses the feature-request case, and the aggregate number hides that entirely. The next check is a per-case diff between the two runs, not just the summary score, to see exactly which cases flipped in which direction.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-prompt-testing-3" difficulty="hard">
+
+Extend `score()` into a function that returns which specific cases failed, not just a percentage, so a failure is debuggable without re-running everything by hand.
+
+<Solution>
+
+```python
+def evaluate(prompt: str, cases: list[dict]) -> dict:
+    failures = []
+    for case in cases:
+        result = classify(prompt, case["input"])
+        if result.category != case["expected_category"]:
+            failures.append({"input": case["input"], "expected": case["expected_category"], "got": result.category})
+    return {"score": 1 - len(failures) / len(cases), "failures": failures}
+```
+
+Returning the failing cases, not just a number, is what makes a regression actually actionable instead of just visible.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-prompt-testing-4" difficulty="interview">
+
+Interview-style: "Why version prompts the same way you version code, instead of just editing the system prompt string in place?" Answer in three sentences or fewer.
+
+<Solution>
+
+Because an in-place edit destroys the ability to answer "what changed" or "what was live when this incident happened," the exact same reason you don't edit application code by SSHing into production. Versioning also makes the eval-set comparison from this lesson meaningful — you need two named, stable versions to compare, not "the prompt before I started editing it just now."
+
+Treating prompts as code is what makes the rest of this lesson's testing discipline actually enforceable.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-prompt-testing-5" difficulty="real-world">
+
+A prompt change ships without running the eval set, because "it was just a small wording tweak." Two days later, a third of `feature_request` tickets are misclassified as `other`. Using only what this lesson covered, describe the process failure, not just the prompt bug.
+
+<Solution>
+
+The prompt bug is whatever the wording tweak actually broke, but the process failure is treating "small wording tweak" as a reason to skip the eval set — prompts don't have a size threshold below which regressions can't happen, since even a small rewording can shift a decision boundary.
+
+The fix is the same as any other code change: every prompt change runs against the eval set before shipping, with no exception carved out for changes that look small.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="If a prompt scores 100% on the eval set, is it safe to ship?">
+
+Not automatically — 100% on your eval set means it handles the cases you thought to test, not every case a real user will send. A high eval score is necessary confidence, not a guarantee; it should shrink surprises, not eliminate the need to watch real traffic after shipping.
+
+</Gotcha>
+
+<Gotcha question="Does an eval set need to be huge to be useful?">
+
+No — a dozen well-chosen cases that each cover a genuinely different decision boundary catches far more real regressions than a hundred near-duplicate cases. Coverage of disagreement matters more than raw count, the same principle from the few-shot lesson applied to testing instead of prompting.
+
+</Gotcha>
+
+<Gotcha question="Is temperature=0 enough to make eval scores perfectly reproducible run to run?">
+
+Not perfectly, as covered back in Module 1 — near-deterministic, not guaranteed identical. A score that moves by one case between two runs at `temperature=0` isn't necessarily a real regression; treat small score deltas with appropriate skepticism, not as proof of a break.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can build a small eval set that covers real decision boundaries, score two prompt versions against it objectively, and explain why an in-place prompt edit undermines the entire practice.
+
+</Checkpoint>
+
+## Summary
+
+A prompt is a piece of behavior, not a one-time draft — treat changes to it with the same discipline as code: versioned, tested against a curated eval set, compared objectively rather than by feel. A tied aggregate score can still hide real per-case regressions, so check failures individually, not just the summary number. The module assignment builds a small test harness that does exactly this, end to end.

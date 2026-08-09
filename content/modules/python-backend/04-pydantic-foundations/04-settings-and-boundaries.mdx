@@ -1,0 +1,172 @@
+---
+id: pydantic-settings
+title: Settings and Model Boundaries
+description: Separate configuration, transport validation, and static typing concerns.
+module: pydantic-foundations
+order: 4
+estimatedMinutes: 45
+prerequisites: [pydantic-serialization]
+learningObjectives:
+  - Separate settings and requests
+  - Explain runtime versus static guarantees
+---
+
+## Models should follow trust boundaries
+
+Request models validate client-controlled transport data. Settings models validate process configuration. Domain models encode business invariants. Database models map persistence. They may share concepts, but they should not become one universal class.
+
+```python
+from functools import lru_cache
+from pydantic import SecretStr
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="TASK_API_",
+        env_file=".env",
+        extra="ignore",
+    )
+
+    environment: str = "development"
+    database_url: SecretStr
+    log_level: str = "INFO"
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+```
+
+`SecretStr` reduces accidental display; it does not encrypt memory. Load settings at an application composition boundary, not during import of every domain module. Caching is useful in production and must be cleared or overridden in tests.
+
+## Convert between representations
+
+Map request data into an application command, then map domain results into responses. Explicit mapping documents which layer owns defaults and prevents transport-only fields from entering domain behavior.
+
+```python
+command = CreateTask(
+    title=request.title,
+    project_id=ProjectId(str(request.project_id)),
+    actor_id=current_user.id,
+)
+task = service.create(command)
+return TaskRead.model_validate(task, from_attributes=True)
+```
+
+The checker proves the mapping code uses compatible Python types. Pydantic proves the incoming runtime values fit the request schema. Domain construction proves business rules. These guarantees are complementary.
+
+<TypeScriptComparison>
+
+Using one TypeScript type for a DTO and domain entity is tempting because types are erased. In Python, reusing one Pydantic class also imports runtime validation, serialization configuration, and framework concerns into every layer.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Do not instantiate settings as a module global in files imported by migrations and tests. Missing production configuration can make unrelated commands impossible to import.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Validate all required configuration before accepting traffic, log only safe setting names and modes, and source secrets from the deployment platform rather than committed `.env` files.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="pydantic-settings-1" difficulty="easy">
+
+Define settings for a required database URL and integer pool size between 1 and 50, using prefix `TASK_API_`.
+
+<Solution>
+
+```python
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="TASK_API_")
+    database_url: SecretStr
+    pool_size: int = Field(default=10, ge=1, le=50)
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-settings-2" difficulty="medium">
+
+Why should `actor_id` normally be supplied by authentication rather than a task request body?
+
+<Solution>
+
+The authenticated identity is trusted request context. Accepting it from the client lets callers impersonate another actor. Map it separately into the application command.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-settings-3" difficulty="hard">
+
+A unit test changes an environment variable but still gets old cached settings. Repair the test boundary.
+
+<Solution>
+
+Clear `get_settings.cache_clear()` after changing the environment, or override the settings dependency with an explicitly constructed test instance.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-settings-4" difficulty="interview">
+
+Interview-style: "Why shouldn't your request model, your domain model, and your settings model all just be the same Pydantic class?" Answer in three sentences or fewer.
+
+<Solution>
+
+Each one validates a different trust boundary with different lifetimes and different concerns — a request model validates client-controlled data on every call, settings validate process configuration once at startup, and a domain model encodes business invariants that shouldn't be shaped by transport or environment concerns at all.
+
+Collapsing them into one class means a change motivated by one boundary (adding an API field, renaming an env var) leaks into the others by accident. Keeping them separate, with explicit mapping between them, is what makes each boundary's guarantee legible on its own.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-settings-5" difficulty="real-world">
+
+A `Settings()` instance is created as a module-level singleton in a file that `alembic/env.py` imports, so running `alembic revision --autogenerate` on a laptop now requires the full production environment to be configured just to generate a migration file. Using only what this lesson covered, diagnose the problem and propose a fix.
+
+<Solution>
+
+Instantiating `Settings()` fails fast if a required field (like `database_url`) has no value available — that's the whole point of a required settings field. The problem is *where* it's being instantiated: as a module-level global in a broadly-imported file, so merely importing that module (which Alembic's config does, indirectly) now demands full production configuration, even for a command that doesn't need most of it.
+
+The fix matches this lesson's common mistake: load settings at one application composition boundary (behind `get_settings()`, called lazily, ideally only where actually needed) rather than as an import-time side effect of a module that other unrelated tools also need to import.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does `@lru_cache` on `get_settings()` mean settings are re-read from the environment on every call?">
+
+No — the whole point of caching it is the opposite: the environment is read once, on first call, and every subsequent call returns the same cached instance. An environment variable changed mid-process won't be reflected until the cache is explicitly cleared, which is exactly the failure mode Exercise 3 asks you to fix.
+
+</Gotcha>
+
+<Gotcha question="Does `SecretStr` encrypt or hide a setting's value from anything with access to the settings object?">
+
+No — it only reduces *accidental* display, such as in a `repr()`, log line, or traceback, by masking the value in string representations. Anything that explicitly calls `.get_secret_value()` still gets the real value in memory; `SecretStr` is a display safeguard, not encryption.
+
+</Gotcha>
+
+<Gotcha question="Is a required settings field (no default) guaranteed to fail loudly at construction if its value is missing?">
+
+Yes — and that's precisely why *where* you instantiate `Settings()` matters so much. A required field with no default raises a `ValidationError` the moment the class is constructed, so instantiating it as an import-time side effect in a widely-imported module can break unrelated commands (a migration tool, a test runner) that were never going to need that configuration at all.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can locate validation at transport, configuration, domain, and persistence boundaries and explain the distinct guarantee at each.
+
+</Checkpoint>
+
+## Summary
+
+Use dedicated settings, request, response, domain, and persistence types. Map explicitly between them so runtime validation, static checking, business invariants, and security context remain visible.
+

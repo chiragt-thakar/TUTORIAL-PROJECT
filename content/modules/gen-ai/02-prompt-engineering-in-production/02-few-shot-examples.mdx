@@ -1,0 +1,163 @@
+---
+id: genai-few-shot
+title: Few-shot Examples
+description: Show the model the shape of a good answer instead of describing it.
+module: prompt-engineering-in-production
+order: 2
+estimatedMinutes: 45
+prerequisites: [genai-system-prompts]
+learningObjectives:
+  - Add few-shot examples to a prompt
+  - Choose examples that cover edge cases
+  - Know when few-shot is worth the extra tokens
+---
+
+## Show, don't just tell
+
+A **zero-shot** prompt describes the task in words alone. A **few-shot** prompt adds a small number of worked examples showing input-output pairs. When a task's output format or edge cases are hard to describe precisely in prose, showing beats describing almost every time.
+
+```python title="zero_shot_vs_few_shot.py"
+zero_shot = """Classify the sentiment of the review as positive, negative, or mixed."""
+
+few_shot = """Classify the sentiment of the review as positive, negative, or mixed.
+
+Review: "Battery life is terrible but the screen is gorgeous."
+Sentiment: mixed
+
+Review: "Works exactly as described, very happy."
+Sentiment: positive
+
+Review: "Broke after two days, waste of money."
+Sentiment: negative
+"""
+```
+
+The zero-shot version leaves "mixed" ambiguous — how mixed does a review need to be? The few-shot version's first example pins down exactly that boundary case by demonstration, which is far more precise than any adjective-based description would be.
+
+<Concept>
+
+Each example in a few-shot prompt is doing two jobs at once: showing the **output format** (so the model doesn't need to guess how to phrase or structure its answer) and showing the **decision boundary** for ambiguous cases (so "mixed" isn't left to the model's own judgment call).
+
+</Concept>
+
+## Choosing examples that actually help
+
+Random examples don't help much. Examples chosen to cover the boundary cases — the ones a person would actually disagree about — do the real work. If your classifier struggles specifically on sarcasm, a sarcastic example teaches more than three more obvious ones.
+
+```python title="edge_case_examples.py"
+few_shot_edge_cases = """Review: "Oh great, ANOTHER update that breaks everything. Love it."
+Sentiment: negative
+
+Review: "It's fine. Does what it says. Nothing special."
+Sentiment: positive
+"""
+```
+
+The first example teaches the model that sarcastic praise reads as negative. The second teaches that "fine, does what it says" — lukewarm but not critical — should still count as positive, not mixed. Both are boundary decisions prose alone struggles to pin down.
+
+<WhyItMatters>
+
+Few-shot examples cost tokens on every single request, not once. Three examples that each cover a genuinely different edge case are worth far more than ten examples that all look similar — pick for coverage of disagreement, not for volume.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Using few-shot examples that are all "easy" cases the model would get right anyway. If every example is unambiguous, the model learns nothing about where the actual decision boundary is, and you've just spent tokens restating the obvious.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Store few-shot examples as data, not as a string baked into your code. A JSON or YAML file of example pairs can be reviewed, versioned, and updated by someone who isn't reading Python — and it's exactly what the testing lesson later in this module will use as a starting point for a regression suite.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-few-shot-1" difficulty="easy">
+
+Explain in one sentence why the zero-shot prompt in this lesson leaves "mixed" ambiguous, and few-shot doesn't.
+
+<Solution>
+
+Zero-shot only describes "mixed" as a word with no boundary, while few-shot shows a concrete example of a review that crosses into mixed territory, pinning down exactly how much criticism plus praise counts.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-few-shot-2" difficulty="medium">
+
+You have a five-category classifier and three example reviews, all clearly positive. Explain why adding two more clearly-positive examples wouldn't help much, and suggest what to add instead.
+
+<Solution>
+
+More clearly-positive examples don't teach the model anything new about the decision boundary — it already handles obvious cases correctly. What would help is at least one example for each of the other categories, and especially examples near the boundary between adjacent categories, since those are where classification actually goes wrong.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-few-shot-3" difficulty="hard">
+
+A few-shot prompt has 12 examples and costs meaningfully more per request than the team is comfortable with. Propose a concrete way to cut the example count without losing the coverage that matters.
+
+<Solution>
+
+Audit which examples are actually distinct decision boundaries versus near-duplicates of each other, and keep one representative per boundary instead of several similar ones. A prompt with 4-5 examples that each teach something different usually outperforms 12 that overlap, at a fraction of the token cost — the goal was never "more examples," it was "enough distinct boundaries."
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-few-shot-4" difficulty="interview">
+
+Interview-style: "When would you choose zero-shot over few-shot, given that few-shot is usually more accurate?" Answer in three sentences or fewer.
+
+<Solution>
+
+Choose zero-shot when the task is simple enough that the model already gets it right without examples, since every example is ongoing token cost on every request forever. Also choose zero-shot when you genuinely don't yet know what the edge cases are — badly chosen examples can bias the model toward patterns that don't generalize. Few-shot earns its cost specifically when you've identified real ambiguity that prose can't resolve precisely.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-few-shot-5" difficulty="real-world">
+
+Your support-ticket classifier's few-shot examples were written six months ago. Since then, the product added a new feature that generates a whole new category of tickets the model now misclassifies. Using only what this lesson covered, describe the fix.
+
+<Solution>
+
+Add few-shot examples specifically for the new ticket category, chosen the same way as any other example: pick ones near the boundary with existing categories, not just an easy obvious case. This is also a sign that few-shot examples need the same maintenance discipline as code — they age as the product changes, and "written once" isn't "correct forever."
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does adding more few-shot examples always improve accuracy?">
+
+No — past a handful of well-chosen examples, returns diminish fast, and a very long list can even start to dilute the model's attention or bias it toward whatever pattern happens to repeat across your examples (like always starting with "Review:"). More examples is not automatically better; better-chosen examples is.
+
+</Gotcha>
+
+<Gotcha question="Do few-shot examples need to be real data?">
+
+No, but they do need to be representative and correctly labeled — a synthetic example that accurately captures a real edge case works exactly as well as one pulled from production data. What matters is correctness and coverage of the decision boundary, not provenance.
+
+</Gotcha>
+
+<Gotcha question="Is few-shot the same thing as fine-tuning?">
+
+No. Few-shot examples live inside the prompt and cost tokens every request, with no permanent change to the model. Fine-tuning actually adjusts model weights ahead of time and doesn't cost extra prompt tokens per request — a different technique with a different cost tradeoff, and out of scope for this track.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can explain why a well-chosen few-shot example teaches a decision boundary that prose can't, and you can identify when examples are redundant versus genuinely adding coverage.
+
+</Checkpoint>
+
+## Summary
+
+Few-shot examples show the model a decision boundary instead of describing one, which is far more precise for ambiguous or format-sensitive tasks. Choose examples for coverage of disagreement, not volume — a handful of boundary cases beats a dozen easy ones, at a fraction of the ongoing token cost. The next lesson turns the model's output itself into something your code can trust: structured, validated JSON.

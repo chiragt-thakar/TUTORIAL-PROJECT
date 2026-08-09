@@ -1,0 +1,241 @@
+---
+id: genai-rag-assignment
+title: "Assignment: A Grounded Docs Q&A Tool"
+description: Build a real retrieve-then-generate tool over the FAQ corpus from Module 4 — cited answers, an explicit refusal path, and a two-layer eval harness that separates retrieval failures from generation failures.
+module: retrieval-augmented-generation
+order: 5
+estimatedMinutes: 65
+prerequisites: [genai-rag-evaluation]
+learningObjectives:
+  - Wire retrieval and generation into one grounded, cited pipeline
+  - Refuse to answer when nothing relevant was retrieved
+  - Diagnose retrieval failures separately from generation failures with a real eval set
+---
+
+## Scenario
+
+Module 4 built the retrieval half — chunking, embedding, a cached vector store, ranked search. This module built the other half — a grounded, cited generation call, a refusal path, and a way to actually verify groundedness instead of assuming it. This assignment assembles all of it into one tool a real support team could deploy, over the same FAQ corpus from Module 4's assignment.
+
+<Assignment id="genai-rag-assignment-work">
+
+## Requirements
+
+Build `rag_qa.py`, invoked as `python rag_qa.py "your question here"`, that:
+
+- Reuses (or adapts) Module 4's FAQ corpus, chunking, cached embedding, and `InMemoryVectorStore` — do not re-embed the corpus on every run.
+- Retrieves the top-k chunks for a query and assembles a grounded, citation-instructed prompt (Lesson 3), then generates an answer that cites which chunk(s) it drew from.
+- Applies a retrieval-side minimum-similarity threshold *and* a generation-side "say you don't know" instruction — both layers from Lesson 3 — so an off-topic query is refused before generation, and an on-topic-but-uncovered query is refused by the model itself.
+- Logs the retrieved chunk IDs for every query (stderr is fine) so a wrong answer can be diagnosed without re-running anything.
+- Supports an `--eval` mode that runs a fixed eval set of at least 8 cases, each checking retrieval (expected chunk in top-k) and groundedness (expected claim present in the answer) as two separate, independently reported metrics — not one combined score.
+
+```text
+rag_qa.py
+  FAQ_DOCS, chunk_text, cached_embed, InMemoryVectorStore  -- reused/adapted from Module 4
+  SYSTEM_PROMPT             -- grounding + refusal + citation instructions from Lesson 3
+  build_prompt(query, chunks)  -- assembles the cited context prompt
+  answer(store, query, top_k)  -- retrieve -> threshold check -> generate -> log chunk IDs
+  EVAL_SET                  -- (query, expected_doc_id, expected_claim) triples, at least 8
+  check_retrieval(...) / check_groundedness(...)  -- the two independent checks from Lesson 4
+  run_eval(store)           -- reports retrieval accuracy and groundedness rate separately
+  main()                    -- CLI entry point (query mode / --eval mode)
+```
+
+## Acceptance criteria
+
+1. `python rag_qa.py "how do I reset my password"` prints a cited answer, and stderr shows which chunk ID(s) were retrieved and used.
+2. A deliberately off-topic query (e.g. `"what's the weather like"`) is refused before a generation call is made, via the retrieval-side threshold.
+3. A query that's on-topic for the corpus's general domain but genuinely uncovered by any document still gets a "not covered" style answer, not an invented one — proving the generation-side instruction is doing real work independent of the threshold.
+4. `python rag_qa.py --eval` prints retrieval accuracy and groundedness rate as two separate numbers, plus per-case pass/fail for each.
+5. Running the same query twice makes no new embedding API calls on the second run (the Module 4 cache is respected).
+6. No unhandled traceback for an empty query or a query with no plausible match in the corpus.
+
+### Stretch goals
+
+Swap the substring-based `check_groundedness` for the LLM-as-judge version from Lesson 4 and compare results between the two on the same eval set. Add source citations to the printed answer that quote the exact retrieved sentence, not just a chunk number. Extend the eval set with at least 2 deliberately out-of-corpus queries that should trigger refusal, and assert the refusal actually happens.
+
+<Solution>
+
+The solution's central discipline, carried over from Module 4, is keeping retrieval and generation checkable independently — `run_eval` never lets a groundedness check run against a case where retrieval already failed, because that would conflate two different failure causes into one misleading number.
+
+```python
+import hashlib
+import json
+import math
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+from openai import OpenAI
+
+client = OpenAI()
+CACHE_PATH = Path("embeddings_cache.json")
+
+FAQ_DOCS = {
+    "password-reset": "To reset your password, go to Settings > Security and click 'Reset Password'. You'll receive an email with a reset link valid for 24 hours.",
+    "billing": "Billing occurs on the first of each month for your active subscription tier. Failed payments retry automatically for 3 days before the account is downgraded.",
+    "refunds": "Refunds are available within 30 days of purchase for annual plans and within 14 days for monthly plans. Refunds are processed within 5 business days.",
+    "account-deletion": "You can permanently delete your account from Settings > Account > Delete Account. This action is irreversible and removes all data within 30 days.",
+    "shipping": "Standard shipping takes 5-7 business days. Express shipping takes 1-2 business days for an additional fee. International orders may take 10-20 business days.",
+}
+
+EVAL_SET = [
+    {"query": "how do I get my money back", "expected_doc_id": "refunds", "expected_claim": "30 days"},
+    {"query": "I forgot my password", "expected_doc_id": "password-reset", "expected_claim": "Settings > Security"},
+    {"query": "when does my card get charged", "expected_doc_id": "billing", "expected_claim": "first of each month"},
+    {"query": "how long until my package arrives", "expected_doc_id": "shipping", "expected_claim": "5-7 business days"},
+    {"query": "I want to permanently remove my account", "expected_doc_id": "account-deletion", "expected_claim": "irreversible"},
+    {"query": "reset link expired", "expected_doc_id": "password-reset", "expected_claim": "24 hours"},
+    {"query": "how long do refunds take to process", "expected_doc_id": "refunds", "expected_claim": "5 business days"},
+    {"query": "what happens if my payment fails", "expected_doc_id": "billing", "expected_claim": "3 days"},
+]
+
+
+@dataclass
+class Chunk:
+    id: str
+    doc_id: str
+    text: str
+    vector: list[float]
+
+
+class InMemoryVectorStore:
+    def __init__(self) -> None:
+        self._chunks: list[Chunk] = []
+
+    def add(self, chunk: Chunk) -> None:
+        self._chunks.append(chunk)
+
+    def search(self, query_vector: list[float], top_k: int = 3) -> list[tuple[Chunk, float]]:
+        scored = [(c, cosine_similarity(query_vector, c.vector)) for c in self._chunks]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:top_k]
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    return dot / (norm_a * norm_b)
+
+
+def _load_cache() -> dict[str, list[float]]:
+    return json.loads(CACHE_PATH.read_text()) if CACHE_PATH.exists() else {}
+
+
+def _save_cache(cache: dict[str, list[float]]) -> None:
+    CACHE_PATH.write_text(json.dumps(cache))
+
+
+def cached_embed(texts: list[str]) -> list[list[float]]:
+    cache = _load_cache()
+    keys = [hashlib.sha256(t.encode()).hexdigest() for t in texts]
+    missing = [t for t, k in zip(texts, keys) if k not in cache]
+    if missing:
+        response = client.embeddings.create(model="text-embedding-3-small", input=missing)
+        vectors = iter(item.embedding for item in response.data)
+        for t, k in zip(texts, keys):
+            if k not in cache:
+                cache[k] = next(vectors)
+        _save_cache(cache)
+    return [cache[k] for k in keys]
+
+
+def build_index() -> InMemoryVectorStore:
+    store = InMemoryVectorStore()
+    vectors = cached_embed(list(FAQ_DOCS.values()))
+    for (doc_id, text), vector in zip(FAQ_DOCS.items(), vectors):
+        store.add(Chunk(id=f"{doc_id}-0", doc_id=doc_id, text=text, vector=vector))
+    return store
+
+
+SYSTEM_PROMPT = (
+    "Answer the user's question using ONLY the provided context. "
+    "If the context doesn't contain the answer, say you don't know — never guess. "
+    "Cite each claim with the [n] marker of the chunk it came from."
+)
+
+
+def build_prompt(query: str, chunks: list[Chunk]) -> str:
+    context = "\n\n".join(f"[{i + 1}] {c.text}" for i, c in enumerate(chunks))
+    return f"Context:\n{context}\n\nQuestion: {query}"
+
+
+def answer(store: InMemoryVectorStore, query: str, top_k: int = 3, min_score: float = 0.2) -> str:
+    query_vector = cached_embed([query])[0]
+    results = store.search(query_vector, top_k=top_k)
+
+    if not results or results[0][1] < min_score:
+        print("[retrieval] below threshold, skipping generation", file=sys.stderr)
+        return "I don't have information about that in the available documentation."
+
+    chunks = [chunk for chunk, _ in results]
+    print(f"[retrieval] used chunks: {[c.id for c in chunks]}", file=sys.stderr)
+
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_prompt(query, chunks)},
+        ],
+    )
+    return response.choices[0].message.content
+
+
+def check_retrieval(store: InMemoryVectorStore, query: str, expected_doc_id: str, top_k: int = 3) -> bool:
+    query_vector = cached_embed([query])[0]
+    results = store.search(query_vector, top_k=top_k)
+    return any(chunk.doc_id == expected_doc_id for chunk, _ in results)
+
+
+def check_groundedness(response_text: str, expected_claim: str) -> bool:
+    return expected_claim.lower() in response_text.lower()
+
+
+def run_eval(store: InMemoryVectorStore) -> None:
+    retrieval_pass = 0
+    grounded_pass = 0
+    grounded_checked = 0
+
+    for case in EVAL_SET:
+        retrieved_ok = check_retrieval(store, case["query"], case["expected_doc_id"])
+        retrieval_pass += retrieved_ok
+        print(f"[retrieval {'PASS' if retrieved_ok else 'FAIL'}] {case['query']!r}")
+
+        if retrieved_ok:
+            grounded_checked += 1
+            response_text = answer(store, case["query"])
+            grounded_ok = check_groundedness(response_text, case["expected_claim"])
+            grounded_pass += grounded_ok
+            print(f"[groundedness {'PASS' if grounded_ok else 'FAIL'}] {case['query']!r}")
+
+    print(f"\nRetrieval: {retrieval_pass}/{len(EVAL_SET)} ({retrieval_pass / len(EVAL_SET):.0%})")
+    if grounded_checked:
+        print(f"Groundedness (given correct retrieval): {grounded_pass}/{grounded_checked} ({grounded_pass / grounded_checked:.0%})")
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        print("Usage: python rag_qa.py \"your question\" | --eval")
+        return
+
+    store = build_index()
+
+    if sys.argv[1] == "--eval":
+        run_eval(store)
+        return
+
+    print(answer(store, sys.argv[1]))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+One detail worth calling out: `run_eval` only calls `answer()` — and therefore only checks groundedness — for cases where retrieval already succeeded. Scoring groundedness against a case where the wrong chunk was retrieved would blame generation for what's actually a retrieval failure, exactly the conflation Lesson 4 warns against.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+This is the canonical RAG pattern the rest of the Gen AI track assumes you've built by hand: Module 8's LangChain lessons show how a framework packages retrieval, prompt assembly, and citation into higher-level abstractions, but the grounding discipline — refuse when uncovered, verify don't assume, split retrieval from generation failures — is exactly what you built here and remains your responsibility inside any framework. The Module 10 capstone wires a version of this exact pipeline behind a real API endpoint with its own document ingestion path.

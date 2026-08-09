@@ -1,0 +1,209 @@
+---
+id: genai-tool-schema
+title: Defining Callable Tools
+description: Describe a Python function so a model can call it correctly.
+module: tool-and-function-calling
+order: 1
+estimatedMinutes: 45
+prerequisites: [genai-structured-output]
+learningObjectives:
+  - Write a JSON-schema tool definition
+  - Map a tool call to a real function
+  - Validate arguments before executing
+---
+
+## The model still can't do anything
+
+Here's the thing nobody tells you clearly enough when you start building with LLMs: the model cannot check an order status, query a database, or send an email. It can only produce text. Every "AI agent that books your flights" you've seen is, underneath, a text-predicting model deciding *which function your code should call*, and your code doing the actual work.
+
+**Tool calling** (also called function calling) is the mechanism that makes this decision structured instead of you regex-parsing "please call check_order_status with id 4471" out of prose. You describe your Python functions to the model using a schema; the model responds with which function to call and what arguments to use; your code executes it and decides what happens next.
+
+```python title="tool_definition.py"
+CHECK_ORDER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "check_order_status",
+        "description": "Look up the current status of a customer order by its ID.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "order_id": {"type": "string", "description": "The order ID, e.g. 'ORD-4471'."},
+            },
+            "required": ["order_id"],
+        },
+    },
+}
+```
+
+This is just JSON Schema — the same specification family Pydantic generates under the hood. If you did Module 1's structured-output lesson, this should look familiar, because it's the same idea pointed in a slightly different direction: instead of describing the *shape of an answer*, you're describing the *shape of a function call*.
+
+<Concept>
+
+A **tool** (or function) definition has three parts that all matter: a `name` the model will reference, a `description` that is doing more work than you'd expect — it's the *only* information the model has about when to use this tool — and a `parameters` schema constraining what arguments look like. A vague description is the single most common reason a model picks the wrong tool or invents nonsense arguments.
+
+</Concept>
+
+## From the model's response back to a real call
+
+When you send tools alongside a message, the model doesn't execute anything — it returns a structured request describing what it wants called. Your code is 100% in control of what actually happens next.
+
+```python title="parse_tool_call.py"
+response = client.chat.completions.create(
+    model="gpt-4.1-mini",
+    messages=[{"role": "user", "content": "Where is order ORD-4471?"}],
+    tools=[CHECK_ORDER_TOOL],
+)
+
+call = response.choices[0].message.tool_calls[0]
+print(call.function.name)       # "check_order_status"
+print(call.function.arguments)  # '{"order_id": "ORD-4471"}' -- a JSON *string*
+```
+
+Notice `arguments` is a string, not a parsed dict — the model generated it as text, the same way it generates any other output. That means it can be malformed, just like the JSON output from Module 1. Nothing about tool calling exempts you from validating.
+
+<WhyItMatters>
+
+Every tool call is untrusted input, exactly like a request body hitting an HTTP endpoint — it originated from a probabilistic text generator, not a type-checked caller. If you take one idea from this lesson into the rest of the module, take this one: **validate tool arguments with the same seriousness you'd validate an API request**, because that's genuinely what this is.
+
+</WhyItMatters>
+
+```python title="validate_and_dispatch.py"
+import json
+from pydantic import BaseModel
+
+class CheckOrderArgs(BaseModel):
+    order_id: str
+
+def dispatch(call) -> str:
+    if call.function.name == "check_order_status":
+        args = CheckOrderArgs.model_validate(json.loads(call.function.arguments))
+        return check_order_status(args.order_id)
+    raise ValueError(f"unknown tool: {call.function.name}")
+```
+
+<CommonMistake>
+
+Writing `description` fields like `"Checks an order"` and being surprised when the model calls it for the wrong scenario, or a completely different tool for a similar-sounding request. Write descriptions the way you'd write a docstring for a teammate who has never seen your codebase — because that's approximately the model's information level.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Keep your tool list focused. Every tool you register adds tokens to every request (the full schema is sent every time) and adds one more option the model can pick wrong. A system with 40 loosely-related tools is meaningfully less reliable per-call than one with 5 well-scoped ones — more on this in Module 8's LangChain lessons, which cover tool organization at scale.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-tool-schema-1" difficulty="easy">
+
+Write a tool definition for `get_weather(city: str)` that returns current weather for a city.
+
+<Solution>
+
+```python
+GET_WEATHER_TOOL = {
+    "type": "function",
+    "function": {
+        "name": "get_weather",
+        "description": "Get the current weather conditions for a named city.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "city": {"type": "string", "description": "City name, e.g. 'Austin' or 'Berlin'."},
+            },
+            "required": ["city"],
+        },
+    },
+}
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-schema-2" difficulty="medium">
+
+A model calls `check_order_status` with `arguments = '{"order_id": 4471}'` — a number, not a string. Explain what happens when `CheckOrderArgs.model_validate` runs on it, and why.
+
+<Solution>
+
+Pydantic coerces `4471` to `"4471"` by default, since numeric-to-string coercion is one of its standard lenient conversions — so validation succeeds even though the model technically didn't produce a string. This is usually fine here, but it's worth knowing this coercion is happening rather than assuming the model was perfectly precise.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-schema-3" difficulty="hard">
+
+Two tools, `search_products(query: str)` and `search_orders(query: str)`, have identical descriptions: `"Searches using a query string."` Rewrite both descriptions so the model can reliably tell them apart.
+
+<Solution>
+
+```python
+"description": "Search the product catalog by name, category, or keyword. Use for questions about what's for sale."
+"description": "Search a specific customer's past orders by product name or order ID. Use for questions about something already purchased."
+```
+
+Distinguishing *what* is searched and *when to use this one versus the other* is what identical generic descriptions were missing.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-schema-4" difficulty="interview">
+
+Interview-style: "If a tool's `parameters` schema marks a field as required, does that guarantee the model will always provide it?" Answer in three sentences or fewer.
+
+<Solution>
+
+No — `required` in the schema is a strong instruction, not an enforced constraint, since the model still generates the arguments as text token by token. Most of the time a well-described required field is provided reliably, but "most of the time" isn't "always," so your dispatch code still needs to validate the parsed arguments before using them, exactly like any other model output.
+
+The schema shapes behavior; validation guarantees correctness.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-schema-5" difficulty="real-world">
+
+Your team's assistant has one tool, `run_query(sql: str)`, described as `"Runs a SQL query against the database."` A user asks an innocuous question and the model calls it with a `DELETE` statement, because nothing in the tool's design prevented that request from being a plausible completion. Using only what this lesson covered, name the design flaw.
+
+<Solution>
+
+The design flaw is a tool whose surface area is far broader than the task actually needs — "run arbitrary SQL" gives the model (and, transitively, anyone whose input reaches it) the ability to express destructive operations that a narrowly-scoped tool never could. A tool like `get_customer_orders(customer_id: str)` can't accidentally become a `DELETE`, because its schema doesn't have room for one.
+
+Lesson 3 covers this in depth: scope tools to the narrowest capability the task needs, the same "least capability" principle as the Python typing module.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="If you register a tool, does the model call it every time it's relevant, even if not asked to?">
+
+Not necessarily — the model decides whether to call a tool at all based on the conversation, and it can just as easily respond with plain text if it decides no tool is needed. You can force tool use with a `tool_choice` parameter if your use case requires it, but by default it's the model's judgment call, and that judgment can be wrong in both directions.
+
+</Gotcha>
+
+<Gotcha question="Are tool call arguments guaranteed to be valid JSON?">
+
+No — they're generated text, same as any other model output, and can occasionally be malformed for the same reasons covered in Module 1's structured-output lesson. `json.loads()` on `call.function.arguments` can raise, and production code needs to handle that the same way it handles any other parse failure.
+
+</Gotcha>
+
+<Gotcha question="Does adding more tools always make an assistant more capable?">
+
+Not for free — every registered tool costs tokens on every request (full schemas are resent each call) and adds one more option the model can select incorrectly. A focused set of 5 well-described tools is usually more reliable in practice than a sprawling set of 30 loosely differentiated ones, echoing this lesson's production note.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can write a tool schema with a description precise enough to disambiguate it from a similar tool, and you can explain why tool call arguments need validation exactly like any other untrusted input.
+
+</Checkpoint>
+
+## Summary
+
+Tool calling turns "the model wants to do X" into a structured, parseable request — but the model still only produces text, and your code still owns every real action. A tool's `description` does more work than its name suggests: it's the model's only signal for when to use it, so write it like documentation for a stranger.
+
+Validate every tool call's arguments with the same rigor as an API request, because that's exactly what it is. The next lesson wires this into a full call-execute-respond loop.

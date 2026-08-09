@@ -1,0 +1,192 @@
+---
+id: genai-structured-output
+title: Structured and JSON Output
+description: Get output your code can parse instead of prose you have to guess at.
+module: prompt-engineering-in-production
+order: 3
+estimatedMinutes: 45
+prerequisites: [genai-few-shot]
+learningObjectives:
+  - Request and validate JSON output
+  - Use a Pydantic model as the output contract
+  - Handle malformed model output gracefully
+---
+
+## From "please return JSON" to a real contract
+
+Module 1 asked a model for JSON with a system-prompt instruction alone. That works for simple shapes, but production features need more: nested objects, arrays, enums with a fixed set of valid values, and optional fields that are genuinely optional — not just "sometimes present."
+
+The contract for all of that is the same tool you already know from the Python Backend track: a Pydantic model. It's not just a validator here — it's the specification you paste directly into the prompt.
+
+```python title="ticket_schema.py"
+from typing import Literal
+from pydantic import BaseModel, Field
+
+class TicketTriage(BaseModel):
+    category: Literal["billing", "bug", "feature_request", "other"]
+    priority: Literal["low", "medium", "high"]
+    summary: str = Field(max_length=200)
+    tags: list[str] = Field(default_factory=list)
+```
+
+`Literal` becomes an enum constraint the model can be told about explicitly. `Field(max_length=200)` becomes an instruction, not just a runtime check. The schema is doing double duty: documentation for the model and validation for your code.
+
+<Concept>
+
+**Structured output** means the model's response is constrained to match a schema you define, either by strong prompting (describe the schema, ask for JSON matching it) or by a provider feature that enforces it server-side. Either way, the goal is the same: a shape your code can `model_validate` without guessing.
+
+</Concept>
+
+## Turning a schema into a prompt
+
+Pydantic can generate its own JSON Schema, which you can paste into the prompt so the model sees the exact contract instead of your English paraphrase of it.
+
+```python title="schema_in_prompt.py"
+import json
+
+schema_text = json.dumps(TicketTriage.model_json_schema(), indent=2)
+
+system_prompt = f"""Classify the support ticket. Respond with ONLY a JSON object
+matching this schema exactly, no markdown, no extra text:
+
+{schema_text}
+"""
+```
+
+This scales far better than hand-describing every field as the schema grows, and it can never drift out of sync with the actual Pydantic model, since it's generated from it directly.
+
+<WhyItMatters>
+
+Some providers offer a "JSON mode" or structured-output feature that constrains generation server-side so malformed JSON becomes far rarer. That reduces failures, but it doesn't replace validation — a syntactically valid JSON object can still have the wrong types, an invalid enum value, or a missing field, so `model_validate` still has to run every time.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Trusting `response.choices[0].message.content` as if it were already validated because you asked for JSON. Requesting a shape and receiving that shape are two different guarantees — the second one only exists after `model_validate` succeeds.
+
+</CommonMistake>
+
+<ProductionNote>
+
+When validation fails, log the raw response alongside the validation error, not just "invalid output." Without the raw text, you can't tell whether the model returned malformed JSON, valid JSON with the wrong shape, or valid JSON with a subtly wrong value — three different problems with three different fixes.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-structured-output-1" difficulty="easy">
+
+Add an optional `assignee: str | None = None` field to `TicketTriage`. Explain the difference between this and a required `assignee: str`.
+
+<Solution>
+
+```python
+class TicketTriage(BaseModel):
+    category: Literal["billing", "bug", "feature_request", "other"]
+    priority: Literal["low", "medium", "high"]
+    summary: str = Field(max_length=200)
+    tags: list[str] = Field(default_factory=list)
+    assignee: str | None = None
+```
+
+A required `str` field means the model must always produce a value, even a made-up one, to satisfy validation. The optional version lets the model correctly represent "no assignee yet" as `None` instead of being forced to invent something.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-structured-output-2" difficulty="medium">
+
+The model returns `{"category": "Billing", "priority": "high", "summary": "..."}`. Validation fails. Identify the exact problem and whether it's a JSON problem or a schema-match problem.
+
+<Solution>
+
+It's a schema-match problem, not a JSON syntax problem — the object parses fine as JSON, but `"Billing"` (capitalized) doesn't match any of the `Literal["billing", "bug", "feature_request", "other"]` values, which are case-sensitive. The fix is either normalizing the value before validation (`.lower()`) or being more explicit in the prompt about exact casing.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-structured-output-3" difficulty="hard">
+
+Write a function `parse_triage(raw: str) -> TicketTriage` that raises a single, clearly-labeled exception whether the failure is a JSON parse error or a Pydantic validation error, while still preserving the original error for logging.
+
+<Solution>
+
+```python
+import json
+from pydantic import ValidationError
+
+class TriageParseError(Exception):
+    pass
+
+def parse_triage(raw: str) -> TicketTriage:
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError as error:
+        raise TriageParseError(f"not valid JSON: {error}") from error
+    try:
+        return TicketTriage.model_validate(data)
+    except ValidationError as error:
+        raise TriageParseError(f"JSON didn't match schema: {error}") from error
+```
+
+One exception type for the caller to catch, with `from error` preserving the real cause for logs.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-structured-output-4" difficulty="interview">
+
+Interview-style: "If a provider offers a JSON-mode feature that guarantees syntactically valid JSON, do you still need Pydantic validation?" Answer in three sentences or fewer.
+
+<Solution>
+
+Yes — JSON mode guarantees the output parses as JSON, but it says nothing about whether the object matches your specific schema, has the right types, or uses valid enum values. A syntactically valid `{"category": "Billing"}` still fails your schema if "Billing" isn't an allowed value. Syntax validity and schema validity are different guarantees, and only Pydantic checks the second one.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-structured-output-5" difficulty="real-world">
+
+Your triage feature has been running for a month. You discover 2% of tickets silently got `category: "other"` because the model's raw output failed validation and a broad `except Exception: return default_ticket()` swallowed the real error. Using only what this lesson covered, describe what should have happened instead.
+
+<Solution>
+
+The production note in this lesson covers exactly this: every validation failure should have logged the raw model output alongside the specific error, so someone could see *why* 2% of tickets failed instead of silently defaulting. A silent fallback that never surfaces is functionally invisible data corruption — the fix isn't necessarily "never fall back," it's "never fall back without logging enough to diagnose the pattern afterward."
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="If a model's structured output feature is enabled, will validation errors stop happening entirely?">
+
+No. Provider-side structured output features reduce malformed JSON, but they generally enforce syntax and sometimes basic shape, not your full business-logic constraints (a `Field(max_length=200)`, a specific `Literal` set your provider doesn't know about, or cross-field rules). Keep validating.
+
+</Gotcha>
+
+<Gotcha question="Does model_json_schema() always produce a schema the model will follow perfectly?">
+
+No — it produces an accurate description, but the model still has to generate output that matches it, and generation is still probabilistic. A complex nested schema is harder to satisfy reliably than a flat one; simplifying the schema is a legitimate reliability lever, not just a code-cleanliness one.
+
+</Gotcha>
+
+<Gotcha question="Is it safe to use model_construct() instead of model_validate() to skip validation and go faster?">
+
+No, not for model output — `model_construct()` deliberately skips validation, which defeats the entire purpose of using a schema for untrusted model output in the first place. It exists for cases where data is already known-trusted (like reloading your own validated data), not for anything coming from outside your code.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can generate a prompt directly from a Pydantic schema, and you can distinguish a JSON-syntax failure from a schema-mismatch failure when validation fails.
+
+</Checkpoint>
+
+## Summary
+
+A Pydantic model is both the prompt's specification and your code's validation gate — generate the prompt's schema description from it so the two can't drift apart. Provider JSON-mode features reduce malformed syntax but never replace validation, since a syntactically valid object can still violate your schema.
+
+Log the raw output on every validation failure; it's the only way to tell three different failure modes apart. The next lesson turns all of this into a repeatable regression test suite.

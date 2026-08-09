@@ -1,0 +1,190 @@
+---
+id: genai-tool-project
+title: A Tool-using Assistant
+description: Combine several tools in one assistant, handle a tool that fails, and return a final answer grounded in tool results.
+module: tool-and-function-calling
+order: 4
+estimatedMinutes: 45
+prerequisites: [genai-tool-safety]
+learningObjectives:
+  - Combine several tools in one assistant
+  - Handle a tool that fails
+  - Return a final answer grounded in tool results
+---
+
+## Multiple tools change the shape of the problem
+
+One tool is a single decision: use it or don't. Several tools introduce a real problem — the model has to pick the *right one*, sometimes chain several together, and your dispatcher has to stay correct as the registry grows.
+
+This lesson is where the previous three lessons' pieces (schema design, the loop, safe dispatch) get exercised together, because that's the only way to see where they actually rub against each other.
+
+```python title="multi_tool_registry.py"
+TOOLS = [CHECK_ORDER_TOOL, CHECK_REFUND_ELIGIBILITY_TOOL, ISSUE_REFUND_TOOL]
+
+TOOL_REGISTRY = {
+    "check_order_status": (CheckOrderArgs, check_order_status),
+    "check_refund_eligibility": (CheckEligibilityArgs, check_refund_eligibility),
+    "issue_refund": (IssueRefundArgs, issue_refund),
+}
+DESTRUCTIVE_TOOLS = {"issue_refund"}
+```
+
+Three tools that build on each other: check an order, check whether *that* order is refund-eligible, and only then issue the refund. A question like "can you refund ORD-4471?" genuinely needs all three, in order, informed by each previous result — precisely the multi-turn behavior from lesson 2.
+
+<Concept>
+
+A well-designed multi-tool assistant reads like a small state machine even though nothing forces it into that shape explicitly: certain tools are only sensible after certain others have run. You can't fully prevent the model from calling them out of order, but a tool like `issue_refund` can (and should) re-verify eligibility itself rather than trusting that the model called things in the "right" sequence first.
+
+</Concept>
+
+## A tool call will eventually fail
+
+Not "might." A downstream service will time out, an order ID won't exist, a database connection will drop — and the question is whether that failure becomes a crash, an infinite retry, or a message the model can actually reason about and communicate to the user.
+
+```python title="tool_failure_handling.py"
+def check_order_status(order_id: str) -> str:
+    try:
+        order = orders_service.get(order_id)
+    except OrderNotFoundError:
+        return f"No order found with ID {order_id}. Ask the customer to double-check it."
+    except ServiceUnavailableError:
+        return "The order lookup service is temporarily unavailable. Try again shortly."
+    return f"Order {order_id} status: {order.status}, last updated {order.updated_at}."
+```
+
+The critical move here: a tool failure becomes a **string result the model receives**, not a Python exception that kills the loop. The model can read "no order found" and respond sensibly to the user; it cannot do anything useful with an unhandled `OrderNotFoundError` traceback, because that never reaches it at all.
+
+<WhyItMatters>
+
+This is the same principle from Module 1's assignment — partial failure shouldn't take down the whole interaction. A tool that fails gracefully lets the model recover ("let me double check that ID with you") instead of the entire assistant crashing on one bad lookup.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Letting a tool raise an unhandled exception and catching it generically at the top of the loop with `"Something went wrong."` The model — and the user — deserve to know *what* went wrong in terms specific enough to act on, the same distinction Module 1 drew between a silent fallback and a diagnosable one.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Ground the final answer explicitly. Before returning the model's last message to the user, it's worth asking: did every factual claim in this answer actually come from a tool result, or did the model add something on top? For high-stakes assistants, some teams add an explicit final "cite which tool result supports each claim" step — overkill for a demo, standard practice for anything touching money or medical/legal topics.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-tool-project-1" difficulty="easy">
+
+Add a fourth tool, `list_recent_orders(customer_id: str)`, to `TOOL_REGISTRY` following the pattern in this lesson.
+
+<Solution>
+
+```python
+class ListOrdersArgs(BaseModel):
+    customer_id: str
+
+TOOL_REGISTRY["list_recent_orders"] = (ListOrdersArgs, list_recent_orders)
+```
+
+Same shape as every other entry: an args model paired with the real function, added to the registry and the `TOOLS` schema list sent to the API.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-project-2" difficulty="medium">
+
+A user asks "refund my last order" without specifying an order ID. Trace what should happen across the three tools in `multi_tool_registry.py`.
+
+<Solution>
+
+The model has no order ID yet, so a well-designed assistant should call `list_recent_orders` first (or ask the user directly if that tool doesn't exist), then `check_order_status` and `check_refund_eligibility` on the result before ever reaching `issue_refund` — the ambiguous request should drive *more* tool calls and clarification, not a guess at which order was meant.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-project-3" difficulty="hard">
+
+`check_refund_eligibility` calls a fraud-check service that times out about 2% of the time. Write the function so a timeout doesn't crash the loop and gives the model something actionable.
+
+<Solution>
+
+```python
+def check_refund_eligibility(order_id: str) -> str:
+    try:
+        result = fraud_service.check(order_id, timeout=5)
+    except TimeoutError:
+        return (
+            f"Could not verify refund eligibility for {order_id} — the fraud check "
+            "service timed out. Do not issue a refund yet; ask the customer to try "
+            "again in a few minutes, or escalate to a human."
+        )
+    return f"Order {order_id} is {'eligible' if result.eligible else 'not eligible'} for refund."
+```
+
+The message doesn't just report failure — it explicitly tells the model not to proceed to `issue_refund`, since eligibility couldn't actually be confirmed.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-project-4" difficulty="interview">
+
+Interview-style: "Why return a plain string from a failed tool call instead of raising an exception and catching it in the loop?" Answer in three sentences or fewer.
+
+<Solution>
+
+Because the model is the thing that needs to *understand* the failure and decide what to do next — an exception caught generically outside the loop can stop execution, but it can't be reasoned about by the model the way a descriptive string result can.
+
+Returning a clear string keeps the failure inside the normal message flow, so the model can apologize, retry a different way, or ask for clarification, exactly as if the tool had "succeeded" with bad news.
+
+Exceptions are for genuinely unexpected code bugs, not expected failure modes like "order not found."
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-project-5" difficulty="real-world">
+
+Your team ships a support assistant with `check_order_status`, `check_refund_eligibility`, and `issue_refund`. In testing, it correctly refuses to refund an ineligible order — but it does so by explaining the eligibility rules in detail, including the exact fraud-score threshold used internally. Using only what this lesson covered, name the fix.
+
+<Solution>
+
+The fix is in what the tool *returns*, not in the model's judgment — `check_refund_eligibility` should return an answer shaped for a customer-facing conversation ("not eligible, requires manual review") rather than internal implementation detail like a fraud-score threshold, because whatever a tool returns is exactly what the model has available to explain to the user.
+
+If a detail shouldn't reach the customer, it shouldn't be in the tool's return value in the first place — this is the same boundary discipline as never returning a database row directly from an API response.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Can you stop a model from calling tools out of a sensible order just by describing the right order in the system prompt?">
+
+Only partially — as covered in lesson 3, a system prompt shapes behavior, it doesn't enforce it. The reliable fix is defensive tools: `issue_refund` re-checking eligibility itself rather than trusting that `check_refund_eligibility` was called first, so an out-of-order call sequence fails safely instead of skipping a required check.
+
+</Gotcha>
+
+<Gotcha question="If a tool call fails, does the loop from lesson 2 need special-case code to handle it?">
+
+No, and that's the point of this lesson's core technique — a failed tool returns a normal string result through the exact same `"role": "tool"` message path a successful call uses. The loop itself doesn't need to know or care whether a call "succeeded"; only the tool function's own return value communicates that.
+
+</Gotcha>
+
+<Gotcha question="Does grounding the final answer in tool results happen automatically just because tools were used somewhere in the conversation?">
+
+No — nothing stops a model from adding an unsupported detail on top of real tool results in its final response, the same hallucination risk from Module 1 applied to the last step of a tool-using conversation. For anything high-stakes, that final answer deserves the same skepticism as any other model output, not a free pass because tools were involved earlier.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can register several related tools that build on each other, make a failing tool return an actionable message instead of crashing, and explain why the final answer still needs grounding even after real tool calls succeeded.
+
+</Checkpoint>
+
+## Summary
+
+Multiple tools turn a single yes/no decision into routing and sequencing, and the tools most worth writing defensively are the ones downstream of another tool's result — never trust that the model called things in the right order. A failed tool call should return a clear, actionable string through the normal loop, not raise an exception that kills the conversation.
+
+The module assignment builds a complete assistant applying every one of these lessons to a realistic support scenario.

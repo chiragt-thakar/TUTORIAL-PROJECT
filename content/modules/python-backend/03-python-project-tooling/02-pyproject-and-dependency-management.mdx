@@ -1,0 +1,152 @@
+---
+id: tooling-pyproject
+title: pyproject.toml and Dependency Management
+description: "Read the modern project contract: metadata, build systems, dependency groups, and commands."
+module: python-project-tooling
+order: 2
+estimatedMinutes: 40
+prerequisites: [tooling-env]
+learningObjectives:
+  - Explain pyproject sections
+  - Separate runtime and development dependencies
+  - Choose application packaging settings
+---
+
+## One project contract
+
+`pyproject.toml` standardizes build configuration and stores tool settings. `[project]` describes installable metadata and runtime dependencies. `[build-system]` tells build frontends how to create distributions. `[tool.*]` namespaces configure tools such as Ruff and mypy.
+
+```toml title="pyproject.toml"
+[project]
+name = "task-api"
+version = "0.1.0"
+requires-python = ">=3.13"
+dependencies = ["fastapi>=0.116,<1"]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.12", "mypy>=1.16"]
+
+[tool.uv]
+package = true
+```
+
+An application still benefits from being an installable package: imports work the same in tests, scripts, and production. The build backend does not run the application; it defines how source becomes a wheel or source distribution.
+
+## Constraints and lockfiles
+
+Declare compatible direct-dependency ranges in `pyproject.toml`; let the lock record exact transitive versions. A broad unreviewed `>=` can admit a future breaking release. An exact pin for every direct dependency can make security updates unnecessarily coupled. The team's update policy matters more than a universal range style.
+
+Runtime dependencies are required to execute the service. Test, lint, and type tools belong in a development group. Optional features belong in extras when consumers choose them; application-only developer workflows usually belong in dependency groups.
+
+<TypeScriptComparison>
+
+`[project.dependencies]` resembles `dependencies`, dependency groups resemble development tool groups, and a build backend has no precise npm equivalent because Python distribution formats require standardized builders.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Do not manually edit the lockfile. Change the declared dependency with the package manager, review the resolved diff, and run tests.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Package metadata and the lockfile solve different problems. Deploy applications from a reviewed lock, but keep declared compatibility truthful so dependency automation can propose understandable updates.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="tooling-pyproject-1" difficulty="easy">
+
+Classify FastAPI, SQLAlchemy, pytest, Ruff, and mypy into runtime or development dependencies.
+
+<Solution>
+
+FastAPI and SQLAlchemy are runtime dependencies. pytest, Ruff, and mypy are development dependencies unless a production command explicitly imports them—which it should not need to.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-pyproject-2" difficulty="medium">
+
+Explain why a project with `src/task_api` should remain installable even if it is never published to PyPI.
+
+<Solution>
+
+Installation gives every command the same import behavior and metadata. Tests no longer pass merely because the repository root accidentally appears on `sys.path`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-pyproject-3" difficulty="hard">
+
+Where should Ruff configuration live, and why?
+
+<Solution>
+
+Place it under `[tool.ruff]` and related sub-tables in `pyproject.toml`. This keeps project policy versioned beside package and checker configuration.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-pyproject-4" difficulty="interview">
+
+Interview-style: "Why declare `fastapi>=0.116,<1` in `pyproject.toml` when `uv.lock` already pins the exact resolved version?" Answer in three sentences or fewer.
+
+<Solution>
+
+The declared range and the lock answer different questions: the range states what the project is *compatible with*; the lock states what actually gets installed *right now*. Dropping the range would make future upgrade decisions unclear. Keeping both means humans read intent from `pyproject.toml`, and tooling reads exact reproducibility from the lock.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-pyproject-5" difficulty="real-world">
+
+A production incident review finds that a transitive dependency silently jumped two major versions during a routine `uv add` for an unrelated package, and it broke a serialization behavior in prod. Using only what this lesson covered, explain what governance gap allowed this and how the team's dependency policy should change.
+
+<Solution>
+
+Nothing in this lesson's setup catches that automatically — the lockfile records whatever the resolver picks, and an unreviewed `uv add` can pull in a wide compatible-range bump for a dependency nobody was looking at. The gap is process, not tooling: the resolved lock diff was never reviewed before merge.
+
+The fix is treating `uv.lock` changes as reviewable artifacts, not generated noise — diff the lock in PR review the same way you'd review a schema migration, and separate "I added a package" changes from "unrelated transitive versions moved" so the latter gets a deliberate look.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does a broad version range like `fastapi>=0.116` protect you from breaking changes?">
+
+No — a `>=` range with no upper bound only promises the resolver *can* pick anything newer, including a future breaking major version, unless something else constrains it. The lockfile pins what's actually installed today, but the next `uv sync` after a range-permitted release can pull in a break. Review lock diffs, don't just trust the range.
+
+</Gotcha>
+
+<Gotcha question="Is a project that will never be published to PyPI exempt from needing a `[build-system]` section?">
+
+No — `[build-system]` isn't about publishing, it's about installability. Tools like uv still need a build backend to install your package into its own environment in editable mode, which is what makes `from task_api...` imports work correctly in tests.
+
+</Gotcha>
+
+<Gotcha question="Do dependency groups (`[dependency-groups]`) and optional extras (`[project.optional-dependencies]`) mean the same thing?">
+
+No — extras are for consumers of your package who opt into optional runtime features (`pip install yourpkg[redis]`), while dependency groups are for your own project's developer-only workflows (test, lint, type-check tools) that never ship to consumers at all.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can separate project metadata, build instructions, dependency intent, resolved versions, and tool policy.
+
+</Checkpoint>
+
+## Summary
+
+`pyproject.toml` is the readable project contract; a build backend packages it; dependency groups separate developer tools; and a lockfile makes an application reproducible.

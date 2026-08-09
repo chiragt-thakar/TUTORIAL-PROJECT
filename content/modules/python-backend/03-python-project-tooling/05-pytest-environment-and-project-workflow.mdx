@@ -1,0 +1,188 @@
+---
+id: tooling-tests
+title: pytest, Environment Variables, and the Project Workflow
+description: Test the service layer, handle configuration safely, and define repeatable developer commands.
+module: python-project-tooling
+order: 5
+estimatedMinutes: 45
+prerequisites: [tooling-quality]
+learningObjectives:
+  - Write focused pytest tests
+  - Handle environment variables without leaking secrets
+  - Use one repeatable validation workflow
+---
+
+## Tests describe behavior
+
+pytest discovers `test_*.py` files and plain `test_*` functions. Use direct `assert` statements; pytest rewrites them to show useful differences. One test should establish a clear state, perform one behavior, and verify related outcomes.
+
+```python title="tests/test_service.py"
+import pytest
+
+def test_complete_marks_existing_task_done() -> None:
+    repository = InMemoryTaskRepository()
+    task = repository.create("Ship API")
+    service = TaskService(repository)
+
+    completed = service.complete(task.id)
+
+    assert completed.status is TaskStatus.DONE
+    assert repository.get(task.id) == completed
+
+def test_complete_rejects_unknown_id() -> None:
+    service = TaskService(InMemoryTaskRepository())
+    with pytest.raises(TaskNotFoundError, match="missing"):
+        service.complete(TaskId("missing"))
+```
+
+Fixtures provide reusable setup through dependency injection. Prefer small fixtures with visible scope. A session-scoped mutable fake can leak state; function scope is the default for a reason. Parametrization is ideal when many inputs share one behavior.
+
+## Configuration is input
+
+Environment variables are process-level strings. Read them in one configuration boundary, convert them to typed values, and pass settings inward. Never read scattered environment values deep inside domain code.
+
+Use `.env` for local convenience only when a settings loader explicitly supports it. Commit `.env.example` with safe placeholders; ignore `.env`; never place production secrets in source, tests, screenshots, or default values.
+
+```python
+import os
+
+def require_database_url() -> str:
+    value = os.environ.get("TASK_API_DATABASE_URL")
+    if not value:
+        raise RuntimeError("TASK_API_DATABASE_URL is required")
+    return value
+```
+
+Later `pydantic-settings` will make typed configuration richer, but the architectural rule stays the same.
+
+## The developer contract
+
+Document exact commands and keep them boring:
+
+```bash
+uv sync --locked
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy src tests
+uv run pytest
+```
+
+Run commands from repository root. CI should use the same lock and commands. A task runner is optional; add one only when it reduces real repetition.
+
+<CommonMistake>
+
+Tests that depend on your shell's existing environment can pass locally and fail in CI. Set configuration explicitly with pytest's `monkeypatch` and remove it after the test automatically.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Fail fast on missing required configuration at application startup, but avoid importing settings as a global singleton in modules that tooling and tests need to import independently.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="tooling-tests-1" difficulty="easy">
+
+Parametrize title validation over an empty string and whitespace-only strings.
+
+<Solution>
+
+```python
+@pytest.mark.parametrize("title", ["", " ", "\n\t"])
+def test_create_rejects_blank_title(title: str) -> None:
+    with pytest.raises(ValueError, match="title is required"):
+        InMemoryTaskRepository().create(title)
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-tests-2" difficulty="medium">
+
+Test a required environment function without changing the developer's real environment permanently.
+
+<Solution>
+
+```python
+def test_database_url_is_required(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.delenv("TASK_API_DATABASE_URL", raising=False)
+    with pytest.raises(RuntimeError):
+        require_database_url()
+```
+
+pytest restores the environment after the test.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-tests-3" difficulty="hard">
+
+A test asserts a private `_tasks` dictionary. Improve it.
+
+<Solution>
+
+Assert through public behavior: retrieve the task, list tasks, update it, or expect a not-found error. Testing the private representation prevents safe refactoring without proving more user-visible behavior.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-tests-4" difficulty="interview">
+
+Interview-style: "Why is a session-scoped pytest fixture riskier for mutable test state than a function-scoped one?" Answer in three sentences or fewer.
+
+<Solution>
+
+A session-scoped fixture is created once and reused across every test in the run, so if it's mutable and any test mutates it, later tests silently inherit that leftover state. That produces order-dependent failures — a test passes alone but fails as part of the suite, or vice versa — which are painful to debug because the cause is a test that ran earlier, not the one that failed.
+
+Function scope (pytest's default) rebuilds the fixture per test, trading a little setup cost for test isolation.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-tests-5" difficulty="real-world">
+
+A test suite passes reliably on every developer's laptop but fails intermittently in CI with a "TASK_API_DATABASE_URL not set" error, even though CI's environment does export it. Using only what this lesson covered, propose a diagnosis path and fix.
+
+<Solution>
+
+The likely cause is a test order problem: some earlier test used `monkeypatch.delenv` or `monkeypatch.setenv` on that variable without proper isolation, or manually mutated `os.environ` instead of going through `monkeypatch`, and that mutation leaked into a later test. It would "pass on laptops" if developers happen to run a subset of tests, or if execution order there doesn't trigger it, while CI's full-suite, possibly-parallelized run exposes the ordering dependency.
+
+The diagnosis path is to run the full suite locally with `-p no:randomly` toggled both ways (or however order is controlled) to see if order matters, and audit every place that touches that environment variable for a raw `os.environ` mutation instead of `monkeypatch`. The fix is consistently routing all environment mutation through `monkeypatch`, which pytest guarantees to undo after each test regardless of pass/fail.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does `pytest.raises` alone confirm the right error was raised, not just any error?">
+
+No, not unless you narrow it — `pytest.raises(ValueError)` accepts any `ValueError`, including one raised for a completely unrelated reason inside the code path. Always pair it with `match=` against the specific message, or assert on structured exception attributes, so the test fails if the wrong `ValueError` is the one actually raised.
+
+</Gotcha>
+
+<Gotcha question="Is reading `os.environ` directly inside a service function harmless if it's simple?">
+
+No — even a single scattered `os.environ.get(...)` deep in domain or service code couples that code to process-global state, making it harder to test in isolation and easy to accidentally depend on unset variables in a new environment. Read environment variables once at a configuration boundary and pass typed values inward.
+
+</Gotcha>
+
+<Gotcha question="Does `.env.example` need real, working values to be useful?">
+
+No — and it specifically should not have them. Its job is to document which variables exist and their shape (`DATABASE_URL=postgresql://user:pass@localhost:5432/db`), not to provide working credentials. Real secrets belong in a secrets manager or untracked `.env`, never in anything committed.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can write behavior-focused pytest tests, control environment input safely, and reproduce the complete quality loop from a clean checkout.
+
+</Checkpoint>
+
+## Summary
+
+pytest rewards simple tests and explicit fixtures. Environment variables belong at one configuration boundary. A short, locked validation sequence becomes the shared developer and CI contract.
+

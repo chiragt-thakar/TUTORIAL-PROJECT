@@ -1,0 +1,207 @@
+---
+id: genai-tool-safety
+title: Safety Around Tool Execution
+description: Never let a model-generated call run unchecked against real systems.
+module: tool-and-function-calling
+order: 3
+estimatedMinutes: 45
+prerequisites: [genai-tool-loop]
+learningObjectives:
+  - Whitelist allowed tools and parameters
+  - Add confirmation for destructive actions
+  - Sandbox or rate-limit tool execution
+---
+
+## The model is not your authorization layer
+
+Here's a mental model worth internalizing early: a tool call from a model is a *suggestion*, not a *permission*. The moment your `dispatch()` function executes a call without a check, you've delegated your system's authorization decisions to a text predictor that has no concept of your business rules, your account boundaries, or what "destructive" means.
+
+This isn't hypothetical caution. It's the exact same reasoning behind never trusting client-supplied data in a web API — a tool call is client-supplied data, it just came from a model instead of a browser.
+
+```python title="unsafe_dispatch.py"
+# Don't do this.
+def dispatch(call):
+    fn = globals()[call.function.name]
+    args = json.loads(call.function.arguments)
+    return fn(**args)
+```
+
+This pattern — dynamically resolving and calling whatever function name the model produced, with whatever arguments it produced — is the tool-calling equivalent of `eval()` on user input. If `call.function.name` is ever something you didn't explicitly intend to expose, or `args` contains something your function didn't validate, you've built an injection vulnerability with extra steps.
+
+<Concept>
+
+**Least-privilege dispatch** means your code only ever executes an explicit, finite set of known tools, each with its own argument validation — never a dynamic lookup by name. The model choosing among tools you've deliberately exposed is safe by construction; the model choosing among *anything callable in your codebase* is not.
+
+</Concept>
+
+## A safe dispatcher, piece by piece
+
+```python title="safe_dispatch.py"
+from pydantic import BaseModel, ValidationError
+
+class CheckOrderArgs(BaseModel):
+    order_id: str
+
+class IssueRefundArgs(BaseModel):
+    order_id: str
+    amount_cents: int
+
+TOOL_REGISTRY = {
+    "check_order_status": (CheckOrderArgs, check_order_status),
+    "issue_refund": (IssueRefundArgs, issue_refund),  # a destructive action
+}
+DESTRUCTIVE_TOOLS = {"issue_refund"}
+
+def dispatch(call, confirm) -> str:
+    entry = TOOL_REGISTRY.get(call.function.name)
+    if entry is None:
+        return f"Error: {call.function.name} is not an available tool."
+
+    args_model, fn = entry
+    try:
+        args = args_model.model_validate_json(call.function.arguments)
+    except ValidationError as error:
+        return f"Error: invalid arguments — {error}"
+
+    if call.function.name in DESTRUCTIVE_TOOLS and not confirm(call.function.name, args):
+        return "Error: action was not confirmed and was not executed."
+
+    return fn(**args.model_dump())
+```
+
+Four checks, in order: is this tool even in the whitelist, do the arguments pass validation, does this specific tool require confirmation, and only then does real code run. Skipping any one of the four reopens exactly the hole it exists to close.
+
+<WhyItMatters>
+
+Notice `issue_refund` never actually gets less safe because a model is calling it instead of a human clicking a button — it's the same function, with the same validation, behind the same confirmation gate a human-triggered refund would go through. Tool calling doesn't change your security model; it's a new caller that has to go through the existing one.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Treating "the model was told not to do X in the system prompt" as a safety control. A system prompt is a strong hint, covered back in Module 2 — it reduces how often the model attempts something out of scope, but it is not where you enforce a boundary that actually matters. Enforcement belongs in `dispatch()`, not in prose the model might not follow.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Rate-limit tool execution per user and per tool, independent of whatever rate limit you already have on the LLM API calls themselves. A single conversation triggering `send_email` fifty times in a minute is a real-world failure mode worth its own limit, separate from "how many times did we call the model."
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-tool-safety-1" difficulty="easy">
+
+A new tool `delete_account(user_id: str)` is added to a support assistant. Which set does it belong in, and why?
+
+<Solution>
+
+`DESTRUCTIVE_TOOLS`. Any irreversible action — deleting data, issuing money, sending an external communication — needs a confirmation gate before execution, regardless of how confident the model's call looks.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-safety-2" difficulty="medium">
+
+The model calls a tool named `check_0rder_status` (a typo — zero instead of the letter O) that doesn't exist in `TOOL_REGISTRY`. Trace exactly what `safe_dispatch.py` does with this call.
+
+<Solution>
+
+`TOOL_REGISTRY.get("check_0rder_status")` returns `None`, so `dispatch` returns `"Error: check_0rder_status is not an available tool."` without ever attempting to look up or execute anything — the whitelist check fails closed, safely, instead of crashing or falling through to unintended behavior.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-safety-3" difficulty="hard">
+
+Add per-tool rate limiting to `safe_dispatch.py`: no more than 3 calls to any single tool per conversation.
+
+<Solution>
+
+```python
+def dispatch(call, confirm, call_counts: dict[str, int]) -> str:
+    entry = TOOL_REGISTRY.get(call.function.name)
+    if entry is None:
+        return f"Error: {call.function.name} is not an available tool."
+
+    call_counts[call.function.name] = call_counts.get(call.function.name, 0) + 1
+    if call_counts[call.function.name] > 3:
+        return f"Error: {call.function.name} has been called too many times in this conversation."
+
+    args_model, fn = entry
+    try:
+        args = args_model.model_validate_json(call.function.arguments)
+    except ValidationError as error:
+        return f"Error: invalid arguments — {error}"
+
+    if call.function.name in DESTRUCTIVE_TOOLS and not confirm(call.function.name, args):
+        return "Error: action was not confirmed and was not executed."
+
+    return fn(**args.model_dump())
+```
+
+`call_counts` needs to live outside a single `dispatch` call — pass it in from the loop that owns the conversation, the same way `messages` is owned by the caller.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-safety-4" difficulty="interview">
+
+Interview-style: "Why is `globals()[name]()`-style dynamic dispatch dangerous specifically in a tool-calling context, when it might be fine in other internal tooling?" Answer in three sentences or fewer.
+
+<Solution>
+
+In most internal tooling, the value fed into a dynamic lookup is controlled by a trusted developer or config file. In a tool-calling context, `name` is generated by a model responding to arbitrary user-influenced conversation, which makes it closer to unsanitized user input than trusted config — and `globals()` exposes everything in module scope, not just the tools you meant to offer.
+
+The combination of an untrusted source and an unrestricted target is exactly the shape of an injection vulnerability.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-safety-5" difficulty="real-world">
+
+A postmortem: an internal ops assistant with a `restart_service(name: str)` tool restarted a production database's connection pool because a user asked "can you restart the thing that's been slow?" and the model matched it to the wrong service. Using only what this lesson covered, name two independent layers that should have existed and didn't.
+
+<Solution>
+
+First, `restart_service` should have been in `DESTRUCTIVE_TOOLS`, requiring an explicit human confirmation showing exactly which service name was about to be restarted before execution — "can you restart the thing that's been slow" is far too vague to skip confirmation on an irreversible action.
+
+Second, the tool itself should validate `name` against a whitelist of known-safe services to restart via this path, rather than accepting any string, so an ambiguous match can't reach a critical system at all regardless of what the model decided.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does putting 'never restart the production database' in the system prompt prevent the model from calling a restart tool on it?">
+
+Not reliably, and this lesson's common mistake covers exactly why: a system prompt reduces the frequency of unwanted behavior, it doesn't enforce it. The database name still needs to be rejected by the tool's own validation or excluded from what's callable at all — the enforcement has to live in code that runs regardless of what the model decided to attempt.
+
+</Gotcha>
+
+<Gotcha question="Is validating arguments with Pydantic enough to make a tool safe to auto-execute?">
+
+Not on its own — Pydantic validation confirms the *shape* of the arguments is correct, not that the *action* is safe to perform without a human in the loop. A perfectly well-typed `issue_refund(order_id="ORD-1", amount_cents=50000)` is still a real refund; shape validation and action authorization are two separate checks.
+
+</Gotcha>
+
+<Gotcha question="Does rate-limiting tool calls protect against a single call that's individually destructive?">
+
+No — rate limiting protects against *repeated* problematic calls (like the fifty-emails-in-a-minute scenario), but a single destructive call executed once is still fully destructive. Rate limiting and confirmation gates solve different problems and you generally need both, not one instead of the other.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can explain why a tool call is untrusted input regardless of how it was generated, and you can build a dispatcher that whitelists, validates, and gates destructive actions before any real function runs.
+
+</Checkpoint>
+
+## Summary
+
+A tool call is a suggestion from a probabilistic text generator, never a permission — treat every dispatch the way you'd treat an incoming API request: whitelist what's callable, validate every argument, and gate destructive actions behind explicit confirmation. A system prompt shapes behavior; it is never where you enforce a real boundary.
+
+The final lesson in this module puts safe dispatch, the bounded loop, and multiple tools together into one working assistant.

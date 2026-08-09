@@ -1,0 +1,202 @@
+---
+id: genai-rag-evaluation
+title: Evaluating a RAG System
+description: Know whether your RAG system is actually grounded, not just fluent.
+module: retrieval-augmented-generation
+order: 4
+estimatedMinutes: 40
+prerequisites: [genai-rag-pipeline]
+learningObjectives:
+  - Check answers are supported by retrieved text
+  - Catch retrieval failures versus generation failures
+  - Build a small RAG evaluation set
+---
+
+## Fluent is not the same claim as grounded
+
+A RAG answer can be well-written, confident, and completely wrong — the model is still generating text token by token, and fluency is not evidence of correctness. Lesson 3 ended on "diagnose whether the wrong answer was retrieval or generation" by hand, reading logs.
+
+This lesson turns that manual diagnosis into a repeatable evaluation harness — the same eval-set discipline Module 4's assignment applied to plain search, now extended to check groundedness, not just relevance.
+
+## Two independent checks, not one score
+
+A RAG answer can fail in two genuinely different ways, and a single "did it get the right answer" pass/fail can't tell you which one happened:
+
+**Retrieval check**: did the expected chunk actually appear in the top-k results for this query? This only tests the search half of the pipeline — embeddings, chunking, ranking — with no model generation involved at all.
+
+**Groundedness check**: is the model's answer actually supported by the retrieved text, or did it drift, invent, or contradict it? This only tests the generation half, and only makes sense to run *given* that the right chunk was retrieved.
+
+```python title="rag_eval.py"
+EVAL_SET = [
+    {"query": "how do I get my money back", "expected_doc_id": "refunds", "expected_claim": "30 days"},
+    {"query": "I forgot my password", "expected_doc_id": "password-reset", "expected_claim": "Settings > Security"},
+]
+
+def check_retrieval(store: InMemoryVectorStore, query: str, expected_doc_id: str, top_k: int = 3) -> bool:
+    query_vector = embed([query])[0]
+    results = store.search(query_vector, top_k=top_k)
+    return any(entry.doc_id == expected_doc_id for entry, _ in results)
+
+def check_groundedness(answer: str, expected_claim: str) -> bool:
+    return expected_claim.lower() in answer.lower()
+```
+
+`check_groundedness` here is a deliberately crude substring check — good enough to demonstrate the split, and genuinely useful for facts with a stable, quotable form (a number, a specific phrase). It has an obvious ceiling.
+
+<Concept>
+
+The reason to keep these two checks **separate** rather than one combined pass/fail is diagnostic, not academic: a retrieval failure and a generation failure need completely different fixes (Lesson 2's chunking versus Lesson 3's prompt instructions), and a combined score can't tell you which one to reach for.
+
+Running them independently turns "the bot is sometimes wrong" into "retrieval is at 90%, groundedness is at 75% given correct retrieval" — two separately actionable numbers.
+
+</Concept>
+
+## Beyond substring matching: LLM-as-judge
+
+A substring check only works for facts with one fixed phrasing. For claims that can be correctly stated many different ways, a second model call can judge groundedness directly.
+
+```python title="llm_judge.py"
+JUDGE_PROMPT = (
+    "Context: {context}\n\nClaim: {claim}\n\n"
+    "Does the context support this claim? Answer only 'yes' or 'no'."
+)
+
+def llm_judge_groundedness(context: str, claim: str) -> bool:
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[{"role": "user", "content": JUDGE_PROMPT.format(context=context, claim=claim)}],
+    )
+    return response.choices[0].message.content.strip().lower().startswith("yes")
+```
+
+<WhyItMatters>
+
+LLM-as-judge is a well-established pattern precisely because "is this claim supported by this text" is a task models are reasonably good at — it's reading comprehension again, the same trick RAG itself relies on. It's cheap, scriptable, and catches paraphrased claims a substring check would miss entirely.
+
+It's also imperfect in the same ways any model output is, so treat judge verdicts as a strong signal to sample and spot-check, not an infallible oracle.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Eyeballing a handful of RAG answers, deciding they "sound reasonable," and calling the system validated. A fixed eval set with known-correct answers is what actually catches a regression — a chunking change, a prompt tweak, a model swap — before it reaches real users, the same lesson Module 4's assignment already applied to plain retrieval.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Track retrieval accuracy and groundedness rate as two separate metrics over time, and re-run the eval set on every meaningful change to chunking, the retrieval model, or the system prompt — treat it exactly like a test suite, because that's precisely what it is.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-rag-evaluation-1" difficulty="easy">
+
+For a given eval case, the expected chunk was retrieved but the model's answer doesn't mention the expected claim at all. Which check fails: retrieval, groundedness, or both?
+
+<Solution>
+
+Only groundedness fails — retrieval succeeded (the expected chunk was in the top-k), so the retrieval check passes; the model simply didn't produce an answer supported by the correct, available context, which is a generation-layer problem.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-rag-evaluation-2" difficulty="medium">
+
+Write the eval loop that runs `check_retrieval` and `check_groundedness` over `EVAL_SET`, printing a separate pass rate for each rather than one combined score.
+
+<Solution>
+
+```python
+def run_eval(store: InMemoryVectorStore) -> None:
+    retrieval_passes = 0
+    grounded_passes = 0
+    for case in EVAL_SET:
+        retrieved_ok = check_retrieval(store, case["query"], case["expected_doc_id"])
+        retrieval_passes += retrieved_ok
+        if retrieved_ok:
+            model_answer, _ = answer(store, case["query"])
+            grounded_passes += check_groundedness(model_answer, case["expected_claim"])
+
+    print(f"Retrieval: {retrieval_passes}/{len(EVAL_SET)}")
+    print(f"Groundedness (given correct retrieval): {grounded_passes}/{retrieval_passes or 1}")
+```
+
+Groundedness is only meaningfully checked when retrieval succeeded, which is why its denominator is `retrieval_passes`, not the full eval set.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-rag-evaluation-3" difficulty="hard">
+
+A team's eval set shows retrieval accuracy dropped from 95% to 70% after a chunking change, but groundedness (given correct retrieval) stayed at 90%. Explain what this tells them, and which lesson's fix applies.
+
+<Solution>
+
+The generation layer is unaffected — when the right chunk makes it into the prompt, the model still uses it correctly about as often as before.
+
+The regression is entirely in retrieval: the chunking change (Lesson 2) is producing chunks that no longer match queries as well as the old ones did, whether from worse structural boundaries, a size change that diluted embeddings, or lost metadata. The fix belongs in chunking strategy, not the system prompt.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-rag-evaluation-4" difficulty="interview">
+
+Interview-style: "Why do you need two separate checks — retrieval and groundedness — instead of one end-to-end 'is the final answer correct' check?" Answer in three sentences or fewer.
+
+<Solution>
+
+An end-to-end check tells you *that* something is wrong but not *where* — retrieval and generation are different subsystems with different failure causes and different fixes. Splitting the check lets you attribute a regression to a specific layer immediately instead of debugging the whole pipeline from scratch on every failure.
+
+It's the same reason you'd want separate test suites for a database layer and an API layer rather than one giant integration test that only tells you "something broke."
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-rag-evaluation-5" difficulty="real-world">
+
+A team relies entirely on an LLM-as-judge groundedness check with no human spot-checking, and ships a chunking change that the judge scores at 98% groundedness. Two weeks later, users report answers subtly misrepresenting numeric values the judge apparently didn't catch. Using only what this lesson covered, what went wrong and what should change?
+
+<Solution>
+
+The judge model is itself a probabilistic model output, not an infallible oracle — it can be systematically weaker at verifying precise numeric or quantitative claims than it is at verifying general topical support, and a 98% aggregate score can hide a specific, consistent blind spot like this. Treating the judge's verdict as ground truth with zero human sampling let that blind spot ship undetected.
+
+The fix is what this lesson's production note already implies: sample and manually spot-check a subset of judge verdicts, especially for claim types (like precise numbers) where an automated judge is more likely to be unreliable, rather than trusting the aggregate score alone.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="If a RAG answer sounds fluent and confident, does that mean it's grounded in the retrieved context?">
+
+No — fluency and correctness are unrelated properties of a generated answer. A model produces well-formed text whether or not it's faithfully using the provided context, which is exactly why groundedness needs to be checked explicitly rather than inferred from how convincing the answer reads.
+
+</Gotcha>
+
+<Gotcha question="Does a high overall eval pass rate mean both retrieval and generation are working well?">
+
+Not necessarily — a single combined score can mask one subsystem failing while the other compensates, or hide that the two failure rates are moving in opposite directions. Separate retrieval and groundedness metrics are what actually reveal which layer needs attention.
+
+</Gotcha>
+
+<Gotcha question="Is an LLM-as-judge groundedness check as reliable as a human review?">
+
+No — it's a fast, cheap, scriptable signal, not a ground-truth verdict. It can have systematic blind spots (numeric precision is a common one) the same way any model output can, so treat it as something to sample and validate against human judgment periodically, not something to trust unconditionally.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can build an eval set that checks retrieval and groundedness as two independent, separately actionable metrics, and you can explain why an LLM-as-judge groundedness check is a strong signal rather than an infallible one.
+
+</Checkpoint>
+
+## Summary
+
+A RAG system can fail at retrieval, at generation, or both — and only a two-layer eval harness (does the right chunk get retrieved, is the answer actually supported by it) tells you which one to fix. Substring checks work for stable, quotable facts; LLM-as-judge extends coverage to paraphrased claims at the cost of needing occasional human spot-checking.
+
+The assignment builds this full harness — retrieval, generation, and dual-layer evaluation — into one real, working tool.

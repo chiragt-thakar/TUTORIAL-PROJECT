@@ -1,0 +1,178 @@
+---
+id: types-tooling
+title: Advanced Typing and Type Checkers
+description: Use Literal, Final, ClassVar, overload, generic protocols, mypy, and pyright pragmatically.
+module: python-type-system
+order: 5
+estimatedMinutes: 40
+prerequisites: [types-models]
+learningObjectives:
+  - Constrain values precisely
+  - Use overload without lying
+  - Adopt strict checking incrementally
+---
+
+## Small tools with precise jobs
+
+`Literal` restricts a value to enumerated constants. `Final` tells checkers a name should not be rebound. `ClassVar` marks class-level data so dataclasses and checkers do not treat it as an instance field.
+
+```python
+from typing import ClassVar, Final, Literal
+
+DEFAULT_LIMIT: Final = 50
+SortDirection = Literal["asc", "desc"]
+
+class Task:
+    table_name: ClassVar[str] = "tasks"
+```
+
+These are static constraints. `Final` does not make an object deeply immutable and `Literal` does not reject runtime input.
+
+## Overloads describe correlated calls
+
+Use `@overload` when return type depends on argument shape in a way a union cannot express. Overload signatures are for checkers; one implementation handles runtime calls.
+
+```python
+from typing import Literal, overload
+
+@overload
+def fetch_task(task_id: str, *, required: Literal[True]) -> Task: ...
+@overload
+def fetch_task(task_id: str, *, required: Literal[False] = False) -> Task | None: ...
+
+def fetch_task(task_id: str, *, required: bool = False) -> Task | None:
+    task = repository.find(task_id)
+    if required and task is None:
+        raise TaskNotFoundError(task_id)
+    return task
+```
+
+Do not write overloads that claim more than the implementation guarantees. If the correlation is not valuable to callers, prefer the simple union.
+
+## mypy and pyright
+
+Both are mature static analyzers with different implementation and inference choices. Pyright powers Pylance and is fast; mypy is widely used and extensible. Pick one required checker in CI so developers share one verdict. Running both can be useful for libraries, but it increases policy cost.
+
+Start strict for new application code: disallow untyped definitions, warn on unused ignores, check untyped bodies, and prevent implicit optional behavior. For a legacy codebase, tighten package by package and measure the remaining escape hatches.
+
+```toml title="pyproject.toml"
+[tool.mypy]
+python_version = "3.13"
+strict = true
+warn_unreachable = true
+
+[tool.pyright]
+pythonVersion = "3.13"
+typeCheckingMode = "strict"
+```
+
+<CommonMistake>
+
+`# type: ignore` without an error code or explanation becomes permanent invisible debt. Narrow it to the specific diagnostic and link the library issue when a stub is wrong.
+
+</CommonMistake>
+
+<ProductionNote>
+
+The highest-value checks live at boundaries: service inputs and outputs, repository protocols, configuration, and serialization. Perfect typing inside one-off glue is less valuable than preventing `Any` from crossing those boundaries.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="types-tooling-1" difficulty="easy">
+
+Type a direction parameter that accepts only `asc` or `desc`.
+
+<Solution>
+
+```python
+from typing import Literal
+SortDirection = Literal["asc", "desc"]
+
+def order_tasks(direction: SortDirection) -> list[Task]: ...
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-tooling-2" difficulty="medium">
+
+When is `Final[list[str]]` insufficient for immutability, and what is a better annotation?
+
+<Solution>
+
+`Final` prevents rebinding the list name but permits `append`. Use `Final[tuple[str, ...]]` when the collection contents should also be immutable.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-tooling-3" difficulty="hard">
+
+Your project contains 200 untyped files. Propose a safe strictness rollout.
+
+<Solution>
+
+Require strict checking for new packages, check bodies in existing typed functions, enable reports for untyped definitions, then migrate one dependency-oriented package at a time. Keep CI on one configured checker and track explicit, coded ignores.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-tooling-4" difficulty="interview">
+
+Interview-style: "Why would you write `@overload` signatures instead of just typing a parameter as a union and letting callers narrow the result themselves?" Answer in three sentences or fewer.
+
+<Solution>
+
+A union return type like `Task | None` forces every caller to handle the `None` case even when the arguments they passed make `None` impossible — like calling with `required=True`. Overloads let the checker know that specific argument shapes correlate with specific, narrower return types, so a caller who passes `required=True` gets back a checker-verified `Task`, not `Task | None`.
+
+It's purely a static-analysis improvement — there's still one real implementation handling every call at runtime.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-tooling-5" difficulty="real-world">
+
+A codebase has 40 scattered `# type: ignore` comments with no explanation, accumulated over two years. A new teammate can't tell which ones are still-relevant workarounds versus stale suppressions of bugs that got fixed elsewhere. Using only what this lesson covered, describe the fix.
+
+<Solution>
+
+Require every `# type: ignore` to carry a specific error code and a short reason (`# type: ignore[arg-type]  # upstream stub is wrong, see issue #123`), the same discipline this lesson's common mistake calls out.
+
+That doesn't retroactively fix the existing 40, but going forward it turns an ignore from invisible debt into something searchable and reviewable — and existing ones can be triaged by whether the linked reason still applies.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does Final[list[str]] make the list itself immutable?">
+
+No — `Final` only prevents the *name* from being rebound to a different object; it says nothing about whether the object it points to can be mutated. `Final[list[str]]` still allows `.append()`, `.clear()`, and every other list mutation. For real content immutability, use an immutable container type like `tuple[str, ...]`.
+
+</Gotcha>
+
+<Gotcha question="Do overload signatures get checked against each other for consistency by Python itself at runtime?">
+
+No — `@overload`-decorated signatures are erased at runtime and exist purely for the static checker; only the final, undecorated implementation actually runs. Nothing at runtime verifies the overloads are honest about what the implementation does, which is exactly why the common mistake in this lesson warns against overloads that claim more than the implementation guarantees.
+
+</Gotcha>
+
+<Gotcha question="Is running both mypy and pyright in CI strictly better than picking one?">
+
+Not necessarily — the two checkers make different inference and edge-case decisions, so running both can produce two different sets of errors on the same code, which turns "is this code type-correct" into a judgment call about whose opinion wins. For most application codebases, one required checker as policy, chosen deliberately, beats the ambiguity of two disagreeing ones.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can identify whether a feature constrains a value, a binding, a class member, or a relationship between calls—and configure one checker as enforceable policy.
+
+</Checkpoint>
+
+## Summary
+
+Advanced typing tools should make public contracts more truthful. Use overloads sparingly, remember static markers do not validate runtime data, and make checker strictness an incremental team policy.
+

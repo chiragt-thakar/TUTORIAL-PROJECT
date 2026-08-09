@@ -1,0 +1,172 @@
+---
+id: genai-rag-why
+title: Why RAG, and When Not To
+description: The problem RAG solves, and simpler alternatives that solve it too.
+module: retrieval-augmented-generation
+order: 1
+estimatedMinutes: 40
+prerequisites: []
+learningObjectives:
+  - Explain hallucination and knowledge cutoffs
+  - Compare RAG to fine-tuning and long context
+  - Recognize when RAG is the wrong tool
+---
+
+## The model doesn't know your data, and it won't admit it
+
+An LLM's knowledge is frozen at training time and lives entirely in its weights — ask it about your company's refund policy, a document uploaded yesterday, or anything published after its training cutoff, and it doesn't return "I don't know." It returns something fluent and plausible, because fluent and plausible is what the training objective actually optimized for.
+
+That's a **hallucination**: a confident, well-formed answer that isn't grounded in anything true.
+
+```python title="ungrounded_answer.py"
+response = client.chat.completions.create(
+    model="gpt-4.1-mini",
+    messages=[{"role": "user", "content": "What's our refund window for annual plans?"}],
+)
+print(response.choices[0].message.content)
+# A specific-sounding number, invented, because the model was never told your policy.
+```
+
+**Retrieval-augmented generation (RAG)** fixes this by changing what question you're actually asking the model. Instead of "what do you know about refunds," you retrieve your actual refund policy text and ask "given this text, what's the refund window" — a reading-comprehension task the model is genuinely good at, instead of a recall task it can only fake.
+
+```python title="grounded_answer.py"
+policy_text = "Refunds are available within 30 days of purchase for annual plans."
+response = client.chat.completions.create(
+    model="gpt-4.1-mini",
+    messages=[
+        {"role": "system", "content": "Answer using only the provided context."},
+        {"role": "user", "content": f"Context: {policy_text}\n\nQuestion: What's our refund window for annual plans?"},
+    ],
+)
+```
+
+<Concept>
+
+RAG separates **what the model knows** (frozen, general, in its weights) from **what's true right now** (your documents, refreshed on every call). The model never needs to memorize your refund policy — the prompt just needs to contain it at answer time.
+
+This is the entire idea; everything else in this module is mechanics for doing it at scale over real documents, which is exactly where Module 4's chunking, embedding, and vector store work plugs in.
+
+</Concept>
+
+## RAG versus the alternatives
+
+RAG isn't the only way to get a model to answer from specific knowledge — it's the right tool for a specific shape of problem, not a universal upgrade.
+
+**Fine-tuning** bakes new behavior or knowledge into the model's weights through additional training. It's the right tool for teaching a model a *style*, a *format*, or a *skill* — not for injecting facts that change weekly, because retraining is slow and expensive compared to just changing what text you retrieve.
+
+**Long context** — just pasting your entire knowledge base into the prompt — works fine when that knowledge base is genuinely small and static. It stops working as the corpus grows: cost and latency scale with every token you send on every call, and models measurably lose track of information buried in the middle of very long contexts.
+
+<WhyItMatters>
+
+The decision isn't "RAG is advanced, so use it" — it's matching the tool to what's actually changing. Static and small: put it in the system prompt directly, no retrieval needed. Changes rarely and needs a skill or tone shift: fine-tune. Large, frequently updated, needs to be looked up per-query: that's RAG's actual sweet spot, and it's the one this module builds.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Reaching for a full RAG pipeline — chunking, embeddings, a vector store — for three static onboarding paragraphs that would fit entirely inside a system prompt with room to spare. That's real infrastructure and real failure modes (Lesson 4 covers what can go wrong) for a problem that a hardcoded string already solves correctly.
+
+</CommonMistake>
+
+<ProductionNote>
+
+RAG reduces ungrounded claims; it does not eliminate hallucination. A model can still ignore correctly retrieved context and answer from its own memory instead, misread a retrieved chunk, or confidently fill a gap the retrieved text doesn't actually cover. Lesson 4 covers how to actually verify grounding rather than assume it from architecture alone.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-rag-why-1" difficulty="easy">
+
+A support team's help-center content changes every time they publish an article — several times a week. In one sentence, why is RAG a better fit than fine-tuning a model on that content?
+
+<Solution>
+
+Fine-tuning would need to be repeated after every content change to stay current, which is slow and expensive relative to just re-indexing changed documents so the next query retrieves the updated text — RAG's knowledge source is refreshed by updating the corpus, not by retraining a model.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-rag-why-2" difficulty="medium">
+
+A team has exactly three onboarding paragraphs, totaling under 2,000 tokens, that essentially never change. Is building chunking, embedding, and vector-store infrastructure for this corpus justified? What's the simpler alternative?
+
+<Solution>
+
+No — three small, static paragraphs fit comfortably inside a system prompt with plenty of budget to spare, and a hardcoded (or config-loaded) string requires no retrieval infrastructure, no embedding calls, and has no retrieval-failure mode at all. Reach for RAG's machinery when the corpus is too large to fit in context or changes too often to hardcode, not by default.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-rag-why-3" difficulty="hard">
+
+A RAG bot answers a question incorrectly. Looking at the transcript, the correct chunk was retrieved and included in the prompt, but the model's answer contradicts it anyway. Is this a retrieval failure or a generation failure, and why does the distinction matter for how you'd fix it?
+
+<Solution>
+
+It's a generation failure — retrieval did its job (the right chunk made it into the prompt), but the model didn't faithfully use what it was given.
+
+This distinction matters because the fix is completely different depending on which layer broke: a retrieval failure gets fixed by improving chunking, embeddings, or the search itself (Lessons 2–3), while a generation failure gets fixed by tightening the system prompt's grounding instructions or the model's adherence to "answer only from context" (Lesson 3), covered in depth in Lesson 4's evaluation framework.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-rag-why-4" difficulty="interview">
+
+Interview-style: "What specific problem does RAG solve that fine-tuning does not, and vice versa?" Answer in three sentences or fewer.
+
+<Solution>
+
+RAG solves the problem of answering from knowledge that's large, frequently changing, or needs per-query lookup, without retraining anything — you just update what gets retrieved.
+
+Fine-tuning solves a different problem entirely: teaching a model a consistent style, format, or behavioral skill that should apply regardless of what's retrieved, which isn't something you can hand it via a prompt. They're complementary, not competing — a fine-tuned model can still use RAG for its facts.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-rag-why-5" difficulty="real-world">
+
+A team builds a customer-support RAG bot over their product catalog, which includes live inventory counts that change hourly. Users keep getting stale "in stock" answers even though the RAG pipeline is technically working correctly. Using only what this lesson covered, diagnose the likely cause.
+
+<Solution>
+
+This likely isn't a RAG bug at all — it's a mismatch between the tool and the problem. RAG grounds answers in whatever's in the indexed corpus *as of the last re-index*, so if inventory counts change hourly but the corpus is chunked and embedded on a slower cadence (daily, or only on deploy), every query in between retrieves accurate-looking but stale numbers.
+
+Fast-changing structured data like live inventory is usually better served by a tool call to a live inventory API (Module 3) than by RAG over periodically re-indexed text — RAG fits knowledge that's large and lookup-shaped, not state that changes faster than your indexing pipeline runs.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does RAG guarantee the model won't hallucinate?">
+
+No — it reduces the *opportunity* for hallucination by giving the model something true to answer from, but the model can still ignore retrieved context, misread it, or blend it with its own memorized (and possibly wrong) knowledge. Grounding needs to be verified, not assumed — the subject of Lesson 4.
+
+</Gotcha>
+
+<Gotcha question="Is RAG a strictly more advanced, strictly better replacement for fine-tuning?">
+
+No — they solve different problems and aren't ranked on a single "more advanced" scale. RAG injects up-to-date factual knowledge at query time; fine-tuning changes the model's underlying behavior, style, or skills. A production system often uses both for different reasons, not one instead of the other.
+
+</Gotcha>
+
+<Gotcha question="Does retrieving more chunks per query always improve answer quality?">
+
+No — irrelevant or excessive retrieved context can dilute what the model attends to (the same "lost in the middle" problem long-context stuffing runs into), while also costing more tokens and latency per call. More retrieved context is a tradeoff to tune against measured answer quality, not a free win.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can explain what hallucination actually is, why RAG addresses it differently than fine-tuning or long context does, and recognize a case where RAG is genuinely the wrong tool for the job.
+
+</Checkpoint>
+
+## Summary
+
+RAG works by changing the question you ask the model — from "what do you know" to "given this retrieved text, what does it say" — turning an unreliable recall task into a reliable reading-comprehension one. It's the right tool specifically for knowledge that's large, changes often, and needs per-query lookup; a static handful of facts belongs in the system prompt, and a needed behavior change belongs in fine-tuning.
+
+The next lesson covers the piece that determines whether retrieval finds the right text at all: chunking strategy.

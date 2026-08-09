@@ -1,5 +1,14 @@
 import { z } from "zod";
 
+export const trackSchema = z.object({
+  slug: z.string().min(1),
+  number: z.number().int().positive(),
+  title: z.string().min(1),
+  tagline: z.string().min(1),
+  description: z.string().min(1),
+  status: z.enum(["available", "planned"]),
+});
+
 const lessonBaseSchema = z.object({
   id: z.string().min(1),
   title: z.string().min(1),
@@ -14,6 +23,7 @@ export const frontmatterSchema = lessonBaseSchema.extend({ module: z.string().mi
 
 export const moduleSchema = z.object({
   slug: z.string().min(1),
+  track: z.string().min(1),
   number: z.number().int().positive(),
   title: z.string().min(1),
   description: z.string().min(1),

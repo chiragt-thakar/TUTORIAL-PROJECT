@@ -1,0 +1,168 @@
+---
+id: pydantic-serialization
+title: Serialization and Aliases
+description: Control output, aliases, and public API shapes.
+module: pydantic-foundations
+order: 3
+estimatedMinutes: 40
+prerequisites: [pydantic-nested]
+learningObjectives:
+  - Serialize models safely
+  - Map external and internal names
+---
+
+## Dump for the destination
+
+`model_dump()` returns Python values; `model_dump_json()` returns JSON text. JSON mode converts types such as UUID and datetime into JSON-compatible values.
+
+```python
+payload = task.model_dump(mode="json", exclude_none=True)
+json_text = task.model_dump_json(exclude_none=True)
+```
+
+`exclude_unset=True` is essential for PATCH semantics: it preserves the distinction between a field omitted by the client and one explicitly supplied as `None`. `exclude_defaults` removes values equal to their defaults; it answers a different question.
+
+## Input and output aliases
+
+Aliases translate boundary vocabulary without contaminating internal names.
+
+```python
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field
+
+class TaskRead(BaseModel):
+    model_config = ConfigDict(populate_by_name=True)
+
+    task_id: str = Field(
+        validation_alias=AliasChoices("taskId", "id"),
+        serialization_alias="taskId",
+    )
+```
+
+This can accept a legacy `id` or current `taskId`, while emitting one canonical key with `model_dump(by_alias=True)`. Use compatibility aliases during deliberate migrations, not to accept arbitrary spellings forever.
+
+## Response schemas are allowlists
+
+Never serialize database models with `__dict__`. Define response models containing exactly the public fields. Pydantic can validate from attributes with `ConfigDict(from_attributes=True)`, but that does not make ORM objects safe to expose.
+
+```python
+class UserRead(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: str
+    display_name: str
+```
+
+The absence of `password_hash` is a security property. Separate read, create, update, and internal schemas when their fields and permissions differ.
+
+<TypeScriptComparison>
+
+Renaming keys in TypeScript usually requires explicit mapping at runtime. Pydantic aliases integrate parsing, serialization, and generated JSON Schema, but the public wire name still needs intentional stability.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Do not use `exclude_none=True` for PATCH updates when explicit `null` means “clear this field.” Use `exclude_unset=True` and keep supplied `None` values.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Changing serialization aliases is an API change even when Python field names remain stable. Version and test the wire contract, not only the model class.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="pydantic-serialization-1" difficulty="easy">
+
+A patch model has `description: str | None = None`. Extract only keys the client supplied while preserving explicit `None`.
+
+<Solution>
+
+```python
+changes = patch.model_dump(exclude_unset=True)
+```
+
+Do not add `exclude_none=True` because it would erase the request to clear the description.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-serialization-2" difficulty="medium">
+
+Accept `projectId` and emit `projectId` while using `project_id` internally.
+
+<Solution>
+
+Declare `project_id: str = Field(alias="projectId")`, enable population by name if internal construction needs it, and dump with `by_alias=True`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-serialization-3" difficulty="hard">
+
+Explain why a response model is safer than returning an ORM user directly.
+
+<Solution>
+
+It is an explicit public allowlist, validates the response shape, avoids leaking unloaded/internal attributes, and keeps persistence changes from silently changing the API.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-serialization-4" difficulty="interview">
+
+Interview-style: "Does `model_dump()` return JSON-safe output by default?" Answer in three sentences or fewer.
+
+<Solution>
+
+No, not necessarily — `model_dump()` defaults to Python mode, which keeps native Python objects like `UUID` and `datetime` in the returned dict rather than converting them to JSON-compatible types. Passing `json.dumps()` a plain `model_dump()` result can raise a `TypeError` on those fields. Use `model_dump(mode="json")` or `model_dump_json()` specifically when the destination is actually JSON.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-serialization-5" difficulty="real-world">
+
+A team renames a field's wire name via `serialization_alias="taskId"` mid-migration but forgets `populate_by_name=True`. Internal code that constructs `TaskRead(task_id=...)` using the original Python attribute name now fails validation. Using only what this lesson covered, explain what's happening and the fix.
+
+<Solution>
+
+`serialization_alias` only controls the *outbound* wire name — it says nothing about what keyword construction accepts. Without `populate_by_name=True`, Pydantic still expects construction to use whatever alias governs *input* (the `validation_alias`, or the same alias if only one `alias` was set), so `task_id=...` no longer matches what the model expects and validation fails.
+
+The fix is enabling `model_config = ConfigDict(populate_by_name=True)` so the model accepts both the Python attribute name and its alias for construction, while still emitting the canonical alias with `by_alias=True` on the way out.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does `model_dump()` with no arguments produce JSON-ready output the same way `model_dump_json()` does?">
+
+No — plain `model_dump()` defaults to Python mode and keeps native types like `UUID` and `datetime` intact rather than converting them. Feeding that straight into `json.dumps()` can raise a `TypeError`; use `mode="json"` or `model_dump_json()` when the destination genuinely needs JSON-safe values.
+
+</Gotcha>
+
+<Gotcha question="Does setting a `serialization_alias` on a field also let you construct the model using that same alias as a keyword?">
+
+No — validation (input) and serialization (output) aliases are independent settings. Setting one doesn't configure the other, and construction behavior additionally depends on `populate_by_name`, so it's easy to change the outbound wire name and be surprised that inbound construction didn't follow along.
+
+</Gotcha>
+
+<Gotcha question="Is `ConfigDict(from_attributes=True)` enough by itself to safely return an ORM object from an endpoint?">
+
+No — `from_attributes=True` only lets Pydantic *read* attributes off an arbitrary object to populate the model; it doesn't limit which attributes are exposed. Safety comes entirely from which fields you declared on the response model — that declared allowlist is the actual security boundary, not the ability to read from an ORM instance.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can choose Python or JSON dump mode, distinguish unset/default/`None`, and treat aliases as versioned wire-contract decisions.
+
+</Checkpoint>
+
+## Summary
+
+Serialization is boundary design. Dump in the correct mode, preserve PATCH intent, use aliases for controlled translation, and publish dedicated response models rather than object internals.
+

@@ -13,4 +13,11 @@ export const FurtherReading = ({ children }: { children: React.ReactNode }) => <
 export const CodeExample = ({ title, children }: { title?: string; children: React.ReactNode }) => <section className="code-example">{title && <p className="code-title">{title}</p>}{children}</section>;
 export function Solution({ children }: { children: React.ReactNode }) { return <details className="solution"><summary>Reveal solution</summary><div>{children}</div></details>; }
 
-export const mdxComponents = { Callout, Concept, WhyItMatters, TypeScriptComparison, CommonMistake, ProductionNote, Checkpoint, FurtherReading, CodeExample, Exercise, Solution, Assignment, pre: CopyCodeBlock };
+export function Gotchas({ children }: { children: React.ReactNode }) {
+  return <section className="gotchas"><p className="gotchas-title">Tricky questions &amp; gotchas</p><div className="gotchas-list">{children}</div></section>;
+}
+export function Gotcha({ question, children }: { question: string; children: React.ReactNode }) {
+  return <div className="gotcha"><p className="gotcha-question"><span aria-hidden="true">?</span>{question}</p><div className="gotcha-answer">{children}</div></div>;
+}
+
+export const mdxComponents = { Callout, Concept, WhyItMatters, TypeScriptComparison, CommonMistake, ProductionNote, Checkpoint, FurtherReading, CodeExample, Exercise, Solution, Assignment, Gotchas, Gotcha, pre: CopyCodeBlock };

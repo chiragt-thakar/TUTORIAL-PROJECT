@@ -1,0 +1,172 @@
+---
+id: pydantic-models
+title: BaseModel, Fields, and Defaults
+description: Parsing, required and optional fields, defaults, and validation errors.
+module: pydantic-foundations
+order: 1
+estimatedMinutes: 40
+prerequisites: [tooling-assignment]
+learningObjectives:
+  - Define request models
+  - Interpret validation errors
+---
+
+## Runtime boundary, not domain magic
+
+Pydantic reads untrusted Python values, applies a declared schema, and returns a model whose fields satisfy that schema. It is most valuable where data crosses a boundary: HTTP, environment variables, messages, or loosely typed libraries.
+
+```python title="src/task_api/schemas/tasks.py"
+from datetime import datetime
+from uuid import UUID
+from pydantic import BaseModel, ConfigDict, Field
+
+class TaskCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=1, max_length=120)
+    project_id: UUID
+    priority: int = Field(default=2, ge=1, le=3)
+
+class TaskRead(BaseModel):
+    id: UUID
+    title: str
+    created_at: datetime
+```
+
+No default means required. A default makes a field optional to provide; it does not automatically mean the value may be `None`. `title: str | None` permits `None` but remains required unless it also has a default such as `= None`.
+
+<TypeScriptComparison>
+
+A TypeScript interface checks developer-authored code but disappears at runtime. A Pydantic model behaves more like a Zod schema plus inferred object: construction executes validation and returns a runtime object.
+
+</TypeScriptComparison>
+
+## Strictness and coercion
+
+Pydantic commonly converts compatible inputs—for example, a UUID string into `UUID`. That is useful at transport boundaries, but surprising conversions should be controlled with strict types, field configuration, or `ConfigDict(strict=True)`. Decide whether your API accepts convenient coercion; do not discover the policy accidentally.
+
+`extra="forbid"` rejects unknown input keys and catches client typos. Response models can use different policy because they are constructed from trusted application data.
+
+## Reading validation errors
+
+`ValidationError.errors()` returns structured entries containing a location, error type, message, and input context. Treat error types and locations as machine-usable; avoid building logic around English messages.
+
+```python
+from pydantic import ValidationError
+
+try:
+    TaskCreate.model_validate({"title": "", "project_id": "bad"})
+except ValidationError as exc:
+    for error in exc.errors():
+        print(error["loc"], error["type"])
+```
+
+<CommonMistake>
+
+`Optional[str]` means `str | None`; it does not mean the input key may be omitted. Requiredness and nullability are separate dimensions.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Reject unknown write fields unless compatibility requires otherwise. Silent extras hide client mistakes and can create mass-assignment vulnerabilities when payloads later feed persistence code.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="pydantic-models-1" difficulty="easy">
+
+Create `ProjectCreate` with required `name` of 1–80 characters and optional `description` that defaults to `None`.
+
+<Solution>
+
+```python
+class ProjectCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    description: str | None = None
+```
+
+The description is both nullable and omittable.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-models-2" difficulty="medium">
+
+Predict whether `priority: int = 2` accepts the input string `"3"`, then make the whole model strict.
+
+<Solution>
+
+Default Pydantic validation coerces a compatible numeric string. Add `model_config = ConfigDict(strict=True)` to require already-correct runtime types.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-models-3" difficulty="hard">
+
+Reject a misspelled `projet_id` key instead of ignoring it.
+
+<Solution>
+
+Set `model_config = ConfigDict(extra="forbid")`. Validation then reports the extra key while also reporting the missing required `project_id`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-models-4" difficulty="interview">
+
+Interview-style: "Does `Optional[str]` (or `str | None`) mean a field can be omitted from the input?" Answer in three sentences or fewer.
+
+<Solution>
+
+No — nullability and requiredness are independent dimensions in Pydantic. `Optional[str]` only tells the checker and validator that `None` is an acceptable *value*; the field is still required unless it also has a default, such as `= None`. A field can be required-and-nullable, required-and-non-nullable, optional-and-nullable, or optional-and-non-nullable — all four combinations are meaningful and distinct.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pydantic-models-5" difficulty="real-world">
+
+A write endpoint's request model omits `extra="forbid"`. A buggy client sends `{"title": "Ship", "is_admin": true}` intending only to set the title. Downstream code does `Task(**validated.model_dump())`, and the internal `Task` domain object happens to have an unrelated `is_admin` field used for something else entirely. Using only what this lesson covered, explain the vulnerability and the fix.
+
+<Solution>
+
+This is a mass-assignment vulnerability: without `extra="forbid"`, the request model silently accepts and carries forward the unexpected `is_admin` key, and the blind `**validated.model_dump()` unpacking lets that unrelated client-supplied value flow straight into a domain field it was never meant to reach — potentially granting privileges the client never should have been able to set.
+
+The fix is two-layered: set `model_config = ConfigDict(extra="forbid")` so the extra key is rejected at the boundary with a clear validation error, and never construct domain or persistence objects by blindly unpacking a request model — map fields explicitly instead, which this module's later lessons cover in depth.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does giving a field a default value mean it also accepts `None` as input?">
+
+No — a default only controls whether the key may be *omitted*. Whether `None` is an acceptable *value* for a present key is a separate question controlled by the field's type (`str` versus `str | None`). A field can have a default and still reject `None` if it's typed as non-optional.
+
+</Gotcha>
+
+<Gotcha question="Does Pydantic's automatic type coercion guarantee the validated value is exactly the type you annotated?">
+
+Not without `strict=True` — default coercion happily converts a compatible numeric string like `"3"` into `int(3)`, meaning the value you get back may not be the type the client actually sent. That's usually convenient at a transport boundary, but it's a deliberate policy choice, not something to discover by accident.
+
+</Gotcha>
+
+<Gotcha question="Is `ConfigDict(extra='forbid')` enough by itself to prevent every mass-assignment bug?">
+
+No — it only protects the boundary at which that specific model is constructed. If raw dictionaries or unvalidated data bypass the model anywhere downstream (a different code path, a second deserialization step), `forbid` never gets a chance to run against that data.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can distinguish requiredness, nullability, defaults, constraints, coercion, and unknown-field policy.
+
+</Checkpoint>
+
+## Summary
+
+`BaseModel` turns runtime input into a validated boundary object. Make field presence, `None`, defaults, coercion, and extra-key handling deliberate rather than relying on annotation appearance.
+

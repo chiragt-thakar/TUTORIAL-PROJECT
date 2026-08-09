@@ -1,0 +1,184 @@
+---
+id: genai-tokens-and-prediction
+title: How LLMs Predict Text
+description: Tokens, next-token prediction, and why a language model is a very sophisticated autocomplete.
+module: what-llms-actually-are
+order: 1
+estimatedMinutes: 45
+prerequisites: []
+learningObjectives:
+  - Explain what a token is and why models don't see words
+  - Explain next-token prediction as the entire generation mechanism
+  - Explain what training data does and doesn't guarantee about correctness
+---
+
+## The whole trick, in one sentence
+
+A large language model does one thing: given some text, it predicts which small chunk of text is most likely to come next. It does that once, appends the result, and does it again.
+
+That loop, repeated a few hundred or thousand times, is everything a chatbot, a coding assistant, and a summarizer are doing under the hood. There is no separate "understanding module" and no lookup table of facts. There is one prediction step, running in a loop.
+
+That sentence sounds too simple to explain what these models can do. Most of this lesson is spent making it feel less simple, without adding anything false to it.
+
+## Tokens, not words
+
+Models don't read words. They read **tokens**, which are chunks of text a tokenizer has split the input into. A token is often a whole short word, sometimes half of a longer word, and sometimes a single punctuation mark or space. `"unbelievable"` might become `["un", "believ", "able"]`. `"cat"` is probably one token.
+
+This matters practically: API pricing and context limits are measured in tokens, not words or characters, and a rough rule of thumb is that one token is about four characters of English text.
+
+You can see the same idea in miniature with a tiny word-level version, which behaves the same way a real tokenizer does at a bigger scale:
+
+```python title="tokenize_demo.py"
+text = "the quick brown fox jumps over the lazy dog"
+tokens = text.split()  # a crude word-level "tokenizer"
+
+print(len(tokens), "tokens")
+for token in tokens[:5]:
+    print(repr(token))
+```
+
+Real tokenizers are smarter than `.split()` — they're trained on huge amounts of text to find chunks that recur often enough to be worth their own token — but the shape of the idea is identical: text in, a sequence of discrete pieces out.
+
+## Next-token prediction, made concrete
+
+Here is the mechanism, shrunk down to something you can run. Given a tiny amount of training text, count which word tends to follow which other word, then always pick the most common follower:
+
+```python title="toy_predictor.py"
+from collections import Counter, defaultdict
+
+training_text = "the cat sat on the mat the cat ran on the roof"
+words = training_text.split()
+
+followers: dict[str, Counter[str]] = defaultdict(Counter)
+for current, nxt in zip(words, words[1:]):
+    followers[current][nxt] += 1
+
+def predict_next(word: str) -> str:
+    return followers[word].most_common(1)[0][0]
+
+print(predict_next("the"))  # "cat" — it followed "the" most often
+print(predict_next("cat"))  # "sat" — a coin flip against "ran" in real data
+```
+
+A real model replaces this word-counting table with a neural network trained on a huge slice of the internet, and it predicts a probability for every possible next token rather than picking a single deterministic winner. But the shape is the same: look at what came before, produce a ranked guess for what comes next, repeat.
+
+Scale that idea up by billions of parameters and trillions of training tokens, and the guesses become good enough to write working code and hold a coherent conversation.
+
+<Concept>
+
+**Autoregressive generation** is the term for this loop: predict one token, add it to the input, predict the next token based on the now-longer input, and repeat until a stop condition is hit. Every word an LLM "writes" was, at the moment it appeared, the model's best guess at what should come next given everything before it.
+
+</Concept>
+
+## Training data shapes patterns, not truth
+
+A model's predictions come entirely from patterns in its training data. That data contains an enormous amount of correct, well-written text — and also outdated facts, contradictions, jokes, sarcasm, and plain mistakes. The model has no separate mechanism for checking whether a completion is *true*; it only has a mechanism for producing text that is *statistically plausible* given everything it has seen.
+
+Most of the time those two things line up closely enough to be extremely useful. Sometimes they don't, and the model will say something fluent and confident that is simply wrong. That failure mode has a name — hallucination — and lesson four is dedicated to it.
+
+<WhyItMatters>
+
+If you remember nothing else from this lesson, remember this: fluency and correctness are two different properties, and a language model directly optimizes for the first one. Confident-sounding text is not evidence of correctness. Every design decision later in this track — asking for citations, validating output, adding retrieval — exists because of this one fact.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Treating a model's confident tone as a signal of certainty. Unlike a person, an LLM's writing style doesn't reliably change when it's guessing versus when it's certain — both come out equally fluent. Never infer confidence from phrasing alone.
+
+</CommonMistake>
+
+## Exercises
+
+<Exercise id="genai-tokens-1" difficulty="easy">
+
+Without running any code, estimate how many tokens the sentence `"I can't believe it's not butter"` would use, given that punctuation and contractions often split into their own tokens. Then explain in one sentence why token count usually doesn't equal word count.
+
+<Solution>
+
+A reasonable estimate is 8–10 tokens rather than 6 words, because `can't` and `it's` each likely split into two tokens (`can` + `'t`, `it` + `'s`). Token count differs from word count because tokenizers split on statistically useful chunks, not on whitespace.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tokens-2" difficulty="medium">
+
+In `toy_predictor.py`, `predict_next("cat")` always returns `"sat"` even though `"cat"` was followed by both `"sat"` and `"ran"` in the training text. Explain why, and describe what a real model does differently at this exact point.
+
+<Solution>
+
+`Counter.most_common(1)` always returns the single highest-count entry, and ties are broken by insertion order, so `"sat"` wins deterministically every time. A real model instead keeps a full probability distribution over every possible next token and can *sample* from it — which is exactly what the `temperature` parameter in the next lesson controls.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tokens-3" difficulty="hard">
+
+A teammate says: "The model told me the population of a city, so it must be right — it sounded very sure of itself." Identify the flawed assumption in one or two sentences.
+
+<Solution>
+
+The flaw is treating confident phrasing as evidence of correctness. A model's fluency reflects how statistically plausible the sentence structure is, not whether the underlying fact was verified — the number should be checked against a real source before being trusted.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tokens-4" difficulty="interview">
+
+Interview-style: "Why can't a language model just look up facts in a database instead of predicting them token by token?" Answer as precisely as you would in a technical interview, in three sentences or fewer.
+
+<Solution>
+
+Because an LLM has no built-in database or lookup step — generation is a single mechanism, next-token prediction, applied uniformly to every kind of output, factual or not. Facts that appeared often and consistently in training data get predicted reliably as a side effect of that mechanism, not because they were retrieved from a source.
+
+That's precisely why retrieval-augmented generation, covered later in this track, bolts on an actual lookup step rather than trusting the model's memory alone.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tokens-5" difficulty="real-world">
+
+Your team wants to auto-generate release notes from a list of merged pull request titles using an LLM, then publish them without a human reading them first. Using only what this lesson covered, write two sentences explaining the concrete risk in "publish without review" and what you'd change.
+
+<Solution>
+
+The risk is that the model can produce a fluent, confident-sounding release note that misdescribes what a PR actually did, since nothing about generation guarantees the summary matches the PR's real content — and an unreviewed publish step means that error ships directly to users.
+
+The fix isn't "don't use the model," it's adding a cheap check before publish: a human skim, or at minimum an automated diff between claimed changes and the PR's actual file changes.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="If the training data is 99% correct, isn't the model's hallucination rate basically zero?">
+
+No — those aren't the same number. A model's accuracy on any specific question depends on how often *that specific pattern* appeared, clearly and consistently, in training, not on the overall correctness rate of the internet-sized dataset it learned from. Rare, ambiguous, or recent topics can be wrong far more often than 1% of the time even in an otherwise "mostly correct" model.
+
+</Gotcha>
+
+<Gotcha question="Does giving the model more context always make it more accurate?">
+
+Not automatically. More context helps when it's relevant and clearly written; irrelevant, contradictory, or poorly organized context can just as easily confuse a response as improve it. "More context" and "better context" are different things — this comes back in the context-management lesson later in this track.
+
+</Gotcha>
+
+<Gotcha question="Is a token roughly the same across every provider and language?">
+
+No. Different providers use different tokenizers, and the same English sentence can tokenize into a noticeably different count between them — and non-English text, especially non-Latin scripts, often uses meaningfully more tokens per word than English does. Never hardcode a token-to-cost estimate that assumes one universal ratio.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can explain, without hand-waving, why an LLM sometimes writes something both fluent and wrong — and why that isn't a bug so much as a direct consequence of how next-token prediction works.
+
+</Checkpoint>
+
+## Summary
+
+An LLM predicts one token at a time based on everything before it, then repeats that step to generate longer text — a mechanism called autoregressive generation. Tokens are the model's real unit of text, not words, which is why pricing and limits are measured in tokens.
+
+Because the model is trained to produce statistically plausible continuations rather than verified facts, fluency and correctness are separate properties, and confident phrasing is never proof of accuracy. Every later lesson in this module builds directly on that distinction.

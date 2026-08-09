@@ -1,0 +1,176 @@
+---
+id: types-runtime
+title: Runtime and Static Typing
+description: Annotations, Any, object, None, unions, narrowing, and the boundary of the checker.
+module: python-type-system
+order: 1
+estimatedMinutes: 45
+prerequisites: [py-assignment]
+learningObjectives:
+  - Explain annotation behavior
+  - Use Any and object correctly
+  - Narrow unions safely
+---
+
+## Two systems, one program
+
+Python remains dynamically typed when annotations are present. The interpreter usually stores annotations and executes the same objects; a checker such as mypy or pyright analyzes source without becoming the runtime. External data is still untrusted.
+
+```python
+def close_task(task_id: str) -> bool:
+    return "not actually a bool"  # runs; a checker rejects it
+```
+
+<TypeScriptComparison>
+
+Both TypeScript types and Python annotations can disappear from enforcement at runtime. Python differs because libraries inspect annotations at runtime and because untyped Python code can spread `Any`, which disables checking through an expression.
+
+</TypeScriptComparison>
+
+## Any, object, and unknown data
+
+`Any` tells the checker to permit essentially every operation. It is an escape hatch, not Python's equivalent of TypeScript `unknown`. `object` accepts every Python value, but you must narrow it before using specific operations—making it the closer `unknown` analogue.
+
+```python
+def stringify(value: object) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, int):
+        return str(value)
+    raise TypeError(f"unsupported value: {type(value).__name__}")
+```
+
+Use `Any` at a boundary only when a library truly offers no contract, then validate or narrow immediately. Letting it flow through service code turns off the alarm system.
+
+## None, unions, and narrowing
+
+`None` is one singleton value and one type. Python has no `undefined`. A missing dictionary key, omitted function argument, and explicit `None` are different states that require explicit modeling when the distinction matters.
+
+```python
+def find_task(task_id: str) -> Task | None:
+    ...
+
+task = find_task("t-1")
+if task is None:
+    raise TaskNotFoundError("t-1")
+reveal_type(task)  # Task to a checker
+```
+
+Narrow with `is None`, `isinstance`, membership checks, pattern matching, or a user-defined `TypeGuard`. Avoid truthiness when empty strings, zero, or empty collections are valid.
+
+<CommonMistake>
+
+`if value:` does not mean `value is not None`. It also rejects `0`, `False`, `""`, and empty containers.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Static types defend developer-controlled paths. Pydantic will later validate runtime request data. Use both; asking one to do the other's job creates either false confidence or excessive runtime modeling.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="types-runtime-1" difficulty="easy">
+
+Choose `Any` or `object` for a logging function that accepts any value but only calls `repr(value)`. Explain the choice.
+
+<Solution>
+
+Use `object`. Every value supports `repr`, and the checker will prevent accidental calls to arbitrary methods. `Any` would unnecessarily disable checking.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-runtime-2" difficulty="medium">
+
+Fix `return task.title if task else "missing"` when a valid task object might define false truthiness.
+
+<Solution>
+
+```python
+return task.title if task is not None else "missing"
+```
+
+The condition now tests the modeled absent state precisely.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-runtime-3" difficulty="hard">
+
+Narrow `str | int` and reject negative integers while returning a normalized string ID.
+
+<Solution>
+
+```python
+def normalize_id(value: str | int) -> str:
+    if isinstance(value, int):
+        if value < 0:
+            raise ValueError("id must be non-negative")
+        return str(value)
+    return value.strip()
+```
+
+Each branch has a concrete type.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-runtime-4" difficulty="interview">
+
+Interview-style: "If mypy passes on a codebase, can it still crash with a `TypeError` at runtime?" Answer in three sentences or fewer.
+
+<Solution>
+
+Yes, easily — a clean mypy run only proves the annotated code is internally consistent with itself, not that runtime data actually matches those annotations. Untrusted input (a JSON body, an environment variable, a third-party API response) can violate an annotation with no runtime check unless something like Pydantic validates it. Static typing and runtime validation are complementary, not substitutes for each other.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-runtime-5" difficulty="real-world">
+
+A teammate's function signature is `def process(data: Any) -> Any:` because "it made the type errors go away." Using only what this lesson covered, explain what was actually lost and what to do instead.
+
+<Solution>
+
+`Any` doesn't just suppress the errors on that function — it suppresses checking on everything that flows through it, since the checker stops verifying operations on anything typed `Any`.
+
+The fix is finding the narrowest honest type: often `object` if the function genuinely handles arbitrary values safely, or a `Union` of the specific types it actually branches on, reserving `Any` for the rare case where no real contract exists at all.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does adding type annotations make Python code run faster?">
+
+No — annotations are, by default, purely for tooling (checkers, editors) and have effectively no runtime performance impact; Python doesn't use them to specialize execution the way a compiled language would. Performance is a separate concern from typing entirely.
+
+</Gotcha>
+
+<Gotcha question="Is object the same as Any but 'a bit stricter'?">
+
+No, they're fundamentally different in what they permit. `object` accepts any value but the checker still enforces that you only call methods every object actually has (like `repr()`) until you narrow it — `Any` disables checking entirely on anything it touches, permitting operations that don't even exist. `object` is safety-preserving; `Any` is an opt-out.
+
+</Gotcha>
+
+<Gotcha question="Does `if value:` correctly check for 'value is not None'?">
+
+No, and this is one of the most common Python type-narrowing bugs — truthiness also rejects `0`, `False`, `""`, `[]`, and `{}`, none of which are `None`. Whenever the distinction between "empty/zero" and "absent" matters, use `is not None` explicitly.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can say which guarantees exist only in the checker, contain `Any`, and model absence without confusing it with falsiness.
+
+</Checkpoint>
+
+## Summary
+
+Annotations improve design and tooling but do not validate runtime values. `object` preserves safety for unknown values; `Any` opts out. Model `None` explicitly and narrow unions with evidence.
+

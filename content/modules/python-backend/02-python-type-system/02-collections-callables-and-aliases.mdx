@@ -1,0 +1,174 @@
+---
+id: types-callables
+title: Collections, Callables, and Type Aliases
+description: Type modern Python collections and function boundaries without noisy annotations.
+module: python-type-system
+order: 2
+estimatedMinutes: 40
+prerequisites: [types-runtime]
+learningObjectives:
+  - Type collection APIs
+  - Describe callable contracts
+  - Create useful type aliases
+---
+
+## Accept capabilities, return commitments
+
+Annotate parameters with the least capability the function needs. Accept `Iterable[Task]` when you only loop, `Sequence[Task]` when you need order and indexing, and `Collection[Task]` when you need size or membership. Return a concrete type when callers benefit from that guarantee.
+
+```python
+from collections.abc import Iterable, Sequence
+
+def open_ids(tasks: Iterable[Task]) -> list[str]:
+    return [task.id for task in tasks if task.status is TaskStatus.OPEN]
+
+def newest(tasks: Sequence[Task]) -> Task:
+    return tasks[-1]
+```
+
+Built-in generics such as `list[str]`, `dict[str, Task]`, and `tuple[str, ...]` are standard in modern Python. A fixed tuple uses `tuple[int, str]`; a variable-length homogeneous tuple uses an ellipsis.
+
+## Callable contracts
+
+`Callable[[str, int], Task]` describes parameter and return types but not keyword names. For callbacks with keyword-only parameters or attributes, define a `Protocol` with `__call__`.
+
+```python
+from collections.abc import Callable
+
+TaskFilter = Callable[[Task], bool]
+
+def select(tasks: Iterable[Task], predicate: TaskFilter) -> list[Task]:
+    return [task for task in tasks if predicate(task)]
+```
+
+Aliases reduce domain noise. In Python 3.12+, `type TaskId = str` creates an explicit type alias, but it remains the same runtime type. Use `NewType` when the checker should distinguish otherwise identical primitive IDs.
+
+```python
+from typing import NewType
+
+TaskId = NewType("TaskId", str)
+ProjectId = NewType("ProjectId", str)
+```
+
+<TypeScriptComparison>
+
+Like TypeScript aliases, ordinary Python aliases do not create runtime wrappers. `NewType` provides nominal distinction to checkers with nearly zero runtime cost, but it still does not validate strings.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Annotating every input as `list[T]` rejects tuples, generators, and views even when the function only iterates. This makes APIs less reusable for no benefit.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Avoid returning a one-shot iterator unless laziness is part of the public contract. A repository `list()` method returning a concrete list is often easier to use and test; a streaming export should expose iteration explicitly.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="types-callables-1" difficulty="easy">
+
+Annotate a function that accepts any iterable of task IDs and returns an immutable pair of accepted and rejected ID lists.
+
+<Solution>
+
+```python
+from collections.abc import Iterable
+
+def partition(ids: Iterable[str]) -> tuple[list[str], list[str]]:
+    accepted, rejected = [], []
+    # populate both lists
+    return accepted, rejected
+```
+
+The tuple shape is fixed while the contained result lists remain mutable.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-callables-2" difficulty="medium">
+
+Define a callback type for `can_edit(task) -> bool` and use it as a parameter.
+
+<Solution>
+
+```python
+from collections.abc import Callable
+CanEdit = Callable[[Task], bool]
+
+def editable(tasks: Iterable[Task], check: CanEdit) -> list[Task]:
+    return [task for task in tasks if check(task)]
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-callables-3" difficulty="hard">
+
+Prevent a checker from accepting a `ProjectId` where `TaskId` is required.
+
+<Solution>
+
+Create both with `NewType` and annotate the function with `TaskId`. The checker distinguishes them even though both wrap strings at runtime.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-callables-4" difficulty="interview">
+
+Interview-style: "Why accept `Iterable[Task]` instead of `list[Task]` when you're only going to loop over it once?" Answer in three sentences or fewer.
+
+<Solution>
+
+Accepting the narrowest capability the function actually uses — iteration — lets callers pass anything iterable, including generators, database cursors, and views, not just a materialized list. Requiring `list[Task]` forces every caller to build a full list first, even if they had a lazy stream that would've worked fine. It's the same principle as accepting an interface instead of a concrete class: ask for only what you need.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-callables-5" difficulty="real-world">
+
+Two functions in a codebase both take `user_id: str` and `org_id: str`. A refactor accidentally swaps the argument order at one call site, and it passes both the type checker and code review, because both are just `str`. Using only what this lesson covered, describe the fix that would have caught it.
+
+<Solution>
+
+Wrap both in `NewType`: `UserId = NewType("UserId", str)` and `OrgId = NewType("OrgId", str)`. Once the function signatures use `UserId` and `OrgId` instead of bare `str`, passing one where the other is expected becomes a real type error the checker catches at the swapped call site — the exact class of bug that plain `str` typing can never detect, since both arguments are structurally identical to the checker.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does NewType create a real subclass with runtime behavior?">
+
+No — at runtime, `NewType("TaskId", str)` is just the identity function; a `TaskId` value is literally a `str` object with no wrapper, no extra attributes, and no runtime validation. All of the distinction it provides is enforced by the checker, not by Python itself.
+
+</Gotcha>
+
+<Gotcha question="Is list[Task] a subtype of Sequence[Task] as far as the checker is concerned?">
+
+Yes — `list` satisfies the `Sequence` protocol, so a function typed to accept `Sequence[Task]` happily accepts a `list[Task]` argument. The relationship only matters in the other direction: a function that only promises `Iterable[Task]` shouldn't be assumed to support indexing, even if you happen to pass it a list.
+
+</Gotcha>
+
+<Gotcha question="Does a type alias like `type TaskId = str` stop you from passing a plain string where TaskId is expected?">
+
+No — a plain alias (as opposed to `NewType`) is just another name for the exact same type, so `str` and `TaskId` remain fully interchangeable to the checker. If you need the checker to actually reject mixing them up, `NewType` (or a real wrapper class) is the tool, not a plain alias.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can select `Iterable`, `Sequence`, or a concrete collection based on operations and explain the limits of `Callable` and aliases.
+
+</Checkpoint>
+
+## Summary
+
+Type the capability a function consumes and the commitment it returns. Use callable aliases for simple functions, protocols for richer call shapes, and nominal IDs when mixing primitives would be costly.
+

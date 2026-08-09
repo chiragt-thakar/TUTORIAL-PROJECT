@@ -1,0 +1,165 @@
+---
+id: tooling-imports
+title: src Layout, Packages, and Imports
+description: Understand import resolution, __init__.py, absolute imports, and python -m.
+module: python-project-tooling
+order: 3
+estimatedMinutes: 50
+prerequisites: [tooling-pyproject]
+learningObjectives:
+  - Build a src-layout package
+  - Predict import resolution
+  - Run modules without path hacks
+---
+
+## Packages create namespaces
+
+A module is normally one `.py` file; a package organizes modules under a dotted name. An `__init__.py` makes a regular package and executes when the package imports. Keep it small: re-export a deliberate public API or leave it empty. Namespace packages without `__init__.py` exist, but regular application packages are easier to reason about.
+
+```text
+task-api/
+  pyproject.toml
+  src/
+    task_api/
+      __init__.py
+      domain/
+        __init__.py
+        models.py
+      application/
+        service.py
+  tests/
+```
+
+The `src/` layout prevents accidental imports directly from the checkout. Your package must be installed—normally editable in the environment—so tests exercise installation-like behavior.
+
+## Import resolution
+
+`import task_api.domain.models` asks finders on `sys.meta_path` to resolve the top-level package using locations such as the script directory, environment paths, installed distributions, and standard library. Once loaded, modules are cached in `sys.modules`.
+
+Prefer absolute imports across application areas:
+
+```python
+from task_api.domain.models import Task
+```
+
+Use relative imports inside a tight package when they improve locality: `from .models import Task`. Multiple leading dots are harder to review. Never mutate `sys.path` in application source to make imports pass.
+
+<TypeScriptComparison>
+
+Python has no compile-time path alias magically understood by every runtime tool. Installation and package structure are the portable solution. `__init__.py` is executable package code, not just a directory marker.
+
+</TypeScriptComparison>
+
+## Run modules, not internal files
+
+Running `python src/task_api/application/service.py` makes that file's directory the import origin and loses intended package context. Use `python -m task_api.application.service` from an installed environment. For real commands, define `[project.scripts]` or invoke an ASGI server by import string.
+
+Circular imports usually reveal confused ownership: module A needs B during initialization while B needs A. Move shared domain types downward, import a protocol instead of infrastructure, or delay only the type annotation with `TYPE_CHECKING` when runtime dependency truly is unnecessary.
+
+<CommonMistake>
+
+Do not fix circular imports by scattering imports inside functions without understanding the dependency cycle. It changes timing and can hide an architectural inversion.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Use importable application factories and commands. Migrations, tests, workers, and ASGI servers should all import the same package rather than depend on a working-directory trick.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="tooling-imports-1" difficulty="easy">
+
+Explain why a test can import `task_api` from a flat checkout even when the wheel forgot to include it.
+
+<Solution>
+
+The repository root is commonly placed on `sys.path`, so a flat `task_api/` directory is importable without installation. A `src/` layout removes that accidental path and exposes packaging mistakes.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-imports-2" difficulty="medium">
+
+Replace `sys.path.append("../../")` and `from domain.models import Task` in `service.py`.
+
+<Solution>
+
+Install the project into its environment and use `from task_api.domain.models import Task`. Run the containing module with `python -m ...` when it has an entry point.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-imports-3" difficulty="hard">
+
+Domain models import a SQLAlchemy repository for a helper, and the repository imports those models. Fix the direction.
+
+<Solution>
+
+Move domain behavior into the domain and define repository contracts in the application/domain boundary. Infrastructure may import inward; domain code must not import outward to SQLAlchemy.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-imports-4" difficulty="interview">
+
+Interview-style: "What's the actual difference between `python path/to/script.py` and `python -m package.module`?" Answer in three sentences or fewer.
+
+<Solution>
+
+Running a file directly sets that file's own directory as the import origin and executes it with no package context, so relative imports and package-qualified imports inside it can fail.
+
+`python -m` resolves the target through the normal package/import system first, so the module runs with correct package identity and relative imports work. The practical rule: anything meant to be part of a package should be run with `-m`, not by file path.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-imports-5" difficulty="real-world">
+
+A new hire's first PR adds `sys.path.insert(0, "..")` at the top of a script to "make the imports work" after hitting a `ModuleNotFoundError`. Using only what this lesson covered, explain what's actually wrong and the correct fix.
+
+<Solution>
+
+The real problem is that the package isn't installed into the active environment (or the script is being run by file path instead of as an installed module), so Python can't resolve `task_api` normally.
+
+The `sys.path` hack "fixes" it by brute-force adding a directory, but it's fragile — it breaks the moment the file moves, works differently depending on the current working directory, and hides the packaging problem from everyone else who hits it.
+
+The correct fix is to install the project (`uv sync` against the `src` layout) so the package resolves through normal installed-package mechanics, and run entry points with `python -m` or a defined console script — never by mutating `sys.path` in application source.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does an empty `__init__.py` do nothing?">
+
+No — its mere presence is what makes a directory a regular package in the first place (as opposed to a plain folder or a namespace package), and it still executes on first import even when empty. It's not "just a marker file" the way it can feel like one.
+
+</Gotcha>
+
+<Gotcha question="Are relative imports (`from .models import Task`) always worse than absolute imports?">
+
+No — inside a small, tightly-related package, one level of relative import can improve locality and survive a package rename for free. The guidance against them is specifically about multiple leading dots and imports that cross application layers, where absolute imports make the dependency direction obvious to a reviewer.
+
+</Gotcha>
+
+<Gotcha question="Does moving an import inside a function permanently fix a circular import?">
+
+No, or at least not by itself — it changes *when* the import executes (deferring it until call time), which can mask the symptom without resolving the underlying ownership problem. It often reappears the moment someone calls that function during another module's initialization. Treat it as a signal to look for an inverted dependency, not a default repair.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can trace an import from `sys.path` through package initialization and fix execution using installation or `python -m`, not path mutation.
+
+</Checkpoint>
+
+## Summary
+
+The src layout makes packaging honest. Packages are executable namespaces, imports are runtime resolution plus caching, and commands should execute installed modules rather than internal files by path.
+

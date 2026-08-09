@@ -1,0 +1,186 @@
+---
+id: genai-embeddings-intro
+title: What Embeddings Represent
+description: Vectors as a geometric encoding of meaning.
+module: embeddings-and-semantic-search
+order: 1
+estimatedMinutes: 40
+prerequisites: []
+learningObjectives:
+  - Explain embeddings without hand-waving
+  - Generate embeddings for a batch of text
+  - Reason about embedding dimensionality
+---
+
+## Meaning as a point in space
+
+Every technique in this module rests on one idea: an **embedding model** turns a piece of text into a fixed-length list of numbers — a vector — such that texts with similar meaning end up as nearby points, and texts with unrelated meaning end up far apart. Not "similar words." Similar *meaning*.
+
+`"the cat sat on the mat"` and `"a feline rested on the rug"` share almost no words and still land close together, because the model was trained to encode meaning, not spelling.
+
+This is the entire trick behind "search by meaning instead of keywords." A keyword search for `"feline"` won't match a document containing only `"cat"`. A semantic search will, because their embeddings are close.
+
+```python title="embed_text.py"
+from openai import OpenAI
+
+client = OpenAI()
+
+def embed(texts: list[str]) -> list[list[float]]:
+    response = client.embeddings.create(
+        model="text-embedding-3-small",
+        input=texts,
+    )
+    return [item.embedding for item in response.data]
+
+vectors = embed([
+    "The cat sat on the mat.",
+    "A feline rested on the rug.",
+    "Quarterly revenue grew 12 percent.",
+])
+print(len(vectors[0]))  # 1536 — the model's fixed output dimensionality
+```
+
+<Concept>
+
+Every embedding from a given model has the **same dimensionality** — `text-embedding-3-small` always returns 1536 numbers, no matter if the input is one word or several paragraphs. Those 1536 numbers don't correspond to anything human-readable individually; the *geometry* of the whole vector relative to other vectors is what carries meaning.
+
+You never inspect a single dimension — you compare whole vectors to each other, which is the subject of the next lesson.
+
+</Concept>
+
+Batch what you can into one call — embedding 50 documents in one request is one round trip, not 50, and it's how the API is priced and rate-limited in the first place. The `input` parameter accepts a list precisely for this.
+
+<WhyItMatters>
+
+Embeddings are the foundation everything else in this module — and Module 5's retrieval-augmented generation — is built on. Get comfortable with "vectors encode meaning, nearby vectors mean similar meaning" now.
+
+Every later lesson just adds mechanics on top of that one sentence: how to measure "nearby" (Lesson 2), how to store and search vectors at all (Lesson 3), and how to build something real with it (Lesson 4 and the assignment).
+
+</WhyItMatters>
+
+## Embeddings are deterministic and cacheable
+
+Unlike a chat completion, an embedding call has no sampling randomness to worry about in practice — the same text into the same model version reliably returns the same vector. That means embeddings are worth caching aggressively: hash the input text, store the vector keyed by that hash, and never re-embed content you've already embedded with that model.
+
+```python title="cached_embed.py"
+import hashlib
+
+_cache: dict[str, list[float]] = {}
+
+def cached_embed(text: str) -> list[float]:
+    key = hashlib.sha256(text.encode()).hexdigest()
+    if key not in _cache:
+        _cache[key] = embed([text])[0]
+    return _cache[key]
+```
+
+<CommonMistake>
+
+Re-embedding the same static corpus on every process start, or worse, on every request. Embedding is a paid API call with real latency — treat generated embeddings as a durable artifact of your content, not a throwaway computation. Persist them (a file, a database column, a vector store) and only re-embed when the source text actually changes.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Pick a model deliberately, not by habit. Smaller embedding models (fewer dimensions) are cheaper to store and search but capture less nuance; larger ones cost more per call and per stored vector but often rank better on subtle distinctions.
+
+For most application-scale corpora (thousands to low millions of chunks), a smaller widely-used model like `text-embedding-3-small` is the right default — reach for something bigger only after you've measured that ranking quality is actually the bottleneck.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-embeddings-intro-1" difficulty="easy">
+
+In one or two sentences, explain why the embeddings for `"dog"` and `"puppy"` end up close together while `"dog"` and `"car"` end up far apart, given how embedding models are trained.
+
+<Solution>
+
+Embedding models are trained so that words and phrases used in similar contexts across huge amounts of text end up with similar vectors — "dog" and "puppy" appear in overlapping contexts (pets, animals, walks) far more often than "dog" and "car" do, so the model places them close together geometrically to reflect that shared meaning.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-embeddings-intro-2" difficulty="medium">
+
+A batch embedding call over 200 short FAQ entries fails with a token-limit error, but only one entry in the batch is unusually long — a pasted multi-page policy document. What's the fix, and why does the fix live at the input stage rather than the API call itself?
+
+<Solution>
+
+Split the oversized entry into smaller chunks before embedding — the API enforces a per-request token limit across the whole batch, so one oversized item can blow the budget for everything sent alongside it.
+
+The fix belongs at the input stage because the API has no way to know your document's chunking boundaries; only you know where it's safe to split without breaking a sentence or an idea in half (the subject of chunking in Lesson 4).
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-embeddings-intro-3" difficulty="hard">
+
+Two teams at the same company each embedded their own product documentation — one team used `text-embedding-3-small`, the other used an older `text-embedding-ada-002`. They tried to merge both sets into one shared search index and got nonsense rankings. Explain what went wrong.
+
+<Solution>
+
+Different embedding models produce vectors in different, model-specific geometric spaces — there's no guarantee that "close" in one model's space means anything comparable to "close" in another's, even for the exact same input text, and the two models likely don't even share the same dimensionality.
+
+Comparing (or averaging distances between) vectors from two different models is comparing numbers that were never meant to be compared. The fix is re-embedding the entire merged corpus with one single model.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-embeddings-intro-4" difficulty="interview">
+
+Interview-style: "Does a higher-dimensional embedding always mean a 'smarter' or more accurate embedding?" Answer in three sentences or fewer.
+
+<Solution>
+
+No — dimensionality is a design tradeoff, not a quality score by itself. Higher dimensionality *can* let a model encode more nuance, but it also costs more to store and makes similarity search slower at scale, and a well-trained smaller model can outperform a poorly-suited larger one on a given task. The right choice depends on measured ranking quality against your actual data, not the raw number.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-embeddings-intro-5" difficulty="real-world">
+
+A support team's new semantic search feature returns great results when customers search using exact product names, but noticeably worse results for typos and informal phrasing from non-native English speakers — the opposite of what "search by meaning, not keywords" was supposed to fix. Using only what this lesson covered, is this necessarily an embeddings problem, and what would you check first?
+
+<Solution>
+
+Not necessarily — embeddings are generally *more* robust to phrasing and typo variation than exact keyword matching, so a regression here points somewhere else first.
+
+Check, in order: whether the query and the corpus were actually embedded with the same model (Exercise 3's failure mode), whether the corpus chunks being searched actually contain the informal phrasing customers use (if support docs are written formally, there may genuinely be nothing semantically close to search against), and only then whether the embedding model itself is underperforming on this domain.
+
+That last one is the least likely culprit of the three.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Can you meaningfully compare embeddings produced by two different model versions?">
+
+No — different embedding models (or even different versions of the "same" model family) produce vectors in incompatible geometric spaces. Always embed your entire corpus and every query against it with the exact same model, and re-embed the whole corpus if you ever change models.
+
+</Gotcha>
+
+<Gotcha question="Do embeddings guarantee an exact substring match scores highest?">
+
+No — embeddings encode overall semantic meaning, not literal string containment, so a document that shares zero exact words with the query can outrank one that repeats the query verbatim if the repeating document is otherwise less relevant. This is usually the point, but it means exact identifiers (SKUs, order numbers, error codes) often need a keyword or hybrid fallback alongside semantic search, not semantic search alone.
+
+</Gotcha>
+
+<Gotcha question="Is embedding the same text twice guaranteed to save you money the second time, automatically?">
+
+No — nothing about the API caches for you. If you don't build your own cache keyed on the input text, calling the same content through `embeddings.create` twice costs twice, with no automatic deduplication on the provider's side.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can explain what an embedding actually represents without hand-waving, generate embeddings for a batch of text in one call, and reason about when dimensionality and model choice actually matter.
+
+</Checkpoint>
+
+## Summary
+
+An embedding is a fixed-length vector positioned so that semantically similar text lands nearby and unrelated text lands far apart — that geometric relationship, not any individual number in the vector, is what you're actually using. Embeddings are deterministic per model version, so cache them rather than recomputing, and never mix vectors from two different models in the same comparison. The next lesson makes "nearby" precise with cosine similarity.

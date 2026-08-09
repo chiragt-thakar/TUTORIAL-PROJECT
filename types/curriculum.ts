@@ -1,5 +1,14 @@
 export type ContentStatus = "available" | "planned";
 
+export interface Track {
+  slug: string;
+  number: number;
+  title: string;
+  tagline: string;
+  description: string;
+  status: ContentStatus;
+}
+
 export interface LessonSummary {
   id: string;
   slug: string;
@@ -19,6 +28,7 @@ export interface Lesson extends LessonSummary {
 
 export interface Module {
   slug: string;
+  track: string;
   number: number;
   title: string;
   description: string;

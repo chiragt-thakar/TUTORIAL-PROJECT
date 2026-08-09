@@ -1,0 +1,187 @@
+---
+id: genai-chunking
+title: Chunking Strategy
+description: How you split documents determines what the model can retrieve.
+module: retrieval-augmented-generation
+order: 2
+estimatedMinutes: 40
+prerequisites: [genai-rag-why]
+learningObjectives:
+  - Chunk by size, structure, and overlap
+  - Avoid chunks that split meaning apart
+  - Attach metadata to chunks for filtering
+---
+
+## The bug is usually upstream of the model
+
+When a RAG bot gives a confidently wrong answer, the instinct is to blame the model. In practice, the most common root cause is one step earlier: the right information was never a coherent, retrievable chunk in the first place.
+
+Chunking decides what *can* be retrieved at all — a perfect retriever and a perfect model can't recover from a chunk boundary that split the one sentence that mattered right down the middle.
+
+Module 4's `chunk_text` split purely on a fixed character count. That's a fine starting point, but it has no idea where sentences, paragraphs, or sections actually end.
+
+## Size is a tradeoff, not a setting to maximize
+
+A chunk that's too small loses the surrounding context needed to interpret it standalone — a sentence like `"It expires after 24 hours."` means nothing on its own if the sentence naming *what* expires ended up in the previous chunk.
+
+A chunk that's too big dilutes its own embedding across too many unrelated ideas (Module 4's core lesson on what embeddings represent), and burns a large share of the generation prompt's token budget on mostly-irrelevant text.
+
+```python title="structure_aware_chunk.py"
+import re
+
+def chunk_by_structure(text: str, max_chars: int = 500) -> list[str]:
+    sections = re.split(r"\n(?=#{1,3} )", text)  # split before markdown headings
+    chunks = []
+    for section in sections:
+        if len(section) <= max_chars:
+            chunks.append(section.strip())
+        else:
+            paragraphs = section.split("\n\n")
+            buffer = ""
+            for paragraph in paragraphs:
+                if len(buffer) + len(paragraph) > max_chars and buffer:
+                    chunks.append(buffer.strip())
+                    buffer = ""
+                buffer += paragraph + "\n\n"
+            if buffer.strip():
+                chunks.append(buffer.strip())
+    return [c for c in chunks if c]
+```
+
+This splits on real structural boundaries first — headings, then paragraphs — and only breaks a paragraph internally as a last resort, which is the opposite priority order from a pure character-count chunker.
+
+<Concept>
+
+Chunk size is a genuine tradeoff between **retrieval precision** (smaller, more focused chunks let semantically distinct ideas score independently against a query) and **standalone comprehensibility** (a chunk needs enough surrounding context to make sense when it's the only piece of the document the model ever sees). There's no universally correct size — it depends on how self-contained your source material's natural units already are.
+
+</Concept>
+
+## Metadata travels with the chunk
+
+Attach source information — document ID, section heading, page number — to each chunk at chunking time, not as an afterthought at retrieval time.
+
+```python title="chunk_with_metadata.py"
+from dataclasses import dataclass
+
+@dataclass
+class Chunk:
+    text: str
+    source_doc: str
+    heading: str | None
+    position: int
+```
+
+This metadata does two jobs: it lets you filter retrieval by source or category before ranking (Module 4's vector-store lesson mentioned this as one of the concrete reasons to graduate to a real vector database), and it's what makes citing sources in the final answer (Lesson 3) possible without a second lookup back to the original document.
+
+<TypeScriptComparison>
+
+This is the same instinct as attaching structured metadata to a log line instead of only writing a free-text message — the metadata is what makes the data queryable and traceable later, not just readable in the moment.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Chunking purely by character count with no structural awareness, so a chunk boundary lands in the middle of a table row, a code block, or a numbered list item. The resulting chunk embeds — and reads, if ever shown to a user as a citation — as a meaningless fragment.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Re-chunking a whole corpus is expensive (every chunk needs re-embedding) and changes what retrieval finds — treat chunking strategy changes like a schema migration, not a quiet tweak. Test a chunking change against a fixed retrieval eval set (Lesson 4) before rolling it out broadly, the same discipline Module 4's assignment applied to search quality generally.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-chunking-1" difficulty="easy">
+
+A chunk contains only the sentence `"It expires after 24 hours."` with no surrounding context. What chunking problem does this most likely indicate?
+
+<Solution>
+
+The chunk is too small, or the boundary landed in the wrong place — the subject the sentence refers to ("it") lives in a different chunk, so this chunk is not standalone-comprehensible. Either increasing chunk size or adding overlap so the subject sentence appears alongside it would fix this.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-chunking-2" difficulty="medium">
+
+A document contains a markdown table describing pricing tiers. A fixed character-count chunker splits it so half the table rows are in one chunk and half are in the next. Explain the retrieval consequence and how structure-aware chunking avoids it.
+
+<Solution>
+
+Neither resulting chunk contains the complete table, so a query about a specific tier's price may retrieve a chunk missing the row that actually answers it, or retrieve a fragment with headers but no matching data row — either way, the model can't answer correctly from what it received.
+
+Structure-aware chunking that treats a table (or code block, or list) as an atomic unit — never splitting it mid-structure — keeps the complete, answerable unit together in one chunk.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-chunking-3" difficulty="hard">
+
+Two document sets are chunked with the same `max_chars=500`: one is dense legal prose with long paragraphs, the other is a FAQ with short question/answer pairs. Explain why the same `max_chars` value produces meaningfully different quality outcomes for the two.
+
+<Solution>
+
+`max_chars=500` for the FAQ likely spans several complete question/answer pairs per chunk, diluting each pair's specific meaning into a chunk about several unrelated questions at once — worse for precise retrieval. The same limit for dense legal prose might cut a single paragraph's argument in half, losing the coherence a legal clause needs to be interpreted correctly.
+
+Chunk size should be tuned per corpus based on the natural size of its coherent units (a FAQ pair, a legal clause), not applied as one universal constant across differently structured content.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-chunking-4" difficulty="interview">
+
+Interview-style: "Why does a RAG system need metadata (source, section, position) attached to each chunk, not just the chunk's text and embedding?" Answer in three sentences or fewer.
+
+<Solution>
+
+Metadata enables filtering retrieval before ranking — searching only within a specific document category, for instance — which a bare text-plus-vector pair can't support. It's also what makes citing a source in the final answer possible without a separate lookup step back to the original document. Without it, a retrieved chunk is an anonymous fragment of text with no traceable origin.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-chunking-5" difficulty="real-world">
+
+A team changes their chunk size from 500 to 1,200 characters to "reduce the number of embedding calls and save cost," ships it directly to production, and two days later support tickets report the bot giving vaguer, less specific answers than before. Using only what this lesson covered, explain what likely happened and what step was skipped.
+
+<Solution>
+
+Larger chunks dilute each chunk's embedding across more unrelated content (Module 4's core embeddings concept), so retrieval starts returning chunks that are topically broader but less precisely matched to the query — consistent with "vaguer, less specific answers." Cost wasn't a wrong consideration, but it was optimized in isolation.
+
+The skipped step is this lesson's production note: testing a chunking change against a fixed retrieval eval set before rolling it out, so a regression like this shows up as a failing test rather than as a wave of support tickets.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Is a smaller chunk size always safer for retrieval quality?">
+
+No — too small loses the surrounding context a chunk needs to be independently comprehensible, the same way too large dilutes its embedding. Size is a tradeoff to tune against your specific corpus's natural unit size, not a dial to minimize.
+
+</Gotcha>
+
+<Gotcha question="Does changing chunk size only affect embedding cost, not answer quality?">
+
+No — chunk size directly changes what gets embedded and therefore what retrieval finds and ranks highly, which flows straight through to answer quality. A cost-motivated chunking change is also a retrieval-quality change, and should be evaluated as one.
+
+</Gotcha>
+
+<Gotcha question="Is attaching metadata to chunks an optional nice-to-have for a basic RAG system?">
+
+Not really — without it, you lose the ability to filter retrieval by source or category and the ability to cite where an answer came from, both of which Lesson 3 treats as core parts of a trustworthy RAG pipeline, not extras bolted on later.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can explain why chunk size is a genuine tradeoff, chunk a document on structural boundaries instead of raw character counts, and explain what chunk-level metadata makes possible later in the pipeline.
+
+</Checkpoint>
+
+## Summary
+
+Chunking determines what retrieval can ever find — a structure-aware chunker that respects paragraph, heading, and list boundaries produces far more retrievable, citable chunks than a pure character-count split, and metadata attached at chunk time is what makes filtering and citation possible downstream. The next lesson wires chunked, embedded, metadata-tagged chunks into a full retrieve-then-generate request.

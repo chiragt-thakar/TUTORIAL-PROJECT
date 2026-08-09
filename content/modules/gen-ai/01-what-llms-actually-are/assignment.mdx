@@ -1,0 +1,189 @@
+---
+id: genai-assignment
+title: "Assignment: A Research Brief Generator"
+description: Build a small CLI that turns one topic into a validated, multi-question research brief — the whole module working together as one real tool.
+module: what-llms-actually-are
+order: 5
+estimatedMinutes: 60
+prerequisites: [genai-llm-limits]
+learningObjectives:
+  - Wire multiple chained LLM calls into one small Python CLI
+  - Validate every piece of model output against a schema before trusting it
+  - Handle partial failure gracefully instead of aborting the whole run
+  - Estimate and report the real cost of a multi-call feature
+---
+
+## Scenario
+
+A single Q&A call is a demo. A real research tool has to break a broad topic into specific questions, answer each one independently, keep working even when one sub-question fails, and tell you what it cost — all in a file someone could actually hand to a colleague.
+
+This assignment is every lesson in this module (tokens and cost, deliberate parameters, shaped output, and honest limits) working together as one small, genuinely useful tool, not four separate exercises.
+
+<Assignment id="genai-assignment-work">
+
+## Requirements
+
+Build `research.py`, a command-line tool invoked as `python research.py "your topic here"` that:
+
+- **Plans**: sends the topic to the model and gets back 3–5 specific sub-questions, validated as a Pydantic-checked list of non-empty strings — not free text you hope is a list.
+- **Researches**: answers each sub-question independently with the same shaped-output, validate-then-retry-once pattern from this module's earlier exercises (`{"answer": str, "confidence": "high" | "medium" | "low"}`).
+- **Survives partial failure**: if one sub-question's call fails twice, the brief still generates — that question is marked `"answer unavailable"` in the output instead of crashing the whole run.
+- **Reports cost**: tracks input/output tokens across every call made (planning plus each sub-question) and prints a rough total cost estimate at the end, using the same style of calculation from the "Where LLMs Break" lesson.
+- Writes a Markdown file, `brief-<topic-slug>.md`, with the topic as a heading and each sub-question as its own section with its answer and confidence.
+- Sets `temperature` and `max_tokens` explicitly on every call — none left at library defaults — and reads the API key from an environment variable only.
+
+```text
+research.py
+  SubQuestions        -- Pydantic model: list[str], min 3 max 5 items
+  AnswerModel          -- Pydantic model: answer + confidence (from earlier exercises)
+  plan(topic)           -- one call: topic -> validated SubQuestions
+  research_one(question) -- one call + one retry -> AnswerModel, or None on repeated failure
+  build_brief(topic, results) -- assemble the Markdown file
+  main()                  -- ties it together, prints the cost summary
+```
+
+## Acceptance criteria
+
+1. `python research.py "How does garbage collection work in CPython?"` produces `brief-how-does-garbage-collection-work-in-cpython.md` with 3–5 answered sections.
+2. Forcing one sub-question's call to fail (temporarily raise inside `research_one` while testing) still produces a complete brief, with that section marked unavailable instead of stopping the program.
+3. The planning step's output is validated against a Pydantic model before any sub-question call is made — a malformed plan is retried once, the same way a malformed answer is.
+4. The tool prints a total estimated cost at the end, based on tokens actually used across every call in the run, not a flat guess.
+5. `temperature` and `max_tokens` are explicit on every request; grep confirms no API key literal in source.
+6. Killing network access mid-run produces a clean error for the affected call, not an unhandled traceback for the whole program.
+
+### Stretch goals
+
+Cache sub-question answers by question text so re-running on a similar topic doesn't re-pay for questions you've already asked. Add a `--max-questions` flag. Have `build_brief` also print a one-line overall confidence summary (e.g., "4 of 5 answers high confidence").
+
+<Solution>
+
+The shape that makes this tractable is the same "one attempt, one retry wrapper, one place that decides how failure surfaces" pattern from the earlier exercises — just applied twice, once for planning and once per sub-question — plus a token counter that every call feeds into.
+
+```python
+import argparse
+import json
+import re
+import sys
+from typing import Literal
+
+from openai import APIError, APITimeoutError, OpenAI
+from pydantic import BaseModel, Field, ValidationError
+
+client = OpenAI()
+INPUT_PRICE_PER_1K = 0.00015
+OUTPUT_PRICE_PER_1K = 0.0006
+usage_log: list[tuple[int, int]] = []  # (input_tokens, output_tokens) per call
+
+
+class SubQuestions(BaseModel):
+    questions: list[str] = Field(min_length=3, max_length=5)
+
+
+class AnswerModel(BaseModel):
+    answer: str
+    confidence: Literal["high", "medium", "low"]
+
+
+def _track(response) -> None:
+    usage_log.append((response.usage.prompt_tokens, response.usage.completion_tokens))
+
+
+def plan(topic: str) -> SubQuestions:
+    for attempt in range(2):
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            temperature=0.3,
+            max_tokens=300,
+            messages=[
+                {"role": "system", "content": (
+                    'Break the topic into 3-5 specific sub-questions. '
+                    'Respond with ONLY {"questions": [str, ...]}. No extra text.'
+                )},
+                {"role": "user", "content": topic},
+            ],
+        )
+        _track(response)
+        try:
+            return SubQuestions.model_validate(json.loads(response.choices[0].message.content))
+        except (json.JSONDecodeError, ValidationError) as error:
+            if attempt == 1:
+                raise RuntimeError("Planning step returned a malformed question list twice.") from error
+
+
+def research_one(question: str) -> AnswerModel | None:
+    for attempt in range(2):
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4.1-mini",
+                temperature=0.2,
+                max_tokens=200,
+                messages=[
+                    {"role": "system", "content": (
+                        'Respond with ONLY {"answer": str, "confidence": "high"|"medium"|"low"}.'
+                    )},
+                    {"role": "user", "content": question},
+                ],
+            )
+            _track(response)
+            return AnswerModel.model_validate(json.loads(response.choices[0].message.content))
+        except (json.JSONDecodeError, ValidationError, APITimeoutError, APIError) as error:
+            if attempt == 1:
+                print(f"Giving up on {question!r}: {error}", file=sys.stderr)
+                return None
+
+
+def build_brief(topic: str, results: dict[str, AnswerModel | None]) -> str:
+    lines = [f"# Research brief: {topic}", ""]
+    for question, answer in results.items():
+        lines.append(f"## {question}")
+        if answer is None:
+            lines.append("_answer unavailable_")
+        else:
+            lines.append(f"{answer.answer}\n\n_Confidence: {answer.confidence}_")
+        lines.append("")
+    return "\n".join(lines)
+
+
+def estimate_total_cost() -> float:
+    return sum(
+        (inp / 1000) * INPUT_PRICE_PER_1K + (out / 1000) * OUTPUT_PRICE_PER_1K
+        for inp, out in usage_log
+    )
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("topic")
+    args = parser.parse_args()
+
+    try:
+        sub_questions = plan(args.topic)
+    except RuntimeError as error:
+        print(str(error), file=sys.stderr)
+        raise SystemExit(1)
+
+    results = {question: research_one(question) for question in sub_questions.questions}
+    brief = build_brief(args.topic, results)
+
+    slug = re.sub(r"[^a-z0-9]+", "-", args.topic.lower()).strip("-")
+    path = f"brief-{slug}.md"
+    with open(path, "w", encoding="utf-8") as file:
+        file.write(brief)
+
+    answered = sum(1 for value in results.values() if value is not None)
+    print(f"Wrote {path} ({answered}/{len(results)} questions answered)")
+    print(f"Estimated cost for this run: ${estimate_total_cost():.4f}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+The discipline that makes this scale past a single call: `research_one` returns `None` on repeated failure instead of raising, so one bad sub-question can never take down the whole brief — the failure is contained exactly where it happened. Every call, successful or not, still gets tracked into `usage_log` before anything can go wrong with it, so the cost total stays honest even on a run with partial failures.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+The "plan, then fan out to independent validated calls, then survive partial failure" shape here is exactly what the agent loop in Module 6 and the RAG pipeline in Module 5 both do at a larger scale. The Module 9 capstone wires a version of this same pattern into a real FastAPI endpoint with proper guardrails and monitoring layered on top.

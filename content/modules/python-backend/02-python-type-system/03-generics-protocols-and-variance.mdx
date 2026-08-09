@@ -1,0 +1,191 @@
+---
+id: types-generics
+title: Generics, Protocols, and Variance
+description: Design repository contracts with TypeVar, bounds, structural typing, and practical variance.
+module: python-type-system
+order: 3
+estimatedMinutes: 50
+prerequisites: [types-callables]
+learningObjectives:
+  - Create generic functions and classes
+  - Define structural protocols
+  - Reason about variance at API boundaries
+---
+
+## Preserve relationships with generics
+
+A generic says several positions share a type relationship. `Any` erases that relationship.
+
+```python
+from typing import TypeVar
+
+T = TypeVar("T")
+
+def first(items: list[T]) -> T:
+    if not items:
+        raise ValueError("items cannot be empty")
+    return items[0]
+```
+
+Given `list[Task]`, the result is `Task`. A bound limits valid types while preserving the concrete subtype:
+
+```python
+class Entity:
+    id: str
+
+E = TypeVar("E", bound=Entity)
+
+def entity_id(entity: E) -> str:
+    return entity.id
+```
+
+## Protocols express behavior
+
+Protocols provide structural typing: a class satisfies a protocol by having compatible members, without inheritance or registration.
+
+```python
+from typing import Protocol, TypeVar
+
+T_co = TypeVar("T_co", covariant=True)
+
+class Reader(Protocol[T_co]):
+    def get(self, entity_id: str) -> T_co: ...
+    def list(self) -> list[T_co]: ...
+
+class TaskWriter(Protocol):
+    def add(self, task: Task) -> None: ...
+```
+
+Split reading and writing when useful. A service can require only its actual dependency. Structural contracts make an in-memory repository and future SQLAlchemy repository interchangeable without coupling either class to an interface base.
+
+<TypeScriptComparison>
+
+Python `Protocol` is the closest match to TypeScript's structural interfaces. Unlike a normal Python abstract base class, it does not require explicit inheritance. It still exists mainly for static analysis unless marked `@runtime_checkable`, whose runtime check is shallow.
+
+</TypeScriptComparison>
+
+## Variance in practice
+
+Covariance means a producer of `SpecialTask` can stand in for a producer of `Task`; it only returns values. Contravariance means a consumer able to handle any `Task` can stand in for one asked to handle only `SpecialTask`. Mutable containers are invariant because they both produce and consume.
+
+If `list[SpecialTask]` were accepted as `list[Task]`, the callee could append a plain `Task`, violating the caller's list. Prefer read-only abstractions such as `Sequence[Task]` when covariance is useful. Do not add variance declarations until the direction of data is clear.
+
+<CommonMistake>
+
+A repository protocol with twenty methods becomes a disguised concrete dependency. Define cohesive capabilities used by the consumer, and let architectural boundaries—not a generic framework—drive reuse.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Protocols make tests cheaper: service tests can use a small fake implementing the same behavior. They do not remove the need for integration tests proving the SQLAlchemy implementation honors the contract.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="types-generics-1" difficulty="easy">
+
+Write generic `last(items: Sequence[T]) -> T` and reject an empty sequence.
+
+<Solution>
+
+```python
+from collections.abc import Sequence
+from typing import TypeVar
+T = TypeVar("T")
+
+def last(items: Sequence[T]) -> T:
+    if not items:
+        raise ValueError("items cannot be empty")
+    return items[-1]
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-generics-2" difficulty="medium">
+
+Define the smallest protocol needed by a service that only retrieves a task by ID.
+
+<Solution>
+
+```python
+from typing import Protocol
+
+class TaskReader(Protocol):
+    def get(self, task_id: str) -> Task: ...
+```
+
+Depending on this capability keeps unrelated repository operations out of the service contract.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-generics-3" difficulty="hard">
+
+Explain why `Sequence[SpecialTask]` can be accepted where `Sequence[Task]` is needed, while `list[SpecialTask]` cannot safely replace `list[Task]`.
+
+<Solution>
+
+The sequence interface only exposes values, so reading a subtype as its base is safe. A list permits writes; the receiver could insert a base `Task` into a list promised to contain only `SpecialTask`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-generics-4" difficulty="interview">
+
+Interview-style: "What's the practical difference between a Python `Protocol` and an abstract base class (`ABC`) for defining a repository interface?" Answer in three sentences or fewer.
+
+<Solution>
+
+A `Protocol` uses structural typing — any class with matching methods satisfies it automatically, with no inheritance or registration required. An `ABC` uses nominal typing — a class must explicitly inherit from it to count as implementing it, even if its methods already match.
+
+Protocols are usually the better fit for repository-style interfaces specifically because they let an in-memory fake and a real database-backed class both satisfy the same contract without either one depending on a shared base class.
+
+</Solution>
+</Exercise>
+
+<Exercise id="types-generics-5" difficulty="real-world">
+
+Your team's `Repository` protocol has grown to 15 methods over a year of feature work, and every service now depends on the full protocol even though most only use 2-3 methods. Using only what this lesson covered, name the fix.
+
+<Solution>
+
+Split the one large protocol into several small, cohesive ones — a `TaskReader` with just `get`/`list`, a `TaskWriter` with just `add`/`update`, and so on — so each service can depend on exactly the capability it uses instead of the entire surface. This is the same "20-method protocol is a disguised concrete dependency" problem this lesson's common mistake warns about, just discovered a year later instead of at design time.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does a class need to import or reference a Protocol to satisfy it?">
+
+No — that's the entire point of structural typing. Any class with matching method signatures satisfies a `Protocol` automatically, with zero coupling between the implementing class and the protocol definition. This is different from inheriting an ABC, which requires an explicit `class Foo(MyABC):` relationship.
+
+</Gotcha>
+
+<Gotcha question="Is @runtime_checkable enough to fully validate that a class implements a Protocol at runtime?">
+
+No — `@runtime_checkable` only checks that the required method *names* exist via `isinstance()`, not that their signatures, parameter types, or return types actually match. It's a shallow existence check, useful for a quick sanity test, not a substitute for the static checker's full verification.
+
+</Gotcha>
+
+<Gotcha question="Is a generic function with an unbounded TypeVar just as safe as Any?">
+
+No, meaningfully safer. An unbounded `TypeVar` still preserves the relationship between input and output — `def first(items: list[T]) -> T` guarantees the return type matches whatever concrete type was passed in, which is real information `Any` throws away entirely. Bounded or not, a `TypeVar` is doing type-relationship work that `Any` opts out of.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can identify the type relationship a generic preserves, define a consumer-shaped protocol, and reason about producer versus consumer variance.
+
+</Checkpoint>
+
+## Summary
+
+Generics preserve type relationships. Protocols describe behavior structurally. Variance follows data direction: producers can be covariant, consumers contravariant, and mutable producer-consumers are normally invariant.
+

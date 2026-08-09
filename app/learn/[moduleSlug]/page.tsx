@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { getModule, getModules } from "@/lib/content/loader";
+import { getModule, getModules, getTracks } from "@/lib/content/loader";
 import { ContinueLearning, OverallProgress } from "@/components/progress/ProgressWidgets";
 
 type Props = { params: Promise<{ moduleSlug: string }> };
@@ -18,9 +18,11 @@ export async function generateMetadata({ params }: Props): Promise<Metadata> {
 export default async function ModulePage({ params }: Props) {
   const courseModule = await getModule((await params).moduleSlug);
   if (!courseModule) notFound();
+  const track = (await getTracks()).find((item) => item.slug === courseModule.track);
   const lessons = courseModule.lessons.map((lesson) => ({ id: lesson.id, href: `/learn/${courseModule.slug}/${lesson.slug}` }));
   return <div className="standard-page module-page">
     <header className="page-header">
+      <nav className="breadcrumbs" aria-label="Breadcrumb"><Link href="/learn">All tracks</Link><span>/</span><Link href={`/tracks/${courseModule.track}`}>{track?.title ?? courseModule.track}</Link></nav>
       <p className="eyebrow">MODULE {String(courseModule.number).padStart(2, "0")} · {courseModule.status.toUpperCase()}</p>
       <h1>{courseModule.title}</h1><p>{courseModule.description}</p>
       <div className="module-facts"><span>{courseModule.lessons.length} lessons</span><span>{Math.round(courseModule.estimatedMinutes / 60)} hours</span><span>{courseModule.prerequisites.length ? `Requires ${courseModule.prerequisites.join(", ")}` : "No course prerequisites"}</span></div>

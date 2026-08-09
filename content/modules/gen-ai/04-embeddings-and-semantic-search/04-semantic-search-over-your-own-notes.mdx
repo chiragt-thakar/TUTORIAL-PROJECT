@@ -1,0 +1,170 @@
+---
+id: genai-search-project
+title: Semantic Search Over Your Own Notes
+description: Build search that finds relevant text by meaning, not exact words.
+module: embeddings-and-semantic-search
+order: 4
+estimatedMinutes: 40
+prerequisites: [genai-vector-store]
+learningObjectives:
+  - Chunk and embed a real document set
+  - Serve a top-k semantic search query
+  - Evaluate whether results are actually relevant
+---
+
+## Real documents don't fit in one embedding
+
+Every example so far embedded whole, short sentences. Real documents — a policy page, a set of notes, a long article — are too large and too topically mixed to embed as one vector; a single embedding for a 3,000-word document averages away most of its specific content, so a query about one paragraph won't score highly against the whole.
+
+The fix is **chunking**: splitting a document into smaller, coherent pieces and embedding each one separately.
+
+```python title="chunk_text.py"
+def chunk_text(text: str, max_chars: int = 500, overlap: int = 50) -> list[str]:
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + max_chars
+        chunks.append(text[start:end])
+        start = end - overlap
+    return chunks
+```
+
+This is a deliberately simple character-based chunker. It works, but it can split mid-sentence. A better default splits on paragraph or sentence boundaries first and only falls back to a hard character cut when a single paragraph is itself too long — worth doing in the assignment, not required to understand this lesson's core idea.
+
+<Concept>
+
+The **overlap** between chunks (`50` characters above) exists so that a sentence or idea spanning a chunk boundary still appears intact in at least one chunk. Too little overlap risks splitting meaning across two chunks that individually don't capture it; too much overlap wastes embedding calls and storage on duplicated content. There's no universal right number — it depends on how self-contained your source paragraphs typically are.
+
+</Concept>
+
+## Assembling the pipeline
+
+Chunking, embedding, storing, and querying compose into one pipeline using everything from Lessons 1 through 3:
+
+```python title="notes_search.py"
+def index_document(store: InMemoryVectorStore, doc_id: str, text: str) -> None:
+    chunks = chunk_text(text)
+    vectors = embed(chunks)  # one batched call for all chunks
+    for i, (chunk, vector) in enumerate(zip(chunks, vectors)):
+        store.add(f"{doc_id}-{i}", chunk, vector)
+
+def search_notes(store: InMemoryVectorStore, query: str, top_k: int = 3) -> list[tuple[str, float]]:
+    query_vector = embed([query])[0]
+    results = store.search(query_vector, top_k=top_k)
+    return [(entry.text, score) for entry, score in results]
+```
+
+Notice `index_document` embeds all of a document's chunks in one batched call, not one call per chunk — the same batching discipline from Lesson 1, now applied at the chunk level where it matters even more, since one document can produce dozens of chunks.
+
+<WhyItMatters>
+
+This is the exact pipeline shape behind every "chat with your docs" and semantic-search feature you've used: chunk the source material, embed each chunk once, store it, and at query time embed the query and rank chunks against it. Module 5's retrieval-augmented generation takes this same pipeline and feeds the top-k chunks into an LLM prompt instead of just displaying them — the retrieval half doesn't change.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Evaluating "does semantic search work" by eyeballing whether the top result *looks* plausible, rather than checking whether it's the result you actually wanted for a query where you know the right answer. A search feature that returns a fluent-sounding but wrong chunk is worse than one that returns nothing, because it's more likely to mislead silently.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Build a small, fixed set of `(query, expected_chunk_id)` pairs from your own corpus before shipping — even 10–15 pairs is enough to catch an obvious regression (a chunking change, a model swap) that "it still returns *something*" would miss entirely. This is the same regression-testing instinct from Module 2's prompt-testing lesson, applied to retrieval instead of generation.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-search-project-1" difficulty="easy">
+
+A 4,000-character document is chunked with `max_chars=500` and `overlap=50`. Roughly how many chunks does it produce?
+
+<Solution>
+
+Each chunk after the first advances the start position by `500 - 50 = 450` characters, so it takes roughly `4000 / 450 ≈ 9` chunks to cover the whole document.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-search-project-2" difficulty="medium">
+
+`chunk_text` with no overlap (`overlap=0`) splits a sentence exactly at a chunk boundary, so half the sentence is in one chunk and half is in the next. Explain the concrete downside for search quality, using what Lesson 1 covered about what embeddings represent.
+
+<Solution>
+
+Each half-sentence chunk gets embedded on its own, and an embedding represents the meaning of whatever text is actually in it — a truncated half-sentence often carries a different, weaker, or ambiguous meaning than the complete sentence would, so neither resulting chunk embeds as strongly toward a query about that sentence's actual point as the intact sentence would have. Overlap exists specifically to reduce how often this split happens.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-search-project-3" difficulty="hard">
+
+`index_document` is called once per document in a loop, each call making its own `embed(chunks)` batch call. For a corpus of 200 documents averaging 8 chunks each, propose a change that reduces the number of embedding API calls from 200 to close to 1, and name one risk of going too far in that direction.
+
+<Solution>
+
+Collect every document's chunks into one combined list first, call `embed()` once (or in a few large batches respecting the API's per-request size/token limits) over all ~1,600 chunks, then map the returned vectors back to their originating document and chunk index.
+
+The risk of going too far is hitting the API's per-request token or item limit in one oversized batch — the real answer is "the fewest calls that respect the provider's batch limits," not literally one call regardless of size.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-search-project-4" difficulty="interview">
+
+Interview-style: "Why can't you just embed an entire long document as a single vector and skip chunking?" Answer in three sentences or fewer.
+
+<Solution>
+
+A single embedding for a long, topically varied document ends up as an average over everything in it, diluting any one specific idea's contribution to the vector. A query about one narrow topic in that document won't score as strongly against that diluted whole-document vector as it would against a chunk that's actually about that topic. Chunking keeps each stored vector focused enough that similarity scores stay meaningful.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-search-project-5" difficulty="real-world">
+
+A team ships semantic search over their internal wiki and celebrates because "search returns results now, it used to return nothing for anything not an exact title match." Two weeks later, users complain that results are "plausible but usually not what I needed." Using only what this lesson covered, what evaluation step did the team skip before shipping, and what would it have caught?
+
+<Solution>
+
+They skipped building even a small set of `(query, expected result)` pairs to check against before shipping — they validated "the pipeline runs and returns something" but never validated "the pipeline returns the *right* thing" for queries where they already knew the correct answer.
+
+A fixed eval set, even 10–15 realistic queries checked against the chunk they should surface, would have caught a systematically mediocre ranking (a chunking choice that's too coarse, an overlap that's too small, a corpus with gaps) before real users hit it in production.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does a fixed-size character chunker guarantee chunks end on sentence or paragraph boundaries?">
+
+No — a plain character-count chunker like the one in this lesson cuts wherever the character count runs out, mid-sentence and mid-word included. Overlap mitigates the damage but doesn't eliminate it; a boundary-aware chunker (split on paragraphs/sentences first, fall back to hard cuts only when necessary) produces cleaner chunks.
+
+</Gotcha>
+
+<Gotcha question="If your search feature returns a result for every query, does that mean it's working correctly?">
+
+No — "returns something" and "returns the right thing" are different claims, and only the second one is what users actually need. A corpus with no genuinely relevant content for a query will still return its closest (but poor) match by rank; only a real evaluation set against known-correct answers catches ranking quality problems that "it returns results" hides.
+
+</Gotcha>
+
+<Gotcha question="Is more overlap between chunks always safer?">
+
+No — overlap trades storage and embedding cost for reduced risk of split meaning; pushed too far, you're paying to embed and store largely duplicated content across neighboring chunks with diminishing benefit. It's a tuning knob, not a "more is better" setting.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can chunk a real document with a deliberate overlap strategy, assemble chunking, batched embedding, storage, and query-time search into one working pipeline, and explain why "it returns results" isn't the same as "it works."
+
+</Checkpoint>
+
+## Summary
+
+Real documents need chunking before they can be embedded meaningfully — one vector per coherent piece, not one vector per document. The full pipeline is chunk, batch-embed, store, and rank at query time, and it's exactly the retrieval half of what Module 5's RAG systems build on.
+
+Evaluate with real known-answer queries, not by eyeballing whether the top result looks plausible. The assignment turns this into a complete, real search tool over a real corpus.

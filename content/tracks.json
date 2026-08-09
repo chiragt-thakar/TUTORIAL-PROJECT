@@ -1,0 +1,42 @@
+[
+  {
+    "slug": "python-backend",
+    "number": 1,
+    "title": "Python & Backend Engineering",
+    "tagline": "Zero to production FastAPI",
+    "description": "Python fundamentals, typing, FastAPI, SQLAlchemy, testing, and production architecture — building one cumulative Task Management API.",
+    "status": "available"
+  },
+  {
+    "slug": "python-libraries",
+    "number": 2,
+    "title": "Python Libraries",
+    "tagline": "The tools real Python code runs on",
+    "description": "Focused, practical tutorials for the libraries you will reach for constantly: requests, NumPy, pandas, pytest add-ons, CLI tooling, and more.",
+    "status": "planned"
+  },
+  {
+    "slug": "gen-ai",
+    "number": 3,
+    "title": "Generative AI Engineering",
+    "tagline": "Build real things with LLMs",
+    "description": "How large language models actually work, prompting that holds up in production, embeddings and RAG, tool use and agents, and shipping a Gen AI feature safely.",
+    "status": "available"
+  },
+  {
+    "slug": "ai-ml",
+    "number": 4,
+    "title": "AI & Machine Learning",
+    "tagline": "From first model to deep learning",
+    "description": "Classical machine learning with scikit-learn, model evaluation, and an on-ramp into neural networks and deep learning — grounded in code, not just theory.",
+    "status": "planned"
+  },
+  {
+    "slug": "ai-ml-maths",
+    "number": 5,
+    "title": "Maths for AI & ML",
+    "tagline": "The maths, explained for programmers",
+    "description": "Linear algebra, calculus, probability, and statistics taught the way a working engineer needs them — with Python and NumPy standing in for abstract notation.",
+    "status": "planned"
+  }
+]

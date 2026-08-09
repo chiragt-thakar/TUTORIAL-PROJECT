@@ -1,0 +1,215 @@
+---
+id: genai-tool-loop
+title: The Tool-calling Loop
+description: Send results back to the model and let it decide the next step.
+module: tool-and-function-calling
+order: 2
+estimatedMinutes: 45
+prerequisites: [genai-tool-schema]
+learningObjectives:
+  - Implement a call -> execute -> respond loop
+  - Cap the number of tool-calling turns
+  - Log every tool call for debugging
+---
+
+## One tool call is rarely the whole answer
+
+"What's the status of order ORD-4471, and is the customer who placed it eligible for a refund?" needs two tool calls — `check_order_status`, then `check_refund_eligibility` using something the first call returned. The model can't chain them itself; it needs your code to execute the first, send the result *back*, and let it decide the second.
+
+This is the **tool-calling loop**: call the model, check whether it wants a tool, execute the tool, append the result as a new message, and call the model again — repeating until it responds with a final answer instead of another tool call.
+
+```python title="tool_loop.py"
+def run(question: str, tools: list[dict], dispatch) -> str:
+    messages = [{"role": "user", "content": question}]
+
+    while True:
+        response = client.chat.completions.create(
+            model="gpt-4.1-mini",
+            messages=messages,
+            tools=tools,
+        )
+        message = response.choices[0].message
+        messages.append(message)
+
+        if not message.tool_calls:
+            return message.content  # model gave a final answer
+
+        for call in message.tool_calls:
+            result = dispatch(call)
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": result,
+            })
+```
+
+Look closely at that `"role": "tool"` message — it's a fourth message role beyond system/user/assistant, specifically for feeding a tool's output back in, tagged with `tool_call_id` so the model knows which call it answers.
+
+<Concept>
+
+Each pass through this loop is one **turn**. A simple question might resolve in one turn (no tool needed) or two (one tool call, then a final answer). A complex request might need several turns chaining multiple tool calls together — this is, mechanically, the same loop that powers every "agent" you've heard about, just without a name yet. Module 6 gives it one.
+
+</Concept>
+
+## Turns aren't free, and they aren't guaranteed to end
+
+That `while True` should make you nervous, and it should — an unbounded loop against a model that might keep deciding "I need one more tool call" is a real production hazard: unbounded cost, unbounded latency, and in a genuine failure mode, a loop that never terminates because the model keeps calling the same tool with slightly different arguments.
+
+```python title="bounded_loop.py"
+def run(question: str, tools: list[dict], dispatch, max_turns: int = 6) -> str:
+    messages = [{"role": "user", "content": question}]
+
+    for turn in range(max_turns):
+        response = client.chat.completions.create(model="gpt-4.1-mini", messages=messages, tools=tools)
+        message = response.choices[0].message
+        messages.append(message)
+
+        if not message.tool_calls:
+            return message.content
+
+        for call in message.tool_calls:
+            print(f"[turn {turn}] calling {call.function.name}({call.function.arguments})")
+            result = dispatch(call)
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+
+    return "I wasn't able to complete this within the allowed number of steps."
+```
+
+The `print` isn't a debugging afterthought — it's the difference between "the assistant gave a weird answer" and "here's the exact sequence of five tool calls that led to it," which you will need the very first time this breaks in front of a real user.
+
+<WhyItMatters>
+
+A hard cap on turns is not a workaround for a bug — it's a required design element, the same way you'd never ship a retry loop without a max-retry count. Every agentic system needs an answer to "what happens if this never converges," and "it runs forever" is never an acceptable answer.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Logging only the final answer and not the intermediate tool calls. When a multi-turn interaction produces a wrong answer, the bug is almost always in one specific turn, and you cannot find it after the fact without a trace of every call, argument, and result along the way.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Track cost per turn, not just per conversation. A single user request that silently burns 6 turns because a tool kept returning ambiguous results costs 6x a one-turn request — and that difference is invisible unless you're logging turn count and tokens per turn, not just per top-level API call.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-tool-loop-1" difficulty="easy">
+
+`bounded_loop.py` runs `max_turns=6` and the model needs a 7th tool call to finish. What does the user see?
+
+<Solution>
+
+`"I wasn't able to complete this within the allowed number of steps."` — the loop exits the `for` after 6 turns without ever returning a final answer, falling through to the fallback message instead of the model's actual response.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-loop-2" difficulty="medium">
+
+A teammate removes the `messages.append(message)` line right after getting the response, reasoning "we only need to append the tool result, not the assistant's own message." Explain what breaks.
+
+<Solution>
+
+The model's message that *requested* the tool call — including the `tool_calls` field with the `id` the "tool" role message references via `tool_call_id` — is gone from history, so the next API call sends a `"tool"` message that doesn't correspond to any `tool_calls` the model can see it made. Most providers reject this as invalid message sequencing; at minimum, the model loses context for why that tool result exists.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-loop-3" difficulty="hard">
+
+Extend `bounded_loop.py` so it also stops early — before `max_turns` — if the same tool is called with the exact same arguments twice in a row, since that's a strong signal of a stuck loop.
+
+<Solution>
+
+```python
+def run(question: str, tools: list[dict], dispatch, max_turns: int = 6) -> str:
+    messages = [{"role": "user", "content": question}]
+    last_call_signature = None
+
+    for turn in range(max_turns):
+        response = client.chat.completions.create(model="gpt-4.1-mini", messages=messages, tools=tools)
+        message = response.choices[0].message
+        messages.append(message)
+
+        if not message.tool_calls:
+            return message.content
+
+        for call in message.tool_calls:
+            signature = (call.function.name, call.function.arguments)
+            if signature == last_call_signature:
+                return "Stopped: the same tool call repeated with identical arguments."
+            last_call_signature = signature
+            result = dispatch(call)
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+
+    return "I wasn't able to complete this within the allowed number of steps."
+```
+
+A repeated identical call is a cheap, reliable early-exit signal — no need to wait for `max_turns` to catch it.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-loop-4" difficulty="interview">
+
+Interview-style: "Why does the tool result get sent back as a new message instead of the model just being told to 'wait' for the result?" Answer in three sentences or fewer.
+
+<Solution>
+
+Because the model has no persistent execution context between API calls — it isn't "waiting," it's stateless, and every call is a fresh forward pass over whatever messages you send. The only way for the model to "know" a tool's result is for that result to literally be present in the message list on the next call, tagged with `tool_call_id` so it's unambiguous which call it answers.
+
+This is the same statelessness from Module 1, just now applying to tool results instead of conversation history.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-tool-loop-5" difficulty="real-world">
+
+Production logs show a customer-support assistant averaging 4.2 turns per conversation, but a small number of conversations hit exactly `max_turns` and returned the fallback message. Using only what this lesson covered, describe two different next steps depending on what you find in the tool-call logs for those conversations.
+
+<Solution>
+
+If the logs show the model genuinely making steady progress toward an answer but needing more than `max_turns` steps for a legitimately complex request, the fix is raising the cap (with the cost tradeoff that implies) or breaking the task into a simpler flow.
+
+If instead the logs show the model repeating the same or similar tool calls without making progress, that's the stuck-loop pattern from the previous exercise, and the fix is a repetition/no-progress detector, not a higher cap — a higher cap would just let a stuck loop burn more turns before failing the same way.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does the model see previous tool results automatically on the next turn?">
+
+Only if your code put them in `messages`. There's no hidden memory of tool results across API calls — everything the model "knows" about a previous tool call's outcome has to be explicitly present in the message list you send, exactly like every other piece of conversation history.
+
+</Gotcha>
+
+<Gotcha question="If a model requests two tool calls in one response, do they have to be executed in order?">
+
+Not inherently — they're independent requests from that single turn, and if the tools don't depend on each other's results, you can execute them concurrently for latency. What does matter is that each `"tool"` role response message correctly references its own call's `tool_call_id`, regardless of execution order.
+
+</Gotcha>
+
+<Gotcha question="Is a higher max_turns cap always safer than a lower one?">
+
+No — it trades one risk for another. A low cap risks cutting off legitimately complex requests early; a high cap risks a stuck or slowly-diverging loop burning far more cost and latency before it's caught. The repetition-detection exercise in this lesson is often a better lever than just raising the number.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can implement a bounded call-execute-respond loop, explain why the assistant's own tool-call message has to stay in history, and justify a concrete stopping condition beyond just a turn count.
+
+</Checkpoint>
+
+## Summary
+
+The tool-calling loop is call, check for tool calls, execute, append the result as a `"tool"` message, and repeat — the same statelessness from Module 1 applied to multi-step tool use. An unbounded loop is a production hazard, not just bad style; always cap turns and log every call, argument, and result so a bad run is debuggable after the fact.
+
+The next lesson covers what happens when a tool call shouldn't just be trusted and executed blindly.

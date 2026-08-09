@@ -1,0 +1,189 @@
+---
+id: genai-rag-pipeline
+title: The Retrieve-then-generate Pipeline
+description: Wire retrieval and generation into one request.
+module: retrieval-augmented-generation
+order: 3
+estimatedMinutes: 40
+prerequisites: [genai-chunking]
+learningObjectives:
+  - Retrieve top-k chunks for a query
+  - Assemble a grounded prompt from retrieved chunks
+  - Cite sources in the final answer
+---
+
+## Two calls, one answer
+
+Everything so far in this module has been setup. A RAG request itself is two calls in sequence: embed the query and retrieve the top-k chunks (Module 4's `InMemoryVectorStore.search`), then assemble those chunks into a prompt and ask the model to answer strictly from them (Module 2's system-prompt discipline, pointed at retrieved text instead of static instructions).
+
+```python title="rag_answer.py"
+SYSTEM_PROMPT = (
+    "Answer the user's question using ONLY the provided context. "
+    "If the context doesn't contain the answer, say you don't know — "
+    "never guess or use outside knowledge. "
+    "Cite each claim with the [n] marker of the chunk it came from."
+)
+
+def build_prompt(query: str, chunks: list[Chunk]) -> str:
+    context = "\n\n".join(f"[{i + 1}] {chunk.text}" for i, chunk in enumerate(chunks))
+    return f"Context:\n{context}\n\nQuestion: {query}"
+
+def answer(store: InMemoryVectorStore, query: str, top_k: int = 3) -> tuple[str, list[Chunk]]:
+    query_vector = embed([query])[0]
+    results = store.search(query_vector, top_k=top_k)
+    chunks = [entry for entry, _ in results]
+
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_prompt(query, chunks)},
+        ],
+    )
+    return response.choices[0].message.content, chunks
+```
+
+Nothing here is new mechanics — it's Module 4's retrieval and Module 2's grounded-prompt discipline, composed. That composition *is* what "RAG" means in practice; there's no third, separate technique hiding underneath the acronym.
+
+<Concept>
+
+The `[n]` citation markers in the prompt do two jobs at once: they give the model a concrete way to attribute each claim to a specific chunk, and — critically — they let *you* verify the claim afterward by checking chunk `[n]`'s actual text, rather than trusting the model's summary of what it said. Citations you can't verify against source text aren't really citations.
+
+</Concept>
+
+## The instruction to refuse is not optional
+
+The single highest-leverage line in `SYSTEM_PROMPT` is `"If the context doesn't contain the answer, say you don't know."` Without it, a model facing a query with no good retrieved match doesn't fall silent — it falls back on its own parametric memory and answers anyway, confidently, exactly like Lesson 1's ungrounded example. RAG's grounding guarantee is only as strong as the model's willingness to admit "not in this context."
+
+```python title="refusal_check.py"
+def is_low_confidence(store: InMemoryVectorStore, query: str, min_score: float = 0.2) -> bool:
+    query_vector = embed([query])[0]
+    results = store.search(query_vector, top_k=1)
+    return not results or results[0][1] < min_score
+```
+
+Combine both layers: a retrieval-side score threshold (Module 4's minimum-similarity check) that skips generation entirely for a clearly-off-topic query, and a generation-side instruction that catches the harder case — a query that's on-topic but genuinely unanswered by anything retrieved.
+
+<WhyItMatters>
+
+This two-layer refusal is what separates a RAG system that's actually trustworthy from one that merely *looks* grounded because it usually has relevant context available. Production traffic eventually asks something your corpus doesn't cover — what happens on that exact query is the real test of the system, not the demo queries where retrieval always finds something great.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Omitting the "say you don't know" instruction because "the retrieved context is usually relevant, so it's fine." The failure only shows up on the query that falls outside your corpus — which is exactly the query where an ungrounded, confident-sounding wrong answer does the most damage to trust.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Log the retrieved chunk IDs alongside every generated answer, not just the final text. When a user reports a wrong answer, that log is what lets you tell — in seconds, not through a debugging session — whether retrieval found the wrong chunks or generation ignored the right ones, which is exactly the diagnostic split Lesson 4 formalizes into an evaluation harness.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-rag-pipeline-1" difficulty="easy">
+
+Write the `build_prompt` output structure (not the code, the shape) for a query with 2 retrieved chunks, showing where citation markers appear.
+
+<Solution>
+
+```text
+Context:
+[1] <first chunk's text>
+
+[2] <second chunk's text>
+
+Question: <the user's query>
+```
+
+Each chunk gets a numbered marker matching its position, which the model is instructed to reuse when citing that chunk's claim in its answer.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-rag-pipeline-2" difficulty="medium">
+
+A query about a topic completely absent from the corpus still retrieves the top-3 closest chunks (an exhaustive or ANN search always returns *something* by rank). Using the system prompt from this lesson, what should the model do, and why doesn't the mere presence of retrieved chunks force it to answer confidently?
+
+<Solution>
+
+The model should say it doesn't know, because the system prompt explicitly instructs it to check whether the context *actually contains* the answer — not merely whether context was provided at all. "Retrieved something" and "retrieved something relevant" are different, and a well-followed grounding instruction distinguishes between them rather than treating any non-empty context as license to answer.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-rag-pipeline-3" difficulty="hard">
+
+A teammate proposes removing the retrieval-side minimum-similarity check, reasoning "the system prompt already tells the model to refuse when it doesn't know, so the score threshold is redundant." Evaluate this reasoning.
+
+<Solution>
+
+It's not fully redundant — the two checks catch different failure modes. The generation-side instruction depends on the model correctly recognizing and honoring "not in context," which is a probabilistic behavior that can fail, especially under adversarial or ambiguous phrasing.
+
+The retrieval-side score threshold is a deterministic, cheap circuit breaker that skips the generation call entirely for clearly off-topic queries — faster, cheaper, and not dependent on model compliance. Keeping both is defense in depth, not duplication.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-rag-pipeline-4" difficulty="interview">
+
+Interview-style: "Why is the instruction 'say you don't know if the context doesn't contain the answer' the single most important line in a RAG system prompt?" Answer in three sentences or fewer.
+
+<Solution>
+
+Without it, a query that falls outside the corpus doesn't produce silence — it produces a confident, fluent answer sourced from the model's own memory instead of the retrieved context, which is exactly the ungrounded hallucination RAG was built to prevent. Every other part of the pipeline can work perfectly and this single failure mode still undermines trust in the whole system.
+
+It's the line that determines what happens on the query your corpus doesn't cover, which real production traffic guarantees will eventually happen.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-rag-pipeline-5" difficulty="real-world">
+
+A user reports that a RAG bot answered a billing question with a plausible-sounding but factually wrong number. The team has chunk-level logging in place. Using only what this lesson covered, describe the first diagnostic step and what each possible finding would tell them.
+
+<Solution>
+
+Pull the logged chunk IDs retrieved for that exact query and read their actual text. If the correct billing figure isn't in any retrieved chunk, it's a retrieval failure — the right chunk exists somewhere in the corpus but wasn't found (a chunking, embedding, or ranking problem from Lesson 2).
+
+If the correct figure *is* present in a retrieved chunk and the model still stated something different, it's a generation failure — the model didn't faithfully use the context it was given, pointing at the system prompt's grounding instruction or the model's adherence to it.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does providing retrieved context to the model guarantee it will only answer from that context?">
+
+No — providing context makes grounded answers *possible*, but the model can still fall back on its own memorized knowledge unless explicitly and effectively instructed not to, and even then compliance isn't perfect. This is exactly why Lesson 4's evaluation step checks groundedness directly rather than assuming it from the pipeline's design.
+
+</Gotcha>
+
+<Gotcha question="If retrieval returns results, does that mean at least one of them is actually relevant to the query?">
+
+No — a similarity search (exhaustive or ANN) returns the *closest available* chunks by rank, even when none of them are a good match for a query outside the corpus's coverage. That's precisely why a minimum-similarity threshold and an explicit "say you don't know" instruction are both necessary, not just one or the other.
+
+</Gotcha>
+
+<Gotcha question="Are citation markers like [1] trustworthy just because the model included them in its answer?">
+
+Not automatically — a citation marker only means the model *said* the claim came from that chunk, not that it verifiably does. Treat citations as something to spot-check against the actual chunk text (manually, or via the eval harness in Lesson 4), especially before trusting them in a high-stakes context.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can assemble a grounded, cited prompt from retrieved chunks, explain why the refusal instruction is the highest-leverage line in the system prompt, and diagnose whether a wrong answer came from retrieval or generation using logged chunk IDs.
+
+</Checkpoint>
+
+## Summary
+
+A RAG request is retrieval (Module 4) followed by a grounded, citation-instructed generation call (Module 2's system-prompt discipline) — no separate third technique. The refusal instruction — say you don't know when context doesn't cover it — is what actually delivers on RAG's hallucination-reduction promise, and it needs both a generation-side instruction and a retrieval-side score threshold to hold up.
+
+The next lesson turns "trust the pipeline" into "verify the pipeline" with a real evaluation harness.

@@ -1,8 +1,53 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { getModules } from "@/lib/content/loader";
-import { ContinueLearning, OverallProgress } from "@/components/progress/ProgressWidgets";
-import { CurriculumCards } from "@/components/learning/CurriculumCards";
+import { getModules, getTracks } from "@/lib/content/loader";
+import { ResumeCard } from "@/components/dashboard/ResumeCard";
+import { SkillProgress } from "@/components/dashboard/SkillProgress";
+import { AllModulesOverview } from "@/components/dashboard/AllModulesOverview";
+import { LearningStreak } from "@/components/progress/StreakWidget";
+import { TrackCards } from "@/components/learning/TrackCards";
 
-export const metadata: Metadata = { title: "Python Backend + FastAPI: Zero to Master", description: "Your practical path from Node.js and TypeScript to production Python backend engineering." };
-export default async function Home() { const modules = await getModules(); const available = modules.filter((module) => module.status === "available"); const lessons = available.flatMap((module) => module.lessons.map((lesson) => ({ id: lesson.id, href: `/learn/${module.slug}/${lesson.slug}` }))); return <div className="home-page"><section className="hero"><p className="eyebrow">PERSONAL LEARNING TRACK · PYTHON 3.13+</p><h1>Build the Python backend instincts your Node.js experience can’t supply.</h1><p className="hero-copy">A rigorous, project-driven course in Python, typing, FastAPI, SQLAlchemy, testing, reliability, and production architecture—without reteaching what an API is.</p><div className="hero-actions"><ContinueLearning lessons={lessons} /><Link className="button secondary" href="/learn">View curriculum</Link></div><div className="overall-card"><div><span>Overall progress</span><strong>{available.length} modules available · {modules.length} total</strong></div><OverallProgress lessonIds={lessons.map((lesson) => lesson.id)} /></div></section><section className="home-section"><div className="section-heading"><div><p className="eyebrow">THE PATH</p><h2>One service, built in layers</h2></div><p>Every module advances a production-structured Task Management API—from typed in-memory entities to an authenticated, tested PostgreSQL service with caching and durable background work.</p></div><CurriculumCards modules={modules.slice(0, 6)} compact /><Link className="inline-link" href="/learn">See all {modules.length} modules <span aria-hidden="true">→</span></Link></section><section className="method-grid"><article><span>01</span><h2>Read for the difference</h2><p>Focus on Python-specific semantics and use TypeScript comparisons only where they sharpen the mental model.</p></article><article><span>02</span><h2>Work the exercises</h2><p>Predict behavior, repair realistic bugs, and implement small backend boundaries before revealing each solution.</p></article><article><span>03</span><h2>Ship the increment</h2><p>Close each module with an assignment that becomes part of the cumulative Task Management API.</p></article></section></div>; }
+export const metadata: Metadata = {
+  title: "Command Center",
+  description: "Your personal AI engineering command center: resume where you left off, streak, skill progress, and every track and module from Python zero to advanced Gen AI, always open.",
+};
+
+export default async function Home() {
+  const [modules, tracks] = await Promise.all([getModules(), getTracks()]);
+  const totalLessons = modules.reduce((sum, module) => sum + module.lessons.length, 0);
+  const availableCount = modules.filter((module) => module.status === "available").length;
+
+  return (
+    <div className="command-center">
+      <header className="command-header">
+        <p className="eyebrow">ZERO TO HERO · COMMAND CENTER</p>
+        <h1>Python → Backend → Gen AI → AI/ML.</h1>
+        <p className="command-sub">{availableCount} of {modules.length} modules live across {tracks.length} tracks · {totalLessons} lessons on the map · nothing is gated.</p>
+      </header>
+
+      <section className="command-grid">
+        <ResumeCard modules={modules} />
+        <LearningStreak />
+      </section>
+
+      <section className="home-section">
+        <div className="section-heading">
+          <div>
+            <p className="eyebrow">THE TRACKS</p>
+            <h2>Every track on the map</h2>
+          </div>
+          <Link className="inline-link" href="/roadmap">Open the skill tree <span aria-hidden="true">→</span></Link>
+        </div>
+        <TrackCards tracks={tracks} modules={modules} />
+      </section>
+
+      <section className="home-section">
+        <SkillProgress tracks={tracks} modules={modules} />
+      </section>
+
+      <section className="home-section">
+        <AllModulesOverview tracks={tracks} modules={modules} />
+      </section>
+    </div>
+  );
+}

@@ -1,0 +1,162 @@
+---
+id: genai-prompt-testing-assignment
+title: "Assignment: A Prompt Regression Test Harness"
+description: Build a real tool that scores two prompt versions against a shared eval set and flags regressions between them — every technique in this module working together.
+module: prompt-engineering-in-production
+order: 5
+estimatedMinutes: 65
+prerequisites: [genai-prompt-testing]
+learningObjectives:
+  - Build a reusable eval harness that scores a prompt against a schema-validated task
+  - Compare two prompt versions on the same data and detect per-case regressions
+  - Combine system prompts, few-shot examples, and structured output into one working tool
+---
+
+## Scenario
+
+Every lesson in this module built one piece: a disciplined system prompt, few-shot examples that teach a decision boundary, a Pydantic schema that turns output into something trustworthy, and an eval set that catches regressions. A real prompt engineering workflow needs all four working together as one tool, not four separate exercises you never actually run back to back.
+
+<Assignment id="genai-prompt-testing-assignment-work">
+
+## Requirements
+
+Build `prompt_harness.py`, invoked as `python prompt_harness.py`, that:
+
+- Defines a `TicketTriage` Pydantic model (category, priority, summary) as the structured-output contract, reused from this module's lessons.
+- Defines an eval set of at least 10 cases covering every category, including at least one deliberately tricky case per category (sarcasm, lukewarm tone, ambiguous wording).
+- Defines two named system prompt versions: `PROMPT_V1` (zero-shot, instructions only) and `PROMPT_V2` (adds few-shot examples for the boundary cases the eval set covers).
+- Runs both versions against the full eval set, validating every response against `TicketTriage` and treating a parse/validation failure as a failed case, not a crash.
+- Reports a per-version score **and** a per-case diff: which specific cases flipped between versions, in which direction.
+- Flags clearly if V2 regressed on anything V1 got right — this is the one output a human reviewing the comparison must not be able to miss.
+
+```text
+prompt_harness.py
+  TicketTriage      -- Pydantic schema (category, priority, summary)
+  EVAL_CASES         -- list of {"input": str, "expected_category": str}
+  PROMPT_V1, PROMPT_V2 -- the two system prompt versions under test
+  classify(prompt, text) -- one call, validated, returns TicketTriage or raises
+  evaluate(prompt, cases) -- runs every case, returns per-case results
+  main()                   -- runs both versions, prints scores + diff + regressions
+```
+
+## Acceptance criteria
+
+1. Running the harness prints a score for both `PROMPT_V1` and `PROMPT_V2` on the same eval set.
+2. The output lists every case where the two versions disagreed, showing input, expected, V1's answer, and V2's answer.
+3. Any case where V1 was correct and V2 was wrong is printed under a clearly labeled "regressions" section, separate from ordinary disagreements.
+4. A model response that fails JSON parsing or schema validation counts as a wrong answer for that case, not a crash that stops the whole run.
+5. `PROMPT_V2` actually contains few-shot examples in its text (not just a longer description) covering at least two of the eval set's tricky cases.
+6. Re-running the harness twice produces the same scores within one case of variance, consistent with `temperature=0` behavior from Module 1.
+
+### Stretch goals
+
+Add a third prompt version and generalize the comparison to N versions instead of exactly two. Persist results to a JSON file per run so score history can be tracked over time. Add a `--case` flag that runs and prints just one eval case in detail, useful while debugging a single failure.
+
+<Solution>
+
+The shape that makes this tractable: `classify` does one job (one call, one validated result, or raise), `evaluate` runs it across every case and never lets one case's exception stop the others, and `main` is the only place that compares the two result sets and decides what counts as a regression.
+
+```python
+from typing import Literal
+from openai import OpenAI
+from pydantic import BaseModel, ValidationError
+import json
+
+client = OpenAI()
+
+
+class TicketTriage(BaseModel):
+    category: Literal["billing", "bug", "feature_request", "other"]
+    priority: Literal["low", "medium", "high"]
+    summary: str
+
+
+EVAL_CASES = [
+    {"input": "My invoice charged me twice", "expected_category": "billing"},
+    {"input": "The app crashes every time I open settings", "expected_category": "bug"},
+    {"input": "Oh great, ANOTHER crash. Love this app.", "expected_category": "bug"},
+    {"input": "Could you add a dark mode option?", "expected_category": "feature_request"},
+    {"input": "It's fine, does what it says.", "expected_category": "other"},
+    {"input": "Why was I charged for a plan I cancelled?", "expected_category": "billing"},
+    {"input": "Login button does nothing when clicked", "expected_category": "bug"},
+    {"input": "Would love an export-to-CSV feature", "expected_category": "feature_request"},
+    {"input": "What are your support hours?", "expected_category": "other"},
+    {"input": "Refund never showed up after 2 weeks", "expected_category": "billing"},
+]
+
+PROMPT_V1 = """Classify the support ticket into category (billing, bug,
+feature_request, other) and priority (low, medium, high), with a one-line
+summary. Respond with ONLY JSON matching the schema."""
+
+PROMPT_V2 = PROMPT_V1 + """
+
+Examples:
+Ticket: "Oh great, ANOTHER crash. Love this app."
+-> {"category": "bug", "priority": "medium", "summary": "App crashes, reported sarcastically"}
+
+Ticket: "It's fine, does what it says."
+-> {"category": "other", "priority": "low", "summary": "Neutral feedback, no action needed"}
+"""
+
+
+def classify(prompt: str, text: str) -> TicketTriage:
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        temperature=0,
+        max_tokens=200,
+        messages=[
+            {"role": "system", "content": prompt},
+            {"role": "user", "content": text},
+        ],
+    )
+    data = json.loads(response.choices[0].message.content)
+    return TicketTriage.model_validate(data)
+
+
+def evaluate(prompt: str, cases: list[dict]) -> list[dict]:
+    results = []
+    for case in cases:
+        try:
+            result = classify(prompt, case["input"])
+            got = result.category
+        except (json.JSONDecodeError, ValidationError):
+            got = None
+        results.append({**case, "got": got, "correct": got == case["expected_category"]})
+    return results
+
+
+def main() -> None:
+    results_v1 = evaluate(PROMPT_V1, EVAL_CASES)
+    results_v2 = evaluate(PROMPT_V2, EVAL_CASES)
+
+    score_v1 = sum(r["correct"] for r in results_v1) / len(EVAL_CASES)
+    score_v2 = sum(r["correct"] for r in results_v2) / len(EVAL_CASES)
+    print(f"V1 score: {score_v1:.0%}   V2 score: {score_v2:.0%}\n")
+
+    regressions = []
+    for r1, r2 in zip(results_v1, results_v2):
+        if r1["correct"] and not r2["correct"]:
+            regressions.append(r1["input"])
+        if r1["got"] != r2["got"]:
+            print(f"DIFF: {r1['input']!r} -> V1: {r1['got']} | V2: {r2['got']} | expected: {r1['expected_category']}")
+
+    if regressions:
+        print("\nREGRESSIONS (V1 correct, V2 wrong):")
+        for text in regressions:
+            print(f"  - {text!r}")
+    else:
+        print("\nNo regressions from V1 to V2.")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+The regression check is the piece most solutions skip: it's not enough to know V2 scored higher overall — a version can improve on the aggregate while quietly breaking a case that used to work, and `zip(results_v1, results_v2)` comparing each case pairwise is what catches that instead of hiding it inside a summary number.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+This eval-and-compare pattern is exactly what Module 8's evaluation harness scales up, and the schema-validated `classify()` function is the same shape the tool-calling loop in Module 3 builds on next. The Module 9 capstone runs a version of this harness in CI before any prompt change ships.

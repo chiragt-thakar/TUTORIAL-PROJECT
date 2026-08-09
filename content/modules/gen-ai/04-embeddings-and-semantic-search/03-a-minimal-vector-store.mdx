@@ -1,0 +1,185 @@
+---
+id: genai-vector-store
+title: A Minimal Vector Store
+description: Build a simple in-memory semantic search index before reaching for a database.
+module: embeddings-and-semantic-search
+order: 3
+estimatedMinutes: 40
+prerequisites: [genai-cosine-similarity]
+learningObjectives:
+  - Store and query embeddings in memory
+  - Compare a naive store to a real vector database
+  - Decide when you actually need a vector database
+---
+
+## A vector store is just a list, until it isn't
+
+Strip away the marketing and a "vector store" is: something that holds `(id, vector, metadata)` triples and, given a query vector, returns the top-k closest matches. At small scale, that's genuinely just a Python list and a loop — there is no law requiring Pinecone or pgvector to search a few hundred documents.
+
+```python title="minimal_store.py"
+from dataclasses import dataclass
+
+@dataclass
+class Entry:
+    id: str
+    text: str
+    vector: list[float]
+
+class InMemoryVectorStore:
+    def __init__(self) -> None:
+        self._entries: list[Entry] = []
+
+    def add(self, id: str, text: str, vector: list[float]) -> None:
+        self._entries.append(Entry(id=id, text=text, vector=vector))
+
+    def search(self, query_vector: list[float], top_k: int = 3) -> list[tuple[Entry, float]]:
+        scored = [(entry, cosine_similarity(query_vector, entry.vector)) for entry in self._entries]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:top_k]
+```
+
+```python title="use_store.py"
+store = InMemoryVectorStore()
+for doc_id, text in enumerate(["Reset your password from Settings.", "Refunds process within 5 business days."]):
+    store.add(str(doc_id), text, embed([text])[0])
+
+results = store.search(embed(["how do I get my money back"])[0], top_k=2)
+for entry, score in results:
+    print(f"{score:.3f}  {entry.text}")
+```
+
+This is a **naive** store: `search` is an exhaustive scan — it computes similarity against every stored vector, every time. For hundreds or low thousands of entries this is fast enough to not think about. That threshold moving is exactly what a real vector database is for.
+
+<Concept>
+
+A real vector database (Pinecone, Weaviate, Qdrant, pgvector, or a managed offering) adds two things a plain list doesn't have: an **approximate nearest-neighbor (ANN) index** so search doesn't scan every vector at large scale, and **persistence plus metadata filtering** so you can query "closest to this vector, and also `status = 'published'`" without loading everything into memory first.
+
+</Concept>
+
+<WhyItMatters>
+
+Reaching for a vector database before you've measured that exhaustive scan is actually your bottleneck is a common overengineering trap in this space — it adds an infrastructure dependency, a deployment concern, and an API to learn, for a problem your corpus might not have yet.
+
+Build the naive version first; it's usually correct-by-construction because there's no index to get subtly wrong, and it tells you exactly when you've outgrown it.
+
+</WhyItMatters>
+
+<TypeScriptComparison>
+
+Think of the naive store as the vector-search equivalent of `Array.prototype.filter` plus `.sort()` over an in-memory array — completely fine until the array is large enough that you'd reach for a real database index instead. Nobody reaches for Elasticsearch to search 200 rows; the same instinct applies here.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Rebuilding the entire in-memory store from scratch (re-embedding everything) on every process restart instead of persisting vectors alongside their source text. Even a naive store should serialize to disk (JSON, a pickle, a SQLite table) so restarting your process doesn't mean re-paying for every embedding call.
+
+</CommonMistake>
+
+<ProductionNote>
+
+The real signal for "do I need a vector database" is one of: corpus size making exhaustive scan too slow for your latency budget (rule of thumb: tens of thousands of vectors and up starts to matter, but measure, don't guess), a need for metadata filtering alongside similarity, or a need for the store to survive process restarts and be queried from multiple services at once.
+
+Any one of those is a legitimate reason; "everyone else uses one" is not.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-vector-store-1" difficulty="easy">
+
+The `InMemoryVectorStore.search` method above always computes similarity against every stored entry. What is this search strategy called, and what's its time complexity relative to the number of stored entries `n`?
+
+<Solution>
+
+It's an exhaustive (or "brute-force" / "linear") scan, with `O(n)` time complexity — every query touches every stored vector once, so search time grows linearly with corpus size.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-vector-store-2" difficulty="medium">
+
+Add a `delete(id: str)` method to `InMemoryVectorStore` that removes an entry, and explain why a naive store makes this trivial compared to some real ANN index implementations.
+
+<Solution>
+
+```python
+def delete(self, id: str) -> None:
+    self._entries = [entry for entry in self._entries if entry.id != id]
+```
+
+It's trivial here because there's no index structure to keep consistent — you're just filtering a list. Some ANN index types require rebuilding or carefully updating internal index structures on delete, which is part of why they're more complex to operate than a plain list.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-vector-store-3" difficulty="hard">
+
+A team's naive in-memory store works fine in development but returns empty or stale results in production because the service runs behind a load balancer across three replica processes. Diagnose the issue and propose a fix using only what this lesson covered.
+
+<Solution>
+
+Each replica process has its own independent `InMemoryVectorStore` in its own memory — an `add()` call handled by replica A never reaches replica B or C's copy, so a query routed to a different replica than the one that indexed a document won't find it, and restarts lose everything.
+
+The fix is moving to a store with shared, persistent state that every replica reads from and writes to — either persisting the naive store to a shared location all replicas load from, or migrating to a real vector database once this multi-process requirement exists, which is exactly the kind of signal this lesson's production note describes.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-vector-store-4" difficulty="interview">
+
+Interview-style: "When would you reach for a dedicated vector database instead of an in-memory list with a cosine similarity loop?" Answer in three sentences or fewer.
+
+<Solution>
+
+When exhaustive scan is measurably too slow for the latency budget at your actual corpus size, when you need to filter by metadata alongside similarity, or when the store needs to persist and be shared across multiple processes or services.
+
+Below that threshold, a plain in-memory (or simply persisted) store is simpler, has no extra infrastructure to operate, and is easier to reason about correctness for. The decision should follow a measured need, not a default assumption that "real" search requires a database.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-vector-store-5" difficulty="real-world">
+
+A startup with roughly 800 internal help-desk articles is deciding between building the naive `InMemoryVectorStore` from this lesson or paying for a managed vector database from day one. Using only what this lesson covered, what would you recommend, and what would change your answer?
+
+<Solution>
+
+At 800 documents, an exhaustive scan is effectively instant — well under any reasonable latency budget — so the naive store (persisted to disk so it survives restarts) is the right starting point: no new infrastructure, no new API to operate, and it's trivially correct.
+
+What would change the answer: the corpus growing by orders of magnitude, a need to run the search from multiple independent services against shared state, or a need to filter results by metadata (department, article status) alongside similarity — any of those is a legitimate, measured reason to move to a real vector database rather than a default one.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does an in-memory vector store automatically survive a process restart?">
+
+No — unless you explicitly persist it (write vectors and text to disk, a database, or another durable store), everything lives in process memory and is gone the moment the process exits, silently forcing a full corpus re-embed on the next start.
+
+</Gotcha>
+
+<Gotcha question="Is an approximate nearest-neighbor (ANN) index guaranteed to return the exact same top-k results as an exhaustive scan?">
+
+No — "approximate" is the operative word. ANN indexes trade a small, usually acceptable amount of ranking accuracy for large speed gains at scale; they can occasionally miss a true top-k result in exchange for not scanning the entire corpus. This tradeoff is a deliberate design choice in every major vector database, not a bug.
+
+</Gotcha>
+
+<Gotcha question="Do you need a vector database as soon as you have 'a lot' of documents?">
+
+No — "a lot" is corpus- and latency-budget-relative. A few thousand entries scanned in milliseconds on modern hardware is not a bottleneck for most applications; measure your actual search latency against your actual budget before adding infrastructure.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can build and query a minimal in-memory vector store, explain precisely what a real vector database adds on top of it, and decide — based on measured need, not default assumption — when a naive store has actually been outgrown.
+
+</Checkpoint>
+
+## Summary
+
+A vector store is conceptually simple: entries plus a similarity search. A naive in-memory version — a list and a loop — is the right default until corpus size, multi-process sharing, or metadata filtering give you a concrete, measured reason to reach for a real vector database's ANN index and persistence. The next lesson puts this store to work over a real document set.

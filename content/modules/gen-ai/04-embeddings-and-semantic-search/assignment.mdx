@@ -1,0 +1,225 @@
+---
+id: genai-embeddings-assignment
+title: "Assignment: A Semantic FAQ Search CLI"
+description: Build a real tool that chunks a small support-FAQ corpus, embeds it, and serves ranked semantic search results over a query — every technique in this module working together.
+module: embeddings-and-semantic-search
+order: 5
+estimatedMinutes: 60
+prerequisites: [genai-search-project]
+learningObjectives:
+  - Chunk and embed a real multi-document corpus
+  - Rank results by cosine similarity against a live query embedding
+  - Evaluate whether top-k results are actually relevant, not just returned
+---
+
+## Scenario
+
+Every lesson in this module built one piece of the same system: what an embedding actually is, how to score similarity between two of them, a minimal store to hold and query them, and a chunking pipeline for real documents. This assignment is that system, pointed at a real (if small) support-FAQ corpus, with the two things a shipped version of this feature can't skip — a persistent cache and a real evaluation set.
+
+<Assignment id="genai-embeddings-assignment-work">
+
+## Requirements
+
+Build `semantic_search.py`, invoked as `python semantic_search.py "your query here"`, that:
+
+- Defines a corpus of at least 5 distinct FAQ documents covering different topics (e.g. password reset, billing, refunds, account deletion, shipping times) — hardcoded strings are fine, this is about the pipeline, not content sourcing.
+- Chunks each document (reuse or adapt Lesson 4's `chunk_text`) and embeds every chunk in batched calls, not one call per chunk.
+- Persists embeddings to a local cache file (e.g. `embeddings_cache.json`), keyed by a hash of each chunk's text, so a second run over unchanged content makes zero embedding API calls.
+- Builds an `InMemoryVectorStore` (Lesson 3) from the cached or freshly embedded chunks and serves top-k ranked results for a query, printing each result's source document, chunk text, and similarity score.
+- Applies a minimum similarity threshold: a query with no good match in the corpus prints a clear "no strong match found" message instead of confidently presenting a weak top-1 result as if it were a good answer.
+- Supports an `--eval` mode that runs a fixed set of at least 8 `(query, expected_doc_id)` pairs against the index, prints pass/fail per case (a "pass" being the expected document's chunk appearing in the top-k), and prints an overall pass rate.
+
+```text
+semantic_search.py
+  FAQ_DOCS               -- corpus: doc_id -> full text, at least 5 topics
+  chunk_text(...)         -- chunking from Lesson 4
+  cached_embed(texts)     -- batched embedding with a persisted, hash-keyed cache
+  InMemoryVectorStore     -- store + search from Lesson 3
+  build_index()           -- chunk + cached_embed + populate the store, once
+  search(store, query, top_k, min_score)  -- ranked query with a relevance floor
+  EVAL_SET                -- known (query, expected_doc_id) pairs
+  run_eval(store)         -- score EVAL_SET, print per-case pass/fail + pass rate
+  main()                  -- CLI entry point (query mode / --eval mode)
+```
+
+## Acceptance criteria
+
+1. `python semantic_search.py "how do I reset my password"` prints ranked results with similarity scores, and the top result is genuinely the password-reset document's chunk.
+2. Running the same query twice makes embedding API calls only on the first run — the second run's index build is served entirely from the cache file.
+3. `python semantic_search.py --eval` runs the full eval set, prints a pass/fail line per case, and a summary pass rate.
+4. A deliberately irrelevant query (e.g. `"what's the weather like"`) prints the "no strong match found" message rather than a misleadingly confident top result.
+5. Adding a sixth FAQ document and rerunning only triggers embedding calls for that document's new chunks — existing cached chunks are not re-embedded.
+6. No unhandled traceback for an empty query string or a query longer than any single document.
+
+### Stretch goals
+
+Swap the character-based chunker for a boundary-aware one that splits on paragraphs first. Add an exact-keyword boost so a query containing a rare literal term (like an error code) surfaces a chunk containing that exact term even if its semantic score alone wouldn't rank it first. Add simple metadata (a `category` per document) and filter results by it.
+
+<Solution>
+
+The solution's central discipline is keeping the cache keyed on chunk *content* (a hash), not on document ID or chunk index — that's what makes "only re-embed what changed" work correctly even when documents are edited, reordered, or added.
+
+```python
+import hashlib
+import json
+import math
+import sys
+from dataclasses import dataclass
+from pathlib import Path
+
+from openai import OpenAI
+
+client = OpenAI()
+CACHE_PATH = Path("embeddings_cache.json")
+
+FAQ_DOCS = {
+    "password-reset": "To reset your password, go to Settings > Security and click 'Reset Password'. You'll receive an email with a reset link valid for 24 hours. If you don't receive it, check your spam folder before contacting support.",
+    "billing": "Billing occurs on the first of each month for your active subscription tier. You can update your payment method or view past invoices under Settings > Billing. Failed payments retry automatically for 3 days before the account is downgraded.",
+    "refunds": "Refunds are available within 30 days of purchase for annual plans and within 14 days for monthly plans. Request a refund from Settings > Billing > Request Refund. Refunds are processed within 5 business days back to the original payment method.",
+    "account-deletion": "You can permanently delete your account from Settings > Account > Delete Account. This action is irreversible and removes all your data within 30 days. Export any data you need before confirming deletion.",
+    "shipping": "Standard shipping takes 5-7 business days within the country of purchase. Express shipping takes 1-2 business days for an additional fee. International orders may take 10-20 business days depending on customs.",
+}
+
+EVAL_SET = [
+    ("how do I get my money back", "refunds"),
+    ("I forgot my password", "password-reset"),
+    ("when does my card get charged", "billing"),
+    ("how long until my package arrives", "shipping"),
+    ("I want to permanently remove my account", "account-deletion"),
+    ("reset link expired", "password-reset"),
+    ("how long do refunds take to process", "refunds"),
+    ("what happens if my payment fails", "billing"),
+]
+
+
+@dataclass
+class Entry:
+    id: str
+    doc_id: str
+    text: str
+    vector: list[float]
+
+
+class InMemoryVectorStore:
+    def __init__(self) -> None:
+        self._entries: list[Entry] = []
+
+    def add(self, id: str, doc_id: str, text: str, vector: list[float]) -> None:
+        self._entries.append(Entry(id=id, doc_id=doc_id, text=text, vector=vector))
+
+    def search(self, query_vector: list[float], top_k: int = 3) -> list[tuple[Entry, float]]:
+        scored = [(entry, cosine_similarity(query_vector, entry.vector)) for entry in self._entries]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return scored[:top_k]
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    return dot / (norm_a * norm_b)
+
+
+def chunk_text(text: str, max_chars: int = 300, overlap: int = 40) -> list[str]:
+    chunks = []
+    start = 0
+    while start < len(text):
+        end = start + max_chars
+        chunks.append(text[start:end])
+        start = end - overlap
+    return chunks
+
+
+def _load_cache() -> dict[str, list[float]]:
+    if CACHE_PATH.exists():
+        return json.loads(CACHE_PATH.read_text())
+    return {}
+
+
+def _save_cache(cache: dict[str, list[float]]) -> None:
+    CACHE_PATH.write_text(json.dumps(cache))
+
+
+def cached_embed(texts: list[str]) -> list[list[float]]:
+    cache = _load_cache()
+    keys = [hashlib.sha256(text.encode()).hexdigest() for text in texts]
+    missing = [text for text, key in zip(texts, keys) if key not in cache]
+
+    if missing:
+        response = client.embeddings.create(model="text-embedding-3-small", input=missing)
+        missing_vectors = iter(item.embedding for item in response.data)
+        for text, key in zip(texts, keys):
+            if key not in cache:
+                cache[key] = next(missing_vectors)
+        _save_cache(cache)
+
+    return [cache[key] for key in keys]
+
+
+def build_index() -> InMemoryVectorStore:
+    store = InMemoryVectorStore()
+    all_chunks: list[tuple[str, int, str]] = []
+    for doc_id, text in FAQ_DOCS.items():
+        for i, chunk in enumerate(chunk_text(text)):
+            all_chunks.append((doc_id, i, chunk))
+
+    vectors = cached_embed([chunk for _, _, chunk in all_chunks])
+    for (doc_id, i, chunk), vector in zip(all_chunks, vectors):
+        store.add(f"{doc_id}-{i}", doc_id, chunk, vector)
+
+    return store
+
+
+def search(store: InMemoryVectorStore, query: str, top_k: int = 3, min_score: float = 0.2) -> list[tuple[Entry, float]] | None:
+    query_vector = cached_embed([query])[0]
+    results = store.search(query_vector, top_k=top_k)
+    if not results or results[0][1] < min_score:
+        return None
+    return results
+
+
+def run_eval(store: InMemoryVectorStore) -> None:
+    passed = 0
+    for query, expected_doc_id in EVAL_SET:
+        results = search(store, query, top_k=3) or []
+        matched = any(entry.doc_id == expected_doc_id for entry, _ in results)
+        status = "PASS" if matched else "FAIL"
+        if matched:
+            passed += 1
+        print(f"[{status}] {query!r} -> expected {expected_doc_id}")
+    print(f"\n{passed}/{len(EVAL_SET)} passed ({passed / len(EVAL_SET):.0%})")
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        print("Usage: python semantic_search.py \"your query\" | --eval")
+        return
+
+    store = build_index()
+
+    if sys.argv[1] == "--eval":
+        run_eval(store)
+        return
+
+    query = sys.argv[1]
+    results = search(store, query)
+    if results is None:
+        print("No strong match found for that query.")
+        return
+
+    for entry, score in results:
+        print(f"{score:.3f}  [{entry.doc_id}]  {entry.text}")
+
+
+if __name__ == "__main__":
+    main()
+```
+
+One detail worth calling out: `search` returns `None` (not an empty list) when the top result is below `min_score`, and `main` branches on that explicitly. Collapsing "no results" and "results, but none good enough" into the same return value would make the "no strong match" UX impossible to implement correctly.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+This chunk-embed-cache-store-rank pipeline is exactly the retrieval half of Module 5's retrieval-augmented generation, which takes this assignment's `search()` function and feeds its top-k results into an LLM prompt instead of printing them directly. The eval-set discipline here — known queries, known correct answers, a measured pass rate — is the same pattern Module 9's evaluation and guardrails lessons formalize further, and the Module 10 capstone wires a version of this exact retrieval pipeline behind a real API endpoint.

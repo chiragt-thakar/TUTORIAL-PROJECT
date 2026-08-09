@@ -1,0 +1,193 @@
+---
+id: genai-calling-an-llm
+title: Calling an LLM From Python
+description: Send a real chat completion request from Python and understand every parameter you set.
+module: what-llms-actually-are
+order: 2
+estimatedMinutes: 45
+prerequisites: [genai-tokens-and-prediction]
+learningObjectives:
+  - Send a chat completion request with the messages format
+  - Control output with temperature, max tokens, and stop sequences
+  - Stream a response instead of waiting for the whole thing
+---
+
+## It's just an HTTP API
+
+Underneath every LLM SDK is a plain HTTPS POST request that takes JSON in and returns JSON out. Nothing about it is magic, and nothing about it requires a special mental model beyond "an API call with unusually shaped input." The unusual part isn't the mechanics — it's the `messages` array you send as the request body.
+
+```python title="basic_call.py"
+from openai import OpenAI
+
+client = OpenAI()  # reads OPENAI_API_KEY from the environment
+
+response = client.chat.completions.create(
+    model="gpt-4.1-mini",
+    messages=[
+        {"role": "system", "content": "You answer in one short paragraph, no more."},
+        {"role": "user", "content": "What does the GIL do in CPython?"},
+    ],
+)
+
+print(response.choices[0].message.content)
+```
+
+The `messages` list is the entire conversation so far, tagged by role. `system` sets standing instructions the model should treat as governing the whole exchange. `user` is what the human typed. `assistant` is what the model said previously — you include it yourself on every request, because the API is stateless and remembers nothing between calls.
+
+If you want a multi-turn conversation, your code is responsible for resending the whole history every single time.
+
+<TypeScriptComparison>
+
+This is closer to a stateless REST endpoint than to a WebSocket or a database session. Every call to `fetch("/api/chat")` that includes the full message history in the body is doing exactly what an LLM SDK does — there's no server-side session unless you build one yourself.
+
+</TypeScriptComparison>
+
+## Parameters that actually change behavior
+
+Three parameters matter far more than the rest when you're getting started:
+
+- **`temperature`** controls how much randomness is allowed when picking the next token. `0` makes output close to deterministic — the model almost always picks its highest-probability token. Near `1` (or higher, depending on the provider) lets lower-probability tokens win sometimes, producing more varied, less predictable output. Use low temperature for anything that needs to be consistent, like extracting structured data; use higher temperature for brainstorming.
+- **`max_tokens`** caps how much the model is allowed to generate. It exists to control both cost and runaway responses — without it, a model can keep generating until it hits the provider's own ceiling.
+- **`stop`** is one or more strings that, if generated, immediately end the response. It's useful for cutting output off at a natural boundary your code recognizes, like a closing delimiter.
+
+```python title="tuned_call.py"
+response = client.chat.completions.create(
+    model="gpt-4.1-mini",
+    messages=[{"role": "user", "content": "List three uses of Python's functools.lru_cache."}],
+    temperature=0.2,
+    max_tokens=200,
+)
+```
+
+<CommonMistake>
+
+Leaving `temperature` at its default for a task that needs consistent, parseable output — like extracting a JSON object your code will `json.loads`. Lower temperature first; only raise it deliberately once you've confirmed low temperature is too rigid for the task.
+
+</CommonMistake>
+
+## Streaming instead of waiting
+
+A full response can take several seconds to generate, especially a long one, because it's produced token by token on the server. Streaming lets your code receive and display each token as it's produced instead of blocking until the entire response is done — the same experience as watching a chat UI "type" its answer.
+
+```python title="streamed_call.py"
+stream = client.chat.completions.create(
+    model="gpt-4.1-mini",
+    messages=[{"role": "user", "content": "Explain what a context manager does."}],
+    stream=True,
+)
+
+for chunk in stream:
+    delta = chunk.choices[0].delta.content
+    if delta:
+        print(delta, end="", flush=True)
+```
+
+Streaming doesn't make the total generation faster — it changes *when* your code sees the output, which matters enormously for perceived responsiveness in a user-facing feature and barely matters at all for a background batch job.
+
+<ProductionNote>
+
+Keep your API key out of source control the same way you would a database password: read it from an environment variable, load it through the settings pattern from the Python Backend track's Pydantic module, and never log full request or response bodies that might contain it or sensitive user input.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-calling-1" difficulty="easy">
+
+You need a function that extracts a person's name and age from a sentence, as JSON your code will parse. Which `temperature` would you start with, and why?
+
+<Solution>
+
+Start near `0`. Extraction tasks need the same input to reliably produce the same output shape; low temperature reduces the variation that would otherwise make parsing unreliable.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-calling-2" difficulty="medium">
+
+Predict what happens if you send a `user` message that references "the file I sent earlier" but your `messages` list only contains that one message. Explain why in terms of what you learned about statelessness.
+
+<Solution>
+
+The model has no memory of anything not present in the current `messages` list, so it has no idea what file is being referenced — it will likely ask for clarification or guess. The API call is stateless; nothing is remembered between requests unless your code resends it.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-calling-3" difficulty="hard">
+
+Rewrite `basic_call.py` so it caps the response at roughly 50 words and stops immediately if the model generates the string `"###"`.
+
+<Solution>
+
+```python
+response = client.chat.completions.create(
+    model="gpt-4.1-mini",
+    messages=[{"role": "user", "content": "Summarize asyncio in under 50 words."}],
+    max_tokens=80,
+    stop=["###"],
+)
+```
+
+`max_tokens` is set generously above the word target since tokens and words aren't the same unit; `stop` cuts generation off the instant the delimiter appears.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-calling-4" difficulty="interview">
+
+Interview-style: "What's the difference between `max_tokens` and `stop`, and when would you use one but not the other?" Answer in three sentences or fewer.
+
+<Solution>
+
+`max_tokens` is a hard ceiling on generation length regardless of content, while `stop` ends generation the moment a specific string appears, regardless of length. Use `max_tokens` whenever you need a cost or latency guarantee, even if the model never produces your stop string.
+
+Use `stop` when the output has a natural, code-recognizable boundary — like a delimiter you asked the model to emit — and length alone isn't a reliable signal that the answer is complete.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-calling-5" difficulty="real-world">
+
+Your team's chat feature is getting complaints that responses feel slow, even though the model's total generation time hasn't changed. Using only what this lesson covered, name the one-line fix most likely to help, and explain why it addresses *perceived* latency specifically.
+
+<Solution>
+
+Turn on `stream=True` and render tokens as they arrive instead of waiting for the full response. It doesn't reduce how long the model takes to finish generating, but it moves the moment the user sees the *first* output far earlier, which is what "feels slow" is actually measuring in a chat UI.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does setting temperature to 0 guarantee the exact same output every time?">
+
+No — it makes output *close to* deterministic, not guaranteed identical. Floating-point execution details, provider-side model updates, and infrastructure differences can still produce small variations even at `temperature=0`. Lesson four covers why you should never build logic that depends on byte-for-byte repeatability.
+
+</Gotcha>
+
+<Gotcha question="If I don't set max_tokens, will the model just generate forever?">
+
+No, but it will generate up to the provider's own default or hard ceiling, which is often far more than you need and directly increases cost and latency. Treat an unset `max_tokens` as "the provider decides your budget," not "no limit exists."
+
+</Gotcha>
+
+<Gotcha question="Is a streamed response cheaper than a non-streamed one?">
+
+No — streaming changes delivery, not computation. You're billed for the same input and output tokens either way; streaming only affects when your code receives them, not how many there are or what they cost.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can send a chat completion request, explain what each role in `messages` means, and choose `temperature`, `max_tokens`, and `stop` deliberately instead of leaving every parameter at its default.
+
+</Checkpoint>
+
+## Summary
+
+An LLM API call is a stateless HTTP request built around a `messages` array of role-tagged turns, and your code owns the entire conversation history. `temperature` trades consistency for variety, `max_tokens` caps cost and length, and `stop` ends generation at a boundary you control.
+
+Streaming changes when output arrives, not how much work the model does. The next lesson turns these mechanics into prompts that keep behaving the same way as your feature scales.

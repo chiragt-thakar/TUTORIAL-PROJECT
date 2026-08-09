@@ -1,0 +1,200 @@
+---
+id: py-runtime
+title: Runtime, Modules, Names, and References
+description: How Python executes code and why names are labels rather than typed storage slots.
+module: python-fundamentals
+order: 1
+estimatedMinutes: 40
+prerequisites: []
+learningObjectives:
+  - Run code as a script and module
+  - Explain name binding and object identity
+  - Predict mutation and rebinding
+---
+
+## The execution model
+
+Python reads source, compiles it to bytecode, and executes that bytecode in a Python virtual machine. Compilation is normally implicit; `__pycache__` files are an optimization, not deployable binaries. A `.py` file is a module. Importing it creates a module object, executes its top-level statements once per process, then caches it in `sys.modules`.
+
+```python title="task_api/domain.py"
+print("loading domain")
+DEFAULT_LIMIT = 50
+
+def normalize_title(value: str) -> str:
+    return value.strip()
+```
+
+`python task_api/domain.py` runs it as the special module `__main__`. `python -m task_api.domain` asks the import system to find it inside a package, establishes package context, and is usually safer for package code. Top-level side effects happen on import, so do not open sockets or start servers there.
+
+<TypeScriptComparison>
+
+Node resolves and evaluates modules too, but Python's `python -m package.module` is a crucial execution mode. Imports are statements that bind names; they are not merely TypeScript declarations erased before runtime.
+
+</TypeScriptComparison>
+
+## Names point to objects
+
+Python variables are names bound to objects. Assignment does not copy an object and an annotation does not reserve typed storage.
+
+```python
+task = {"title": "Ship API", "tags": []}
+alias = task
+alias["tags"].append("urgent")
+
+assert task["tags"] == ["urgent"]
+assert alias is task          # identity
+assert alias == task          # value equality
+```
+
+Rebinding `alias = {}` changes which object that name references. It does not change `task`. Mutation changes an object, so every name pointing at it observes the change. Integers, strings, tuples, and frozen dataclasses are immutable; operations produce new objects. Lists, dictionaries, sets, and most class instances are mutable.
+
+<Concept>
+
+Python passes arguments by sharing object references. A function receives a new local name bound to the caller's object. It can mutate a mutable object, but rebinding its local name cannot rebind the caller's name.
+
+</Concept>
+
+## Scope and module boundaries
+
+Name lookup follows LEGB: local, enclosing, global (module), builtins. A module's globals are not application-wide globals; they belong to that module object. Prefer passing dependencies over reaching into module state.
+
+```python
+MAX_TITLE = 120
+
+def validate_title(title: str) -> str:
+    cleaned = title.strip()
+    if not cleaned:
+        raise ValueError("title is required")
+    if len(cleaned) > MAX_TITLE:
+        raise ValueError("title is too long")
+    return cleaned
+```
+
+`if __name__ == "__main__":` protects an entry-point action while keeping definitions importable. It is useful for small tools; larger applications normally expose a console entry point or server command.
+
+<CommonMistake>
+
+Do not name files `typing.py`, `json.py`, or `fastapi.py`. The local file can shadow the standard-library or installed package and create circular-looking import failures.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Keep imports deterministic and top-level work cheap. Import-time network calls complicate worker startup, tests, migrations, and command-line tools.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="py-runtime-1" difficulty="easy">
+
+Predict the output and explain identity versus equality:
+
+```python
+a = [1, 2]
+b = a
+c = [1, 2]
+b.append(3)
+print(a, b, c, a is b, a == c)
+```
+
+<Solution>
+
+It prints `[1, 2, 3] [1, 2, 3] [1, 2] True False`. `a` and `b` share one mutated list. `c` is a distinct list whose value no longer equals it.
+
+</Solution>
+</Exercise>
+
+<Exercise id="py-runtime-2" difficulty="medium">
+
+Fix a module that starts an HTTP client during import. Keep `build_client()` importable and only print a demonstration when executed directly.
+
+<Solution>
+
+```python
+def build_client() -> object:
+    return object()
+
+if __name__ == "__main__":
+    print(build_client())
+```
+
+Importing now defines the function without performing the action.
+
+</Solution>
+</Exercise>
+
+<Exercise id="py-runtime-3" difficulty="hard">
+
+Write `add_label(task, label)` so it returns a new task dictionary and never mutates the input. Copy the nested label list as well.
+
+<Solution>
+
+```python
+def add_label(task: dict, label: str) -> dict:
+    return {**task, "labels": [*task.get("labels", []), label]}
+```
+
+Both the outer mapping and nested list are new objects.
+
+</Solution>
+</Exercise>
+
+<Exercise id="py-runtime-4" difficulty="interview">
+
+Interview-style: "What's the difference between `is` and `==`, and when would you actually reach for `is` in real code?" Answer in three sentences or fewer.
+
+<Solution>
+
+`is` checks object identity — whether two names point at the exact same object in memory — while `==` checks value equality, which a class can customize via `__eq__`.
+
+In real code, `is` is the right tool specifically for singleton checks like `x is None`, `x is True`, or comparing against a sentinel object, because those comparisons should never depend on a custom `__eq__`. Using `is` for anything else, like comparing two lists, is almost always a bug.
+
+</Solution>
+</Exercise>
+
+<Exercise id="py-runtime-5" difficulty="real-world">
+
+You inherit a small internal tool with a module-level `_cache: dict = {}` that every request handler reads and writes. Tests that pass individually start failing when run together as a suite. Using only what this lesson covered, explain the root cause and the fix.
+
+<Solution>
+
+The root cause is module-level mutable state: `_cache` is created once when the module is imported and then shared by every call into that module for the life of the process, so one test's writes leak into the next test's run.
+
+The fix is to stop treating module globals as scratch space — pass the cache in explicitly (as a fixture in tests, a constructor argument in the app) so each test, and ideally each request, gets state it actually owns instead of state shared with everything else that imported the module.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="If two variables hold equal values, does `is` return True?">
+
+Not reliably. Small integers and short strings are sometimes cached by CPython so `is` can appear to work by coincidence, but that's an implementation detail, not a guarantee — `1000 is 1000` can be `False` in the same interpreter where `5 is 5` is `True`. Never rely on `is` for value comparison.
+
+</Gotcha>
+
+<Gotcha question="Does reassigning a function parameter change the caller's variable?">
+
+No. Reassigning a parameter inside a function only rebinds the local name to a new object; it never affects what the caller's variable points to, because Python passes the object reference by value, not the variable itself. Only *mutating* the object the parameter refers to (like `.append()` on a passed-in list) is visible to the caller.
+
+</Gotcha>
+
+<Gotcha question="Is `__pycache__` a build artifact you need to manage?">
+
+No — it's an automatic bytecode cache Python maintains for you, not something to hand-edit, commit, or treat as a deployable artifact. Deleting it is always safe; Python just regenerates it on the next import.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can explain why import executes code, why `python -m` preserves package context, and whether a line rebinds a name or mutates an object.
+
+</Checkpoint>
+
+## Summary
+
+Python executes modules at runtime. Names reference objects; mutation affects shared objects while rebinding affects one scope. Treat import time as application startup infrastructure, not a place for uncontrolled work.
+

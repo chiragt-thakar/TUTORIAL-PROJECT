@@ -1,0 +1,172 @@
+---
+id: tooling-quality
+title: Ruff, Static Checking, and Pre-commit
+description: Create a fast local quality loop with explicit, maintainable policy.
+module: python-project-tooling
+order: 4
+estimatedMinutes: 40
+prerequisites: [tooling-imports]
+learningObjectives:
+  - Configure linting and formatting
+  - Run strict static checks
+  - Automate checks before commits
+---
+
+## One fast feedback loop
+
+Ruff can format Python and enforce a broad set of lint rules quickly. Start from a small, intentional selection; enabling every rule creates contradictory policy and noisy migrations.
+
+```toml title="pyproject.toml"
+[tool.ruff]
+target-version = "py313"
+line-length = 100
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.ruff.format]
+quote-style = "double"
+
+[tool.mypy]
+python_version = "3.13"
+strict = true
+```
+
+Run formatting, linting, and types as separate checks so failures remain legible:
+
+```bash
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy src tests
+```
+
+Formatting removes style debate. Linting finds suspicious syntax and maintainability issues. Static checking validates annotated relationships. Tests exercise behavior. None replaces the others.
+
+## Pre-commit without surprise
+
+Pre-commit hooks provide early feedback, but CI remains authoritative because local hooks can be skipped. Pin hook revisions, keep hooks fast, and ensure the same underlying commands run in CI.
+
+```yaml title=".pre-commit-config.yaml"
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.0
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+```
+
+In a real repository, select a currently reviewed revision rather than copying this example indefinitely. Automatic fixes are appropriate locally; CI should generally check without modifying files.
+
+<TypeScriptComparison>
+
+Ruff overlaps ESLint plus Prettier; mypy or pyright occupies the `tsc --noEmit` role. Python splits these concerns across tools, so one documented command sequence matters.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Do not use `exclude` or blanket `noqa` to make a red repository green. Exclusions should describe generated or vendored code; targeted ignores should state the exceptional rule.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Pin tool versions in the development lock. A formatter upgrade can rewrite the repository and a checker upgrade can alter accepted inference even when runtime dependencies did not change.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="tooling-quality-1" difficulty="easy">
+
+Order these checks for fast local feedback: tests, format check, lint, static types.
+
+<Solution>
+
+A practical order is format check, lint, static types, then tests. The cheapest mechanical failures appear first. CI can run independent jobs concurrently.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-quality-2" difficulty="medium">
+
+A migration file intentionally has a long SQL string. Choose a narrow policy exception.
+
+<Solution>
+
+Use a per-file ignore for the specific line-length rule on the migrations path, or a line-level code if only one occurrence exists. Do not disable line length globally.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-quality-3" difficulty="hard">
+
+Why should CI not rely only on pre-commit?
+
+<Solution>
+
+Hooks can be skipped, may not be installed, and run on a developer's machine. CI supplies the shared enforceable environment and verdict.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-quality-4" difficulty="interview">
+
+Interview-style: "What's the difference between what a linter and a type checker each guarantee?" Answer in three sentences or fewer.
+
+<Solution>
+
+A linter (Ruff) finds suspicious syntax, style violations, and known-bad patterns by inspecting code structurally, largely without understanding types or data flow. A type checker (mypy/pyright) verifies that annotated values are used consistently with their declared types across the whole call graph, catching a different class of bug entirely. Neither proves the code is correct at runtime — that's what tests are for.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-quality-5" difficulty="real-world">
+
+A team's CI takes 11 minutes because Ruff, mypy, and pytest run sequentially in one job, and developers have started merging without waiting for it. Using only what this lesson covered, propose a fix.
+
+<Solution>
+
+Nothing in these three checks actually depends on the others succeeding first — format, lint, and type checks are independent static passes over the same source, and even test failures don't need to block a lint failure from being visible.
+
+Splitting them into parallel CI jobs turns an 11-minute serial chain into roughly the length of the slowest single job, which is almost always a meaningful win with zero loss of coverage.
+
+The other half of the fix is process, not tooling: branch protection that requires the checks to pass before merge, so "developers stopped waiting" stops being possible rather than relying on discipline.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does enabling more Ruff rule categories always make a codebase safer?">
+
+No — a large, unreviewed rule set (`select = ["ALL"]`) tends to produce contradictory or low-value findings and forces either a noisy migration or blanket ignores that erase the intended signal. Starting from a small, deliberate rule selection and expanding it intentionally keeps the linter's output trustworthy.
+
+</Gotcha>
+
+<Gotcha question="If pre-commit hooks pass locally, is the code guaranteed to pass CI?">
+
+No — hooks can be skipped (`--no-verify`), might not be installed on every machine, or could simply be out of date relative to the pinned CI revision. Pre-commit is a convenience for fast local feedback; CI is the only enforceable source of truth.
+
+</Gotcha>
+
+<Gotcha question="Does mypy strict mode catch every type-related bug at runtime?">
+
+No — it only verifies internal consistency between annotations and their usage in code it can see. It has no way to validate that untyped external input (a JSON body, an environment variable, a third-party response) actually matches the types you annotated; that's a runtime validation problem, not a static one.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can explain what each quality tool proves, run them independently, and scope exceptions without weakening unrelated code.
+
+</Checkpoint>
+
+## Summary
+
+Use Ruff for formatting and linting, one configured type checker for contracts, pre-commit for convenience, and CI for enforcement. Keep policy explicit, pinned, and narrow.
+

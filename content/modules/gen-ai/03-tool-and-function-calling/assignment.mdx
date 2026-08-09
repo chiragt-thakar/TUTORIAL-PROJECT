@@ -1,0 +1,171 @@
+---
+id: genai-tool-assignment
+title: "Assignment: A Safe Support Ops Assistant"
+description: Build a multi-tool assistant that resolves a refund request end to end, with a bounded loop, whitelisted safe dispatch, a confirmation gate on the destructive step, and graceful handling of a failing tool.
+module: tool-and-function-calling
+order: 5
+estimatedMinutes: 70
+prerequisites: [genai-tool-project]
+learningObjectives:
+  - Combine tool schema design, the bounded loop, and safe dispatch into one working system
+  - Gate a destructive tool call behind explicit confirmation
+  - Handle a failing tool without crashing the conversation or losing context
+---
+
+## Scenario
+
+Every lesson in this module built one piece of the same system: schemas the model can call correctly, a loop that survives multiple turns, a dispatcher that never trusts a call blindly, and tools that fail without taking the conversation down with them. This assignment is that system, built for a real (if simplified) scenario a support team would actually deploy.
+
+<Assignment id="genai-tool-assignment-work">
+
+## Requirements
+
+Build `ops_assistant.py`, invoked as `python ops_assistant.py "your request here"`, that:
+
+- Registers three tools: `check_order_status(order_id)`, `check_refund_eligibility(order_id)`, and `issue_refund(order_id, amount_cents)`.
+- Runs a bounded call-execute-respond loop (`max_turns`, default 6) and logs every tool call — name, arguments, and result — to stderr as it happens.
+- Dispatches through a whitelist keyed by tool name, validating every call's arguments with a Pydantic model before execution; an unknown tool name or invalid arguments returns an error string to the model instead of crashing.
+- Requires explicit confirmation before executing `issue_refund` specifically — simulate confirmation with a `--auto-confirm` flag for scripted runs, and an interactive prompt otherwise.
+- Makes `check_order_status` fail for a specific hardcoded order ID (e.g. `"ORD-FAIL"`) to simulate a real service outage, and returns a clear, actionable error string instead of raising.
+- Prints a final answer grounded in whatever the tools actually returned — no invented order details.
+
+```text
+ops_assistant.py
+  CheckOrderArgs, CheckEligibilityArgs, IssueRefundArgs -- Pydantic argument schemas
+  TOOL_REGISTRY, DESTRUCTIVE_TOOLS  -- the whitelist from Lesson 3
+  check_order_status / check_refund_eligibility / issue_refund -- the tool functions
+  dispatch(call, confirm) -- whitelist + validate + confirm + execute
+  run(question, max_turns=6) -- the bounded loop from Lesson 2
+  main()                      -- CLI entry point
+```
+
+## Acceptance criteria
+
+1. `python ops_assistant.py "Can you refund ORD-4471?" --auto-confirm` runs all three tools in a sensible order and prints a final answer mentioning the order's actual status and eligibility.
+2. Without `--auto-confirm`, reaching `issue_refund` pauses for interactive confirmation and does not execute the refund if declined.
+3. `python ops_assistant.py "What's the status of ORD-FAIL?"` prints a clean answer acknowledging the lookup failed — no unhandled traceback reaches the terminal.
+4. Calling an unregistered tool name (simulate by temporarily renaming an entry in `TOOL_REGISTRY`) produces a graceful error string, not a crash.
+5. The stderr log shows every tool call made during a run, in order, with arguments and results.
+6. The loop exits with a clear fallback message if `max_turns` is reached without a final answer.
+
+### Stretch goals
+
+Add per-tool rate limiting (max 3 calls per tool per run) from this module's exercises. Add a `--dry-run` flag that logs what `issue_refund` *would* do without executing it. Persist the tool-call log to a JSON file per run instead of just stderr.
+
+<Solution>
+
+The solution is a direct assembly of every piece already built in this module's lessons — the main engineering decision is keeping `dispatch()` as the single point every safety check flows through, so nothing can reach a tool function without passing all of them in order.
+
+```python
+import argparse
+import json
+import sys
+from typing import Literal
+from openai import OpenAI
+from pydantic import BaseModel, ValidationError
+
+client = OpenAI()
+
+
+class CheckOrderArgs(BaseModel):
+    order_id: str
+
+class CheckEligibilityArgs(BaseModel):
+    order_id: str
+
+class IssueRefundArgs(BaseModel):
+    order_id: str
+    amount_cents: int
+
+
+def check_order_status(order_id: str) -> str:
+    if order_id == "ORD-FAIL":
+        return f"Could not look up {order_id} — the order service is unavailable. Ask the customer to try again shortly."
+    return f"Order {order_id} status: shipped, delivered 3 days ago."
+
+def check_refund_eligibility(order_id: str) -> str:
+    return f"Order {order_id} is eligible for a refund (within the 30-day window)."
+
+def issue_refund(order_id: str, amount_cents: int) -> str:
+    return f"Refund of ${amount_cents / 100:.2f} issued for order {order_id}."
+
+
+TOOL_REGISTRY = {
+    "check_order_status": (CheckOrderArgs, check_order_status),
+    "check_refund_eligibility": (CheckEligibilityArgs, check_refund_eligibility),
+    "issue_refund": (IssueRefundArgs, issue_refund),
+}
+DESTRUCTIVE_TOOLS = {"issue_refund"}
+
+TOOLS_SCHEMA = [
+    {"type": "function", "function": {"name": "check_order_status", "description": "Look up an order's shipping status by ID.", "parameters": {"type": "object", "properties": {"order_id": {"type": "string"}}, "required": ["order_id"]}}},
+    {"type": "function", "function": {"name": "check_refund_eligibility", "description": "Check whether an order is eligible for a refund.", "parameters": {"type": "object", "properties": {"order_id": {"type": "string"}}, "required": ["order_id"]}}},
+    {"type": "function", "function": {"name": "issue_refund", "description": "Issue a refund for an order. Destructive — only call after confirming eligibility.", "parameters": {"type": "object", "properties": {"order_id": {"type": "string"}, "amount_cents": {"type": "integer"}}, "required": ["order_id", "amount_cents"]}}},
+]
+
+
+def dispatch(call, confirm) -> str:
+    entry = TOOL_REGISTRY.get(call.function.name)
+    if entry is None:
+        return f"Error: {call.function.name} is not an available tool."
+
+    args_model, fn = entry
+    try:
+        args = args_model.model_validate_json(call.function.arguments)
+    except ValidationError as error:
+        return f"Error: invalid arguments — {error}"
+
+    if call.function.name in DESTRUCTIVE_TOOLS and not confirm(call.function.name, args):
+        return "Error: action was not confirmed and was not executed."
+
+    print(f"[tool] {call.function.name}({args.model_dump()})", file=sys.stderr)
+    result = fn(**args.model_dump())
+    print(f"[result] {result}", file=sys.stderr)
+    return result
+
+
+def run(question: str, confirm, max_turns: int = 6) -> str:
+    messages = [{"role": "user", "content": question}]
+
+    for _ in range(max_turns):
+        response = client.chat.completions.create(model="gpt-4.1-mini", messages=messages, tools=TOOLS_SCHEMA)
+        message = response.choices[0].message
+        messages.append(message)
+
+        if not message.tool_calls:
+            return message.content
+
+        for call in message.tool_calls:
+            result = dispatch(call, confirm)
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+
+    return "I wasn't able to complete this within the allowed number of steps."
+
+
+def main() -> None:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("question")
+    parser.add_argument("--auto-confirm", action="store_true")
+    args = parser.parse_args()
+
+    def confirm(tool_name: str, tool_args: BaseModel) -> bool:
+        if args.auto_confirm:
+            return True
+        response = input(f"Confirm {tool_name}({tool_args.model_dump()})? [y/N] ")
+        return response.strip().lower() == "y"
+
+    print(run(args.question, confirm))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+The one detail worth calling out: `confirm` is a function passed *into* `dispatch`, not a global flag `dispatch` checks itself. That keeps `dispatch` testable and reusable — a test can pass a fake `confirm` that always returns `True` or `False` without touching stdin, which matters the moment you try to write an automated test for the confirmation gate itself.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+This whitelist-validate-confirm-execute dispatcher is the exact foundation Module 6's agent loop and Module 8's LangGraph lessons build on — LangChain's tool-binding APIs automate the schema plumbing, but the safety discipline in this assignment is still entirely your responsibility even inside a framework. The Module 10 capstone wires a version of this dispatcher into a real FastAPI endpoint with authentication in front of the confirmation step.

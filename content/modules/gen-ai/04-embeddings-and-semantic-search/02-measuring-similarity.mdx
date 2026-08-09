@@ -1,0 +1,162 @@
+---
+id: genai-cosine-similarity
+title: Measuring Similarity
+description: Cosine similarity and why it, not Euclidean distance, is the default.
+module: embeddings-and-semantic-search
+order: 2
+estimatedMinutes: 40
+prerequisites: [genai-embeddings-intro]
+learningObjectives:
+  - Compute cosine similarity between vectors
+  - Rank documents by similarity to a query
+  - Explain why normalization matters
+---
+
+## "Nearby" needs a precise definition
+
+Lesson 1 said similar meaning lands "nearby" in vector space. To rank real documents you need a number, not a vibe — something you can sort by. The standard choice for text embeddings is **cosine similarity**: the cosine of the angle between two vectors, which ranges from `-1` (opposite) through `0` (unrelated) to `1` (identical direction).
+
+```python title="cosine_similarity.py"
+import math
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(y * y for y in b))
+    return dot / (norm_a * norm_b)
+```
+
+```python title="rank_query.py"
+query_vector = embed(["How do I reset my password?"])[0]
+doc_vectors = embed([
+    "To change your password, go to Settings > Security.",
+    "Our refund policy allows returns within 30 days.",
+    "Forgot your password? Use the 'reset password' link on the login page.",
+])
+
+scores = [cosine_similarity(query_vector, doc) for doc in doc_vectors]
+ranked = sorted(zip(scores, doc_vectors), key=lambda pair: pair[0], reverse=True)
+```
+
+## Why cosine, not Euclidean distance
+
+Euclidean distance measures straight-line distance between two points; cosine similarity measures the *angle* between them, ignoring magnitude entirely. For text embeddings, magnitude tends to correlate with things like text length rather than meaning, so two vectors pointing in nearly the same direction should score as similar even if one happens to be longer in raw magnitude.
+
+Cosine similarity is the metric text-embedding models are generally trained and evaluated against, so it's the right default rather than an arbitrary choice.
+
+<Concept>
+
+If two vectors are **normalized** to unit length (magnitude 1) before comparing, cosine similarity reduces to a plain dot product — which is faster to compute at scale and is exactly what most vector databases optimize for internally. Many embedding APIs, including OpenAI's, already return normalized vectors, which is worth confirming rather than assuming.
+
+</Concept>
+
+<TypeScriptComparison>
+
+If you've ever implemented a recommendation feature backed by tag overlap or a naive "shared keywords" score, cosine similarity is the same idea generalized: instead of counting shared discrete tags, you're measuring directional agreement between two dense, continuous vectors. The math is different; the goal — "how alike are these two things" as one sortable number — is the same.
+
+</TypeScriptComparison>
+
+<CommonMistake>
+
+Comparing raw dot products across vectors of different magnitude and calling it similarity. Without normalization (or explicitly dividing by both magnitudes, as cosine similarity does), a longer or more "intense" vector can score higher purely from magnitude, not because it's more semantically relevant — this silently biases rankings toward longer documents.
+
+</CommonMistake>
+
+<ProductionNote>
+
+At real scale — tens of thousands of vectors and up — computing cosine similarity against every stored vector for every query (an exhaustive scan) becomes the bottleneck. Vector databases solve this with approximate nearest-neighbor (ANN) indexes that trade a small amount of ranking accuracy for large speedups. Lesson 3 covers exactly where that tradeoff point is and when you actually need one.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-cosine-similarity-1" difficulty="easy">
+
+Two vectors have a cosine similarity of `0.02`. In one sentence, what does that tell you about their meaning?
+
+<Solution>
+
+They're essentially unrelated — a score near `0` means the vectors point in close to perpendicular directions in the embedding space, which corresponds to little to no shared meaning between the two pieces of text.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-cosine-similarity-2" difficulty="medium">
+
+Given `query = [1.0, 0.0]`, `doc_a = [2.0, 0.0]`, and `doc_b = [0.9, 0.1]`, which document has the higher cosine similarity to the query, and why does `doc_a`'s larger magnitude not matter?
+
+<Solution>
+
+`doc_a` scores higher — its direction is identical to the query's (`[2.0, 0.0]` points the same way as `[1.0, 0.0]`), giving a cosine similarity of `1.0`, while `doc_b` points at a slight angle away and scores just under `1.0`. `doc_a`'s magnitude doesn't matter because cosine similarity divides out both vectors' magnitudes — only the angle between them determines the score.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-cosine-similarity-3" difficulty="hard">
+
+A teammate optimizes the ranking function by replacing `cosine_similarity` with a raw dot product, reasoning "it's faster and the ranking order should be about the same." For a corpus of vectors that are already normalized to unit length by the embedding API, are they right? What if the vectors aren't normalized?
+
+<Solution>
+
+If every vector is already unit-normalized, they're right — dot product and cosine similarity produce identical rankings in that case, since dividing by two magnitudes that are both `1` changes nothing, and the dot product is cheaper to compute.
+
+If the vectors aren't normalized, they're wrong: magnitude differences between vectors would then skew the dot product's ranking versus the magnitude-independent cosine similarity, and the teammate's "faster" optimization would also be a correctness regression.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-cosine-similarity-4" difficulty="interview">
+
+Interview-style: "Why is cosine similarity generally preferred over Euclidean distance for comparing text embeddings?" Answer in three sentences or fewer.
+
+<Solution>
+
+Cosine similarity measures the angle between two vectors and ignores their magnitude, while Euclidean distance is sensitive to both angle and magnitude. For text embeddings, magnitude often reflects incidental factors like text length rather than meaning, so a magnitude-independent metric better isolates semantic similarity. It's also the metric most text-embedding models are trained and benchmarked against, so it aligns with how the vectors were actually optimized.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-cosine-similarity-5" difficulty="real-world">
+
+A search feature ranks well for short queries but customers complain that longer, more detailed queries return oddly generic top results. The engineering team suspects the ranking function itself. Using only what this lesson covered, what would you check before assuming the ranking math is broken?
+
+<Solution>
+
+Check whether the similarity function actually being used divides out magnitude (true cosine similarity) or is secretly a raw, unnormalized dot product — a magnitude-sensitive score would systematically favor documents whose embeddings happen to have larger magnitude, which can correlate with a query's own length in ways that produce exactly this "longer input, worse results" pattern.
+
+Confirming the metric before touching the ranking logic saves you from debugging the wrong layer.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Is a cosine similarity of 0 the lowest possible score?">
+
+No — cosine similarity ranges from `-1` to `1`. A score of `0` means unrelated (roughly perpendicular vectors), but a negative score means the vectors point in meaningfully opposite directions, which is rarer for natural text embeddings but not impossible.
+
+</Gotcha>
+
+<Gotcha question="If an embedding API's vectors are already normalized, does computing cosine similarity the 'full' way (with the magnitude division) give a different answer than a plain dot product?">
+
+No — when both vectors have magnitude `1`, the division by magnitudes in the cosine similarity formula divides by `1 * 1`, so the result is identical to the plain dot product. The full formula is only necessary — and only changes the answer — when magnitudes aren't already `1`.
+
+</Gotcha>
+
+<Gotcha question="Does a higher similarity score always mean a document is a good answer to the query?">
+
+No — it means the document is the closest available match in your corpus, which isn't the same as being a *good* match in absolute terms. A corpus with nothing relevant to a query will still return a "top" result by rank; a similarity score threshold (not just top-k) is often needed to decide when to say "no good match found" instead.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can compute cosine similarity between two vectors by hand, rank a small set of documents against a query, and explain precisely why normalization determines whether a plain dot product is a safe shortcut.
+
+</Checkpoint>
+
+## Summary
+
+Cosine similarity turns "nearby in meaning" into a sortable number between `-1` and `1` by comparing vector direction and ignoring magnitude — the right default for text embeddings, and equivalent to a cheaper dot product once vectors are normalized. The next lesson builds a minimal store around this scoring function so you can query more than a handful of documents at once.

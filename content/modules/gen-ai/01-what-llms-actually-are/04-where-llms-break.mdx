@@ -1,0 +1,176 @@
+---
+id: genai-llm-limits
+title: Where LLMs Break
+description: Hallucination, context limits, non-determinism, and cost — the constraints every Gen AI feature has to design around.
+module: what-llms-actually-are
+order: 4
+estimatedMinutes: 40
+prerequisites: [genai-prompting-basics]
+learningObjectives:
+  - Explain why hallucination is expected behavior, not a bug
+  - Reason about context window limits before hitting them in production
+  - Estimate the cost and latency of a feature before building it
+---
+
+## Hallucination is the mechanism working as designed
+
+A model that confidently states a fake court case, a nonexistent Python function, or a wrong date isn't malfunctioning — it's doing exactly what lesson one described: producing the most statistically plausible continuation of the text so far. When the training data doesn't contain a clear, well-represented answer, "plausible-sounding but wrong" is still a very achievable output, and nothing in the generation process distinguishes it from "plausible-sounding and right."
+
+This is why every serious Gen AI feature either constrains what the model is allowed to assert, checks its output against a trusted source, or clearly signals uncertainty to the user rather than presenting every answer with equal confidence.
+
+<Concept>
+
+**Hallucination** is the standard term for fluent, confident, incorrect output. It shows up most often for facts that are obscure, recent (past the model's training cutoff), or highly specific — exact numbers, citations, and API signatures are classic cases. Retrieval-augmented generation, covered later in this track, is the primary tool for reducing it by grounding answers in real documents instead of memorized patterns.
+
+</Concept>
+
+## Context windows are a hard budget, not a soft guideline
+
+Every model has a maximum number of tokens it can consider at once — the **context window** — covering the system prompt, the full conversation history, any documents you've included, and the space reserved for its own response. Go over that limit and the request fails outright; it doesn't gracefully forget older content on its own.
+
+A long conversation, a big pasted document, or a growing list of few-shot examples can all quietly march a feature toward that ceiling.
+
+```python title="rough_token_budget.py"
+def estimate_tokens(text: str) -> int:
+    # Rough rule of thumb: ~4 characters per token for English text.
+    return len(text) // 4
+
+system_prompt = "You are a concise, careful coding assistant." * 3
+conversation_history = "previous turns..." * 200
+user_message = "Can you review this 800-line file?"
+
+budget = estimate_tokens(system_prompt) + estimate_tokens(conversation_history) + estimate_tokens(user_message)
+print(f"~{budget} tokens used before the model has said a single word back")
+```
+
+This is a rough estimate, not an exact count — real tokenizers don't map cleanly to character counts — but it's precise enough to catch a design mistake before it becomes a production incident. If a feature's context keeps growing (a long-running chat, an ever-larger document), you need a deliberate strategy: truncate, summarize, or retrieve only the relevant slice, all of which are covered later in this track.
+
+<CommonMistake>
+
+Assuming a bigger context window solves the problem instead of just postponing it. Even models with very large windows still cost more, respond slower, and lose reliability the more irrelevant content is stuffed in — a big window is headroom, not a replacement for deciding what actually belongs in the prompt.
+
+</CommonMistake>
+
+## Non-determinism is closer to the default than the exception
+
+Even with `temperature=0`, most providers don't guarantee byte-for-byte identical output across two identical requests — floating-point execution across different hardware, provider-side updates, and other implementation details can nudge results. Treat "probably very similar, not guaranteed identical" as the honest baseline, and never build logic that depends on two calls producing exactly the same text.
+
+If you need one part of a response to be truly stable — a category label, a boolean decision — validate it against a small fixed set of allowed values after the fact, rather than trusting raw text equality.
+
+## Estimating cost and latency before you build
+
+Providers price by token, usually with separate rates for input and output tokens, and output tokens typically cost several times more than input tokens because they're the expensive part to generate. Latency scales primarily with how many tokens the model has to *generate*, not how many you send in — a request asking for a one-word answer returns fast regardless of how much context you attached.
+
+```python title="cost_estimate.py"
+INPUT_PRICE_PER_1K = 0.00015   # illustrative, check current provider pricing
+OUTPUT_PRICE_PER_1K = 0.0006   # illustrative, check current provider pricing
+
+def estimate_cost(input_tokens: int, output_tokens: int) -> float:
+    return (input_tokens / 1000) * INPUT_PRICE_PER_1K + (output_tokens / 1000) * OUTPUT_PRICE_PER_1K
+
+# A feature summarizing a 2,000-token document into a 150-token summary,
+# called 10,000 times a month:
+monthly_cost = estimate_cost(2000, 150) * 10_000
+print(f"${monthly_cost:.2f} per month at this volume")
+```
+
+Running a rough version of this calculation before writing the first line of a feature is what separates "this scales fine" from "this quietly costs ten times the budget the moment it gets popular."
+
+<ProductionNote>
+
+Cap `max_tokens` deliberately on every request, not just to control output length but as a direct cost and latency ceiling. An unbounded generation is an unbounded bill.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-limits-1" difficulty="easy">
+
+A teammate says a model "lied" about a library function that doesn't exist. Reframe that statement in terms of what you learned about how generation actually works.
+
+<Solution>
+
+The model didn't lie, which implies intent — it produced the most statistically plausible-sounding function name given the surrounding context, because nothing in the generation process checks the claim against a real API reference. The fix is grounding the answer in real documentation, not scolding the model.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-limits-2" difficulty="medium">
+
+A chat feature keeps resending the entire conversation history on every turn, and after 40 turns it starts failing with a context-length error. Name two concrete strategies from this lesson that would prevent that failure.
+
+<Solution>
+
+Truncate older turns once a token budget threshold is reached, or summarize older turns into a shorter standing summary instead of resending them verbatim — both keep the token budget from growing without bound as the conversation continues.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-limits-3" difficulty="hard">
+
+Using `estimate_cost`, roughly compare the monthly cost of 5,000 calls with 500 input / 100 output tokens each versus 5,000 calls with 500 input / 1,000 output tokens each. Which parameter drove most of the difference, and why?
+
+<Solution>
+
+The second case costs noticeably more, and the difference comes almost entirely from the output tokens, since `OUTPUT_PRICE_PER_1K` is several times higher than the input rate in this example. This matches the lesson's point that output length, not input length, is usually the bigger lever on both cost and latency.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-limits-4" difficulty="interview">
+
+Interview-style: "Two identical requests at `temperature=0` returned slightly different text. Is that a bug in the application?" Answer in three sentences or fewer.
+
+<Solution>
+
+No, not in the application layer — `temperature=0` reduces randomness but most providers don't contractually guarantee byte-for-byte identical output, since floating-point execution and provider-side updates can still introduce tiny variation. It would only be an application bug if the code assumed exact repeatability, for example by comparing two responses with strict string equality.
+
+The correct design assumes "very similar, not guaranteed identical" and validates the parts that actually need to be stable, like a label or boolean, against a small fixed set of allowed values.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-limits-5" difficulty="real-world">
+
+Your feature summarizes uploaded PDFs, and one customer uploads a 300-page document. The request fails. Using only what this lesson covered, explain the most likely cause and the two realistic options for handling it, without redesigning the whole feature.
+
+<Solution>
+
+The most likely cause is a context-window overflow — a 300-page document, plus your system prompt and the space reserved for the model's response, exceeds the model's token budget.
+
+The two realistic options are: chunk the document and summarize each chunk before combining the results (more calls, more cost, but no size ceiling), or reject documents past a stated size limit with a clear error message rather than letting the request fail silently or expensively. Which one is right depends on whether the product actually needs to support documents that large.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does a bigger context window mean a model is less likely to hallucinate?">
+
+Not directly — a larger window means more room to *include* grounding information, but it doesn't change the underlying generation mechanism. A huge context window filled with irrelevant text can still produce a hallucinated answer; what reduces hallucination is relevant, well-organized context actually being present, not the size of the window itself.
+
+</Gotcha>
+
+<Gotcha question="If a request is under the token limit, is it guaranteed to succeed?">
+
+No. Being under the context-window limit is necessary but not sufficient — the request can still fail from a rate limit, a timeout, a transient provider outage, or a content-policy rejection. Token budget is only one of several failure modes production code needs to handle.
+
+</Gotcha>
+
+<Gotcha question="Is the cheapest model always the right choice once a feature is cost-sensitive?">
+
+Not necessarily. A cheaper, weaker model that needs a retry or a longer, more corrective prompt to reach the same quality can end up costing about the same, or more, once you count the extra tokens and calls that correction takes. Cost per request and cost per *successful* result aren't the same number.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can explain hallucination, context limits, non-determinism, and cost as predictable consequences of how LLMs work — not as random misbehavior — and you can produce a rough cost estimate for a feature before building it.
+
+</Checkpoint>
+
+## Summary
+
+Hallucination, context window limits, non-determinism, and cost aren't edge cases to patch around later — they're direct consequences of next-token prediction and are worth designing for from the start. Estimate token budgets and cost before building a feature, cap `max_tokens` deliberately, and never assume two identical requests will return identical text. The assignment for this module puts all four lessons together into one small, honestly-built tool.

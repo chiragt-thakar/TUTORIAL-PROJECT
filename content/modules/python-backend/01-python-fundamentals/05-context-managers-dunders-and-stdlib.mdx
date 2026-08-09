@@ -1,0 +1,209 @@
+---
+id: py-context
+title: Context Managers, Dunder Methods, and the Standard Library
+description: Encode resource lifecycles, object behavior, and robust backend utilities.
+module: python-fundamentals
+order: 5
+estimatedMinutes: 45
+prerequisites: [py-iteration]
+learningObjectives:
+  - Use and implement context managers
+  - Choose useful dunder methods
+  - Apply pathlib, enum, datetime, and collections patterns
+---
+
+## Context managers define lifecycles
+
+The `with` statement calls `__enter__`, runs the block, then calls `__exit__` even when the block raises. Files, locks, database transactions, and test patches use this protocol because acquisition and release remain adjacent.
+
+```python
+from contextlib import contextmanager
+
+@contextmanager
+def transaction(connection):
+    try:
+        yield connection
+    except Exception:
+        connection.rollback()
+        raise
+    else:
+        connection.commit()
+```
+
+A generator-based context manager must yield exactly once. Never swallow an exception unless the context manager genuinely handled it. Async resources use `async with` and `@asynccontextmanager`.
+
+<TypeScriptComparison>
+
+JavaScript commonly uses `try/finally` and has newer explicit-resource-management syntax. Python's context-manager protocol is established across the ecosystem; SQLAlchemy sessions and FastAPI yield dependencies build on the same lifecycle idea.
+
+</TypeScriptComparison>
+
+## Dunder methods are protocols
+
+Double-underscore methods let objects participate in language operations: `__repr__` for diagnostic representation, `__eq__` and `__hash__` for equality and hashed collections, `__len__` and `__iter__` for containers, and `__enter__`/`__exit__` for contexts. Implement them to express a real semantic contract, not to make syntax clever.
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True, slots=True)
+class TaskId:
+    value: str
+
+    def __str__(self) -> str:
+        return self.value
+```
+
+The dataclass generates useful `__init__`, `__repr__`, and equality behavior. `frozen=True` prevents ordinary reassignment and enables hashing when fields are hashable. `slots=True` prevents accidental attributes and can reduce per-instance overhead.
+
+## Standard-library defaults
+
+Use `pathlib.Path` instead of manual path separators. Use timezone-aware UTC datetimes. Use `Enum` or `StrEnum` for closed domain values, `uuid.UUID` for identifiers, `decimal.Decimal` for exact decimal amounts, `collections.abc` for interface annotations, and `secrets` rather than `random` for security tokens.
+
+```python
+from datetime import UTC, datetime
+from enum import StrEnum
+from pathlib import Path
+
+class TaskStatus(StrEnum):
+    OPEN = "open"
+    DONE = "done"
+
+created_at = datetime.now(UTC)
+config_path = Path("config") / "local.toml"
+```
+
+<CommonMistake>
+
+Naive datetimes do not say which instant they represent. Store aware UTC values, serialize them with offsets, and convert for display at the edge.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Prefer a well-known standard-library type to a home-grown helper. It lowers dependency count and makes behavior recognizable to every Python maintainer.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="py-context-1" difficulty="easy">
+
+Write a context manager that measures a block and always prints elapsed seconds, including when the block fails.
+
+<Solution>
+
+```python
+from contextlib import contextmanager
+from time import perf_counter
+
+@contextmanager
+def measured():
+    started = perf_counter()
+    try:
+        yield
+    finally:
+        print(perf_counter() - started)
+```
+
+`finally` guarantees measurement; the exception continues outward.
+
+</Solution>
+</Exercise>
+
+<Exercise id="py-context-2" difficulty="medium">
+
+Model task priority as a string-valued enum with `low`, `normal`, and `high` wire values.
+
+<Solution>
+
+```python
+from enum import StrEnum
+
+class Priority(StrEnum):
+    LOW = "low"
+    NORMAL = "normal"
+    HIGH = "high"
+```
+
+Members behave like strings while restricting the valid set.
+
+</Solution>
+</Exercise>
+
+<Exercise id="py-context-3" difficulty="hard">
+
+Replace `open(base + "/data/tasks.json")` with portable, automatically closed code.
+
+<Solution>
+
+```python
+from pathlib import Path
+
+path = Path(base) / "data" / "tasks.json"
+with path.open(encoding="utf-8") as handle:
+    payload = handle.read()
+```
+
+`Path` handles separators and `with` guarantees closure.
+
+</Solution>
+</Exercise>
+
+<Exercise id="py-context-4" difficulty="interview">
+
+Interview-style: "Why does a context manager's `__exit__` still run even if the code inside the `with` block raises an exception?" Answer in three sentences or fewer.
+
+<Solution>
+
+Because that's the entire point of the protocol: `with` compiles to something equivalent to a `try/finally`, where `__enter__` runs before the block and `__exit__` runs unconditionally after it, exception or not. `__exit__` receives the exception type, value, and traceback as arguments specifically so it can decide whether to clean up, log, or (by returning `True`) suppress the exception entirely.
+
+This guarantee — cleanup always runs — is exactly why resource acquisition belongs in `__enter__`/`__exit__` rather than scattered `try/finally` blocks at every call site.
+
+</Solution>
+</Exercise>
+
+<Exercise id="py-context-5" difficulty="real-world">
+
+A teammate's cron job stores `created_at = datetime.now()` (no timezone) in the database, and a report generated by a different service in a different timezone shows tasks created "in the future." Using only what this lesson covered, name the bug and the fix.
+
+<Solution>
+
+The bug is a naive datetime — `datetime.now()` without a timezone records "some instant, in whatever timezone the machine happens to be in" with no record of which one, so a different service in a different timezone has no correct way to interpret it.
+
+The fix is `datetime.now(UTC)` everywhere a timestamp is created, storing and comparing timezone-aware UTC values consistently, and converting to a local timezone only at the display edge, never in storage or business logic.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does comparing two naive datetimes from different timezones raise an error?">
+
+No — and that's the dangerous part. Python happily compares two naive datetimes even when they implicitly represent different timezones, silently producing a wrong answer instead of an error you'd notice. Comparing an aware and a naive datetime together *does* raise `TypeError`, which is actually the safer failure mode — it's naive-versus-naive that hides the bug.
+
+</Gotcha>
+
+<Gotcha question="Does @dataclass(frozen=True) make an object's fields truly immutable?">
+
+Not all the way down. `frozen=True` blocks reassigning the dataclass's own attributes (`obj.field = x` raises), but if a field holds a mutable object like a list, that list can still be mutated in place (`obj.field.append(x)` works fine). Frozen prevents rebinding the dataclass's fields, not deep immutability of whatever they point to.
+
+</Gotcha>
+
+<Gotcha question="Is StrEnum interchangeable with a plain string everywhere, including in an f-string?">
+
+Almost everywhere, but not silently in every context — `StrEnum` members compare equal to and behave like their string value (including in an f-string, unlike the older `Enum` where `str(member)` prints `ClassName.MEMBER`). The one place to double check is strict JSON/serialization code that inspects `type()` explicitly; it's still technically a distinct type from `str`, even though it behaves like one in nearly all practical code.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can recognize resource lifetimes as context-manager problems, choose dunder methods by protocol, and reach for standard-library types before adding dependencies.
+
+</Checkpoint>
+
+## Summary
+
+Context managers make cleanup structural. Dunder methods connect objects to explicit Python protocols. The standard library already supplies strong primitives for paths, time, enums, identifiers, exact numbers, and secure randomness.
+
