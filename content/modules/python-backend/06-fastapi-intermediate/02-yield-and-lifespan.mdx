@@ -68,7 +68,7 @@ Shutdown has a deadline. Stop accepting work, let in-flight requests finish, clo
 
 ## Exercises
 
-<Exercise id="api-yield-1">
+<Exercise id="api-yield-1" difficulty="easy">
 
 Write a dependency that opens and always closes a synchronous repository resource.
 
@@ -86,7 +86,7 @@ def get_repository():
 </Solution>
 </Exercise>
 
-<Exercise id="api-yield-2">
+<Exercise id="api-yield-2" difficulty="medium">
 
 Classify an HTTP connection pool, authenticated user, and database session by lifetime.
 
@@ -97,16 +97,68 @@ The pool is application-scoped; the authenticated user and session are request-s
 </Solution>
 </Exercise>
 
-<Exercise id="api-yield-3">
+<Exercise id="api-yield-3" difficulty="hard">
 
-A yield dependency catches `Exception`, logs it, and returns. What is wrong?
+A `get_session` yield dependency depends on `get_transaction_lock` (another yield dependency), and the lock must release only *after* the session's own cleanup fully completes. Explain the order FastAPI unwinds these two dependencies, and why that order is what makes this safe.
 
 <Solution>
 
-It suppresses the request failure, so FastAPI cannot handle it correctly. Cleanup may log, but must re-raise unless it intentionally translates the exception.
+FastAPI unwinds yield dependencies in the reverse of their resolution order, respecting the dependency relationship — since `get_session` depends on `get_transaction_lock`, `get_session`'s own cleanup (commit or rollback, then close) runs to completion first, and only afterward does `get_transaction_lock`'s cleanup (releasing the lock) run.
+
+That ordering is exactly what makes it safe: the lock isn't released until the session's writes have already been committed or rolled back, so no other holder of the lock can ever observe partially finished work in between.
 
 </Solution>
 </Exercise>
+
+<Exercise id="api-yield-4" difficulty="interview">
+
+Interview-style: "A yield dependency's cleanup code catches `Exception`, logs it, and returns normally. What's wrong with this?" Answer in three sentences or fewer.
+
+<Solution>
+
+Catching and swallowing the exception in cleanup suppresses the original request failure from ever reaching FastAPI's exception handling, so the client and any registered handler never learn the request actually failed. Logging is fine and often necessary, but the exception must be re-raised afterward unless cleanup is deliberately translating it into a different, intentional exception.
+
+The distinction is "observe the failure" versus "hide the failure" — cleanup code should only ever do the former unless translation is an explicit design choice.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-yield-5" difficulty="real-world">
+
+Your process manager sends `SIGTERM`, and if the process is still shutting down after a grace period, it sends `SIGTERM` again. Your lifespan's shutdown code disposes of a connection pool. What must be true about that disposal code for the second signal to be safe, and why is this treated as a hard requirement rather than a nice-to-have?
+
+<Solution>
+
+The disposal code must be idempotent — calling it a second time on an already-disposed pool has to be a safe no-op, not an error and not a repeated side effect. Process managers legitimately deliver the same shutdown signal more than once, such as a retried `SIGTERM` or an orchestrator's own escalation timer.
+
+Shutdown code that only works correctly the first time will either crash on the second attempt — turning a clean shutdown into a logged failure — or, worse, attempt some state change twice with effects that are hard to predict.
+
+That's precisely why idempotent cleanup is a requirement here, not a style preference.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does the app lifespan's `yield` follow the same per-request scope as a normal yield dependency?">
+
+No — lifespan is process-scoped: its startup code runs once when the application starts, and its shutdown code runs once when the process stops, regardless of how many requests are handled in between. A yield dependency, by contrast, runs its setup and cleanup once per request.
+
+</Gotcha>
+
+<Gotcha question="Is it safe to assume shutdown cleanup code runs exactly once per process?">
+
+No — process managers may deliver the same shutdown signal more than once, so cleanup code will sometimes run, or attempt to run, more than once. It needs to be idempotent — safe to execute repeatedly with the same end state — rather than written under the assumption of a single guaranteed invocation.
+
+</Gotcha>
+
+<Gotcha question="If a yield dependency's code after `yield` never runs, does that always mean there's a bug in your code?">
+
+Not necessarily — it can also mean an even earlier dependency in the graph failed before this one was ever fully resolved, in which case its `yield` never actually happened and there's nothing after it to run. Trace failures from the top of the dependency graph down before assuming a specific dependency's cleanup logic itself is broken.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

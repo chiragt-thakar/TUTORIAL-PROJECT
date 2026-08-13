@@ -70,7 +70,7 @@ Cap page size, measure worst-case queries, and index columns used by authorizati
 
 ## Exercises
 
-<Exercise id="api-listing-1">
+<Exercise id="api-listing-1" difficulty="easy">
 
 Define deterministic descending task ordering when two tasks share `created_at`.
 
@@ -81,7 +81,7 @@ Order by `created_at DESC, id DESC`. Include both values in a keyset cursor if c
 </Solution>
 </Exercise>
 
-<Exercise id="api-listing-2">
+<Exercise id="api-listing-2" difficulty="medium">
 
 Why must project authorization be included before limit/offset?
 
@@ -92,20 +92,75 @@ Filtering after pagination can reveal global counts, return short pages, and ski
 </Solution>
 </Exercise>
 
-<Exercise id="api-listing-3">
+<Exercise id="api-listing-3" difficulty="hard">
 
-Map public sort values without dynamic SQL strings.
+Map public sort values without dynamic SQL strings, and make sure an unsupported sort value returns a 422 instead of silently falling back to a default.
 
 <Solution>
 
 ```python
 SORT_COLUMNS = {"created_at": TaskModel.created_at, "due_at": TaskModel.due_at}
-column = SORT_COLUMNS[filters.sort]
-statement = statement.order_by(column.desc(), TaskModel.id.desc())
+
+class TaskFilters(BaseModel):
+    sort: Literal["created_at", "due_at"] = "created_at"
 ```
+
+Declaring `sort` as a `Literal` does both jobs at once: Pydantic rejects any value outside the two named options with a 422 during request validation, before the operation ever runs, so there's no code path where an unrecognized value reaches `SORT_COLUMNS` and needs its own fallback logic. The lookup dict itself never touches raw SQL text — only the whitelisted enum values it was built from.
 
 </Solution>
 </Exercise>
+
+<Exercise id="api-listing-4" difficulty="interview">
+
+Interview-style: "When does offset pagination stop being a good choice, and what does cursor pagination give up in exchange for fixing it?" Answer in three sentences or fewer.
+
+<Solution>
+
+Offset pagination degrades as the offset grows, because the database still has to account for every row before the offset to know where the next page starts, making deep pages progressively more expensive — and concurrent inserts can shift which rows land on which page between requests.
+
+Cursor (keyset) pagination fixes both by using the last row's actual ordering key as a `WHERE` bound instead of a skip-count, which the database can satisfy directly through an index regardless of depth.
+
+What it gives up is arbitrary page jumping — a cursor only knows "the page after this one," not "page 500," since there's no offset number to compute from.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-listing-5" difficulty="real-world">
+
+A support ticket reports that listing page 500 of tasks (`offset=25000`) takes 8 seconds, while page 1 is instant. The database shows the query scanning tens of thousands of rows before returning results. Diagnose using this lesson's pagination models, and propose the fix.
+
+<Solution>
+
+This is the structural cost of offset pagination, not a missing index or a slow query in isolation: to return rows 25,000–25,050, the database still has to walk past the preceding 25,000 rows in sorted order every single time this page is requested, so cost grows directly with offset depth — page 1 is cheap and page 500 is expensive by design, not by accident.
+
+The fix is switching this endpoint to cursor/keyset pagination: instead of `OFFSET 25000`, the query uses the last row's `(created_at, id)` from the previous page as a `WHERE` bound, which the database can satisfy directly through the index regardless of how deep the page is.
+
+The tradeoff, as covered in this lesson, is losing the ability to jump straight to an arbitrary page number — acceptable for most feed-style UIs, and the right trade for a listing endpoint that doesn't need it.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does offset pagination's cost stay roughly constant no matter how deep the page is?">
+
+No — cost grows with offset depth, because the database has to account for every preceding row before it can return the next page. A page near the start of a large collection is cheap; a page deep into it is progressively more expensive, by design of how offset works.
+
+</Gotcha>
+
+<Gotcha question="Can filtering by authorization happen after pagination without changing the results a legitimate user sees?">
+
+No — filtering unauthorized rows out *after* the database has already applied `LIMIT`/`OFFSET` can return short pages, skip rows the user was actually entitled to see, and leak information through page counts. Authorization has to constrain the query itself, before pagination is applied, not the result set afterward.
+
+</Gotcha>
+
+<Gotcha question="Does mapping a client-supplied sort name through a whitelist dictionary fully protect against SQL injection by itself?">
+
+Only if the lookup key space is itself closed — a `Literal` type (or equivalent enum validation) that rejects anything outside the known sort names before the dictionary lookup even happens. A whitelist dict alone still needs something upstream guaranteeing only whitelisted keys are ever looked up; declaring the field's type is what provides that guarantee here.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

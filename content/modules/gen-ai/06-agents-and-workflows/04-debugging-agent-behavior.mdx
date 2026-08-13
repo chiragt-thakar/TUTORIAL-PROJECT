@@ -1,0 +1,213 @@
+---
+id: genai-agent-debugging
+title: Debugging Agent Behavior
+description: Make an agent's decisions inspectable when it does something wrong.
+module: agents-and-workflows
+order: 4
+estimatedMinutes: 40
+prerequisites: [genai-agent-state]
+learningObjectives:
+  - Log every agent decision and tool call
+  - Reproduce a failing agent run
+  - Add guardrails after a failure mode is found
+---
+
+## "It did something weird" is not a bug report
+
+An agent that took a wrong action did so through a specific sequence of turns — a specific plan, a specific tool call with specific arguments, a specific result it read before deciding the next step. Every one of those is knowable, but only if you captured it *before* the run ended.
+
+"The agent refunded the wrong order" without a trace of which tool calls led there is a bug report you cannot act on; the same failure with a full turn-by-turn log is a five-minute diagnosis.
+
+```python title="structured_trace.py"
+import json
+import time
+
+def logged_turn(turn: int, state: AgentState, message, spent: float) -> None:
+    record = {
+        "turn": turn,
+        "timestamp": time.time(),
+        "plan": [
+            {"tool": c.function.name, "arguments": c.function.arguments}
+            for c in (message.tool_calls or [])
+        ] or "final_answer",
+        "facts_snapshot": dict(state.facts),
+        "cumulative_cost": round(spent, 4),
+    }
+    print(json.dumps(record))
+```
+
+One JSON line per turn, written as the turn happens — not reconstructed afterward from memory or from the final answer alone. `facts_snapshot` matters as much as the tool call itself.
+
+It tells you what the agent *believed* at the moment it made each decision, which is often the actual root cause when a later action looks wrong in isolation but was consistent with an earlier fact that was itself wrong.
+
+<Concept>
+
+A trace answers two different questions, and a good log line supports both: "what did the agent do" (the plan and act fields) and "why did it think that was right" (the facts snapshot and, ideally, the tool result that produced each fact). A trace that only has the first is a very small improvement over no trace at all.
+
+</Concept>
+
+## Reproducing a failing run
+
+Model calls are non-deterministic even at low temperature, so replaying a failing task by just re-running it from the same prompt often doesn't reproduce the same failure — which makes debugging feel like chasing a ghost. The fix isn't to fight the model's non-determinism; it's to remove it from the parts of the system you're actually trying to debug.
+
+```python title="replay_with_mocked_tools.py"
+def replay(logged_trace: list[dict], real_dispatch) -> str:
+    """Re-run the exact same tool call sequence with real dispatch,
+    to check whether the bug is in tool execution or model reasoning."""
+    for entry in logged_trace:
+        for call in entry.get("plan", []):
+            if call == "final_answer":
+                continue
+            result = real_dispatch(call["tool"], json.loads(call["arguments"]))
+            print(f"[replay turn {entry['turn']}] {call['tool']} -> {result}")
+```
+
+This splits the question in two. If replaying the *exact same tool arguments* against the real system produces a different result than the logged run did, the bug is in tool execution or external state (the order's status genuinely changed between runs) — not in the model's reasoning.
+
+If the tool results replay identically but you still don't understand why the model chose what it chose *given* those exact results, the bug is in the model's decision-making given that context — which means the fix is prompt or tool-description clarity, not tool code.
+
+<WhyItMatters>
+
+Without this split, a flaky-looking agent failure gets misdiagnosed constantly — teams either blame "the model being unreliable" for what's actually a tool bug, or rewrite a tool's logic to fix what's actually a prompting problem. The trace is what lets you tell which one it actually was before you start changing anything.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Trying to fix an agent failure by tweaking the system prompt before confirming, from the trace, that the model's *decision* — not a tool's *result* — was actually the wrong part. A prompt change can't fix a tool that silently returned stale or wrong data.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Retain full traces for every agent run for at least as long as your support or dispute window — the trace for a task from three weeks ago is often the only way to answer "why did the agent do that" credibly when a user disputes an outcome after the fact.
+
+</ProductionNote>
+
+## From diagnosis to guardrail
+
+A diagnosed failure mode that only gets fixed for the one case you noticed will recur in a slightly different shape. Module 2 and Module 3 both established this pattern already — a validated request schema, a whitelist around tool dispatch.
+
+The same discipline applies here: once a trace reveals *how* an agent went wrong, encode that finding as a check the loop enforces automatically, not a note for next time.
+
+```python title="guardrail_from_diagnosis.py"
+# Diagnosis: traces showed the model occasionally calls issue_refund
+# with an amount exceeding the order total, because a tool result once
+# included a subtotal instead of a total and the model computed from that.
+def dispatch(call) -> str:
+    args = json.loads(call.function.arguments)
+    if call.function.name == "issue_refund":
+        order = look_up_order(args["order_id"])
+        if args["amount"] > order.total:
+            return json.dumps({"error": "refund amount exceeds order total, call rejected"})
+    return execute_tool(call.function.name, args)
+```
+
+The guardrail doesn't try to make the model never make this mistake again through prompting alone — prompting reduces likelihood, it doesn't guarantee it. The check at the dispatch boundary, from Module 3's safety lesson, is what actually prevents the bad action from executing even on the run where the model gets it wrong anyway.
+
+## Exercises
+
+<Exercise id="genai-agent-debugging-1" difficulty="easy">
+
+A trace shows turn 3's `facts_snapshot` already contains `"order_status": "cancelled"`, but turn 5 calls `issue_refund` anyway. What does the trace tell you to check first?
+
+<Solution>
+
+Whether the model actually read `"order_status": "cancelled"` from the facts context at turn 5, or whether that fact was captured but never re-injected into the prompt for later turns.
+
+Check first whether the facts block was actually present in the messages sent at turn 5, before assuming the model ignored information it had.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-debugging-2" difficulty="medium">
+
+Replaying a failing trace's exact tool call sequence against the real system produces a different result at turn 4 than the original run logged. What does this tell you, and what does it rule out?
+
+<Solution>
+
+It tells you the discrepancy is in tool execution or external state — something about the system being queried changed between the original run and the replay (the order's status, inventory, a downstream service).
+
+It rules out the model's reasoning as the cause of *this specific* mismatch, since the replay used the exact same arguments the model chose the first time; the model's decision-making isn't what's being tested by this replay.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-debugging-3" difficulty="hard">
+
+A support-agent trace shows the model calling `search_docs` four times across a task with four subtly different queries, none matching the repetition detector from Lesson 2 (which only catches identical arguments). The final answer is still wrong. Using this lesson's diagnostic split, design a next debugging step before writing any fix.
+
+<Solution>
+
+Since the repetition detector didn't trip, this isn't the stuck-loop pattern — it's either a retrieval problem (none of the four queries' results actually contained what was needed, a Module 5-style retrieval failure) or a reasoning problem (the results were fine but the model synthesized them incorrectly).
+
+The next step is reading the actual `search_docs` results captured in the trace for all four calls: if none of the four results contain the fact the final answer needed, that's a retrieval/corpus-coverage issue upstream of the agent entirely.
+
+If the needed fact is present in at least one result, the bug is in how the model used or ignored it, which points at the system prompt's synthesis instructions, not at search or the loop's stopping conditions.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-debugging-4" difficulty="interview">
+
+Interview-style: "You're debugging an agent that took a wrong action. How do you determine whether the bug is in a tool or in the model's reasoning?" Answer in three sentences or fewer.
+
+<Solution>
+
+Start from a full per-turn trace of the failing run, then replay the exact same tool call arguments against the real tool implementation. If the replayed result differs from what the original run logged, the bug is in tool execution or external state that changed, not the model's decision.
+
+If the replayed result matches what the model actually saw, but the action taken given that result still looks wrong, the bug is in the model's reasoning given that context — which means the fix belongs in the prompt or tool description, not the tool's code.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-debugging-5" difficulty="real-world">
+
+Three separate incidents over a month all trace back to the same root cause: a tool occasionally returns an amount as a string ("42.00") instead of a number, and the model sometimes mishandles the type when reasoning about it downstream.
+
+Each incident so far has been "fixed" by a slightly different one-off prompt tweak telling the model to "be careful with amount formats." Using this lesson's guardrail principle, propose a better fix.
+
+<Solution>
+
+Three separate prompt tweaks for the same root cause is a sign the diagnosis was done but never converted into an enforced guardrail — prompting can reduce the odds of mishandling a malformed value, but it can't guarantee the model never does, which is exactly why the same bug keeps resurfacing in new shapes.
+
+The fix belongs at the dispatch boundary, the same place Module 3's safety lesson put input validation: normalize or reject a malformed `amount` field *before* the tool result ever reaches the model, so there's no inconsistent format for it to reason about incorrectly in the first place. That closes the failure mode structurally instead of asking the model to remember to be careful every time.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does re-running a failing agent task with the same prompt reliably reproduce the same failure?">
+
+Not reliably — model calls are non-deterministic enough that the same starting prompt can take a different path on a second run. Reproducing a specific failure usually means replaying the exact logged tool call sequence against real (or captured) tool results, not just re-triggering the task from scratch.
+
+</Gotcha>
+
+<Gotcha question="If a replayed tool call produces the same result as the original run, does that rule out a tool bug entirely?">
+
+For that specific call, yes — but only for that call. It confirms the tool behaved consistently for those exact arguments at both points in time; it says nothing about whether the tool has a bug that only surfaces with different arguments or different external state.
+
+</Gotcha>
+
+<Gotcha question="Is a prompt tweak that stops the exact failure you observed a complete fix?">
+
+Not necessarily — a prompt change reduces the probability of a given mistake but doesn't structurally prevent it the way a dispatch-boundary check does. If the same root cause can resurface in a slightly different shape, encode the finding as an enforced guardrail, not only as adjusted wording the model might still fail to follow under different phrasing.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can log an agent's per-turn plan, action, and belief state in a form that supports real debugging, split a failure into a tool-execution cause versus a model-reasoning cause by replaying logged tool calls, and convert a diagnosed failure mode into an enforced guardrail instead of a one-off prompt tweak.
+
+</Checkpoint>
+
+## Summary
+
+A debuggable agent logs its plan, action, result, and belief state every turn — not just its final answer. Replaying a failing run's exact tool call sequence against real tool execution splits "the tool changed or misbehaved" from "the model reasoned incorrectly given what it saw," which is the fork every agent bug eventually needs resolved.
+
+Once a failure mode is diagnosed, encode it as a guardrail at the dispatch boundary — the same place Module 3 put safety checks — rather than trusting a prompt tweak to prevent it from recurring in a new shape.
+
+This closes the module: you can now decide when an agent is the right architecture, design its loop with real stopping conditions, keep its state bounded across a long task, and debug it when it goes wrong. Module 7 turns to a related but distinct problem — keeping an entire *conversation*, not a single bounded agent task, coherent and affordable as it grows across turns and even across sessions.

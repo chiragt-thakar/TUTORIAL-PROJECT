@@ -50,7 +50,7 @@ Security is a set of enforced boundaries, not an OpenAPI padlock icon. Test auth
 
 ## Exercises
 
-<Exercise id="advanced-contract-1">
+<Exercise id="advanced-contract-1" difficulty="easy">
 
 Classify adding an optional response field versus renaming an existing field.
 
@@ -61,7 +61,7 @@ An optional additive field is normally backward-compatible for tolerant clients.
 </Solution>
 </Exercise>
 
-<Exercise id="advanced-contract-2">
+<Exercise id="advanced-contract-2" difficulty="medium">
 
 Why does CORS not protect a curl client from calling your API?
 
@@ -72,7 +72,7 @@ CORS is enforced by browsers for cross-origin frontend scripts. Non-browser clie
 </Solution>
 </Exercise>
 
-<Exercise id="advanced-contract-3">
+<Exercise id="advanced-contract-3" difficulty="hard">
 
 Write three OpenAPI contract assertions.
 
@@ -82,6 +82,54 @@ Assert operation IDs are unique, protected operations declare the bearer scheme,
 
 </Solution>
 </Exercise>
+
+<Exercise id="advanced-contract-4" difficulty="interview">
+
+Interview-style: "Why is CORS insufficient as your only defense against a malicious frontend, and what does `allow_origins=['*']` combined with allowing credentials specifically put at risk?" Answer in three sentences or fewer.
+
+<Solution>
+
+CORS is a browser-enforced policy about which origins' JavaScript may *read* cross-origin responses — it does nothing to stop non-browser clients, or a malicious server, from calling your API directly, so real authorization always has to happen server-side regardless of CORS configuration.
+
+`allow_origins=["*"]` combined with allowing credentials specifically means any website's JavaScript, including a malicious one a logged-in victim happens to visit, can make credentialed requests to your API with the victim's cookies attached by the browser. That combination turns an overly permissive CORS policy into a cross-site request vector against your own authenticated users.
+
+</Solution>
+</Exercise>
+
+<Exercise id="advanced-contract-5" difficulty="real-world">
+
+A `POST /webhooks` endpoint lets users register a URL your server later calls to deliver events. A security report shows the URL was set to a cloud metadata endpoint (`http://169.254.169.254/latest/meta-data/`), and the server dutifully fetched it, leaking instance credentials into the webhook payload the attacker's own server received. Using this lesson, name the vulnerability class and the fix.
+
+<Solution>
+
+This is SSRF (server-side request forgery): the server made an outbound request to a URL fully controlled by an untrusted user, and that URL pointed at an internal-only resource never meant to be reachable from arbitrary user input.
+
+The fix, per this lesson's outbound-URL validation guidance, is to reject internal, link-local, and metadata IP ranges before ever fetching a user-supplied URL, enforce an allowlist of schemes and, where feasible, destination domains, and re-resolve and re-check the destination close to the actual fetch to prevent DNS-rebinding bypasses. A user-supplied URL should never be treated as safe to fetch just because it happens to parse as a valid URL.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does path-based API versioning (`/api/v1`, `/api/v2`) by itself guarantee backward compatibility within a version?">
+
+No — versioning only gives you a place to draw the line; it doesn't enforce what counts as a breaking change within a given version. You still need an explicit policy (contract tests, review discipline) to actually prevent breaking changes from shipping silently inside `v1`.
+
+</Gotcha>
+
+<Gotcha question="Does generating OpenAPI documentation from your route code automatically make the resulting API design good?">
+
+No — generation faithfully reflects whatever naming, structure, and decisions already exist in your code; it doesn't validate or improve them. A poorly named field or an inconsistent status-code choice shows up in the generated document exactly as poorly designed as it was in code, and generated clients inherit that.
+
+</Gotcha>
+
+<Gotcha question="Is CORS a form of server-side authentication or access control?">
+
+No — it's a browser-enforced policy governing whether cross-origin JavaScript can *read* a response, and it has no effect on non-browser clients or on whether a request reaches your server at all. Authentication and authorization must be enforced server-side independent of any CORS configuration.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

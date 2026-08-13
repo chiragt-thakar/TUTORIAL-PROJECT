@@ -1,0 +1,220 @@
+---
+id: genai-persistent-memory
+title: Persistent Memory Across Sessions
+description: Remember facts about a user between separate conversations.
+module: context-and-memory
+order: 3
+estimatedMinutes: 40
+prerequisites: [genai-summarization-memory]
+learningObjectives:
+  - Store durable facts outside the chat transcript
+  - Retrieve relevant memory at the start of a session
+  - Handle memory that becomes stale or wrong
+---
+
+## Two different kinds of "remembering"
+
+Lessons 1 and 2 solved memory *within* one conversation — pinned facts, a rolling summary, recent turns. All of it lives and dies with that conversation's transcript.
+
+Persistent memory is a different problem: facts that need to survive when the conversation ends and a genuinely new one begins tomorrow, next week, or on a different device — "I'm vegetarian," "I work on the payments team," "I already tried restarting the router, don't suggest that again."
+
+That means storage outside the transcript entirely — a small database of facts, keyed by user, that a session reads from at the start and writes to as it learns something durable.
+
+```python title="memory_store.py"
+from dataclasses import dataclass
+import json
+from pathlib import Path
+
+@dataclass
+class MemoryRecord:
+    id: str
+    user_id: str
+    content: str
+    embedding: list[float]
+    created_at: str
+    updated_at: str
+
+class MemoryStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.records: list[MemoryRecord] = self._load()
+
+    def _load(self) -> list[MemoryRecord]:
+        if not self.path.exists():
+            return []
+        return [MemoryRecord(**r) for r in json.loads(self.path.read_text())]
+
+    def save(self) -> None:
+        self.path.write_text(json.dumps([r.__dict__ for r in self.records]))
+```
+
+This is the same shape as Module 4's persistent embedding cache, applied to a different kind of content — durable facts instead of document chunks.
+
+## Retrieving memory: relevance, not everything
+
+The naive approach — inject every stored fact about a user at the start of every session — hits the exact problem Lesson 1 opened this module with: a user with two years of accumulated facts would blow the context budget before the conversation even starts, and most of those facts are irrelevant to today's session anyway.
+
+The fix is retrieval, not dump: embed the session's opening context, and pull only the top-k most relevant stored memories — the same mechanism as Module 5's RAG pipeline, aimed at a memory store instead of a document corpus.
+
+```python title="retrieve_memory.py"
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    return dot / (sum(x * x for x in a) ** 0.5 * sum(y * y for y in b) ** 0.5)
+
+def retrieve_relevant_memories(store: MemoryStore, user_id: str, query: str, top_k: int = 5) -> list[MemoryRecord]:
+    query_vector = embed([query])[0]
+    user_records = [r for r in store.records if r.user_id == user_id]
+    scored = [(r, cosine_similarity(query_vector, r.embedding)) for r in user_records]
+    scored.sort(key=lambda pair: pair[1], reverse=True)
+    return [record for record, _ in scored[:top_k]]
+```
+
+<Concept>
+
+Persistent memory retrieval and RAG retrieval are the same mechanism pointed at different content. This is deliberate composition, not a coincidence — the retrieval discipline you built in Module 4 and 5 (embed, rank, take top-k, apply a relevance floor) generalizes directly to any "find the relevant subset of a larger store" problem, memory included.
+
+</Concept>
+
+## Facts go stale — plan for it from the start
+
+Storing memory as an append-only log of everything ever said eventually accumulates contradictions: "I'm allergic to shellfish" from six months ago, followed by "actually I got tested and I'm not allergic anymore" last week. Retrieval that returns both, with no way to tell which one currently holds, hands the model a contradiction to guess at.
+
+```python title="update_memory.py"
+def upsert_memory(store: MemoryStore, user_id: str, content: str, replaces: str | None = None) -> None:
+    if replaces is not None:
+        store.records = [r for r in store.records if r.id != replaces]  # retire the stale fact
+
+    record = MemoryRecord(
+        id=generate_id(),
+        user_id=user_id,
+        content=content,
+        embedding=embed([content])[0],
+        created_at=now(),
+        updated_at=now(),
+    )
+    store.records.append(record)
+    store.save()
+```
+
+The hard part isn't the mechanism, it's *deciding when* a new statement should retire an old memory versus simply being a new, unrelated fact.
+
+A reasonable default: when a newly stated fact and a retrieved memory are about the same specific topic (detectable via retrieval similarity above a threshold) and appear to conflict, treat the new statement as an update, not an addition — and prefer the most recently confirmed fact when both remain ambiguous.
+
+<WhyItMatters>
+
+A memory system that only ever adds and never resolves conflicts becomes actively harmful over time — the more it "remembers," the more contradictory context it has available to confuse a future session with. Reliability of persistent memory depends on staleness handling at least as much as it depends on storage and retrieval working correctly.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Treating every new statement from the user as either "definitely new" or "definitely an update" without checking. Silently overwriting a fact that was actually still true (a genuinely new, unrelated statement that happened to score high similarity) loses real information just as surely as failing to update a fact that's now false.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Log every memory write with what it replaced, if anything, and why (similarity score, explicit user correction, and so on). When a user says "why does it think I don't eat shellfish anymore, I never said that," this is the only way to reconstruct what happened without guessing.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-persistent-memory-1" difficulty="easy">
+
+A user starts a brand-new conversation with "can you help me plan dinner for tonight?" What should happen before the assistant responds, using this lesson's retrieval approach?
+
+<Solution>
+
+Embed the opening message and retrieve the top-k most relevant stored memories for that user — dietary restrictions or preferences would score highly against a dinner-planning query — and inject only those into context, not the user's entire memory history.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-persistent-memory-2" difficulty="medium">
+
+Explain why injecting every stored memory a user has accumulated, at the start of every session, is a bad default even before considering staleness.
+
+<Solution>
+
+It's the same failure mode Lesson 1 covered: an unbounded amount of content competing for a fixed token budget, most of it irrelevant to the current session's actual topic. A user with two years of accumulated facts would eventually consume most or all of the context window on memory alone, crowding out the conversation itself.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-persistent-memory-3" difficulty="hard">
+
+A user previously stated "I'm on the free tier" (stored as a memory). Today they say "I just upgraded to Pro." Design the logic that decides this should retire the old memory rather than simply add a new one alongside it, using only this lesson's mechanism.
+
+<Solution>
+
+Retrieve memories relevant to the new statement first — "I just upgraded to Pro" would score high similarity against "I'm on the free tier," since both are about the same specific topic (subscription tier).
+
+When a new statement's retrieval against existing memories surfaces a same-topic match above a similarity threshold, treat it as a candidate update rather than an unconditional new fact, and call `upsert_memory` with `replaces` set to the old record's ID instead of just appending.
+
+The key discipline is that this decision is driven by retrieval similarity against *existing* memory, not by any special-casing of "subscription tier" as a category — the same logic should generalize to any topic where a new statement plausibly supersedes an old one.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-persistent-memory-4" difficulty="interview">
+
+Interview-style: "Why does persistent memory retrieval use the same mechanism as RAG document retrieval?" Answer in three sentences or fewer.
+
+<Solution>
+
+Both are instances of the same underlying problem: a store larger than what fits in context, where only a relevant subset should be surfaced for a given query. Embedding the query, ranking stored items by similarity, and taking the top-k is a general retrieval pattern, not something specific to documents — it applies just as directly to a user's accumulated memory records.
+
+Reusing the mechanism means the retrieval discipline already built (relevance floors, ranking, top-k) doesn't need to be reinvented for memory.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-persistent-memory-5" difficulty="real-world">
+
+A user complains that a support assistant confidently told them "you mentioned you're on our Enterprise plan" when they've actually always been on the free tier and never said otherwise. Using only what this lesson covered, describe two different root causes this could have, and how the production logging this lesson recommends would distinguish between them.
+
+<Solution>
+
+One possible root cause is a retrieval failure unrelated to staleness: an unrelated memory (perhaps from a different, similarly-worded conversation, or a retrieval bug) scored high enough similarity to be surfaced and treated as fact, when it was never actually about this user's plan at all.
+
+The other is a stale-update failure: some past interaction incorrectly triggered an `upsert_memory` call that wrote "Enterprise plan" as a memory when it shouldn't have, and that incorrect memory has been getting correctly retrieved and correctly relayed ever since.
+
+The memory-write log this lesson recommends distinguishes them directly: if no memory record for "Enterprise plan" exists in this user's history, the bug is in retrieval or generation, not memory content. If such a record does exist, the log's replaces/similarity/reason data pinpoints exactly which write created it and why — which is only possible because the write was logged in the first place.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Is persistent memory the same thing as the rolling summary from the previous lesson?">
+
+No — a rolling summary is scoped to one conversation and compresses that conversation's own history. Persistent memory is scoped to a user, stored outside any single conversation, and needs to be retrieved fresh at the start of a completely new session that has no rolling summary of its own yet.
+
+</Gotcha>
+
+<Gotcha question="Does injecting a user's full memory history guarantee the assistant has better context than retrieving a relevant subset?">
+
+No — an unbounded memory dump competes with everything else for a fixed context budget, and past a certain size becomes mostly irrelevant noise for whatever the current session is actually about. A well-chosen top-k retrieval, aimed at the session's actual query, typically serves the model better than "everything," not worse.
+
+</Gotcha>
+
+<Gotcha question="Once a memory is stored, does it stay valid until a user explicitly says otherwise?">
+
+Not safely — facts change (preferences, plans, circumstances) without users necessarily framing the update as an explicit correction of a prior statement. A memory system needs a mechanism for detecting likely-stale facts (via retrieval similarity against new statements) rather than assuming every stored memory remains true indefinitely by default.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can separate conversation-scoped memory (pinned facts, rolling summary) from user-scoped persistent memory, retrieve a relevant subset of stored memory using the same mechanism as RAG document retrieval, and design an update path that retires stale facts instead of only ever appending.
+
+</Checkpoint>
+
+## Summary
+
+Persistent memory stores durable facts outside any single conversation's transcript, retrieved at the start of a new session the same way RAG retrieves documents — embed the query, rank by similarity, take the top-k, not everything. Facts go stale; a memory system needs an explicit update path that retires superseded facts, driven by retrieval similarity against new statements, rather than accumulating contradictions forever.
+
+The final lesson in this module steps back to the resource this whole module has been managing implicitly — tokens, and therefore cost and latency — and treats it as a budget to plan for deliberately rather than an afterthought.

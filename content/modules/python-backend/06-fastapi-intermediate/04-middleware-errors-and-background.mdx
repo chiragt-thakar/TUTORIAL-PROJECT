@@ -70,7 +70,7 @@ Middleware ordering matters: the last added layer may wrap earlier layers. Test 
 
 ## Exercises
 
-<Exercise id="api-middleware-1">
+<Exercise id="api-middleware-1" difficulty="easy">
 
 Ensure request duration is logged even when `call_next` raises.
 
@@ -81,27 +81,79 @@ Put the duration log in `finally`, store response-dependent values only when ava
 </Solution>
 </Exercise>
 
-<Exercise id="api-middleware-2">
+<Exercise id="api-middleware-2" difficulty="medium">
 
 Design a safe conflict error body for duplicate project membership.
 
 <Solution>
 
-Return 409 with fields such as `{"code":"member_exists","message":"User is already a project member","request_id":"..."}`. Do not include SQL or stack details.
+Return 409 with fields such as a stable `code` (`"member_exists"`), a safe `message`, and a `request_id`. Do not include SQL or stack details.
 
 </Solution>
 </Exercise>
 
-<Exercise id="api-middleware-3">
+<Exercise id="api-middleware-3" difficulty="hard">
+
+Request-ID middleware sets `response.headers["X-Request-Id"]` on the object returned by `call_next`. A registered exception handler translates a raised `TaskNotFoundError` into a 404 `JSONResponse` further down the stack. Trace whether the request ID header still ends up on that 404 response, and explain why.
+
+<Solution>
+
+Yes, it still ends up there. Exception handler resolution happens *inside* the framework's handling of the request — the exception is raised deep in the route, caught by the registered handler, and converted into a `JSONResponse` before that response object is ever handed back up to your middleware's `call_next` call.
+
+By the time your middleware's line executes, `response` is already the handler's 404 `JSONResponse`, so setting a header on it works exactly the same as it would on a normal 200 response.
+
+This is precisely why request-ID and timing middleware don't need special-case error handling of their own: as long as *something* eventually converts the exception into a `Response` before `call_next` returns, middleware wrapping it downstream sees a normal response object either way.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-middleware-4" difficulty="interview">
+
+Interview-style: "Why should resource-specific business rules stay out of middleware, even though middleware technically has access to the request?" Answer in three sentences or fewer.
+
+<Solution>
+
+Middleware runs unconditionally for every request that reaches the application, before routing has resolved which specific operation and typed dependencies apply — so resource-specific logic placed there either has to re-implement path matching itself or ends up applying rules to routes it was never meant to affect.
+
+It also only has the raw request, not the validated, typed inputs a route's dependencies would already have resolved, so any resource-aware check has to redo work the framework is about to do properly anyway.
+
+Middleware's value is being cheap and universal; the moment it needs to know which specific resource it's looking at, that logic belongs in a dependency or the route itself.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-middleware-5" difficulty="real-world">
 
 Classify thumbnail generation taking 30 seconds with required retries.
 
 <Solution>
 
-Use a durable queued job, not `BackgroundTasks`. Respond with 202 and a job/resource status when asynchronous completion is part of the API.
+Use a durable queued job, not `BackgroundTasks`. Respond with 202 and a job/resource status when asynchronous completion is part of the API — an in-process background task offers no durability if the process restarts mid-generation, and no retry semantics if the generation step fails partway through.
 
 </Solution>
 </Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does `BackgroundTasks` guarantee the task runs if the process crashes right after the response is sent?">
+
+No — it runs in the same process, after the response, with no persistence layer behind it. If the process dies between sending the response and finishing the background task, that work is simply lost, which is exactly why it's only appropriate for small, non-critical, best-effort actions.
+
+</Gotcha>
+
+<Gotcha question="Does middleware only run for the specific routes it seems relevant to?">
+
+No — unless explicitly scoped, middleware wraps every request the application receives, regardless of which route eventually matches. That's what makes it suitable for universal concerns like timing and request IDs, and unsuitable for anything that only makes sense for one resource type.
+
+</Gotcha>
+
+<Gotcha question="If an exception is caught by a registered exception handler, does code in middleware that runs after `call_next` still execute normally?">
+
+Yes — the exception handler converts the exception into a normal `Response` object before `call_next` returns control to the middleware, so any middleware code that runs afterward (adding headers, logging timing) sees a standard response and behaves exactly as it would for a non-error request.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

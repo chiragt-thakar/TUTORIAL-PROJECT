@@ -62,7 +62,7 @@ Use database enums only when their migration trade-offs fit your release process
 
 ## Exercises
 
-<Exercise id="sa-mapping-1">
+<Exercise id="sa-mapping-1" difficulty="easy">
 
 Add a unique project slug of at most 80 characters.
 
@@ -73,7 +73,7 @@ Declare `slug: Mapped[str] = mapped_column(String(80), unique=True, index=True)`
 </Solution>
 </Exercise>
 
-<Exercise id="sa-mapping-2">
+<Exercise id="sa-mapping-2" difficulty="medium">
 
 Why should creation time have a server default even if Python also sets it?
 
@@ -84,7 +84,7 @@ The database protects writes from every client and provides a value when another
 </Solution>
 </Exercise>
 
-<Exercise id="sa-mapping-3">
+<Exercise id="sa-mapping-3" difficulty="hard">
 
 When is a composite uniqueness constraint needed for task position?
 
@@ -94,6 +94,54 @@ If position must be unique only within a project, define uniqueness over `(proje
 
 </Solution>
 </Exercise>
+
+<Exercise id="sa-mapping-4" difficulty="interview">
+
+Interview-style: "Why doesn't a Pydantic required field make a database `NOT NULL` constraint redundant, or vice versa?" Answer in three sentences or fewer.
+
+<Solution>
+
+They protect different entry paths: Pydantic validates the HTTP boundary that requests flowing through this application's handlers pass through, while a database constraint protects every path that can write to the table — migrations, background jobs, another service, a manual admin fix.
+
+Only the database constraint guarantees the invariant unconditionally regardless of which code path attempts the write; Pydantic exists to give fast, specific, client-facing error feedback at the one boundary it actually sees. Neither one is a substitute for the other because neither one covers what the other covers.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-mapping-5" difficulty="real-world">
+
+A "check then insert" uniqueness check ("does a project with this slug already exist? if not, insert") runs entirely at the application layer, with no unique index on the column. Under concurrent request load, two requests occasionally create two projects with the same slug. Diagnose and fix using only this lesson's concepts.
+
+<Solution>
+
+This is a classic race condition: two concurrent requests can both pass the "does not exist" check before either one's insert has committed, since the check and the insert aren't atomic together — so both proceed to insert, producing a duplicate the application-level check never had a real chance to catch.
+
+The fix is exactly this lesson's guidance that the database must be authoritative for durable constraints: add a `unique=True` index on the slug column itself. The second concurrent insert then fails with an `IntegrityError` the application can translate into a domain-specific conflict, instead of silently succeeding and leaving two rows with the same slug.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does a `Mapped[...]` type annotation provide runtime validation the way a Pydantic field does?">
+
+No — `Mapped[...]` is static typing plus ORM runtime configuration (how the attribute maps to a column), not a validation step that runs against incoming values. Nothing about the annotation itself rejects a value at construction time the way a Pydantic model would.
+
+</Gotcha>
+
+<Gotcha question="Does `Base.metadata.create_all()` belong in production application startup?">
+
+No — it's useful for disposable tests or quick tutorials, but production schema history should be owned by a migration tool (Alembic), not created or altered implicitly every time the application starts. Startup-driven schema changes race across replicas and couple application readiness to privileged DDL.
+
+</Gotcha>
+
+<Gotcha question="Does a Pydantic required field at the API boundary guarantee the corresponding database row can never violate that requirement?">
+
+No — it only guarantees that requests validated through that specific Pydantic model satisfy the requirement. Any other write path — a script, a different service, direct database access — bypasses Pydantic entirely; only a database-level constraint protects the invariant unconditionally across every possible writer.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

@@ -1,0 +1,194 @@
+---
+id: lc-fundamentals
+title: "LangChain Fundamentals: Chains, LCEL, and Runnables"
+description: The Runnable interface and the pipe operator that replaces hand-written request/response glue code.
+module: the-langchain-ecosystem
+order: 1
+estimatedMinutes: 50
+prerequisites: []
+learningObjectives:
+  - Explain what a Runnable actually is under the hood
+  - Compose a chain with the | operator instead of manual function calls
+  - Map every LCEL primitive back to code you already wrote by hand
+---
+
+## You already built the thing this module names
+
+Module 2 taught you to build a prompt string, call the model, and parse the result into a Pydantic model — three steps, glued together with plain function calls. That glue code is exactly what LangChain packages into a named abstraction.
+
+Nothing about the underlying mechanics changes here; what changes is that the glue itself becomes a reusable, composable object instead of a sequence of function calls you write fresh every time.
+
+```python title="hand_written.py"
+def summarize(text: str) -> str:
+    prompt = f"Summarize this in one sentence: {text}"
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    return response.choices[0].message.content
+```
+
+```python title="langchain_equivalent.py"
+from langchain_core.prompts import ChatPromptTemplate
+from langchain_openai import ChatOpenAI
+from langchain_core.output_parsers import StrOutputParser
+
+prompt = ChatPromptTemplate.from_template("Summarize this in one sentence: {text}")
+model = ChatOpenAI(model="gpt-4.1-mini")
+parser = StrOutputParser()
+
+chain = prompt | model | parser
+result = chain.invoke({"text": long_document})
+```
+
+Same three steps — render a template, call a model, extract the text — expressed as three composable objects connected with `|` instead of three lines of imperative code. Read this mapping literally: every LCEL primitive corresponds to a piece of code you'd otherwise write by hand.
+
+## The Runnable interface is the whole idea
+
+`ChatPromptTemplate`, `ChatOpenAI`, and `StrOutputParser` all implement the same protocol: `Runnable`. Anything that's a `Runnable` exposes `.invoke()`, `.batch()`, `.stream()`, and their async equivalents (`.ainvoke()`, and so on) — one uniform interface, regardless of whether the underlying thing is a prompt template, a model call, a parser, or a retriever.
+
+```python title="runnable_protocol.py"
+class Runnable(Protocol):
+    def invoke(self, input: Any) -> Any: ...
+    def batch(self, inputs: list[Any]) -> list[Any]: ...
+    def stream(self, input: Any) -> Iterator[Any]: ...
+    # + async equivalents
+```
+
+`|` is Python's `__or__` operator, overloaded on `Runnable` to mean "compose": `a | b` returns a new `Runnable` — a `RunnableSequence` — whose `.invoke(x)` runs `b.invoke(a.invoke(x))`. That's the entire mechanism behind the pipe syntax; nothing more exotic than operator overloading connecting one object's output to the next object's input.
+
+<Concept>
+
+Because every step shares one interface, composing them once gives you `.batch()` and `.stream()` across the *whole chain* for free — you don't write a separate streaming implementation for "render prompt, call model, parse output" the way you would hand-rolling it, because each `Runnable` in the chain already knows how to stream its own piece, and the composed chain propagates that through automatically.
+
+</Concept>
+
+## What LCEL doesn't change
+
+The pipe operator hides the request/response mechanics visually, but it doesn't change them. `model` in the chain above still makes a real network call that costs tokens and can fail; `parser` still can raise if the model's output doesn't match what it expects.
+
+Every failure mode from Module 1–7 — a malformed response, a rate limit, a validation error — still exists underneath the composed chain. LCEL packages the plumbing; it doesn't remove the need to understand what the plumbing does.
+
+<WhyItMatters>
+
+Treating a chain as an opaque black box because "LangChain handles it" is exactly the mistake this module is structured to prevent. You built each of these pieces by hand in earlier modules specifically so a `|`-composed chain reads as "oh, that's the thing I already built" — not as unfamiliar magic to trust blindly.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Debugging a failing multi-step chain by staring at the final exception and guessing which step produced it. A chain that fails mid-pipeline gives you a stack trace through LangChain's internals, not automatically a clear answer to "which of my three steps broke" — that's precisely the gap Lesson 4's tracing tooling closes.
+
+</CommonMistake>
+
+<ProductionNote>
+
+A long `|`-composed chain is easy to write and hard to debug blind. Before shipping anything beyond a two- or three-step chain, have a plan for observing what each step actually received and produced — either explicit logging per step, or the tracing tooling this module builds toward.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="lc-fundamentals-1" difficulty="easy">
+
+Rewrite this hand-written two-step call as an LCEL chain using `|`: build a prompt asking the model to translate `{text}` into French, then extract the string response.
+
+<Solution>
+
+```python
+prompt = ChatPromptTemplate.from_template("Translate this into French: {text}")
+model = ChatOpenAI(model="gpt-4.1-mini")
+parser = StrOutputParser()
+
+chain = prompt | model | parser
+result = chain.invoke({"text": "Good morning"})
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-fundamentals-2" difficulty="medium">
+
+`chain = prompt | model | parser` runs, and the model returns output the parser can't handle, raising an exception inside `parser.invoke(...)`. Did the model call still happen and cost tokens?
+
+<Solution>
+
+Yes — `RunnableSequence.invoke` calls each step in order, so `model.invoke(...)` completes fully (and is billed) before its output is even passed to `parser.invoke(...)`. The parser failing afterward doesn't retroactively undo the model call; the token cost was already incurred by the time the exception is raised.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-fundamentals-3" difficulty="hard">
+
+A teammate calls `chain.invoke(x)` in a loop over 500 items instead of `chain.batch(xs)`. Explain what `.batch()` gets you here that the manual loop doesn't, using only what this lesson covered about the `Runnable` interface.
+
+<Solution>
+
+Because every step in the chain implements the same `Runnable` protocol, `.batch()` is implemented once at each step to handle a list of inputs efficiently — commonly with concurrent execution for I/O-bound steps like the model call — rather than requiring the caller to write their own concurrency logic around 500 sequential `.invoke()` calls.
+
+A manual `for` loop calling `.invoke()` 500 times runs everything sequentially unless the caller adds their own threading or async logic; `.batch()` gets that benefit for free, from the same uniform interface that makes `|` composition possible in the first place.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-fundamentals-4" difficulty="interview">
+
+Interview-style: "What does the `|` operator actually do in `prompt | model | parser`, mechanically?" Answer in three sentences or fewer.
+
+<Solution>
+
+`|` is Python's `__or__` operator, overloaded on the `Runnable` base class to mean composition rather than bitwise OR. `a | b` constructs and returns a new `Runnable` — a `RunnableSequence` — whose own `.invoke(x)` implementation is simply `b.invoke(a.invoke(x))`. There's no special syntax or metaprogramming beyond that: it's operator overloading producing a new object that chains two calls together.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-fundamentals-5" difficulty="real-world">
+
+A production incident report says "the summarization chain returned garbage for 40 minutes before anyone noticed." The on-call engineer's first instinct was to re-read the `ChatPromptTemplate` string looking for a typo, since that's the step they wrote most recently. Using only what this lesson covered, what should have happened first instead, and why?
+
+<Solution>
+
+Before assuming which of the three steps (prompt, model, parser) is at fault, the engineer needs to actually observe what each step received and produced for a failing input — this lesson explicitly warns against guessing which step in a black-box chain is responsible from the final symptom alone.
+
+Re-reading the prompt template is a guess based on recency bias ("I touched that most recently"), not evidence; the actual root cause could just as easily be the model itself degrading, or a parser mismatched to a model output format that changed.
+
+This is exactly the gap this module is building toward closing: without step-level visibility into a chain, diagnosing "which step is garbage" from the outside is guesswork. Lesson 4's tracing tooling is what turns that 40-minute guessing exercise into reading a trace.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does composing steps with `|` remove the underlying network calls, costs, and failure modes of each step?">
+
+No — `|` only changes how the steps are *expressed and connected*, not what they do. A model step inside a chain still makes a real, billable API call that can fail exactly the way it would if you called it directly; LCEL packages the plumbing, it doesn't eliminate it.
+
+</Gotcha>
+
+<Gotcha question="Is `.batch()` just syntactic sugar for looping and calling `.invoke()` repeatedly?">
+
+No — because every `Runnable` implements `.batch()` itself, it's free to handle a list of inputs more efficiently than sequential `.invoke()` calls, commonly through concurrent execution for I/O-bound steps. A manual loop over `.invoke()` gets none of that unless you write the concurrency yourself.
+
+</Gotcha>
+
+<Gotcha question="When a `|`-composed chain fails, does the error message reliably tell you which step failed?">
+
+Not reliably on its own — a chain failing mid-pipeline surfaces a stack trace through LangChain's internals, which isn't automatically the same as a clear answer to "which of my steps produced garbage." Real step-by-step visibility needs either explicit per-step logging or dedicated tracing tooling.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can explain what a `Runnable` is, why `|` composes two of them into a chain, and map every piece of an LCEL chain back to the hand-written request/response code it's standing in for.
+
+</Checkpoint>
+
+## Summary
+
+LCEL's `|` operator composes objects that all implement the same `Runnable` interface (`.invoke`, `.batch`, `.stream`, and async equivalents) into one chain — mechanically, it's operator overloading producing a `RunnableSequence` that calls each step in order.
+
+Every step still does exactly what it would do hand-written: a real model call, a real parse step, with the same costs and failure modes as before; LCEL packages the glue code, it doesn't remove the need to understand what that glue code does.
+
+The next lesson rebuilds the retriever, memory, and tool-calling pieces from Modules 3, 5, and 7 using LangChain's abstractions, so the same "oh, that's what I already built" recognition extends past a simple three-step chain.

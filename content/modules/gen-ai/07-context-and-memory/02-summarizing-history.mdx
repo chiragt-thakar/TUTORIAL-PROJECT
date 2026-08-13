@@ -1,0 +1,188 @@
+---
+id: genai-summarization-memory
+title: Summarizing History
+description: Compress old turns into a summary instead of discarding them.
+module: context-and-memory
+order: 2
+estimatedMinutes: 40
+prerequisites: [genai-context-window]
+learningObjectives:
+  - Summarize a conversation to save tokens
+  - Decide what must never be summarized away
+  - Refresh a summary as a conversation continues
+---
+
+## Compress, don't discard
+
+Module 6's agent loop already did this once, for a single bounded task: fold old turns into one compact synthesis message instead of either resending everything or deleting it outright.
+
+A long-running chat conversation needs the same idea, generalized past "the task ends within a handful of turns" — a support conversation, a coding assistant session, or a personal chatbot can run for hours or days, well past what any fixed `keep_recent` window comfortably holds.
+
+```python title="rolling_summary.py"
+from dataclasses import dataclass, field
+
+@dataclass
+class ConversationState:
+    system_prompt: str
+    pinned_facts: list[str] = field(default_factory=list)   # never summarized away
+    summary: str = ""                                         # rolling compressed history
+    recent: list[dict] = field(default_factory=list)          # verbatim recent turns
+
+def build_messages(state: ConversationState) -> list[dict]:
+    messages = [{"role": "system", "content": state.system_prompt}]
+    if state.pinned_facts:
+        messages.append({"role": "system", "content": "Standing facts:\n" + "\n".join(state.pinned_facts)})
+    if state.summary:
+        messages.append({"role": "system", "content": f"Conversation so far: {state.summary}"})
+    return messages + state.recent
+```
+
+Three tiers, not two: pinned facts that are never eligible for summarization at all, a rolling summary that compresses everything older than the recent window, and the verbatim recent turns themselves. Lesson 1's peanut-allergy example belongs in `pinned_facts`, not in the summarizable pool — that's the direct fix for the failure mode that lesson ended on.
+
+## Refresh, don't re-summarize from scratch
+
+The naive approach — every time the window fills up, take the *entire* conversation so far and summarize it in one call — gets more expensive every single time it runs, because the input to that summarization call keeps growing right along with the conversation it's trying to compress.
+
+The fix is a **rolling** summary: fold only the *newly aged-out* turns into the *existing* summary, one incremental update at a time.
+
+```python title="refresh_summary.py"
+def refresh_summary(state: ConversationState, aged_out: list[dict]) -> None:
+    aged_out_text = "\n".join(f"{m['role']}: {m['content']}" for m in aged_out)
+    prompt = (
+        f"Existing summary: {state.summary or '(none yet)'}\n\n"
+        f"New turns to fold in:\n{aged_out_text}\n\n"
+        "Produce one updated summary that preserves everything important from both."
+    )
+    response = client.chat.completions.create(
+        model="gpt-4.1-mini",
+        messages=[{"role": "user", "content": prompt}],
+    )
+    state.summary = response.choices[0].message.content
+```
+
+Each refresh call's input size is bounded by "the old summary plus one batch of newly-aged-out turns," not "the entire conversation" — so cost per refresh stays roughly constant no matter how long the conversation has already run, which is exactly the property a naive re-summarize-everything approach lacks.
+
+<Concept>
+
+A rolling summary is lossy by construction, and that's an accepted tradeoff, not a defect — each refresh compresses further, so a fact mentioned 200 turns ago has likely been summarized, then summarized again as part of a later summary, and so on. That's precisely why genuinely durable facts need to skip the summary pipeline entirely and live in `pinned_facts` instead.
+
+</Concept>
+
+<WhyItMatters>
+
+Without a rolling update, summarization cost grows with total conversation length even though its whole purpose is controlling cost growth — which defeats the point for exactly the long conversations where summarization matters most. The incremental version is what actually delivers a bounded, predictable cost per turn.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Putting a fact in the rolling summary pool because it "seems important" rather than because it's a standing instruction or safety constraint. Importance alone isn't the test — the test is whether losing precision on it through repeated compression is acceptable. If it isn't, it belongs in `pinned_facts`, full stop, not in a pool that's designed to lose detail over time.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Version and log every summary refresh — the prompt used, the input turns, and the resulting summary. When a user reports "the assistant seems to have lost context," that log is what lets you tell whether the summary itself dropped something important, versus the fact having genuinely never been said.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-summarization-memory-1" difficulty="easy">
+
+A user says "please always respond in bullet points" early in a long conversation. Where does this belong: `pinned_facts`, the rolling `summary`, or `recent`?
+
+<Solution>
+
+`pinned_facts` — it's a standing instruction meant to apply for the rest of the conversation, and the whole point of pinning is that it's never subject to the summary pipeline's lossy compression, no matter how old it gets.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-summarization-memory-2" difficulty="medium">
+
+Explain why `refresh_summary`'s prompt includes the *existing* summary as well as the newly aged-out turns, rather than just the new turns alone.
+
+<Solution>
+
+Summarizing only the new turns would produce a summary of *just that batch*, with no connection to everything summarized in earlier refreshes — effectively discarding the prior summary instead of updating it. Including the existing summary as input lets the model produce one coherent updated summary that preserves both what was already compressed and what's newly aging out.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-summarization-memory-3" difficulty="hard">
+
+A conversation has been refreshed 40 times over several days. A user asks the assistant to recall an exact figure ("what was the exact refund amount we discussed?") that was mentioned once, early on, and has since been folded through several rounds of summarization. Predict the likely failure mode and propose a mitigation within this lesson's scope.
+
+<Solution>
+
+The likely failure is imprecision, not total loss: a specific number mentioned once, early, and then compressed through 40 rounds of summarization is exactly the kind of detail a lossy rolling summary tends to blur or drop, since each refresh re-compresses whatever the previous summary already condensed. The model may recall that a refund was discussed without recalling the exact figure.
+
+The mitigation is recognizing this in advance rather than after the complaint: any fact with this shape — a specific number, a decision, a commitment — that might need exact recall later belongs in `pinned_facts` at the moment it's stated, not left to survive 40 rounds of compression by chance. Summarization is for gist; pinning is for anything that must survive verbatim.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-summarization-memory-4" difficulty="interview">
+
+Interview-style: "Why is a rolling summary cheaper over a long conversation than re-summarizing the entire history every time the context fills up?" Answer in three sentences or fewer.
+
+<Solution>
+
+Re-summarizing everything each time means the summarization call's own input grows with total conversation length, so each refresh gets more expensive than the last — cost compounds rather than staying flat. A rolling summary only ever feeds the previous summary plus the newest batch of aged-out turns into each refresh, so the input size to any single refresh call stays roughly constant regardless of how long the conversation has run.
+
+The savings come from never re-reading history that's already been compressed once.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-summarization-memory-5" difficulty="real-world">
+
+A team's rolling-summary system has no `pinned_facts` tier at all — everything, including explicit user preferences and safety-relevant statements, flows through the same summary pipeline as small talk. After a few weeks in production, users start reporting the assistant "occasionally forgets things it should always remember." Diagnose using this lesson, and describe the fix without redesigning the summarization mechanism itself.
+
+<Solution>
+
+Without a separate always-included tier, standing instructions and safety-relevant facts are subject to the same lossy, repeated compression as everything else — each refresh has some chance of blurring or dropping them, and that risk compounds every time the summary gets refreshed again.
+
+Over weeks of conversations with many refresh cycles, some of those facts are statistically likely to degrade or vanish, which matches the "occasionally forgets" pattern exactly — not every fact, but an accumulating fraction of them.
+
+The fix doesn't require touching the summarization mechanism at all: add the `pinned_facts` tier and route standing instructions and safety statements into it at the moment they're stated, so they're structurally excluded from ever being re-summarized, rather than trying to make the summarization prompt "try harder" to remember them.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does re-summarizing the entire conversation every time the context fills up cost the same amount on every refresh?">
+
+No — its cost grows with total conversation length, since the summarization call's own input is "everything so far" each time. A rolling summary that only feeds in the previous summary plus newly aged-out turns keeps refresh cost roughly constant instead.
+
+</Gotcha>
+
+<Gotcha question="Is a fact that survives one round of summarization guaranteed to survive the next ten?">
+
+No — each refresh re-compresses whatever the previous summary already condensed, so precision tends to degrade further with each additional round, especially for specific details like exact numbers. A fact that must survive verbatim indefinitely needs to be pinned, not left in the summarizable pool and hoped for.
+
+</Gotcha>
+
+<Gotcha question="Is 'this fact seems important' the right test for whether something belongs in `pinned_facts`?">
+
+Not by itself — plenty of things in a conversation are important in the moment without needing to survive verbatim forever. The real test is whether losing precision on it through repeated lossy compression would actually cause a problem; if yes, it's pinned, if the gist is good enough, the rolling summary is the right place for it.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can separate a conversation's state into pinned facts, a rolling summary, and verbatim recent turns, implement an incremental summary refresh that stays roughly constant-cost regardless of conversation length, and identify which facts must be pinned rather than left to summarization.
+
+</Checkpoint>
+
+## Summary
+
+A rolling summary compresses aged-out history incrementally — feeding the previous summary plus new turns into each refresh — so cost stays roughly bounded no matter how long a conversation runs, unlike re-summarizing everything from scratch each time.
+
+Summarization is lossy by design, which is fine for gist but not for anything that must survive verbatim; standing instructions and safety-relevant facts belong in a separate pinned tier that skips the summary pipeline entirely.
+
+The next lesson takes memory a step further: facts that need to survive not just a long conversation, but a completely new one that starts after this one ends.

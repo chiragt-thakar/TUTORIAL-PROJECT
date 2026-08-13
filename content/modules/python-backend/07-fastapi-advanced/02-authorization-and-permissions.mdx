@@ -55,7 +55,7 @@ Log authorization decisions with actor ID, action, resource type/ID, and result�
 
 ## Exercises
 
-<Exercise id="security-rbac-1">
+<Exercise id="security-rbac-1" difficulty="easy">
 
 Why is `if user.role == "admin"` insufficient for project-level management?
 
@@ -66,7 +66,7 @@ It ignores which project the role applies to and encourages global privilege. Lo
 </Solution>
 </Exercise>
 
-<Exercise id="security-rbac-2">
+<Exercise id="security-rbac-2" difficulty="medium">
 
 Design a repository method that prevents cross-project task access.
 
@@ -77,16 +77,73 @@ Accept both `task_id` and an authorized `project_id`/actor constraint and includ
 </Solution>
 </Exercise>
 
-<Exercise id="security-rbac-3">
+<Exercise id="security-rbac-3" difficulty="hard">
 
-Choose 403 or 404 for an authenticated user requesting another tenant's task.
+The authorization matrix marks "Delete Task" as conditional for Manager. Design the application-service check that implements "conditional" correctly for the concrete rule: a Manager may delete tasks in a project they manage, but not tasks in a project they don't.
 
 <Solution>
 
-Use the application's documented concealment policy—commonly 404—to avoid confirming existence. Apply it consistently; do not reveal a different message or timing path.
+```python
+async def delete(self, task_id: TaskId, *, actor: Actor) -> None:
+    task = await self.tasks.require(task_id)
+    membership = await self.memberships.find(task.project_id, actor.id)
+    if membership is None or not membership.can_delete_tasks:
+        raise ForbiddenError("task.delete")
+    await self.tasks.delete(task_id)
+```
+
+"Conditional" resolves to a concrete per-project membership flag (`can_delete_tasks`), not a static per-role boolean — the same actor can be permitted to delete in one project and denied in another, because the check loads membership scoped to *this task's specific project*, not the actor's role in the abstract.
 
 </Solution>
 </Exercise>
+
+<Exercise id="security-rbac-4" difficulty="interview">
+
+Interview-style: "What does 'deny by default' mean in an authorization system, and why is it safer than the reverse?" Answer in three sentences or fewer.
+
+<Solution>
+
+It means every action starts unauthorized unless a specific check explicitly grants it — code has to actively look up and confirm permission before allowing access, rather than assuming access is fine unless some denial condition is met.
+
+It's safer because it determines which direction a *bug* fails in: a missing or broken check in a deny-by-default system fails closed, denying access it maybe should have granted, while the same gap in an allow-by-default system fails open, granting access it should have denied. One of those failure modes is an availability annoyance; the other is a security breach.
+
+</Solution>
+</Exercise>
+
+<Exercise id="security-rbac-5" difficulty="real-world">
+
+During a pentest, a tester discovers they can distinguish "task exists but I'm not authorized to see it" from "task doesn't exist at all" — both endpoints return 404, but one responds measurably faster and with a subtly different error body. Using this lesson's concealment policy, diagnose and fix.
+
+<Solution>
+
+Matching the status code alone isn't sufficient concealment if the two code paths that produce it are actually different — a genuine not-found returning quickly from a simple existence check, versus an authorization denial that does more work (loading the resource, checking membership) before arriving at the same 404, leaks the distinction through timing even when the body and status look identical.
+
+The fix is making both cases converge on one code path as early as possible: the repository query itself should be scoped by both the resource ID and the actor's visible scope, so an unauthorized resource and a genuinely nonexistent one return the identical "not found" result — same timing profile, same body, same status — because the query never distinguished them in the first place.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does checking a user's global role name capture per-project authorization correctly?">
+
+No — a global role like `"admin"` says nothing about which specific project or resource the actor is acting on. Authorization needs to load the actor's membership or permission scoped to the *specific* resource in question, not just check an abstract role label.
+
+</Gotcha>
+
+<Gotcha question="Does returning 404 instead of 403 automatically guarantee no information about cross-tenant resources leaks?">
+
+No — matching status codes alone can still leak through differences in response timing, body content, or headers between the "genuinely not found" and "exists but denied" code paths. True concealment requires both cases to converge on the same code path, not just the same final status number.
+
+</Gotcha>
+
+<Gotcha question="Is enforcing authorization once at the HTTP dependency layer sufficient for the whole application?">
+
+No — a dependency-only check protects HTTP requests specifically, but background jobs, scripts, and any other entry point that calls the same underlying logic would bypass it entirely. Authorization for a resource-level rule needs to live in the application service, which every entry point shares, not only in the HTTP-specific layer.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

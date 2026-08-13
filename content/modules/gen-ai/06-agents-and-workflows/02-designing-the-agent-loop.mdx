@@ -1,0 +1,237 @@
+---
+id: genai-agent-loop-design
+title: Designing the Agent Loop
+description: Plan, act, observe, repeat — with a stopping condition that actually stops.
+module: agents-and-workflows
+order: 2
+estimatedMinutes: 40
+prerequisites: [genai-agent-vs-chain]
+learningObjectives:
+  - Implement a plan/act/observe loop
+  - Cap steps and cost per task
+  - Detect and break out of repetition loops
+---
+
+## Naming the three phases
+
+Module 3's tool loop already has three phases happening every turn, just without labels: the model reads the conversation and decides what to do (**plan**), your code executes that decision (**act**), and the result gets appended back into the conversation for the model to read next turn (**observe**).
+
+"Plan, act, observe, repeat" isn't new mechanics — it's a name for the loop you already wrote, useful because it gives each phase a place to attach the guardrails a real agent needs.
+
+```python title="agent_loop.py"
+def run_agent(goal: str, tools: list[dict], dispatch, max_turns: int = 8) -> str:
+    messages = [
+        {"role": "system", "content": AGENT_SYSTEM_PROMPT},
+        {"role": "user", "content": goal},
+    ]
+
+    for turn in range(max_turns):
+        response = call_model(messages, tools)          # plan
+        message = response.choices[0].message
+        messages.append(message)
+
+        if not message.tool_calls:
+            return message.content                       # goal achieved
+
+        for call in message.tool_calls:
+            result = dispatch(call)                       # act
+            messages.append({                             # observe
+                "role": "tool",
+                "tool_call_id": call.id,
+                "content": result,
+            })
+
+    return "Stopped: exceeded max turns without reaching a final answer."
+```
+
+The one real addition versus Module 3 is `AGENT_SYSTEM_PROMPT`: a multi-tool agent needs an explicit statement of its goal-completion criteria, not just its tools, because "plan" now means choosing *among several unrelated tools* — including, often, a tool that isn't a side-effecting action at all but a retrieval call.
+
+```python title="system_prompt.py"
+AGENT_SYSTEM_PROMPT = """You are a support-operations agent. You have tools to look up orders,
+check refund eligibility, and search internal documentation. Use only the tools you need —
+do not call a tool "just in case." When you have enough information to answer the user's
+request, respond with a final answer and stop calling tools."""
+```
+
+<Concept>
+
+An agent's toolset can mix action tools (Module 3's `check_order_status`) with retrieval tools (Module 5's RAG search, wrapped as a callable `search_docs(query) -> str`). To the loop, both are just tool calls — dispatched, executed, and observed the same way. This is the composition this track has been building toward: an agent is often a tool-calling loop where one of the tools *is* a RAG pipeline.
+
+</Concept>
+
+## Turns aren't the only budget
+
+Module 3 capped turns. A real agent needs a second, independent budget: **cost**. A turn that calls a cheap tool and a turn that calls an expensive retrieval-and-rerank tool are not equal, and a `max_turns` cap alone can't see that difference — eight turns of a $0.001 tool and eight turns of a $0.05 tool are very different production incidents.
+
+```python title="budgeted_loop.py"
+def run_agent(goal: str, tools: list[dict], dispatch, max_turns: int = 8, max_cost: float = 0.50) -> str:
+    messages = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}, {"role": "user", "content": goal}]
+    spent = 0.0
+    last_signature = None
+
+    for turn in range(max_turns):
+        response = call_model(messages, tools)
+        spent += estimate_cost(response.usage)
+        if spent > max_cost:
+            return "Stopped: exceeded per-task cost budget."
+
+        message = response.choices[0].message
+        messages.append(message)
+        if not message.tool_calls:
+            return message.content
+
+        for call in message.tool_calls:
+            signature = (call.function.name, call.function.arguments)
+            if signature == last_signature:
+                return "Stopped: repeated the same tool call with identical arguments."
+            last_signature = signature
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": dispatch(call)})
+
+    return "Stopped: exceeded max turns without reaching a final answer."
+```
+
+Three independent stopping conditions now guard the loop, and each catches a different failure: `max_turns` catches a task that's taking too many steps, `max_cost` catches a task whose steps are individually expensive, and repetition detection catches a task that isn't making progress at all regardless of cost or turn count.
+
+<WhyItMatters>
+
+None of these three conditions substitutes for another. A task could stay well under `max_turns` while blowing through `max_cost` on a handful of expensive calls, or stay well under budget while looping forever on a cheap tool. Treat them as three separate circuit breakers, not one budget expressed three ways.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Implementing only a turn cap and assuming it also protects cost. It protects worst-case turn count, not worst-case spend — a low-turn-count agent using an expensive tool at every turn can still be a costly incident that a `max_turns=6` cap does nothing to prevent.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Log `spent` and the stopping reason (`max_turns`, `max_cost`, `repetition`, or `completed`) on every run, not just the final answer. Without it, "why did this task fail to complete" becomes a guess instead of a lookup the first time a user reports a stuck agent.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-agent-loop-design-1" difficulty="easy">
+
+In `budgeted_loop.py`, the model calls the same tool with the same arguments on turns 2 and 3. What does the function return, and why doesn't it wait for `max_turns`?
+
+<Solution>
+
+It returns `"Stopped: repeated the same tool call with identical arguments."` right after the second identical call on turn 3, before ever reaching `max_turns` — the repetition check runs on every tool call and exits as soon as `signature == last_signature`, independent of how many turns remain.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-loop-design-2" difficulty="medium">
+
+A teammate sets `max_cost=0.50` but the cost check only runs after `call_model`, using `response.usage`. Explain why the check can't prevent the call that pushes spending over budget — only stop the *next* one.
+
+<Solution>
+
+`estimate_cost(response.usage)` can only be computed from a response that has already happened — the call has already been made and billed by the time `spent` reflects its cost. The check therefore stops the loop from making an *additional* call once the running total is already over budget; it cannot retroactively prevent the call that caused the overage, since that would require knowing the cost before making the request.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-loop-design-3" difficulty="hard">
+
+Extend `budgeted_loop.py` so the repetition check catches a slower loop too: the same tool called with the same arguments twice *within the last four calls*, not just back-to-back.
+
+<Solution>
+
+```python
+from collections import deque
+
+def run_agent(goal: str, tools: list[dict], dispatch, max_turns: int = 8, max_cost: float = 0.50) -> str:
+    messages = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}, {"role": "user", "content": goal}]
+    spent = 0.0
+    recent_calls: deque[tuple[str, str]] = deque(maxlen=4)
+
+    for turn in range(max_turns):
+        response = call_model(messages, tools)
+        spent += estimate_cost(response.usage)
+        if spent > max_cost:
+            return "Stopped: exceeded per-task cost budget."
+
+        message = response.choices[0].message
+        messages.append(message)
+        if not message.tool_calls:
+            return message.content
+
+        for call in message.tool_calls:
+            signature = (call.function.name, call.function.arguments)
+            if signature in recent_calls:
+                return "Stopped: repeated a recent tool call — likely stuck."
+            recent_calls.append(signature)
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": dispatch(call)})
+
+    return "Stopped: exceeded max turns without reaching a final answer."
+```
+
+A bounded `deque` gives an O(1)-append sliding window without unbounded memory growth — the same "bounded state" discipline the next lesson generalizes to the rest of an agent's memory.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-loop-design-4" difficulty="interview">
+
+Interview-style: "Why does an agent need a cost budget in addition to a turn cap?" Answer in three sentences or fewer.
+
+<Solution>
+
+A turn cap bounds how many steps a task can take, but says nothing about how expensive any individual step is — tools vary widely in cost, so a small number of turns can still represent significant spend. A cost budget bounds spend directly, catching the case a turn cap structurally cannot: few turns, each one expensive.
+
+Production agents need both because they guard against different failure shapes — too many steps, and steps that are individually too costly.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-loop-design-5" difficulty="real-world">
+
+An agent handling refund requests is observed, over a week of production logs, stopping on `max_cost` for roughly 2% of tasks — always because it called an expensive `search_similar_cases` tool 3-4 times per task instead of once. Using only what this lesson covered, propose a fix that doesn't just raise `max_cost`.
+
+<Solution>
+
+Raising `max_cost` treats the symptom, not the cause — it would let the same wasteful multi-call pattern keep happening, just at a higher ceiling before the circuit breaker trips. The actual problem is that the agent is calling the same expensive tool multiple times per task without making progress, which is precisely what repetition detection exists to catch.
+
+The fix is checking whether `search_similar_cases` calls in those failing tasks were near-duplicate (same or very similar arguments) and, if so, tightening the repetition check to cover that tool specifically, or making the tool's own result more decisive so the model doesn't feel a need to re-query it.
+
+Only if the calls were *legitimately distinct* (different, necessary queries) would raising the budget be the right lever — and the logs would need to show that to justify it.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does a turn cap also bound how much a task can cost?">
+
+No — turns and cost are independent dimensions. A task within its turn budget can still exceed a cost budget if the tools it calls are expensive, and a task can exceed its turn budget while remaining cheap if every tool call is inexpensive. Cap both separately.
+
+</Gotcha>
+
+<Gotcha question="Can a cost check made after a model call prevent that specific call's cost?">
+
+No — cost is only knowable once the call has completed and returned usage data, so a post-call check can only stop *subsequent* calls once the running total crosses the budget. This is why the budget check happens right after updating `spent`, before deciding whether to continue the loop, not before the call that produced the cost.
+
+</Gotcha>
+
+<Gotcha question="Does exact back-to-back repetition detection catch every stuck-loop pattern?">
+
+No — it only catches immediate, identical repeats. A loop cycling through three or four different-looking calls that never actually make progress will slip past a check that only compares each call to the one directly before it, which is why a sliding window over recent calls (this lesson's hard exercise) catches more than a single-previous-call comparison.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can implement a plan/act/observe loop with an explicit multi-tool system prompt, and you can justify why turn count, cost, and repetition need to be three independent stopping conditions rather than one.
+
+</Checkpoint>
+
+## Summary
+
+Plan, act, observe is a name for the loop Module 3 already built, now handling multiple tools — including retrieval tools composed from Module 5 — driven by a system prompt that states the agent's goal and completion criteria explicitly. A production agent loop needs three independent circuit breakers: max turns, a cost budget, and repetition detection, because each catches a failure shape the other two cannot see.
+
+The next lesson covers what the agent needs to remember across those turns without that memory growing unbounded.

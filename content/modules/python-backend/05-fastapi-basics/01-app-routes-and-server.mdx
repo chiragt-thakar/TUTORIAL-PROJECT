@@ -68,7 +68,7 @@ Use an application factory only when environments or tests truly require multipl
 
 ## Exercises
 
-<Exercise id="api-app-routes-1">
+<Exercise id="api-app-routes-1" difficulty="easy">
 
 Add `GET /` returning the service name and semantic version.
 
@@ -83,27 +83,75 @@ async def root() -> dict[str, str]:
 </Solution>
 </Exercise>
 
-<Exercise id="api-app-routes-2">
+<Exercise id="api-app-routes-2" difficulty="medium">
 
-Explain why `uvicorn src.task_api.main:app` is usually wrong for an installed src-layout package.
+Routes are registered in this order: `/tasks/{task_id}` first, then `/tasks/me`. Predict what happens when a client requests `GET /tasks/me`, then fix it.
 
 <Solution>
 
-`src` is a source directory, not part of the installed package name. Use `task_api.main:app` after installing the project.
+FastAPI matches routes in registration order, so `GET /tasks/me` matches `/tasks/{task_id}` first, with `task_id` bound to the literal string `"me"` — the dedicated `/tasks/me` handler never runs. The fix is to register the static route before the overlapping dynamic one, not to change either handler's body.
 
 </Solution>
 </Exercise>
 
-<Exercise id="api-app-routes-3">
+<Exercise id="api-app-routes-3" difficulty="hard">
 
-A module calls `uvicorn.run(app)` at top level and tests hang during collection. Repair the boundary.
+Explain why `uvicorn src.task_api.main:app` is usually wrong for an installed src-layout package (the layout Module 3 set up), and give the correct import string.
 
 <Solution>
 
-Remove the top-level call and start the server through the CLI. If a script is required, guard it with `if __name__ == "__main__":`.
+`src` is a source directory used to force explicit installs — it is not part of the installed package's import name. Once the project is installed, the importable path is `task_api.main:app`; prefixing it with `src.` looks for a top-level package called `src` that doesn't exist as an installed module.
 
 </Solution>
 </Exercise>
+
+<Exercise id="api-app-routes-4" difficulty="interview">
+
+Interview-style: "When exactly does `@app.get(...)` run, and why does that matter for testing?" Answer in three sentences or fewer.
+
+<Solution>
+
+The decorator runs at import time — when Python executes the module that defines the route, not when a request arrives — and it registers the callable plus its metadata on the app.
+
+That means importing `task_api.main` for any reason, including test collection or a tooling script, re-runs every decorator in that module. Any side effect placed at module level, not just inside a route body, therefore fires during import — which is exactly why import-time code must stay safe to run repeatedly and without a network call.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-app-routes-5" difficulty="real-world">
+
+A teammate adds `uvicorn.run(app)` at the top level of `main.py` so `python main.py` starts the server conveniently. CI now hangs during test collection instead of failing. Diagnose and repair the boundary.
+
+<Solution>
+
+`pytest` imports `main.py` to discover fixtures and routes reachable from it, and importing the module executes every top-level statement — including `uvicorn.run(app)`, which blocks forever serving requests, so collection never returns and CI hangs instead of producing a clean failure.
+
+Remove the top-level call entirely; start the server through the `fastapi dev` or `uvicorn` CLI instead. If a script entry point is genuinely required, guard it with `if __name__ == "__main__":` so the call only executes when the file is run directly, never on import.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does creating `app = FastAPI()` start the server?">
+
+No — it constructs an ASGI callable and nothing more. Nothing listens on a socket until a separate ASGI server, such as Uvicorn, is pointed at that callable and started.
+
+</Gotcha>
+
+<Gotcha question="Does FastAPI pick the most specific matching route automatically, regardless of registration order?">
+
+No — routing is first-match by registration order, not by specificity. A dynamic path registered before a static one that could also match will shadow it, so overlapping static routes must be declared first.
+
+</Gotcha>
+
+<Gotcha question="Is `--reload` safe to leave on in production?">
+
+No — the reloader watches the filesystem and manages extra worker processes purely to speed up local iteration. That overhead and process model are dev-only; production runs a fixed set of worker processes with reload disabled.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

@@ -60,7 +60,7 @@ Use constraints to arbitrate races, then translate a known constraint name to a 
 
 ## Exercises
 
-<Exercise id="sa-state-1">
+<Exercise id="sa-state-1" difficulty="easy">
 
 Choose flush or commit when an audit row needs the new task's generated ID in the same atomic operation.
 
@@ -71,7 +71,7 @@ Flush the task, read its ID, add the audit row, then commit once at the operatio
 </Solution>
 </Exercise>
 
-<Exercise id="sa-state-2">
+<Exercise id="sa-state-2" difficulty="medium">
 
 Why can `refresh()` be required after a database trigger changes a field?
 
@@ -82,7 +82,7 @@ The in-memory object may not know a trigger-computed value unless the dialect re
 </Solution>
 </Exercise>
 
-<Exercise id="sa-state-3">
+<Exercise id="sa-state-3" difficulty="hard">
 
 Handle a duplicate project slug without masking other integrity failures.
 
@@ -92,6 +92,56 @@ Rollback, inspect the database-specific constraint identifier, translate only th
 
 </Solution>
 </Exercise>
+
+<Exercise id="sa-state-4" difficulty="interview">
+
+Interview-style: "After `session.flush()` raises an `IntegrityError`, the database has already rolled back the failed transaction internally. Why does the session still require an explicit `rollback()` call before reuse?" Answer in three sentences or fewer.
+
+<Solution>
+
+The database rolling back only resolves the database's own state; the `Session` object separately maintains its own in-memory bookkeeping — pending objects, its own transactional tracking — that doesn't automatically reset just because the underlying database transaction ended. Until `session.rollback()` is explicitly called, the session considers itself in a failed state and refuses further operations.
+
+The explicit call is what re-synchronizes the session's own state with the fact that the transaction underneath it is gone — it isn't a formality, it's required bookkeeping the database-side rollback can't do on the session's behalf.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-state-5" difficulty="real-world">
+
+A route handler catches an `IntegrityError` from `session.flush()`, logs a warning, and returns a generic 400 — without calling `session.rollback()`. The next operation that reuses this same session raises a confusing, seemingly unrelated error on a completely different statement. Diagnose and fix using this lesson.
+
+<Solution>
+
+This is the common mistake this lesson names directly: catching the integrity error without rolling back leaves the session in a failed transaction state, so every subsequent statement on that same session raises until an explicit rollback happens — regardless of how unrelated that later statement looks to the original failure.
+
+The confusing error is a symptom, not the real cause; the actual cause happened earlier and silently, at the moment the first `IntegrityError` was caught and swallowed without a rollback.
+
+The fix is calling `session.rollback()` inside the `except` block before doing anything else with the session — exactly this lesson's own example, and non-negotiable regardless of whether the handler intends to re-raise, translate, or simply log the original error.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Is it necessary to call `flush()` explicitly before `commit()` to ensure pending changes are actually sent?">
+
+No — `commit()` flushes automatically if there are pending changes, so an explicit `flush()` isn't required just to make commit work. Explicit `flush()` is for when you need something *mid-transaction* — a database-generated ID, or to surface a constraint failure early — before the transaction actually ends.
+
+</Gotcha>
+
+<Gotcha question="Does an object's attribute automatically re-read from the database whenever the underlying row might have changed?">
+
+No — without explicit expiration or a `refresh()` call, an already-loaded attribute keeps its in-memory value regardless of what changes elsewhere in the database. Expiration marks attributes so the *next access* triggers a reload; nothing reloads proactively on its own without that marking (or an explicit refresh) happening first.
+
+</Gotcha>
+
+<Gotcha question="Is catching and logging an `IntegrityError` enough to safely keep using the same session for other operations afterward?">
+
+No — logging alone doesn't clear the session's failed transaction state. Every subsequent statement on that session will raise until `session.rollback()` is called explicitly, regardless of whether the original error was logged, swallowed, or re-raised.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

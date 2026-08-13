@@ -55,8 +55,8 @@ before writing or editing any lesson).
 
 | Track | Status | Modules available | Depth standard |
 |---|---|---|---|
-| `python-backend` | available | 15 / 18 | Modules 1–15 are authored; advanced Modules 16–18 are planned outlines. **The authored core is being retrofitted module by module**, interleaved with new `gen-ai` modules (see "Next up"). Modules 1–4 meet the new standard; Modules 5–15 still use the legacy format until their turn comes up. |
-| `gen-ai` | available | 5 / 14 | Modules 1–5 are authored to the current standard. Modules 6–14 are planned, including LangChain/LangGraph/LangSmith, advanced RAG, multimodal AI, model adaptation, and MCP. |
+| `python-backend` | available | 15 / 18 | Modules 1–15 are authored; advanced Modules 16–18 are planned outlines. **The authored core is being retrofitted module by module**, interleaved with new `gen-ai` modules (see "Next up"). Modules 1–8 meet the new standard; Modules 9–15 still use the legacy format until their turn comes up. |
+| `gen-ai` | available | 8 / 14 | Modules 1–8 are authored to the current standard, including Module 8's LangChain/LangGraph/LangSmith. Modules 9–14 are planned: Evaluation/Safety, the capstone, advanced RAG, multimodal AI, model adaptation, and MCP. |
 | `python-libraries` | planned | 0 / 11 | All 11 modules are planned outlines; Modules 9–11 add SciPy, columnar analytics, and reproducible data workflows. |
 | `ai-ml` | planned | 0 / 15 | All 15 modules are planned outlines, including NLP, vision, time series, ranking, and MLOps extensions. |
 | `ai-ml-maths` | planned | 0 / 10 | All 10 modules are planned outlines, including numerical stability, information theory, graph maths, and advanced optimization. |
@@ -125,12 +125,52 @@ each time a module finishes so the alternation stays on track across sessions.
       separates retrieval failures from generation failures. Assignment: "A Grounded Docs Q&A
       Tool" — cited answers over Module 4's FAQ corpus with a retrieval-accuracy +
       groundedness-rate eval harness. `module.json` status flipped to `"available"`.)
-- [ ] Retrofit `python-backend` Module 5 — `fastapi-basics`
-- [ ] Build `gen-ai` Module 6 — Agents and Workflows
-- [ ] ...(continue this pairing through all 15 Python Backend modules and Gen AI module 7,
-      then **Gen AI Module 8 — The LangChain Ecosystem** (LangChain, LangGraph, LangSmith; see
-      the standing rule above for why it's sequenced there), then Gen AI 9–10, then move on to
-      Python Libraries, AI/ML, and Maths in the same alternating style)
+- [x] Retrofit `python-backend` Module 5 — `fastapi-basics` (all 5 lessons: 5-tier exercises +
+      gotchas added; assignment left as-is, it already met the "real project" bar as the Task
+      API's FastAPI HTTP adapter)
+- [x] Build `gen-ai` Module 6 — Agents and Workflows (4 lessons + assignment, built fresh to the
+      full standard: chains vs. agents, plan/act/observe loop design with turn/cost/repetition
+      stopping conditions, working-state extraction vs. history compression, and debugging via
+      structured per-turn tracing plus dispatch-level guardrails. Assignment: "A Bounded Support
+      Resolution Agent" — extends Module 3's ops assistant with a fourth tool, all three
+      stopping conditions, working-state facts, a replayable trace log, and a refund-amount
+      guardrail at dispatch. `module.json` status flipped to `"available"`.)
+- [x] Retrofit `python-backend` Module 6 — `fastapi-intermediate` (all 5 lessons: 5-tier
+      exercises + gotchas added; assignment left as-is, it already met the "real project" bar
+      as the production-shaped dependency/lifespan/pagination retrofit of the Task API routes)
+- [x] Build `gen-ai` Module 7 — Memory, Context Management, and Long Conversations (4 lessons +
+      assignment, built fresh to the full standard: context-window budgeting and truncation
+      risk, incremental rolling summarization, cross-session persistent memory with
+      similarity-driven staleness handling reusing Module 4/5's retrieval mechanism, and
+      cost/latency budgeting with model routing and caching. Assignment: "A Long-Conversation
+      Memory Manager" — combines token-budgeted truncation, pinned facts, rolling summary,
+      persistent per-user memory with upsert, and per-session cost tracking into one CLI tool.
+      `module.json` status flipped to `"available"`.)
+- [x] Retrofit `python-backend` Module 7 — `fastapi-advanced` (all 5 lessons: 5-tier exercises +
+      gotchas added; assignment left as-is, it already met the "real project" bar as the
+      auth/authorization/uploads/versioning/testing capstone for the Task API)
+- [x] Build `gen-ai` Module 8 — The LangChain Ecosystem (4 lessons + assignment, built fresh to
+      the full standard: the `Runnable`/LCEL interface mapped directly back to Module 2's
+      hand-written request/parse code, retrievers/memory/tool-binding mapped back to Modules
+      3/5/7 with explicit call-outs for what the framework does *not* automate (Module 7's
+      memory policy, Module 6's stopping conditions), LangGraph modeling Module 6's agent loop
+      as an explicit state graph, and LangSmith tracing/eval built on the same `Runnable`
+      interface from Lesson 1. Assignment: "Port Your Hand-Built Agent to LangGraph +
+      LangSmith" — reimplements Module 6's `resolution_agent.py` on LangGraph with tracing
+      wired in and a required written comparison of what the framework bought versus what
+      stayed the developer's responsibility. `module.json` status flipped to `"available"`.)
+- [x] Retrofit `python-backend` Module 8 — `sqlalchemy-core` (all 5 lessons: 5-tier exercises +
+      gotchas added; assignment left as-is, it already met the "real project" bar as the
+      engine/session/unit-of-work foundation the Task API's persistence layer is built on)
+- [ ] Build `gen-ai` Module 9 — Evaluation, Safety, and Guardrails **← start here next session**
+      (4 lessons + assignment, not started: eval sets, LLM-as-judge, input/output guardrails,
+      production failure modes. `module.json` at `content/modules/gen-ai/09-evaluation-safety-guardrails/`
+      already has full lesson/assignment metadata scaffolded — only `.mdx` files are missing.
+      Session paused here on explicit user instruction ("do not start new module") mid-pairing:
+      the Module 8/9 pair is half done — PB retrofit finished, Gen AI build not yet started.)
+- [ ] ...(continue this pairing through all 15 Python Backend modules and Gen AI Module 10 —
+      the capstone, "Shipping a Gen AI Feature" — then move on to Python Libraries, AI/ML, and
+      Maths in the same alternating style)
 
 Gen AI track numbering note: Module 8 "The LangChain Ecosystem" was inserted after this track was
 first scaffolded, which shifted the old Modules 8/9 ("Evaluation, Safety, and Guardrails" and the

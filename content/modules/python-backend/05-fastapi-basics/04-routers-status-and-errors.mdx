@@ -80,7 +80,7 @@ Returning 404 instead of 403 can hide resource existence from unauthorized users
 
 ## Exercises
 
-<Exercise id="api-routers-1">
+<Exercise id="api-routers-1" difficulty="easy">
 
 Create a projects router mounted at `/api/v1/projects` and tagged `projects`.
 
@@ -91,7 +91,7 @@ Define `APIRouter(prefix="/projects", tags=["projects"])`, then include it with 
 </Solution>
 </Exercise>
 
-<Exercise id="api-routers-2">
+<Exercise id="api-routers-2" difficulty="medium">
 
 Choose the status for attempting to add an already-existing project member.
 
@@ -102,16 +102,72 @@ Choose the status for attempting to add an already-existing project member.
 </Solution>
 </Exercise>
 
-<Exercise id="api-routers-3">
+<Exercise id="api-routers-3" difficulty="hard">
 
-Move task-not-found translation out of three route functions.
+Every route on the projects router must require an authenticated actor. Declare that once at the router level instead of repeating a dependency on every route function.
 
 <Solution>
 
-Define an application exception handler that maps `TaskNotFoundError` to a consistent 404 payload, register it once, and let routes call the service normally.
+```python
+router = APIRouter(
+    prefix="/projects",
+    tags=["projects"],
+    dependencies=[Depends(require_actor)],
+)
+```
+
+`APIRouter` accepts a `dependencies` list that applies to every route included on that router, the same way `prefix` and `tags` apply router-wide. Individual routes can still add further dependencies of their own; they inherit this one without restating it.
 
 </Solution>
 </Exercise>
+
+<Exercise id="api-routers-4" difficulty="interview">
+
+Interview-style: "A caller is authenticated but not authorized to view a specific project. Should the endpoint return 404 or 403?" Answer in three sentences or fewer.
+
+<Solution>
+
+Both are defensible, but they express different security policies, not different bugs — 403 confirms the resource exists and access was denied, while 404 hides its existence entirely from unauthorized callers. Which one is correct depends on whether resource existence itself is sensitive information for that domain (a private repository's existence, for example, is often treated as sensitive).
+
+Whichever choice is made, it needs to be a deliberate, consistently-applied policy rather than whatever a given route happens to raise.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-routers-5" difficulty="real-world">
+
+Three separate route functions each catch `TaskNotFoundError` and raise their own `HTTPException(404, ...)`, and a fourth route added last sprint forgot to — it leaks a raw 500 instead. Fix the duplication and the gap in one change.
+
+<Solution>
+
+Define one application-level exception handler that maps `TaskNotFoundError` to a consistent 404 payload, and register it once with `app.add_exception_handler` (or `@app.exception_handler`). Remove the per-route `try`/`except`/`raise HTTPException` blocks entirely — routes call the service and let the exception propagate.
+
+This closes today's gap and every future one: a new route that forgets to handle the exception now gets the correct 404 automatically instead of a raw 500, because the translation lives in exactly one place instead of being copy-pasted per route.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Is an `APIRouter` a separate mini-application with its own middleware and lifespan?">
+
+No — it's purely an organizational and metadata-grouping tool. Prefix, tags, dependencies, and response metadata declared on a router get merged into the one application it's included into; there's no separate app boundary, request pipeline, or lifespan to reason about.
+
+</Gotcha>
+
+<Gotcha question="Does returning HTTP 200 with an error-shaped JSON body communicate failure correctly?">
+
+No — monitoring systems, HTTP clients, caches, and retry policies all key off the status code, independent of body contents. A 200 status tells every layer below your application code that the request succeeded, regardless of what the JSON says.
+
+</Gotcha>
+
+<Gotcha question="Does raising the same domain exception from two different routes guarantee they produce the same HTTP response?">
+
+Only if the translation is centralized. If each route independently catches the exception and builds its own `HTTPException`, they will drift — different status codes, different detail strings — the moment one route gets updated and the others don't. A single registered exception handler is what guarantees consistency.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

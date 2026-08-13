@@ -1,0 +1,220 @@
+---
+id: genai-context-memory-assignment
+title: "Assignment: A Long-Conversation Memory Manager"
+description: Build a conversation manager with token-budgeted truncation, pinned facts, rolling summarization, cross-session persistent memory with staleness handling, and cost tracking.
+module: context-and-memory
+order: 5
+estimatedMinutes: 70
+prerequisites: [genai-cost-latency]
+learningObjectives:
+  - Combine truncation, summarization, and persistent memory into one system
+  - Retrieve relevant cross-session memory at the start of a new conversation
+  - Track and report token cost per session
+---
+
+## Scenario
+
+Every lesson in this module built one layer of the same problem: keeping a conversation coherent and affordable as it grows, and keeping a user's facts available across separate conversations entirely. This assignment assembles all four layers — budget-checked truncation, pinned facts, rolling summarization, and persistent cross-session memory — into one manager a real long-running assistant would actually run on.
+
+<Assignment id="genai-context-memory-assignment-work">
+
+## Requirements
+
+Build `memory_manager.py`, invoked as `python memory_manager.py <user_id> "message"` per turn (state persists to disk between invocations), that:
+
+- Maintains per-conversation state: a system prompt, `pinned_facts`, a rolling `summary`, and `recent` verbatim turns — the three-tier model from Lesson 2.
+- Checks the estimated token budget before every model call (Lesson 1's heuristic) and, when the budget would be exceeded, moves the oldest `recent` turns into the rolling summary via an incremental refresh (Lesson 2) rather than a from-scratch resummarization.
+- Persists durable facts per user in a `MemoryStore` (Lesson 3), separate from any single conversation, keyed by `user_id`.
+- At the start of a brand-new conversation (no existing `recent`/`summary` state for this session), retrieves the top-k most relevant persistent memories for the user given their opening message, and injects them as context.
+- Detects when a new user statement plausibly supersedes an existing stored memory (via retrieval similarity above a threshold) and upserts rather than blindly appending a duplicate/conflicting fact.
+- Tracks and prints cumulative estimated token cost for the session so far after every turn.
+
+```text
+memory_manager.py
+  MemoryRecord, MemoryStore        -- persistent per-user memory (Lesson 3)
+  ConversationState                -- pinned_facts, summary, recent (Lesson 2)
+  estimate_tokens, fits_budget     -- token budget check (Lesson 1)
+  refresh_summary                  -- incremental rolling summary update (Lesson 2)
+  retrieve_relevant_memories       -- top-k semantic retrieval (Lesson 3)
+  upsert_memory                    -- conflict-aware memory write (Lesson 3)
+  estimate_session_cost            -- cumulative cost tracking (Lesson 4)
+  main()                           -- CLI: load state, handle one turn, persist state
+```
+
+## Acceptance criteria
+
+1. A first message in a new session for a user with prior stored memories retrieves and injects the top-k relevant ones — verifiable by inspecting what's sent to the model, not just the reply text.
+2. Once `recent` accumulates enough estimated tokens to approach the budget, the oldest turns move into `summary` via `refresh_summary`, and `recent` shrinks — not a hard truncation that discards them.
+3. A fact stated early in a conversation that's later explicitly contradicted (e.g., "I'm on the free tier" → "I upgraded to Pro") results in the old memory being replaced via `upsert_memory`, not duplicated alongside it.
+4. `pinned_facts` are never subject to `refresh_summary` — they remain present verbatim in every turn's context regardless of conversation length.
+5. After each turn, cumulative estimated cost for the session prints, and it increases turn over turn.
+6. State persists across separate invocations of the script for the same `user_id` (a genuinely new process run continues the same conversation and has access to prior sessions' persisted memory).
+
+### Stretch goals
+
+Add a `--new-session` flag that starts a fresh conversation (empty `recent`/`summary`) while still retrieving the user's persistent memory. Add semantic caching (Lesson 4) for identical or near-identical opening questions across different users where the answer is genuinely generic. Log every truncation, summary refresh, and memory upsert to a separate audit file, per the production notes in Lessons 1–3.
+
+<Solution>
+
+The solution's central discipline is layering: token budget checks decide *when* to act, and three genuinely separate storage tiers — `pinned_facts`, `summary`, and the persistent `MemoryStore` — decide *what happens* to content that ages out, each with different survivability guarantees.
+
+```python
+import hashlib
+import json
+import sys
+import time
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from openai import OpenAI
+
+client = OpenAI()
+STATE_DIR = Path("conversation_state")
+STATE_DIR.mkdir(exist_ok=True)
+MEMORY_PATH = Path("memory_store.json")
+
+PRICE_IN, PRICE_OUT = 0.15, 0.60  # per 1M tokens
+
+
+def estimate_tokens(text: str) -> int:
+    return len(text) // 4
+
+
+def embed(texts: list[str]) -> list[list[float]]:
+    response = client.embeddings.create(model="text-embedding-3-small", input=texts)
+    return [item.embedding for item in response.data]
+
+
+def cosine_similarity(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    return dot / (sum(x * x for x in a) ** 0.5 * sum(y * y for y in b) ** 0.5)
+
+
+@dataclass
+class MemoryRecord:
+    id: str
+    user_id: str
+    content: str
+    embedding: list[float]
+    updated_at: float
+
+
+class MemoryStore:
+    def __init__(self, path: Path) -> None:
+        self.path = path
+        self.records = [MemoryRecord(**r) for r in json.loads(path.read_text())] if path.exists() else []
+
+    def save(self) -> None:
+        self.path.write_text(json.dumps([r.__dict__ for r in self.records]))
+
+    def retrieve(self, user_id: str, query: str, top_k: int = 3, min_score: float = 0.3) -> list[MemoryRecord]:
+        query_vector = embed([query])[0]
+        scored = [
+            (r, cosine_similarity(query_vector, r.embedding))
+            for r in self.records if r.user_id == user_id
+        ]
+        scored.sort(key=lambda pair: pair[1], reverse=True)
+        return [r for r, score in scored[:top_k] if score >= min_score]
+
+    def upsert(self, user_id: str, content: str, similarity_threshold: float = 0.75) -> None:
+        vector = embed([content])[0]
+        for existing in [r for r in self.records if r.user_id == user_id]:
+            if cosine_similarity(vector, existing.embedding) >= similarity_threshold:
+                self.records.remove(existing)  # same-topic match: retire the stale version
+                break
+        self.records.append(MemoryRecord(
+            id=hashlib.sha256(f"{user_id}{content}{time.time()}".encode()).hexdigest()[:12],
+            user_id=user_id, content=content, embedding=vector, updated_at=time.time(),
+        ))
+        self.save()
+
+
+@dataclass
+class ConversationState:
+    user_id: str
+    system_prompt: str = "You are a helpful, consistent long-term assistant."
+    pinned_facts: list[str] = field(default_factory=list)
+    summary: str = ""
+    recent: list[dict] = field(default_factory=list)
+    cost_spent: float = 0.0
+
+
+def load_state(user_id: str) -> ConversationState:
+    path = STATE_DIR / f"{user_id}.json"
+    if not path.exists():
+        return ConversationState(user_id=user_id)
+    data = json.loads(path.read_text())
+    return ConversationState(**data)
+
+
+def save_state(state: ConversationState) -> None:
+    (STATE_DIR / f"{state.user_id}.json").write_text(json.dumps(state.__dict__))
+
+
+def build_messages(state: ConversationState, retrieved: list[MemoryRecord]) -> list[dict]:
+    messages = [{"role": "system", "content": state.system_prompt}]
+    if state.pinned_facts:
+        messages.append({"role": "system", "content": "Standing facts:\n" + "\n".join(state.pinned_facts)})
+    if retrieved:
+        messages.append({"role": "system", "content": "Relevant memory:\n" + "\n".join(r.content for r in retrieved)})
+    if state.summary:
+        messages.append({"role": "system", "content": f"Earlier in this conversation: {state.summary}"})
+    return messages + state.recent
+
+
+def refresh_summary(state: ConversationState, aged_out: list[dict]) -> None:
+    aged_text = "\n".join(f"{m['role']}: {m['content']}" for m in aged_out)
+    prompt = f"Existing summary: {state.summary or '(none)'}\n\nNew turns:\n{aged_text}\n\nProduce one updated summary."
+    response = client.chat.completions.create(model="gpt-4.1-mini", messages=[{"role": "user", "content": prompt}])
+    state.cost_spent += estimate_tokens(prompt + response.choices[0].message.content) * PRICE_IN / 1_000_000
+    state.summary = response.choices[0].message.content
+
+
+def enforce_budget(state: ConversationState, max_context: int = 8_000, reserve: int = 1_000) -> None:
+    while estimate_tokens(state.summary + str(state.recent)) > max_context - reserve and len(state.recent) > 2:
+        aged_out = state.recent[:2]
+        state.recent = state.recent[2:]
+        refresh_summary(state, aged_out)
+
+
+def handle_turn(user_id: str, message: str, memory: MemoryStore) -> str:
+    state = load_state(user_id)
+    is_new_session = not state.recent and not state.summary
+    retrieved = memory.retrieve(user_id, message) if is_new_session else []
+
+    state.recent.append({"role": "user", "content": message})
+    enforce_budget(state)
+
+    messages = build_messages(state, retrieved)
+    response = client.chat.completions.create(model="gpt-4.1-mini", messages=messages)
+    reply = response.choices[0].message.content
+    state.cost_spent += (response.usage.prompt_tokens * PRICE_IN + response.usage.completion_tokens * PRICE_OUT) / 1_000_000
+
+    state.recent.append({"role": "assistant", "content": reply})
+    memory.upsert(user_id, f"User said: {message}")
+    save_state(state)
+
+    print(f"[cost] session total so far: ${state.cost_spent:.6f}", file=sys.stderr)
+    return reply
+
+
+def main() -> None:
+    if len(sys.argv) < 3:
+        print("Usage: python memory_manager.py <user_id> \"message\"")
+        return
+    memory = MemoryStore(MEMORY_PATH)
+    print(handle_turn(sys.argv[1], sys.argv[2], memory))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+The one detail worth calling out: `is_new_session` is checked *before* the current message is appended to `recent`, and persistent-memory retrieval only runs in that branch — an established conversation with existing `recent`/`summary` state already has its own context and doesn't need cross-session memory re-injected on every single turn.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+This layered memory model — pinned facts, rolling summary, persistent cross-session store, all under an explicit cost budget — is exactly what Module 8's LangChain memory abstractions automate the bookkeeping for, once you already understand what each layer is protecting against. The Module 10 capstone runs a version of this manager behind a real chat endpoint with concurrent users, where the cost-tracking discipline from this assignment becomes a production budget alert instead of a printed number.

@@ -74,7 +74,7 @@ Keep transactions short and free of remote network calls when possible. Waiting 
 
 ## Exercises
 
-<Exercise id="sa-session-1">
+<Exercise id="sa-session-1" difficulty="easy">
 
 Why should “create task and audit event” use one session/transaction?
 
@@ -85,7 +85,7 @@ Both changes represent one business outcome. One transaction ensures either both
 </Solution>
 </Exercise>
 
-<Exercise id="sa-session-2">
+<Exercise id="sa-session-2" difficulty="medium">
 
 Is the identity map proof that no second SELECT will run for any repeated query?
 
@@ -96,7 +96,7 @@ No. Primary-key `get` can reuse identity, but selects generally execute to deter
 </Solution>
 </Exercise>
 
-<Exercise id="sa-session-3">
+<Exercise id="sa-session-3" difficulty="hard">
 
 Place an outbound email API call relative to the database transaction.
 
@@ -106,6 +106,58 @@ Persist an outbox event in the transaction, commit, then deliver asynchronously.
 
 </Solution>
 </Exercise>
+
+<Exercise id="sa-session-4" difficulty="interview">
+
+Interview-style: "Why can't a `Session` be shared across concurrent requests, even though a database connection pool is designed to be shared?" Answer in three sentences or fewer.
+
+<Solution>
+
+A `Session` is stateful — it tracks pending changes, an identity map, and one specific in-progress transaction — none of which are safe to touch from more than one request at once, and SQLAlchemy explicitly documents it as not thread-safe.
+
+A connection pool, by contrast, is designed exactly for sharing: it hands out one connection per checkout and reclaims it afterward, with no cross-request state living inside the pool object itself.
+
+The pool manages a shared *resource*; the session tracks request-specific *state*, and only one of those two things is safe to reuse concurrently.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-session-5" difficulty="real-world">
+
+A singleton repository is implemented with `self.session = SessionFactory()` created once at application startup and reused for every request. After a few hours in production, unrelated requests start seeing each other's uncommitted or stale data, and the app eventually throws errors about a session already being in a failed transaction state. Diagnose using this lesson.
+
+<Solution>
+
+This is exactly the common mistake this lesson names: storing a session in a singleton shares identity-map state and transaction state across every request that touches it, since a session is stateful and not thread-safe.
+
+One request's failed flush leaves the session unusable until an explicit rollback — and if other concurrent requests are mid-use of that same shared session when it happens, they inherit the failure too, alongside identity-map entries that may reflect data neither of them actually queried themselves.
+
+The fix is creating a new session per request — function-scoped, constructed fresh inside a dependency on every call — never stored on a long-lived singleton that outlives any individual request.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Is the identity map a general-purpose query cache?">
+
+No — it only guarantees that repeated lookups of an *already-loaded* identity (typically via primary-key `get()`) return the same Python object without a new query. Arbitrary `select()` statements still execute against the database every time; the identity map reuses object identity for rows it already has, it doesn't cache query results generally.
+
+</Gotcha>
+
+<Gotcha question="Does `expire_on_commit=False` keep loaded attributes permanently synchronized with the database after commit?">
+
+No — it only means attributes remain accessible without automatically triggering a reload immediately after commit. Those values can still go stale relative to the database over time; `refresh()` or expiration is still needed when current state genuinely matters.
+
+</Gotcha>
+
+<Gotcha question="Does calling `session.get(Model, id)` twice for the same identity guarantee zero SQL was ever executed for it?">
+
+No — the *first* call still executes a query to load that row. Only the *second* and later calls for the same already-loaded identity reuse the identity map and skip an additional query; the identity map avoids repeat queries, not the original one.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

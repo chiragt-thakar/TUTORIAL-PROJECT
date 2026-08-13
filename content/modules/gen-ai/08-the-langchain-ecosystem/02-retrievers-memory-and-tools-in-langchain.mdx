@@ -1,0 +1,205 @@
+---
+id: lc-retrievers-memory-tools
+title: Retrievers, Memory, and Tools in LangChain
+description: Rebuild your Module 5 retriever, Module 7 memory, and Module 3 tool-calling loop using LangChain's abstractions.
+module: the-langchain-ecosystem
+order: 2
+estimatedMinutes: 55
+prerequisites: [lc-fundamentals]
+learningObjectives:
+  - Wrap a vector store as a LangChain retriever
+  - Attach conversation memory to a chain correctly
+  - Bind tools to a model call the LangChain way and compare it to raw function calling
+---
+
+## Retrievers: your Module 5 pipeline, one `Runnable`
+
+Module 5's retrieval step was embed the query, then call `store.search(query_vector, top_k)`. LangChain packages both parts — the embedding call and the similarity search — behind one `Runnable`: a retriever, with `.invoke(query) -> list[Document]` taking a raw string, not a pre-embedded vector.
+
+```python title="langchain_retriever.py"
+from langchain_community.vectorstores import FAISS
+from langchain_openai import OpenAIEmbeddings
+
+vectorstore = FAISS.from_texts(faq_texts, OpenAIEmbeddings())
+retriever = vectorstore.as_retriever(search_kwargs={"k": 3})
+
+docs = retriever.invoke("how do I reset my password")
+```
+
+Two things changed versus your hand-written version, and it's worth naming both precisely. First, `retriever.invoke(query)` folds the embed-then-search sequence into one call — you don't manually call an embedding function before searching.
+
+Second, `FAISS` replaces your hand-rolled `InMemoryVectorStore` and brute-force `cosine_similarity` loop with a real approximate-nearest-neighbor index, which is the part of Module 5 that was always meant to be swapped for a production library once the underlying mechanics were understood.
+
+<Concept>
+
+Because `retriever` is a `Runnable`, it composes with `|` exactly like the prompt/model/parser chain from Lesson 1 — `retriever | format_docs | prompt | model | parser` is a full RAG pipeline expressed the same way a three-step chain was. Nothing new to learn about composition; the same interface just extends to a fourth kind of step.
+
+</Concept>
+
+## Memory: a slot to plug your Module 7 discipline into
+
+`RunnableWithMessageHistory` wraps a chain so that message history is automatically loaded before each call and appended after it, keyed by a session ID you provide.
+
+```python title="langchain_memory.py"
+from langchain_core.runnables.history import RunnableWithMessageHistory
+from langchain_community.chat_message_histories import ChatMessageHistory
+
+session_store: dict[str, ChatMessageHistory] = {}
+
+def get_history(session_id: str) -> ChatMessageHistory:
+    if session_id not in session_store:
+        session_store[session_id] = ChatMessageHistory()
+    return session_store[session_id]
+
+chain_with_history = RunnableWithMessageHistory(
+    chain, get_history, input_messages_key="input", history_messages_key="history"
+)
+chain_with_history.invoke(
+    {"input": "what's my order status?"},
+    config={"configurable": {"session_id": "user-42"}},
+)
+```
+
+Read this carefully: `ChatMessageHistory` by default stores and replays the *entire* message list, unbounded — it does none of Module 7's actual work. No token-budget checking, no truncation, no rolling summarization, no pinned-facts tier, no persistent cross-session store with staleness handling.
+
+`get_history` is a slot the framework gives you to plug memory *implementation* into; the discipline for what happens as that memory grows is still entirely your design responsibility, exactly as Module 7 covered it.
+
+<WhyItMatters>
+
+This is the single most important thing to get right about "LangChain gives you memory": it gives you the wiring — where history is stored and how it's injected — not the policy.
+
+A team that adopts `RunnableWithMessageHistory` and assumes context-window management is now handled will hit Module 7's exact failure modes (unbounded growth, blown context windows, no staleness handling) the first time a conversation runs long, just with an extra layer of framework code between them and the bug.
+
+</WhyItMatters>
+
+## Tools: `@tool` generates the schema you wrote by hand
+
+Module 3's first lesson had you write a JSON schema by hand describing a tool's name, description, and parameters. LangChain's `@tool` decorator generates that same schema automatically, from a function's type hints and docstring.
+
+```python title="langchain_tools.py"
+from langchain_core.tools import tool
+
+@tool
+def check_order_status(order_id: str) -> str:
+    """Look up an order's shipping status by ID."""
+    return look_up_order(order_id)
+
+model_with_tools = model.bind_tools([check_order_status])
+response = model_with_tools.invoke("what's the status of ORD-4471?")
+# response.tool_calls: same conceptual shape as Module 3's message.tool_calls
+```
+
+`bind_tools` is the LangChain equivalent of passing `tools=[...]` to the raw API call from Module 3. Crucially, it stops at exactly the same place your hand-written version did: the model can *request* a tool call, but nothing here executes it or feeds the result back.
+
+`response.tool_calls` still needs to be dispatched and looped through, the same responsibility Module 3's `tool_loop.py` had — LangChain hasn't removed that step, it's just automated schema generation. The next lesson is where the loop itself gets an equivalent.
+
+<CommonMistake>
+
+Assuming `bind_tools` plus a single `.invoke()` call runs a full tool-calling loop. It doesn't — one `.invoke()` call gets you (at most) one round of tool-call requests back. Executing them and continuing the conversation is still your code's job, exactly as it was in Module 3, unless you're using an agent construct built specifically to run that loop (Lesson 3).
+
+</CommonMistake>
+
+<ProductionNote>
+
+Before adopting `RunnableWithMessageHistory` in a long-running product, decide explicitly where Module 7's truncation and summarization logic will live — inside a custom `get_history` implementation, or as a separate layer that runs before the chain is invoked. Don't discover the gap after a conversation blows a context window in production.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="lc-retrievers-memory-tools-1" difficulty="easy">
+
+What does `retriever.invoke("how do I reset my password")` do that Module 5's `store.search(query_vector, top_k)` required a separate step for?
+
+<Solution>
+
+It embeds the raw query string internally before searching — Module 5 required you to call an embedding function first and pass the resulting vector to `search`; `retriever.invoke` takes the raw string and folds both steps into one call.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-retrievers-memory-tools-2" difficulty="medium">
+
+A team adopts `RunnableWithMessageHistory` for a customer support bot and assumes context-window management is now "handled by LangChain." Explain what's missing.
+
+<Solution>
+
+`ChatMessageHistory` stores and replays the entire message list by default with no token-budget checking, truncation, or summarization — it's a storage-and-injection mechanism, not the policy Module 7 built for managing a growing conversation.
+
+The team still needs to implement budget-aware truncation, rolling summarization, and pinned facts themselves, either inside a custom history implementation or as logic that runs around the chain; adopting the wrapper doesn't remove that responsibility, it just changes where the gap would be discovered.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-retrievers-memory-tools-3" difficulty="hard">
+
+`model_with_tools.invoke("what's the status of ORD-4471, and is it eligible for a refund?")` returns a response whose `tool_calls` includes only `check_order_status`, not a refund-eligibility tool, even though one is bound. Using only this lesson's concepts (not the next lesson's), explain why `.invoke()` alone can't resolve this in one call, and what would be needed.
+
+<Solution>
+
+A single `.invoke()` call gets exactly one round of tool-call requests back — the model decided, given only the user's question and no results yet, that checking order status was the first step, and it has no way to know the refund-eligibility answer without seeing that result first.
+
+This is precisely the multi-turn tool-calling loop from Module 3: `check_order_status`'s result needs to be executed, appended back as a new message, and the model called again before it can reasonably request `check_refund_eligibility`. `bind_tools` plus one `.invoke()` gives you the schema and the request mechanism; it doesn't give you the loop — you'd need to write that loop yourself, or use the agent construct the next lesson introduces.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-retrievers-memory-tools-4" difficulty="interview">
+
+Interview-style: "Does `bind_tools` plus `.invoke()` execute a tool-calling loop the way Module 3's hand-written loop did?" Answer in three sentences or fewer.
+
+<Solution>
+
+No — `bind_tools` only handles giving the model a schema and letting it request calls; a single `.invoke()` call returns at most one round of tool-call requests, not a completed multi-turn interaction. Executing those requested calls and feeding results back for further turns is still the caller's responsibility, exactly the loop Module 3 built by hand, unless a dedicated agent construct is doing that looping on your behalf.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-retrievers-memory-tools-5" difficulty="real-world">
+
+A production chatbot using `RunnableWithMessageHistory` starts returning 400 errors from the model API for sessions that have been running for over an hour, with no code changes deployed recently. Using only this lesson's concepts, diagnose the likely cause.
+
+<Solution>
+
+`ChatMessageHistory`'s default behavior stores and replays the full, unbounded message list on every call — with no truncation or summarization built in, a session running for over an hour has likely accumulated enough history to exceed the model's context window, which the API rejects with an error (exactly Module 7's opening failure mode).
+
+Nothing needed to change in the code for this to start happening; it's a threshold being crossed by conversation length, not a regression from a recent deploy.
+
+The fix is exactly what this lesson's `ProductionNote` calls out: implement Module 7's truncation and summarization discipline inside a custom history implementation (or a layer wrapping the chain), since `RunnableWithMessageHistory` was never providing that protection in the first place.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does wrapping a vector store as a LangChain retriever change what's happening mechanically compared to Module 5's hand-written retrieval?">
+
+No — it's still embed the query, then rank stored vectors by similarity, and return the top-k. What changes is the packaging (one `.invoke()` call instead of two explicit steps) and, typically, the index implementation (a real ANN index like FAISS instead of a brute-force loop over all vectors).
+
+</Gotcha>
+
+<Gotcha question="Does `RunnableWithMessageHistory` implement context-window budgeting, truncation, or summarization by default?">
+
+No — its default `ChatMessageHistory` implementation stores and replays the complete message list with no size management at all. All of Module 7's discipline (token budgets, truncation, rolling summaries, pinned facts) has to be built on top of this wiring, not assumed to come with it.
+
+</Gotcha>
+
+<Gotcha question="Does binding tools to a model and calling `.invoke()` once run a complete multi-turn tool-calling interaction?">
+
+No — one `.invoke()` call returns at most one round of requested tool calls. Executing those calls and continuing the conversation with their results is still a loop you (or an agent construct built for this purpose) have to run, the same responsibility Module 3's hand-written loop had.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can wrap a vector store as a LangChain retriever and explain exactly what it automates versus what Module 5 required manually, attach memory to a chain while knowing precisely what discipline still needs to be built on top, and bind tools to a model call while recognizing that the tool-calling loop itself is still your responsibility at this point.
+
+</Checkpoint>
+
+## Summary
+
+LangChain's retriever, memory, and tool-binding abstractions each package one mechanical piece you already built by hand — embed-then-search, message storage-and-injection, and JSON schema generation — without eliminating the design responsibilities behind them: Module 7's memory discipline still has to be built on top of the storage wiring, and the tool-calling loop itself still needs to run somewhere.
+
+The next lesson is where that loop finally gets a first-class equivalent: LangGraph models Module 6's agent loop explicitly as a graph, with the plan/act/observe cycle and its stopping conditions expressed as nodes and edges instead of a hand-written `while` loop.

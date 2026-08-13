@@ -1,0 +1,245 @@
+---
+id: lc-langgraph-agents
+title: "LangGraph: Building Agents as Graphs"
+description: Model the agent loop from Module 6 explicitly as a state graph with nodes, edges, and conditional routing.
+module: the-langchain-ecosystem
+order: 3
+estimatedMinutes: 55
+prerequisites: [lc-retrievers-memory-tools]
+learningObjectives:
+  - Explain why an explicit graph beats an implicit while-loop for a non-trivial agent
+  - Define nodes, edges, and conditional routing in LangGraph
+  - Persist and inspect agent state between graph steps
+---
+
+## Your `while` loop, given nodes and edges
+
+Module 6's agent loop was one function: call the model, check for tool calls, execute them, repeat. That's fine as a single linear cycle.
+
+But the moment a real agent needs more than one kind of branch ("if the tool failed, retry once before giving up," "if confidence is low, route to a human," "if this specific tool was called, skip straight to a summary step"), each new branch becomes another `if` nested inside the same loop body.
+
+The control flow gets harder to read with every addition.
+
+LangGraph's answer is to make each decision point an explicit, named part of the structure instead of a line buried in a function: a **graph**, with **nodes** (units of work) and **edges** (transitions between them, some fixed, some conditional).
+
+```python title="agent_graph.py"
+from typing import TypedDict, Annotated
+from langgraph.graph import StateGraph, END
+from langgraph.graph.message import add_messages
+
+class AgentState(TypedDict):
+    messages: Annotated[list, add_messages]
+
+def call_model(state: AgentState) -> AgentState:
+    response = model_with_tools.invoke(state["messages"])
+    return {"messages": [response]}
+
+def call_tools(state: AgentState) -> AgentState:
+    last_message = state["messages"][-1]
+    results = [execute_tool(call) for call in last_message.tool_calls]
+    return {"messages": results}
+
+def should_continue(state: AgentState) -> str:
+    last_message = state["messages"][-1]
+    return "tools" if last_message.tool_calls else END
+
+graph = StateGraph(AgentState)
+graph.add_node("agent", call_model)
+graph.add_node("tools", call_tools)
+graph.set_entry_point("agent")
+graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+graph.add_edge("tools", "agent")
+
+app = graph.compile()
+result = app.invoke({"messages": [HumanMessage(content="what's the status of ORD-4471?")]})
+```
+
+Map this directly onto Module 6: `call_model` is the **plan** phase, `call_tools` is the **act** phase, the `tools → agent` edge is the **repeat**, and `should_continue` is exactly the line `if not message.tool_calls: return message.content` — just expressed as a named routing function instead of an inline check.
+
+<Concept>
+
+Nothing about *what happens* changed from Module 6's loop — the same plan/act/observe cycle, the same decision about when to stop. What changed is that the decision of "what happens next" is now a first-class, inspectable part of the graph's structure (an edge with a name) instead of implicit control flow inside one function body. That's the entire value proposition: same behavior, more legible and extensible structure once branches multiply.
+
+</Concept>
+
+## State persists and is inspectable between every node
+
+`AgentState` isn't just a parameter passed around — LangGraph tracks it as the graph executes, and with a checkpointer attached, that state is persisted between steps and can be inspected, paused, or resumed at any node boundary.
+
+```python title="checkpointed_graph.py"
+from langgraph.checkpoint.memory import MemorySaver
+
+checkpointer = MemorySaver()
+app = graph.compile(checkpointer=checkpointer)
+
+config = {"configurable": {"thread_id": "conversation-42"}}
+app.invoke({"messages": [HumanMessage(content="check my order")]}, config=config)
+
+# later, inspect exactly what state existed after each node ran
+for state in app.get_state_history(config):
+    print(state.values["messages"])
+```
+
+This is a structural answer to Module 6 Lesson 4's problem: instead of manually printing a JSON line after every turn to build a debuggable trace, the checkpointed state history *is* the trace — every node execution's resulting state is already recorded and queryable, because the framework is tracking it as part of running the graph, not because you added logging.
+
+<WhyItMatters>
+
+Persisted, inspectable state is what makes "why did the agent do that" answerable after the fact without having built custom logging for it. It's also what makes multi-turn conversations across separate invocations possible — a `thread_id` resumes exactly where a prior run left off, state and all.
+
+</WhyItMatters>
+
+## What the graph doesn't give you for free
+
+Compiling a graph doesn't add Module 6's turn cap, cost budget, or repetition detection — those stopping conditions still need to be designed in, the same way Module 7's memory discipline needed to be built on top of `RunnableWithMessageHistory`.
+
+An uncapped `tools → agent → tools → agent` cycle in a compiled graph will run until LangGraph's own `recursion_limit` trips (a blunt safety net, not a designed stopping condition) or until something inside a node raises.
+
+```python title="bounded_graph_state.py"
+class AgentState(TypedDict):
+    messages: Annotated[list, add_messages]
+    turn_count: int
+
+def call_model(state: AgentState) -> AgentState:
+    response = model_with_tools.invoke(state["messages"])
+    return {"messages": [response], "turn_count": state["turn_count"] + 1}
+
+def should_continue(state: AgentState) -> str:
+    if state["turn_count"] >= 8:
+        return END  # Module 6's max_turns, expressed as a graph condition
+    last_message = state["messages"][-1]
+    return "tools" if last_message.tool_calls else END
+```
+
+Adding `turn_count` to the typed state and checking it in `should_continue` is the direct graph equivalent of Module 6's `for turn in range(max_turns)` — the mechanism is different, the discipline is identical, and it still has to be designed in explicitly.
+
+<CommonMistake>
+
+Assuming a compiled LangGraph agent is automatically safe against runaway loops because "the framework handles it." `recursion_limit` exists as a hard ceiling to prevent an actually-infinite graph from hanging forever, but hitting it in production means your own stopping conditions — turn count, cost budget, repetition detection — were never designed into the graph's state and routing logic in the first place.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Before running a LangGraph agent against real traffic, verify explicitly which of Module 6's three stopping conditions (turns, cost, repetition) are represented in the graph's state and conditional edges. `recursion_limit` catching a runaway agent in production is a symptom that this design step was skipped, not a working substitute for it.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="lc-langgraph-agents-1" difficulty="easy">
+
+In `agent_graph.py`, which function corresponds to Module 6's "plan" phase, and which corresponds to "act"?
+
+<Solution>
+
+`call_model` is "plan" — it calls the model to decide what happens next. `call_tools` is "act" — it executes whatever the model decided to request.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-langgraph-agents-2" difficulty="medium">
+
+`should_continue` has a bug: it always returns `"tools"`, even when `last_message.tool_calls` is empty (because `call_tools` is written defensively to handle an empty list). What happens when this graph runs?
+
+<Solution>
+
+The graph never reaches `END` through this path — `agent → tools → agent → tools → ...` cycles indefinitely, since the routing function that's supposed to detect "no more tool calls, we're done" never actually returns `END`. Eventually LangGraph's `recursion_limit` trips and the run fails, but that's the blunt safety net catching a routing bug, not a designed stopping condition working as intended.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-langgraph-agents-3" difficulty="hard">
+
+Extend `bounded_graph_state.py`'s `should_continue` so it also stops (with a distinct message) if the same tool gets called with identical arguments twice in a row — Module 6 Lesson 2's repetition detection, expressed as a graph condition.
+
+<Solution>
+
+```python
+class AgentState(TypedDict):
+    messages: Annotated[list, add_messages]
+    turn_count: int
+    last_call_signature: tuple[str, str] | None
+
+def should_continue(state: AgentState) -> str:
+    if state["turn_count"] >= 8:
+        return END
+    last_message = state["messages"][-1]
+    if not last_message.tool_calls:
+        return END
+    call = last_message.tool_calls[0]
+    signature = (call["name"], str(call["args"]))
+    if signature == state.get("last_call_signature"):
+        return END  # repeated call detected — stop instead of looping
+    return "tools"
+```
+
+The signature needs to be threaded through `call_model`'s return value alongside `messages` and `turn_count` so it's available on the next `should_continue` check — the same "track it in state, check it in the routing function" pattern as the turn counter, just with a different piece of data.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-langgraph-agents-4" difficulty="interview">
+
+Interview-style: "Why does an explicit graph representation beat a single `while` loop for a non-trivial agent?" Answer in three sentences or fewer.
+
+<Solution>
+
+A `while` loop with several branches encodes each decision as an `if` nested inside one function body, which gets harder to read and modify as branches multiply — adding a new path means editing control flow buried inside existing logic.
+
+A graph makes each decision point a named, inspectable part of the structure itself (a node, an edge, a conditional routing function), so branches are additions to the graph's shape rather than edits to existing control flow.
+
+The behavior can be identical; what improves is legibility and how safely the structure can grow.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-langgraph-agents-5" difficulty="real-world">
+
+A team ships a LangGraph-based agent to production without adding a turn counter or cost tracking to its state, reasoning that "LangGraph handles agent loops, that's the whole point of the framework." Three weeks in, a stuck task hits `recursion_limit` after burning several dollars in model calls before failing. Using only this lesson's concepts, explain what went wrong and the fix.
+
+<Solution>
+
+Compiling a graph gives you the *mechanism* for looping (nodes, edges, state persistence) — it does not give you Module 6's *stopping conditions* for free, exactly as memory wiring in Lesson 2 didn't give you Module 7's summarization discipline for free.
+
+`recursion_limit` is a blunt, framework-level ceiling meant to prevent a genuinely infinite graph from hanging forever; it isn't a cost or turn budget, and reaching it after several dollars of model calls means nothing in the graph's routing logic was checking cost or turn count along the way.
+
+The fix is exactly `bounded_graph_state.py`'s pattern: add turn count (and ideally cost) to the typed state, update it in `call_model`, and check it explicitly in `should_continue` — designing the stopping condition into the graph's own logic rather than relying on a safety net that only fires after the damage is already done.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does compiling a LangGraph agent automatically add turn, cost, or repetition limits the way Module 6's hand-written loop had?">
+
+No — those stopping conditions have to be explicitly designed into the graph's state and conditional routing logic, the same discipline Module 6 required. `recursion_limit` is a blunt ceiling that prevents a truly infinite graph from hanging forever; it isn't a substitute for a designed turn cap or cost budget.
+
+</Gotcha>
+
+<Gotcha question="Does an explicit graph representation change what an agent actually does compared to an equivalent hand-written loop?">
+
+No — the behavior can be identical; a correctly built graph and a correctly built loop run the same plan/act/observe cycle with the same stopping logic. What the graph changes is how that logic is structured and how easily new branches can be added without tangling existing control flow.
+
+</Gotcha>
+
+<Gotcha question="Is a checkpointed graph's state history the same thing as the structured per-turn trace logging from Module 6?">
+
+Functionally similar, mechanically different — a checkpointer records state at each node boundary automatically, as a property of how the graph executes, while Module 6's trace required you to explicitly print a log line every turn. Both give you the same debugging capability (see what the agent believed and did at each step); the checkpointer gets it without hand-written logging code.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can express Module 6's plan/act/observe loop as a LangGraph state graph with nodes and conditional edges, explain why an explicit graph scales better than nested `if` branches inside one loop, and identify that turn/cost/repetition stopping conditions still have to be designed into the graph's state rather than assumed to come with it.
+
+</Checkpoint>
+
+## Summary
+
+LangGraph expresses Module 6's agent loop as a graph — nodes for plan and act, a conditional edge for the stopping decision, a fixed edge for the repeat — with checkpointed state giving you inspectable history at every step, largely for free once a checkpointer is attached.
+
+None of this removes the design responsibility for turn caps, cost budgets, or repetition detection: those still have to live explicitly in the graph's state and routing logic, exactly as they did in the hand-written version.
+
+The final lesson closes the loop this whole module has been building toward: LangSmith, which turns "I have to guess which step in my chain or graph failed" into reading an actual trace.

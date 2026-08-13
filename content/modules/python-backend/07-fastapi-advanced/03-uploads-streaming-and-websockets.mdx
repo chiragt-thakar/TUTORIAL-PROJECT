@@ -75,7 +75,7 @@ Define upload quotas, timeouts, connection limits, maximum message size, heartbe
 
 ## Exercises
 
-<Exercise id="advanced-io-1">
+<Exercise id="advanced-io-1" difficulty="easy">
 
 List four validations before persisting an attachment.
 
@@ -86,7 +86,7 @@ Authenticate/authorize, enforce byte limit while reading, validate permitted med
 </Solution>
 </Exercise>
 
-<Exercise id="advanced-io-2">
+<Exercise id="advanced-io-2" difficulty="medium">
 
 Why can `StreamingResponse(iter([huge_bytes]))` still use huge memory?
 
@@ -97,7 +97,7 @@ The entire payload was already materialized as one bytes object. Streaming requi
 </Solution>
 </Exercise>
 
-<Exercise id="advanced-io-3">
+<Exercise id="advanced-io-3" difficulty="hard">
 
 What breaks when WebSocket broadcasts use only an in-process connection dictionary across four workers?
 
@@ -107,6 +107,54 @@ Each worker sees only its own connections, so events reach a subset. Use broker-
 
 </Solution>
 </Exercise>
+
+<Exercise id="advanced-io-4" difficulty="interview">
+
+Interview-style: "What is 'backpressure' for a WebSocket connection, and why can a naive send-everything-immediately implementation cause a production incident?" Answer in three sentences or fewer.
+
+<Solution>
+
+Backpressure is what happens when a receiver — a slow client, a congested network link — can't consume messages as fast as the server is producing them. A naive implementation that just keeps calling `send` without bounding how much unsent data can queue per connection will accumulate that backlog in server memory for every slow client, and at scale, many simultaneously slow clients can exhaust server memory entirely.
+
+The fix is bounding the outgoing queue per connection and deciding deliberately what happens when it fills — drop messages, disconnect the client, or apply flow control — rather than letting it grow without limit.
+
+</Solution>
+</Exercise>
+
+<Exercise id="advanced-io-5" difficulty="real-world">
+
+An hourly CSV export endpoint holds a database transaction open for the entire duration of generating a report streamed to the client — sometimes 6+ minutes for large tenants. During a spike in concurrent report requests, unrelated writes elsewhere in the application start timing out. Using this lesson, diagnose and fix.
+
+<Solution>
+
+A long-held open transaction occupies a connection-pool slot (and potentially locks) for its entire duration, not just the moment it reads data. Several concurrent report requests each holding a transaction open for minutes multiplies pool exhaustion, so unrelated writes that need a connection start queuing and timing out — the export isn't touching the same rows as those writes, but it's starving the shared pool they both depend on.
+
+The fix is exactly what this lesson's streaming section calls out: don't stream directly from a live, long-open transaction. Snapshot the data needed with a short-lived read (or from a replica), write it to object storage or a background job artifact, and have the streaming response serve from that artifact — releasing the database connection almost immediately instead of holding it for the full export duration.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does wrapping data in an iterator automatically make a `StreamingResponse` memory-efficient?">
+
+No — an iterator over an already-fully-materialized object (like one giant bytes blob) still requires that entire blob to exist in memory first. Genuine memory savings require the source itself to produce data incrementally, not just be wrapped in something iterable after the fact.
+
+</Gotcha>
+
+<Gotcha question="Do WebSocket connections held by different worker processes automatically see events broadcast to each other?">
+
+No — each worker process only knows about the connections it personally holds. A user connected to worker A never receives an event broadcast only within worker B's in-process connection registry; multi-instance fan-out requires a shared broker or pub/sub layer that all workers subscribe to.
+
+</Gotcha>
+
+<Gotcha question="Is a client-supplied file extension or declared content type a safe way to determine what an uploaded file actually is?">
+
+No — both are attacker-controlled metadata that can be set to anything regardless of the file's actual bytes. Treat them as untrusted hints at best; validate actual content when security requires knowing what a file really is.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

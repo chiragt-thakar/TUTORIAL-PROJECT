@@ -58,7 +58,18 @@ Interactive docs may reveal sensitive endpoints. They are not an authorization b
 
 ## Exercises
 
-<Exercise id="api-openapi-1">
+<Exercise id="api-openapi-1" difficulty="easy">
+
+Add a stable operation ID for `GET /tasks/{task_id}`.
+
+<Solution>
+
+Pass `operation_id="getTask"` to the route decorator and assert uniqueness in the generated OpenAPI document.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-openapi-2" difficulty="medium">
 
 Find where a 422 response can occur without your operation function running.
 
@@ -69,27 +80,70 @@ Path, query, header, dependency-input, or body validation may fail during FastAP
 </Solution>
 </Exercise>
 
-<Exercise id="api-openapi-2">
+<Exercise id="api-openapi-3" difficulty="hard">
 
-Name two breaking API changes that do not produce a Python type error inside the server.
+`POST /api/v1/projects/{id}/members` returns 500 in production but 201 locally, with identical request payloads. The route has a router-level auth dependency (previous lesson), a validated request body, and a response model. Narrate which lifecycle stage is most likely broken and why the failure would differ between environments.
 
 <Solution>
 
-Examples include renaming a serialization alias, changing 200 to 204, making an optional request field required, removing an enum value, or changing error payload shape.
+Since the request body is validated and the operation clearly starts running (it's not a 422, and locally it succeeds), the failure is downstream of request validation.
+
+Two stages are the prime suspects, both because they're the ones sensitive to environment: a `yield`-based dependency doing environment-specific setup (a database session, a feature-flag client) that behaves differently against production configuration, or response serialization — production data may contain a value shape that never appears in local fixtures and fails validation against the response model.
+
+The discriminating question is whether the failure happens before the operation body runs (dependency resolution) or after it returns (response validation) — checking logs for whether the operation's own logic executed at all pinpoints which one it is.
 
 </Solution>
 </Exercise>
 
-<Exercise id="api-openapi-3">
+<Exercise id="api-openapi-4" difficulty="interview">
 
-Add a stable operation ID for `GET /tasks/{task_id}`.
+Interview-style: "Name two breaking API changes that would not produce a Python type error inside the server." Answer in three sentences or fewer.
 
 <Solution>
 
-Pass `operation_id="getTask"` to the route decorator and assert uniqueness in the generated OpenAPI document.
+Renaming a serialization alias (a field the client sends as `"userId"` now expects `"user_id"`) breaks every existing client without a single type checker complaint, since it's a string literal, not a Python type.
+
+Changing a success status from 200 to 204, or making a previously optional request field required, are both fully valid from the type checker's perspective — the code compiles and runs — but silently break clients that depend on the old contract.
+
+The common thread is that OpenAPI-level contract changes and Python-level type changes are two different surfaces, and passing `mypy` says nothing about the first one.
 
 </Solution>
 </Exercise>
+
+<Exercise id="api-openapi-5" difficulty="real-world">
+
+`/docs` was left enabled in production, and a security researcher used it to discover an internal admin operation nobody intended to advertise externally. Using only what this lesson covers, explain what OpenAPI generation does and doesn't protect, and the fix.
+
+<Solution>
+
+OpenAPI generation and the interactive docs UI only describe what routes exist and their schemas — they are documentation, not an authorization boundary. The admin route was always reachable at its URL; `/docs` didn't create that exposure, it just made it easy to find. Finding it via `/docs` is a discoverability failure, not evidence that the route itself was unprotected or protected.
+
+The fix has two independent parts: the admin route must enforce its own authorization regardless of whether anyone finds it through docs, and separately, `/docs` and `/openapi.json` should be disabled or placed behind auth in production if the policy is that internal operations shouldn't be advertised — relying on obscurity instead of either control is what caused the incident.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does a route passing all its Python type checks guarantee its API contract hasn't changed?">
+
+No — type checking verifies internal Python correctness, not the wire contract. Renaming a JSON alias, changing a status code, or tightening which values are accepted are all contract-breaking changes that a type checker has no way to see, because none of them are Python type errors.
+
+</Gotcha>
+
+<Gotcha question="If a request fails validation, has your operation function's code already run?">
+
+No — parameter and body validation happen during FastAPI's request-parsing stage, strictly before your operation is called. A 422 means your function's body never executed at all; the failure happened one stage earlier.
+
+</Gotcha>
+
+<Gotcha question="Does disabling `/docs` in production remove the need for route-level authorization?">
+
+No — `/docs` only controls discoverability of the API surface, not access to it. Every route still needs its own authorization checks regardless of whether its existence is publicly documented; hiding the docs is a separate, additive precaution, not a substitute.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

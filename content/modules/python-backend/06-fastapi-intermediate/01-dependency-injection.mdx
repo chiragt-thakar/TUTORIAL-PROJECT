@@ -78,7 +78,7 @@ Dependency overrides make testing convenient, but production dependencies should
 
 ## Exercises
 
-<Exercise id="api-di-1">
+<Exercise id="api-di-1" difficulty="easy">
 
 Create an `Annotated` alias for a current user dependency.
 
@@ -91,7 +91,7 @@ CurrentUserDep = Annotated[CurrentUser, Depends(get_current_user)]
 </Solution>
 </Exercise>
 
-<Exercise id="api-di-2">
+<Exercise id="api-di-2" difficulty="medium">
 
 Two dependencies both require the same database session. How many sessions should the default graph create?
 
@@ -102,16 +102,68 @@ One per request because dependency results are cached by default. Both branches 
 </Solution>
 </Exercise>
 
-<Exercise id="api-di-3">
+<Exercise id="api-di-3" difficulty="hard">
 
-Where should a permission dependency stop and service authorization begin?
+A route depends on both `CurrentUserDep` and `Depends(require_task_write)`, and `RequirePermission.__call__` itself takes a `CurrentUserDep` parameter. Does `get_current_user` run once or twice for this request, and why does the answer matter for both correctness and performance?
 
 <Solution>
 
-The dependency may establish identity and coarse permission. Resource ownership and state-dependent rules belong in the application service so every adapter enforces them, not only HTTP.
+Once. FastAPI's per-request dependency caching keys on the dependency callable, so both the route's direct `CurrentUserDep` and `RequirePermission`'s internal one resolve to the same cached result within this request rather than triggering two separate resolutions.
+
+This matters for performance — one token decode instead of two — but it matters more for correctness: without caching, two independent lookups could theoretically observe different state if anything about identity resolution were even slightly time-sensitive. Caching guarantees every consumer of a given dependency within one request sees the exact same object.
 
 </Solution>
 </Exercise>
+
+<Exercise id="api-di-4" difficulty="interview">
+
+Interview-style: "Where should a permission dependency stop and service-layer authorization begin?" Answer in three sentences or fewer.
+
+<Solution>
+
+A dependency is well-suited to establishing identity and coarse, request-shape-independent permission checks — does this user have the `task:write` scope at all. Resource-specific and state-dependent rules — does this user own *this particular* task, is it in a state that allows this action — belong in the application service instead, because that's the layer every adapter (HTTP, a background job, a CLI) shares.
+
+Putting fine-grained authorization only in an HTTP dependency means any non-HTTP entry point silently bypasses it.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-di-5" difficulty="real-world">
+
+Two engineers each independently add `Depends(get_repository)` to their own router file. `get_repository` constructs `InMemoryTaskRepository()` fresh on every call. In staging, a task created through one endpoint doesn't appear when listed through the other. Diagnose using this lesson's caching model, and fix it.
+
+<Solution>
+
+Per-request dependency caching only deduplicates *within* a single request's dependency graph — it does nothing to make a dependency's construction persist *across* requests. Here, `get_repository` builds a brand-new, empty `InMemoryTaskRepository()` every time it's resolved, so the create-request and the list-request each get their own repository instance with no shared state between them.
+
+Caching was never in a position to help, because the actual defect is a construction-scope mismatch, not a caching gap.
+
+The fix is the `CommonMistake` from this lesson: repository construction scope must match state ownership. An in-memory repository meant to represent shared application state needs to be built once — in the lifespan, stored on `app.state`, and injected via a dependency that returns the existing instance — not reconstructed inside the per-request dependency itself.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does FastAPI's per-request dependency caching persist a dependency's result across separate requests?">
+
+No — the cache lives only for the lifetime of one request's dependency graph. A dependency built once and reused by multiple branches *within* that request will share a result; the very next request resolves it fresh from scratch.
+
+</Gotcha>
+
+<Gotcha question="Is FastAPI's dependency injection based on decorator registration or a global container, like some Node frameworks?">
+
+No — it's a graph of plain callables declared directly in function signatures, resolved per-request from those signatures. There's no class registration step, no reflection metadata, and no global container to configure ahead of time.
+
+</Gotcha>
+
+<Gotcha question="Does per-request dependency caching replace `functools.lru_cache` for immutable application configuration?">
+
+No — they solve different scoping problems. Per-request caching only dedupes within one request's graph and resets every request; `lru_cache` (or an application-scoped singleton built in lifespan) is what actually persists a value across the life of the process.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

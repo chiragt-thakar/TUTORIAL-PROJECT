@@ -64,7 +64,7 @@ Inspect emitted SQL and query plans. Fluent Python expressions can still generat
 
 ## Exercises
 
-<Exercise id="sa-core-orm-1">
+<Exercise id="sa-core-orm-1" difficulty="easy">
 
 Select only task IDs and titles for one project.
 
@@ -78,7 +78,7 @@ rows = session.execute(stmt).all()
 </Solution>
 </Exercise>
 
-<Exercise id="sa-core-orm-2">
+<Exercise id="sa-core-orm-2" difficulty="medium">
 
 Choose Core-style projection or ORM entities for a read-only dashboard count by status.
 
@@ -89,7 +89,7 @@ Use a Core/ORM SQL projection with `GROUP BY`; entity identity and unit-of-work 
 </Solution>
 </Exercise>
 
-<Exercise id="sa-core-orm-3">
+<Exercise id="sa-core-orm-3" difficulty="hard">
 
 Why might bulk update violate domain behavior?
 
@@ -99,6 +99,56 @@ It changes rows without calling entity methods or producing per-entity events. U
 
 </Solution>
 </Exercise>
+
+<Exercise id="sa-core-orm-4" difficulty="interview">
+
+Interview-style: "Why does SQLAlchemy let Core expressions and ORM entities interoperate in the same codebase instead of forcing one abstraction for every query?" Answer in three sentences or fewer.
+
+<Solution>
+
+Not every query needs entity identity, relationships, or unit-of-work tracking — a read-only aggregate or dashboard projection gains nothing from ORM machinery and would just pay its overhead for no benefit, while a query that mutates domain state genuinely needs the identity map and change tracking the ORM provides.
+
+Forcing one abstraction everywhere means either wrapping simple reporting queries in unnecessary entity machinery, or losing entity behavior where it's actually needed. Letting both coexist lets each query use whichever surface actually matches what it's doing.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-core-orm-5" difficulty="real-world">
+
+A new "export all tasks" feature calls `session.scalars(select(TaskModel)).all()` with no pagination or streaming, against a table that has grown to several million rows in production. The export process OOMs and crashes. Diagnose and fix using this lesson.
+
+<Solution>
+
+`.all()` materializes the entire result set into memory as live Python objects before returning anything — for several million rows, that means several million ORM entity instances held in memory simultaneously, exactly the common mistake this lesson names.
+
+The fix is not materializing the whole table at once: page through results with bounded limits or keyset pagination, or stream rows incrementally instead of loading everything into a list up front.
+
+Since an export doesn't need entity identity or unit-of-work behavior, a Core-style projection selecting only the needed columns — streamed incrementally rather than collected with `.all()` — is a strong fit here, directly following this lesson's Core-vs-ORM decision framework.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does calling `select()` always return ORM entities?">
+
+No — what comes back depends on what you select and how you execute it. `select(TaskModel)` combined with `session.scalars(...)` returns ORM entities, while `select(TaskModel.id, TaskModel.title)` combined with `session.execute(...)` returns row-like tuples of plain column values, not mapped objects.
+
+</Gotcha>
+
+<Gotcha question="Does a fluent, readable SQLAlchemy expression automatically produce an efficient query?">
+
+No — readable Python expression syntax says nothing about the SQL it generates being cheap. Fluent code can still produce expensive joins, missing predicates, or full table scans; inspect the actually emitted SQL and query plan rather than trusting readability as a proxy for performance.
+
+</Gotcha>
+
+<Gotcha question="Is it safe to accept a SQLAlchemy clause or expression object directly from the HTTP layer to let clients filter data flexibly?">
+
+No — that leaks persistence-layer expressions into transport code and can bypass mandatory authorization predicates that a repository would otherwise always apply. Convert a typed, validated application-level query into repository-owned expressions instead of accepting raw query clauses from outside.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

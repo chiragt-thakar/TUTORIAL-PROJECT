@@ -65,7 +65,7 @@ Response validation failures usually indicate a server bug and should surface in
 
 ## Exercises
 
-<Exercise id="api-bodies-1">
+<Exercise id="api-bodies-1" difficulty="easy">
 
 Define a DELETE operation that returns no body with status 204.
 
@@ -82,7 +82,7 @@ Do not return JSON with a 204 response.
 </Solution>
 </Exercise>
 
-<Exercise id="api-bodies-2">
+<Exercise id="api-bodies-2" difficulty="medium">
 
 The domain task has `internal_notes`; guarantee it never appears publicly.
 
@@ -93,16 +93,79 @@ Create `TaskRead` without `internal_notes` and set it as the operation's respons
 </Solution>
 </Exercise>
 
-<Exercise id="api-bodies-3">
+<Exercise id="api-bodies-3" difficulty="hard">
 
-Why is `dict` a weak return annotation for a public endpoint?
+Define `PATCH /tasks/{task_id}` accepting a partial-update body (only the fields being changed), returning the updated task as `TaskRead` with status 200, and setting the response's `ETag` header to the new version.
 
 <Solution>
 
-It communicates no field contract, produces weak OpenAPI, and offers no output filtering or validation. Return a response model for a stable public resource.
+```python
+class TaskPatch(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    title: str | None = None
+    priority: int | None = Field(default=None, ge=1, le=3)
+
+@app.patch("/tasks/{task_id}", response_model=TaskRead)
+async def patch_task(
+    task_id: UUID, body: TaskPatch, response: Response
+) -> TaskRead:
+    task = service.update(TaskId(str(task_id)), body.model_dump(exclude_unset=True))
+    response.headers["ETag"] = str(task.version)
+    return TaskRead.model_validate(task, from_attributes=True)
+```
+
+`exclude_unset=True` is what makes this a genuine partial update — it distinguishes "field omitted" from "field explicitly set to its current value," which a plain `model_dump()` cannot do. The 200 status (not 201) and the header set on the injected `Response` object reuse exactly the patterns from the earlier `POST` and query-parameter lessons.
 
 </Solution>
 </Exercise>
+
+<Exercise id="api-bodies-4" difficulty="interview">
+
+Interview-style: "Why is `dict` a weak return annotation for a public endpoint?" Answer in three sentences or fewer.
+
+<Solution>
+
+A bare `dict` return type tells FastAPI and its callers nothing about which keys exist, their types, or which are guaranteed — so the generated OpenAPI schema degrades to an untyped object instead of a real contract. It also disables response filtering and validation: whatever keys happen to be in the dictionary at runtime are what ships, including anything accidentally added later.
+
+A response model makes the shape an explicit, checked promise instead of an implementation detail that happens to serialize.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-bodies-5" difficulty="real-world">
+
+A schema refactor accidentally sets `response_model=UserInternal` — the same model used for internal persistence, which includes `password_hash` — on `GET /users/{id}`. Requests succeed and validate cleanly, but the field ships in every response. Using only what this lesson covers, explain why response-model filtering didn't catch this, and the fix.
+
+<Solution>
+
+Response-model filtering only strips fields that are *absent* from the response model's schema — it can't protect a field the model declares as present, because as far as FastAPI is concerned that field is part of the promised contract. Reusing `UserInternal` as the response model means `password_hash` is a declared, validated, intentionally-serialized field, so nothing in the request/response pipeline treats it as a mistake.
+
+The fix is a dedicated `UserRead` response model that never includes secret or internal-only fields in the first place, kept structurally separate from whatever model persistence uses — the two models overlapping in most fields is fine, but they must never be the *same* model when one of them carries secrets.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="If a response model omits a field, is that enough to guarantee clients never see it?">
+
+Yes for that specific model, but only if the field genuinely isn't declared on the model class you register as `response_model`. Filtering works by describing what's allowed to leave, not by scrubbing what's dangerous — a model that declares a secret field as present will still ship it, validation and all.
+
+</Gotcha>
+
+<Gotcha question="Does returning a plain dictionary from an operation skip response validation entirely?">
+
+No — if `response_model` is set, FastAPI validates and filters whatever you return against it regardless of whether you constructed a model instance or a dictionary. The response model, not the return type of your function body, is what governs the response contract.
+
+</Gotcha>
+
+<Gotcha question="Should a response-validation failure be turned into a 422 sent back to the client?">
+
+No — a 422 means the *client's* input was invalid. A response validation failure means the *server* produced a value that doesn't match its own declared contract, which is a server bug. It should surface as a 500 and get flagged in monitoring, not be reinterpreted as if the caller did something wrong.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

@@ -1,0 +1,186 @@
+---
+id: genai-agent-vs-chain
+title: Agents vs. Fixed Chains
+description: When to hard-code steps and when to let the model plan them.
+module: agents-and-workflows
+order: 1
+estimatedMinutes: 40
+prerequisites: []
+learningObjectives:
+  - Distinguish a fixed pipeline from an agent loop
+  - Identify tasks that don't need an agent
+  - Explain the cost/reliability tradeoff of agents
+---
+
+## You've already built one
+
+Module 3's tool-calling loop — call the model, check for a tool call, execute it, send the result back, repeat until a final answer — is not a warm-up for agents. It *is* an agent, minimal and unnamed. This module doesn't introduce a new mechanism; it names the pattern you already built, generalizes it past a single request, and gives you the vocabulary to decide when you actually want it.
+
+That distinction — name aside — is worth making precise, because "agent" gets used loosely enough in the industry to mean almost anything that calls an LLM more than once. Here it means one specific thing: **who decides what happens next.**
+
+## Two architectures, one question
+
+A **chain** is a sequence of steps where *your code* decides the order, unconditionally, before the request ever runs. Module 5's RAG pipeline is a chain: embed the query, retrieve top-k, assemble a prompt, generate. That order never changes based on what the model wants — it can't, because nothing in the pipeline asks the model "what should happen next?" until the final generation step.
+
+An **agent** is a loop where *the model* decides what happens next, turn by turn, based on what it has seen so far. Module 3's "check order status, then check refund eligibility" example is an agent for exactly this reason: the model saw the order status result and then *decided* a second tool call was needed.
+
+Your code didn't hard-code that sequence — it just executed whatever the model asked for.
+
+```python title="chain_vs_agent.py"
+# Chain: the sequence is fixed in code, regardless of input.
+def rag_answer(query: str) -> str:
+    chunks = retrieve(query)       # always step 1
+    return generate(query, chunks)  # always step 2, using step 1's output
+
+# Agent: the sequence is decided by the model, turn by turn.
+def agent_answer(question: str, tools: list[dict], dispatch) -> str:
+    messages = [{"role": "user", "content": question}]
+    for _ in range(MAX_TURNS):
+        message = call_model(messages, tools)
+        messages.append(message)
+        if not message.tool_calls:
+            return message.content
+        for call in message.tool_calls:
+            messages.append(dispatch(call))  # model chose this call, not your code
+```
+
+<Concept>
+
+The tell isn't "does it call an LLM more than once" — RAG's pipeline could call the model twice (once to rewrite the query, once to generate) and still be a chain, because your code still fixes the order.
+
+The tell is whether a branch or loop in the *control flow* is decided by reading the model's output at runtime, or whether it was decided by whoever wrote the code, once, in advance.
+
+</Concept>
+
+## Chains are the default, not the fallback
+
+It's tempting to treat "agent" as the more advanced, more capable option and reach for it by default. Resist that. A chain is cheaper (fewer model calls, no planning overhead), faster (no multi-turn round trips), and dramatically easier to test.
+
+A fixed pipeline's behavior for a given input is deterministic modulo the model's own variance at each fixed step, while an agent's *path* through the problem can vary run to run even before you get to the content of any single response.
+
+Use a chain whenever the steps and their order are knowable in advance regardless of the specific input — RAG is always retrieve-then-generate; a translation pipeline is always detect-language-then-translate. Reach for an agent only when the number or order of steps genuinely depends on what's discovered along the way, the way "is this order refundable" depends on what "check order status" actually returns.
+
+<WhyItMatters>
+
+Every unnecessary turn in an agent loop is a full model call — latency and cost you'd pay whether or not the model's "planning" produced a different order than a chain would have used anyway. Defaulting to agents for tasks a chain already solves isn't a stylistic choice; it's a standing cost and reliability tax with no corresponding benefit.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Building an agent for a task whose steps never actually vary — for instance, wrapping RAG's retrieve-then-generate in a tool-calling loop "so it's more flexible." The order was never going to change, so the only thing purchased is an extra model call, for the model to "decide" to do what a chain would have done unconditionally.
+
+That purchase also buys a new class of failure mode: the model deciding to skip a step or reorder it *incorrectly*.
+
+</CommonMistake>
+
+<ProductionNote>
+
+When choosing between a chain and an agent for a new feature, write down the concrete input where the step order would actually need to differ. If you can't produce one, you don't have an agent problem — you have a chain, and building an agent instead is pure downside: more cost, more latency, and a harder-to-test system for identical behavior.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-agent-vs-chain-1" difficulty="easy">
+
+Classify each as a chain or an agent: (a) Module 5's RAG pipeline, (b) Module 3's order-status-then-refund-eligibility example.
+
+<Solution>
+
+(a) is a chain — retrieve then generate happens in that order for every input, decided by the code. (b) is an agent — the model decided, after seeing the order status result, that a second tool call was needed; the code didn't hard-code that sequence.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-vs-chain-2" difficulty="medium">
+
+A teammate says: "Our support bot calls the LLM three times per request, so it's an agent." Evaluate this claim using only what this lesson covered.
+
+<Solution>
+
+Call count alone doesn't determine the architecture — the question is whether *the model* decided the sequence of those three calls at runtime, or whether the code always makes exactly those three calls in the same order regardless of input. Three fixed calls in a fixed order is still a chain; it just happens to have three steps instead of one or two.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-vs-chain-3" difficulty="hard">
+
+A document-processing feature always does OCR, then summarization, then translation, in that fixed order for every document — but the team implemented it as a tool-calling agent because "it felt more modern." Using this lesson's cost/reliability framing, argue for converting it to a chain, and name the one thing you'd lose by doing so.
+
+<Solution>
+
+Since the order never varies by input, the agent's per-turn "planning" is doing zero useful work — the model is being paid (in latency and tokens) to arrive at a decision the code already knows the answer to, on every single request.
+
+Converting to a chain removes that overhead entirely and makes the pipeline's behavior deterministic and far easier to test, since there's no longer a code path where the model could skip, reorder, or repeat a step.
+
+What you lose is the (currently unused) ability to handle an input where the order genuinely should differ — for example, a document that doesn't need translation. If that case is real and needs handling, it can still be expressed as a chain with a conditional branch in code.
+
+It doesn't require handing the *decision* to the model unless the branching logic is too complex or context-dependent for code to express directly.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-vs-chain-4" difficulty="interview">
+
+Interview-style: "What's the actual difference between a chain and an agent — not the buzzwords, the mechanism?" Answer in three sentences or fewer.
+
+<Solution>
+
+The mechanism is who decides control flow: in a chain, the sequence of steps is fixed by the code before the request runs, regardless of input; in an agent, the model reads intermediate results at runtime and decides — via its own output, like a tool call — what happens next.
+
+Both can call an LLM multiple times; the distinguishing fact is whether a branch or loop in the code's execution path is determined by reading the model's output, not by how many calls are made or how sophisticated the pipeline looks.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-vs-chain-5" difficulty="real-world">
+
+A team ships an "agent" for password-reset support tickets. Its tool-calling loop, in practice, always calls `look_up_account` then `send_reset_email` then responds — never anything else, on any observed ticket in three months of logs. Using only what this lesson covered, what should the team consider, and what evidence would justify keeping the agent architecture instead?
+
+<Solution>
+
+Three months of logs showing an invariant two-step order is strong evidence this is actually a chain wearing an agent's cost structure — every ticket pays for a planning step whose outcome has never once varied. The team should consider converting to a fixed two-call chain, cutting the per-ticket model-call overhead and making behavior fully deterministic and testable.
+
+What would justify keeping the agent is evidence of genuine input-dependent variation the logs haven't captured yet — for example, a ticket type on the roadmap that would need `escalate_to_human` instead of `send_reset_email`, or an existing-but-rare case, such as a locked account needing an extra verification tool call first, that the three months of logs simply didn't happen to include.
+
+Absent concrete evidence of real variation, the fixed pattern in the logs is the stronger signal.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does calling the LLM multiple times automatically make something an agent?">
+
+No — call count is not the distinguishing feature. A pipeline that calls the model three times in the same fixed order for every input is still a chain. What makes something an agent is whether the model's output, read at runtime, determines what happens next in the code's control flow.
+
+</Gotcha>
+
+<Gotcha question="Is an agent architecture strictly more capable than a chain, so it's a safe default?">
+
+No — an agent can express a superset of what a chain can, but "more capable" isn't "no downside." Every turn of genuine model-driven decision-making is a model call you pay for in cost and latency, and it introduces run-to-run variation in the *path* taken, not just the wording of any single response. Default to a chain and justify the agent, not the reverse.
+
+</Gotcha>
+
+<Gotcha question="If a task currently always follows the same two or three steps, does that guarantee a chain is the right architecture forever?">
+
+Not necessarily forever, but it's strong evidence for *now*. If the steps have never varied across real traffic and there's no concrete input on the horizon where they would, an agent is paying ongoing cost for optionality nobody is using. Revisit the decision when a real case of needed variation actually appears, not preemptively.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can classify a given pipeline as a chain or an agent by identifying who decides control flow, and you can argue for or against an agent architecture using the concrete cost and reliability tradeoffs rather than "agents are more advanced."
+
+</Checkpoint>
+
+## Summary
+
+A chain is a fixed sequence of steps decided by code, in advance, regardless of input — Module 5's RAG pipeline is one. An agent is a loop where the model decides what happens next at runtime, based on what it has seen so far — Module 3's tool-calling loop already was one.
+
+Chains are cheaper, faster, and more testable; default to them, and reach for an agent only when a concrete input genuinely needs step order the code can't fix in advance.
+
+The next lesson takes that loop from Module 3 and formalizes it into a general agent design: plan, act, observe, repeat, with a stopping condition that actually stops.

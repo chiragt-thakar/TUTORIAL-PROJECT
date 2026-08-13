@@ -1,0 +1,251 @@
+---
+id: genai-agents-assignment
+title: "Assignment: A Bounded Support Resolution Agent"
+description: Build a multi-tool agent with turn, cost, and repetition guardrails, working-state extraction, a replayable trace log, and a dispatch-level refund guardrail.
+module: agents-and-workflows
+order: 5
+estimatedMinutes: 70
+prerequisites: [genai-agent-debugging]
+learningObjectives:
+  - Compose an agent loop with turn, cost, and repetition stopping conditions
+  - Extract working state instead of resending raw tool output
+  - Log a replayable per-turn trace and enforce a dispatch-level guardrail
+---
+
+## Scenario
+
+Module 3 built `ops_assistant.py`: a whitelisted, confirmation-gated tool loop. This assignment extends that same problem into a real agent — adding a documentation-search tool alongside the order tools, the bounded turn/cost/repetition stopping conditions from Lesson 2, the working-state extraction from Lesson 3, and the structured trace logging and dispatch-level guardrail from Lesson 4. Every piece has already been built in isolation across this module's lessons; this assignment assembles them into one system.
+
+<Assignment id="genai-agents-assignment-work">
+
+## Requirements
+
+Build `resolution_agent.py`, invoked as `python resolution_agent.py "your request here"`, that:
+
+- Registers four tools: `check_order_status(order_id)`, `check_refund_eligibility(order_id)`, `issue_refund(order_id, amount_cents)` (from Module 3, reused), and `search_docs(query)` — a small in-file FAQ lookup standing in for Module 5's retrieval, since this assignment's focus is the agent loop, not the retrieval pipeline itself.
+- Runs a bounded loop with three independent stopping conditions: `max_turns` (default 6), `max_cost` (default `$0.05`, estimated from `response.usage`), and repetition detection (identical tool name + arguments called twice in a row).
+- Maintains a `facts: dict[str, str]` working-state object, updated after every tool call with the specific conclusion that call established (not its raw output), and injects a compact facts summary into the messages sent on later turns.
+- Logs one JSON line per turn to stderr containing at minimum: turn number, the plan (tool calls or `"final_answer"`), the current facts snapshot, and cumulative estimated cost.
+- Enforces one dispatch-level guardrail: `issue_refund` is rejected — without executing — if `amount_cents` exceeds the order's actual total (looked up via `check_order_status`), returning a corrective error string to the model instead of a crash or a silent no-op.
+- Prints a final answer grounded only in what the tools actually returned.
+
+```text
+resolution_agent.py
+  CheckOrderArgs, CheckEligibilityArgs, IssueRefundArgs, SearchDocsArgs -- Pydantic argument schemas
+  FAQ_DOCS                    -- small in-file corpus for search_docs
+  check_order_status / check_refund_eligibility / issue_refund / search_docs -- tool functions
+  TOOL_REGISTRY                -- whitelist, reused pattern from Module 3
+  dispatch(call, state)        -- whitelist + validate + refund guardrail + execute + record_fact
+  log_turn(turn, message, state, spent)  -- structured per-turn trace line
+  run_agent(goal, max_turns=6, max_cost=0.05)  -- the bounded, stateful, logged loop
+  main()                        -- CLI entry point
+```
+
+## Acceptance criteria
+
+1. `python resolution_agent.py "Can you refund ORD-4471, they say they never received it, check our shipping policy first"` calls `search_docs`, `check_order_status`, and `check_refund_eligibility` before `issue_refund`, and prints a final answer citing the actual looked-up status and eligibility.
+2. Attempting a refund `amount_cents` greater than the order's total is rejected by `dispatch` itself — the tool result the model sees is an error, and `issue_refund`'s underlying execution never runs. This is verifiable independent of what the model decides to do next.
+3. If the model calls the same tool with identical arguments twice in a row, the loop stops immediately with a clear message — verify by temporarily forcing this with a stub `dispatch` in a test, since triggering it from a live model call isn't reliably reproducible.
+4. The stderr trace shows one JSON line per turn, and the `facts` object visibly grows across turns as tools are called — never containing a raw multi-field tool result verbatim, only extracted conclusions.
+5. Running a task that would need more than `max_turns` or exceed `max_cost` stops with a distinct message identifying *which* limit was hit, not a generic failure.
+6. No unhandled traceback for an unregistered tool name or invalid tool arguments.
+
+### Stretch goals
+
+Add `compress_history` from Lesson 3, triggered every 4 turns, and verify via the trace log that token count of the outgoing message list stops growing unboundedly on a long synthetic task. Add a `replay(trace_path, real_dispatch)` function per Lesson 4 that re-executes a saved trace's tool calls against live tools and diffs the results. Extend the refund guardrail to also reject a refund for an order whose `check_refund_eligibility` result was never actually checked in this run.
+
+<Solution>
+
+The solution's central discipline is that `dispatch` is the single choke point every safety and state-tracking concern flows through — the guardrail, the whitelist, and the fact extraction all happen there, not scattered across the loop or the tool functions themselves.
+
+```python
+import json
+import sys
+import time
+from dataclasses import dataclass, field
+from pydantic import BaseModel, ValidationError
+from openai import OpenAI
+
+client = OpenAI()
+
+FAQ_DOCS = {
+    "shipping-policy": "Standard shipping takes 5-7 business days. Orders not received within 14 days of shipping qualify for a full refund regardless of the standard 30-day refund window.",
+    "refund-policy": "Refunds are available within 30 days of purchase and are issued to the original payment method within 5 business days.",
+}
+
+ORDERS = {
+    "ORD-4471": {"status": "shipped", "total_cents": 4200, "days_since_order": 18},
+}
+
+
+class CheckOrderArgs(BaseModel):
+    order_id: str
+
+class CheckEligibilityArgs(BaseModel):
+    order_id: str
+
+class IssueRefundArgs(BaseModel):
+    order_id: str
+    amount_cents: int
+
+class SearchDocsArgs(BaseModel):
+    query: str
+
+
+def check_order_status(order_id: str) -> str:
+    order = ORDERS.get(order_id)
+    if order is None:
+        return f"No order found with ID {order_id}."
+    return json.dumps({"order_id": order_id, "status": order["status"], "total_cents": order["total_cents"]})
+
+def check_refund_eligibility(order_id: str) -> str:
+    order = ORDERS.get(order_id)
+    if order is None:
+        return f"No order found with ID {order_id}."
+    eligible = order["days_since_order"] <= 30 or order["days_since_order"] <= 14
+    return json.dumps({"order_id": order_id, "eligible": eligible})
+
+def issue_refund(order_id: str, amount_cents: int) -> str:
+    return f"Refund of ${amount_cents / 100:.2f} issued for order {order_id}."
+
+def search_docs(query: str) -> str:
+    query_lower = query.lower()
+    hits = [text for key, text in FAQ_DOCS.items() if any(w in text.lower() for w in query_lower.split())]
+    return "\n".join(hits) if hits else "No matching documentation found."
+
+
+TOOL_REGISTRY = {
+    "check_order_status": (CheckOrderArgs, check_order_status),
+    "check_refund_eligibility": (CheckEligibilityArgs, check_refund_eligibility),
+    "issue_refund": (IssueRefundArgs, issue_refund),
+    "search_docs": (SearchDocsArgs, search_docs),
+}
+
+TOOLS_SCHEMA = [
+    {"type": "function", "function": {"name": name, "description": fn.__doc__ or name,
+     "parameters": model.model_json_schema()}}
+    for name, (model, fn) in TOOL_REGISTRY.items()
+]
+
+
+@dataclass
+class AgentState:
+    facts: dict[str, str] = field(default_factory=dict)
+    spent: float = 0.0
+    last_signature: tuple[str, str] | None = None
+
+
+def dispatch(call, state: AgentState) -> str:
+    entry = TOOL_REGISTRY.get(call.function.name)
+    if entry is None:
+        return f"Error: {call.function.name} is not an available tool."
+
+    args_model, fn = entry
+    try:
+        args = args_model.model_validate_json(call.function.arguments)
+    except ValidationError as error:
+        return f"Error: invalid arguments — {error}"
+
+    if call.function.name == "issue_refund":
+        order = ORDERS.get(args.order_id)
+        if order is not None and args.amount_cents > order["total_cents"]:
+            return "Error: refund amount exceeds order total — call rejected, not executed."
+
+    result = fn(**args.model_dump())
+
+    if call.function.name == "check_order_status":
+        state.facts[f"order_status:{args.order_id}"] = result
+    elif call.function.name == "check_refund_eligibility":
+        state.facts[f"eligibility:{args.order_id}"] = result
+    elif call.function.name == "search_docs":
+        state.facts[f"docs:{args.query}"] = result[:120]
+
+    return result
+
+
+def facts_block(state: AgentState) -> str:
+    if not state.facts:
+        return ""
+    lines = "\n".join(f"- {k}: {v}" for k, v in state.facts.items())
+    return f"Known facts so far:\n{lines}"
+
+
+def estimate_cost(usage) -> float:
+    return (usage.prompt_tokens * 0.15 + usage.completion_tokens * 0.60) / 1_000_000
+
+
+def log_turn(turn: int, plan, state: AgentState) -> None:
+    print(json.dumps({
+        "turn": turn,
+        "timestamp": time.time(),
+        "plan": plan,
+        "facts_snapshot": dict(state.facts),
+        "cumulative_cost": round(state.spent, 5),
+    }), file=sys.stderr)
+
+
+AGENT_SYSTEM_PROMPT = (
+    "You are a support-resolution agent with tools to check order status, check refund "
+    "eligibility, search documentation, and issue refunds. Use only the tools you need. "
+    "Never call issue_refund before confirming eligibility. Respond with a final answer "
+    "and stop once you have enough information."
+)
+
+
+def run_agent(goal: str, max_turns: int = 6, max_cost: float = 0.05) -> str:
+    state = AgentState()
+    messages = [{"role": "system", "content": AGENT_SYSTEM_PROMPT}, {"role": "user", "content": goal}]
+
+    for turn in range(max_turns):
+        if facts := facts_block(state):
+            messages.append({"role": "system", "content": facts})
+
+        response = client.chat.completions.create(model="gpt-4.1-mini", messages=messages, tools=TOOLS_SCHEMA)
+        state.spent += estimate_cost(response.usage)
+        message = response.choices[0].message
+        messages.append(message)
+
+        if not message.tool_calls:
+            log_turn(turn, "final_answer", state)
+            return message.content
+
+        if state.spent > max_cost:
+            log_turn(turn, "budget_exceeded", state)
+            return "Stopped: exceeded per-task cost budget."
+
+        plan = []
+        for call in message.tool_calls:
+            signature = (call.function.name, call.function.arguments)
+            if signature == state.last_signature:
+                log_turn(turn, "repetition_detected", state)
+                return "Stopped: repeated the same tool call with identical arguments."
+            state.last_signature = signature
+            plan.append({"tool": call.function.name, "arguments": call.function.arguments})
+
+            result = dispatch(call, state)
+            messages.append({"role": "tool", "tool_call_id": call.id, "content": result})
+
+        log_turn(turn, plan, state)
+
+    return "Stopped: exceeded max turns without reaching a final answer."
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        print("Usage: python resolution_agent.py \"your request\"")
+        return
+    print(run_agent(sys.argv[1]))
+
+
+if __name__ == "__main__":
+    main()
+```
+
+The refund guardrail lives entirely inside `dispatch`, before `fn(**args.model_dump())` ever runs — the same choke-point discipline as Module 3's confirmation gate, applied to a different check. `facts` only ever stores short, extracted strings keyed by what was checked, never a full raw tool result, which is what keeps the injected `facts_block` bounded as a task grows.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+This bounded, traced, guardrailed loop is the exact shape Module 8's LangGraph lessons formalize into a graph-based runtime — LangGraph automates the state-passing and checkpointing, but the stopping conditions, working-state discipline, and dispatch-level guardrails built here remain your responsibility to design correctly, framework or not. The Module 10 capstone wires an agent built on this pattern behind a real API endpoint with persistent trace storage.

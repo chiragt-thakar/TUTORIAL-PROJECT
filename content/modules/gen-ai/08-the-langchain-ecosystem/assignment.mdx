@@ -1,0 +1,200 @@
+---
+id: lc-assignment
+title: "Assignment: Port Your Hand-Built Agent to LangGraph + LangSmith"
+description: Reimplement the agent you built by hand in Module 6 as a LangGraph graph with LangSmith tracing wired in, and defend the tradeoffs in writing.
+module: the-langchain-ecosystem
+order: 5
+estimatedMinutes: 70
+prerequisites: [lc-langsmith-observability]
+learningObjectives:
+  - Port a hand-built agent loop to an equivalent LangGraph implementation without losing behavior
+  - Wire up LangSmith tracing and use it to debug a deliberately broken run
+  - Write a short, specific comparison of what the framework bought you and what it cost
+---
+
+## Scenario
+
+Module 6's assignment was `resolution_agent.py`: four tools, a bounded loop with three stopping conditions, working-state extraction, structured tracing, and a dispatch-level refund guardrail. This assignment ports that exact system to LangGraph with LangSmith tracing — not to prove the framework version is better, but to find out, concretely, which pieces it actually automates and which pieces remain entirely your responsibility either way.
+
+<Assignment id="lc-assignment-work">
+
+## Requirements
+
+Build `resolution_agent_graph.py`, reimplementing Module 6's assignment on LangGraph, that:
+
+- Defines the same four tools (`check_order_status`, `check_refund_eligibility`, `issue_refund`, `search_docs`) using LangChain's `@tool` decorator.
+- Builds a `StateGraph` with an `agent` node, a `tools` node, and conditional routing equivalent to Module 6's three stopping conditions: a turn counter in state, a cost estimate accumulated in state, and repetition detection comparing consecutive tool-call signatures — all checked in the routing function, not assumed to come from `recursion_limit`.
+- Preserves the refund-amount guardrail from Module 6 (`issue_refund` rejected if `amount_cents` exceeds the order's actual total) inside the tool execution path — since a plain `@tool`-decorated function has no single shared `dispatch()` choke point the way Module 6's hand-written dispatcher did, decide deliberately where the guardrail now lives and be able to explain that choice.
+- Enables LangSmith tracing via environment variables, with no tracing-specific code inside the graph itself.
+- Includes a short, reproducible bug: temporarily comment out the refund guardrail, run a case that should trigger it, capture the resulting trace, then restore the guardrail and re-run to confirm the trace now shows the rejection.
+- Produces `COMPARISON.md`: a short, specific (not generic) writeup contrasting exactly what LangGraph and LangSmith automated versus what stayed the developer's responsibility, grounded in this specific port — not a general LangChain opinion piece.
+
+```text
+resolution_agent_graph.py
+  check_order_status, check_refund_eligibility, issue_refund, search_docs  -- @tool functions
+  AgentState                        -- messages, turn_count, spent, last_call_signature
+  call_model, call_tools            -- agent/act nodes
+  should_continue                   -- turn/cost/repetition routing, ported from Module 6
+  graph, app                        -- StateGraph definition and compiled app
+  main()                            -- CLI entry point + the deliberate-bug demonstration
+COMPARISON.md                       -- specific writeup, see acceptance criteria
+```
+
+## Acceptance criteria
+
+1. `python resolution_agent_graph.py "refund ORD-4471, check shipping policy first"` runs the same tool sequence Module 6's version did and produces a comparably grounded final answer.
+2. Attempting a refund above the order total is rejected before `issue_refund`'s core logic executes, and this is verifiable independent of what the model decides to do next — the same independence Module 6 required.
+3. `should_continue` stops the graph on turn count, cost, or repetition, each with a distinct return/message, not just relying on `recursion_limit`.
+4. With the guardrail temporarily disabled, a LangSmith trace clearly shows the over-limit refund executing; with it restored, the trace shows the rejection instead — both captured and referenced in `COMPARISON.md`.
+5. `COMPARISON.md` names at least three specific things the framework automated (with the Module 6 mechanism each replaces) and at least three specific things that remained entirely the assignment author's design responsibility.
+6. No unhandled traceback for an unregistered tool call or invalid arguments.
+
+### Stretch goals
+
+Add a LangSmith dataset (Lesson 4) with the same eval cases Module 5's RAG assignment used adapted for this agent, and report retrieval/groundedness scores the way that assignment did. Add a `MemorySaver` checkpointer and demonstrate resuming a conversation across two separate process invocations using the same `thread_id`. Extend `COMPARISON.md` with a recommendation for a future teammate: for a new agent project, hand-build first or start with LangGraph — and why, specifically.
+
+<Solution>
+
+The solution's central lesson lives in `COMPARISON.md` as much as in the code — the graph reimplementation is mostly mechanical once Module 6 and this module's lessons are understood, but articulating *precisely* what changed and what didn't is the actual assignment.
+
+```python
+import os
+import sys
+import time
+from typing import Annotated, TypedDict
+
+from langchain_core.tools import tool
+from langchain_core.messages import HumanMessage
+from langchain_openai import ChatOpenAI
+from langgraph.graph import StateGraph, END
+from langgraph.graph.message import add_messages
+
+os.environ.setdefault("LANGCHAIN_TRACING_V2", "true")
+os.environ.setdefault("LANGCHAIN_PROJECT", "resolution-agent-graph")
+
+ORDERS = {"ORD-4471": {"status": "shipped", "total_cents": 4200}}
+FAQ_DOCS = {"shipping-policy": "Orders not received within 14 days qualify for a full refund."}
+
+
+@tool
+def check_order_status(order_id: str) -> str:
+    """Look up an order's shipping status and total by ID."""
+    order = ORDERS.get(order_id)
+    return str(order) if order else f"No order found: {order_id}"
+
+
+@tool
+def check_refund_eligibility(order_id: str) -> str:
+    """Check whether an order is eligible for a refund."""
+    return "eligible" if order_id in ORDERS else "not found"
+
+
+@tool
+def issue_refund(order_id: str, amount_cents: int) -> str:
+    """Issue a refund for an order. Rejects amounts exceeding the order total."""
+    order = ORDERS.get(order_id)
+    if order is None:
+        return f"No order found: {order_id}"
+    if amount_cents > order["total_cents"]:
+        return "Error: refund amount exceeds order total — rejected, not executed."
+    return f"Refund of ${amount_cents / 100:.2f} issued for {order_id}."
+
+
+@tool
+def search_docs(query: str) -> str:
+    """Search internal documentation for a query."""
+    hits = [t for t in FAQ_DOCS.values() if any(w in t.lower() for w in query.lower().split())]
+    return "\n".join(hits) or "No matching documentation."
+
+
+TOOLS = [check_order_status, check_refund_eligibility, issue_refund, search_docs]
+model = ChatOpenAI(model="gpt-4.1-mini").bind_tools(TOOLS)
+tool_map = {t.name: t for t in TOOLS}
+
+
+class AgentState(TypedDict):
+    messages: Annotated[list, add_messages]
+    turn_count: int
+    spent: float
+    last_call_signature: tuple[str, str] | None
+
+
+def call_model(state: AgentState) -> AgentState:
+    response = model.invoke(state["messages"])
+    spent = state["spent"] + estimate_cost(response)
+    return {"messages": [response], "turn_count": state["turn_count"] + 1, "spent": spent}
+
+
+def call_tools(state: AgentState) -> AgentState:
+    last = state["messages"][-1]
+    results = []
+    for call in last.tool_calls:
+        tool_fn = tool_map[call["name"]]
+        result = tool_fn.invoke(call["args"])
+        results.append({"role": "tool", "content": str(result), "tool_call_id": call["id"]})
+    return {"messages": results}
+
+
+def should_continue(state: AgentState) -> str:
+    if state["turn_count"] >= 8 or state["spent"] > 0.05:
+        return END
+    last = state["messages"][-1]
+    if not getattr(last, "tool_calls", None):
+        return END
+    call = last.tool_calls[0]
+    signature = (call["name"], str(call["args"]))
+    if signature == state["last_call_signature"]:
+        return END
+    return "tools"
+
+
+graph = StateGraph(AgentState)
+graph.add_node("agent", call_model)
+graph.add_node("tools", call_tools)
+graph.set_entry_point("agent")
+graph.add_conditional_edges("agent", should_continue, {"tools": "tools", END: END})
+graph.add_edge("tools", "agent")
+app = graph.compile()
+
+
+def main() -> None:
+    result = app.invoke({
+        "messages": [HumanMessage(content=sys.argv[1])],
+        "turn_count": 0, "spent": 0.0, "last_call_signature": None,
+    })
+    print(result["messages"][-1].content)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+```markdown title="COMPARISON.md"
+## What LangGraph/LangSmith automated
+1. **Tool schema generation** — `@tool` replaced Module 6's hand-written JSON schemas.
+2. **Trace visibility** — every node's input/output is inspectable in LangSmith with zero
+   manual logging, replacing Module 6's `log_turn()` JSON-line printing.
+3. **State threading** — `AgentState` and `add_messages` handle appending new messages to
+   history automatically, replacing manual `messages.append(...)` bookkeeping.
+
+## What stayed entirely my responsibility
+1. **Stopping conditions** — turn cap, cost budget, and repetition detection all had to be
+   explicitly added to `AgentState` and checked in `should_continue`; nothing in LangGraph
+   provided this by default, and `recursion_limit` alone would only have caught the turn cap,
+   crudely, after the fact.
+2. **The refund guardrail** — with no single `dispatch()` choke point, I put the check inside
+   `issue_refund` itself rather than a central dispatcher. This is *less centralized* than
+   Module 6's version: a second destructive tool added later wouldn't automatically inherit
+   any shared guardrail pattern the way it would have through Module 6's `dispatch()`.
+3. **Trace data handling** — nothing about enabling `LANGCHAIN_TRACING_V2` considers whether
+   traced tool arguments contain sensitive data; that redaction decision was still mine alone.
+```
+
+The `COMPARISON.md` entry about the refund guardrail is the most important one to get right in a real review: LangGraph's tool-as-function pattern is convenient, but it structurally removed the one centralized enforcement point Module 6's `dispatch()` gave for free — a real tradeoff, not a strict improvement.
+
+</Solution>
+</Assignment>
+
+## Capstone connection
+
+This port is the direct rehearsal for the Module 10 capstone, which wires a LangGraph agent with LangSmith tracing behind a real FastAPI endpoint — the same guardrail-placement and stopping-condition decisions made here carry forward unchanged, now with authentication and concurrent users added on top.

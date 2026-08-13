@@ -63,7 +63,7 @@ Treat correlation IDs as untrusted strings: validate length and allowed characte
 
 ## Exercises
 
-<Exercise id="api-inputs-1">
+<Exercise id="api-inputs-1" difficulty="easy">
 
 Add an `offset` query parameter from 0 through 10,000 with default 0.
 
@@ -76,7 +76,7 @@ offset: Annotated[int, Query(ge=0, le=10_000)] = 0
 </Solution>
 </Exercise>
 
-<Exercise id="api-inputs-2">
+<Exercise id="api-inputs-2" difficulty="medium">
 
 Declare a required `If-Match` header as a string.
 
@@ -91,16 +91,68 @@ With no default it is required, and the underscore maps to a hyphen.
 </Solution>
 </Exercise>
 
-<Exercise id="api-inputs-3">
+<Exercise id="api-inputs-3" difficulty="hard">
 
-Why should a path UUID's database lookup not be implemented as a field validator?
+Add a repeated `tags` query parameter (`?tags=backend&tags=urgent`) alongside the existing bounded `limit`/`offset`, capped at 5 tags of 1–30 characters each, defaulting to no filter.
 
 <Solution>
 
-UUID parsing is deterministic input validation. Existence requires I/O and request context, so it belongs in a dependency or service where failure and authorization can be handled explicitly.
+```python
+tags: Annotated[list[str] | None, Query(max_length=5)] = None
+```
+
+`Query(max_length=5)` on a `list[str]` bounds the number of repeated keys, not the string length of each one; per-item length needs each tag validated separately (for example with a small `Annotated[str, Query(min_length=1, max_length=30)]` item type, or a dependency that checks the parsed list). The key discipline is the same as `limit`: an unbounded repeated parameter is still an unbounded parameter.
 
 </Solution>
 </Exercise>
+
+<Exercise id="api-inputs-4" difficulty="interview">
+
+Interview-style: "Why shouldn't a path UUID's database existence check be implemented as a field validator?" Answer in three sentences or fewer.
+
+<Solution>
+
+A field validator's job is deterministic input validation — confirming the string has the shape of a UUID — which requires no I/O and always gives the same answer for the same input. Whether that UUID actually identifies a row is a fact about current database state, not about the input's shape, and checking it requires I/O plus request context like authorization.
+
+Mixing the two turns a fast, pure parsing step into a slow, stateful one and moves an application concern into a place designed for schema-level rules — that lookup belongs in a dependency or service instead.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-inputs-5" difficulty="real-world">
+
+Your logging pipeline choked after ingesting a request whose `X-Request-Id` header contained embedded newlines and text crafted to look like separate log entries, which a downstream log parser then split into forged-looking lines. Using only what this lesson covers, fix the endpoint.
+
+<Solution>
+
+The header was accepted as an unconstrained string and reflected straight into structured logs, so attacker-controlled content shaped the log stream. Constrain the header's accepted characters and length declaratively (for example `Header(max_length=64, pattern=r"^[A-Za-z0-9-]+$")`), rejecting anything that doesn't look like a correlation ID with a normal 422 before it ever reaches a log call.
+
+Where the header isn't required to round-trip a client-supplied value, it's simpler and safer to ignore the incoming header and generate a fresh server-side ID instead — never trust an untrusted string enough to log it unvalidated.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does an unset query parameter arrive as JSON `null`?">
+
+No — an absent query key simply means the parameter wasn't provided, so its declared default applies. Query strings have no native `null`; nullability and "was this key present" are handled the same way they are in Pydantic models, through separate default and type-union decisions.
+
+</Gotcha>
+
+<Gotcha question="Can a path parameter be made optional by giving it a default value?">
+
+No — every name that appears in the route path is required by definition, because the route wouldn't match the request at all without it. A default on a path parameter is either ignored or a modeling mistake; make it a query parameter instead if it needs to be optional.
+
+</Gotcha>
+
+<Gotcha question="Does `Header()` read the header name exactly as written in your function's parameter?">
+
+Not by default — FastAPI converts a parameter name's underscores to hyphens when matching header names, so `x_request_id` reads the `X-Request-Id` header. This is convenient once you know it, but surprising the first time a header "isn't arriving" during local testing.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

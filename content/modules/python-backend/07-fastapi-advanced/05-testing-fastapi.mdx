@@ -61,7 +61,7 @@ Avoid asserting the entire OpenAPI document as one brittle snapshot. Assert secu
 
 ## Exercises
 
-<Exercise id="advanced-testing-1">
+<Exercise id="advanced-testing-1" difficulty="easy">
 
 Why should `TestClient` be a context manager for an app that initializes services in lifespan?
 
@@ -72,7 +72,18 @@ Entering/exiting the client runs startup and shutdown, so the test observes the 
 </Solution>
 </Exercise>
 
-<Exercise id="advanced-testing-2">
+<Exercise id="advanced-testing-2" difficulty="medium">
+
+Prevent dependency overrides from leaking across tests.
+
+<Solution>
+
+Set overrides in a function-scoped fixture and clear or restore them in `finally` after yielding the app/client.
+
+</Solution>
+</Exercise>
+
+<Exercise id="advanced-testing-3" difficulty="hard">
 
 Design separate tests for route authorization and JWT verification.
 
@@ -83,16 +94,55 @@ Override current user to test route/service permission outcomes deterministicall
 </Solution>
 </Exercise>
 
-<Exercise id="advanced-testing-3">
+<Exercise id="advanced-testing-4" difficulty="interview">
 
-Prevent dependency overrides from leaking across tests.
+Interview-style: "Why does overriding `get_current_user` in every single test leave real security behavior untested, and what's the risk of doing this exclusively?" Answer in three sentences or fewer.
 
 <Solution>
 
-Set overrides in a function-scoped fixture and clear or restore them in `finally` after yielding the app/client.
+Overriding `get_current_user` replaces the bearer extraction and JWT verification dependency entirely, so any test that only ever exercises that override never actually runs the real signature check, claim validation, or expiration handling.
+
+If that's the *only* way authentication is tested, a genuine bug in the real verification dependency — an expired token being accepted, a wrong-audience token slipping through — could ship with full test coverage passing, because coverage was measuring route logic, not the security boundary in front of it.
+
+The two need separate, deliberate test suites, not one standing in for the other.
 
 </Solution>
 </Exercise>
+
+<Exercise id="advanced-testing-5" difficulty="real-world">
+
+A CI pipeline has an OpenAPI contract test that snapshots the *entire* generated document and fails on any diff. A harmless additive change (a new optional response field) broke it, and under deadline pressure an engineer regenerated and committed the snapshot without close review. Months later, a genuinely breaking change slipped through the same way. Using this lesson, diagnose the process failure and propose a better test design.
+
+<Solution>
+
+A whole-document snapshot test can't distinguish a harmless additive change from a genuinely breaking one — both produce a diff, both require the same "regenerate and commit" response, and that response becomes routine exactly because harmless diffs are common. Once regenerating the snapshot under pressure becomes habitual, a real breaking change hiding in the same diff is easy to wave through without the scrutiny it needed.
+
+The fix, per this lesson's production note, is asserting the specific fragments that actually matter — unique operation IDs, required security schemes on protected routes, and the absence of sensitive fields like `password_hash` — rather than the entire document as one brittle blob. Those targeted assertions only fail when something that genuinely matters changes, so a failure is always worth real attention instead of becoming a routine regenerate-and-commit reflex.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does overriding `get_current_user` in a route test also verify that the real JWT verification dependency works correctly?">
+
+No — an override replaces the dependency entirely, so the route test proves route and service behavior given a known identity, but says nothing about whether the actual bearer extraction and signature verification are correct. Those need their own dedicated tests against the real dependency.
+
+</Gotcha>
+
+<Gotcha question="Do dependency overrides automatically reset between test functions?">
+
+No — `app.dependency_overrides` persists on the application object until explicitly cleared. Without a fixture that clears or restores it after each test, an override set in one test can silently leak into and affect a later, unrelated test.
+
+</Gotcha>
+
+<Gotcha question="Does a full-document OpenAPI snapshot test protect against breaking API changes better than targeted assertions?">
+
+Not in practice — it also fails on every harmless additive change, which trains the team to regenerate and commit the snapshot reflexively under time pressure. That habit is exactly what lets a genuinely breaking change slip through unnoticed inside a routine-looking diff; targeted assertions on the specific things that actually matter avoid this failure mode.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

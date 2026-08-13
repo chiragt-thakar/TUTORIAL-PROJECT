@@ -58,7 +58,7 @@ Concurrency amplifies downstream pressure. Bound fan-out, configure client and p
 
 ## Exercises
 
-<Exercise id="api-async-1">
+<Exercise id="api-async-1" difficulty="easy">
 
 Classify `requests.get`, `httpx.AsyncClient.get`, and password hashing inside an async endpoint.
 
@@ -69,7 +69,7 @@ Classify `requests.get`, `httpx.AsyncClient.get`, and password hashing inside an
 </Solution>
 </Exercise>
 
-<Exercise id="api-async-2">
+<Exercise id="api-async-2" difficulty="medium">
 
 Why does merely changing `def repository_call` to `async def` not make a synchronous driver non-blocking?
 
@@ -80,20 +80,64 @@ The driver still performs blocking I/O on the calling thread. Async behavior req
 </Solution>
 </Exercise>
 
-<Exercise id="api-async-3">
+<Exercise id="api-async-3" difficulty="hard">
 
-You must call a legacy synchronous SDK from an async service. Show the safe call shape.
+A teammate moves a CPU-bound image-resizing function into `await anyio.to_thread.run_sync(resize_image, payload)`, expecting better throughput under load. Latency per request improves slightly, but overall throughput barely changes and CPU usage pegs at 100% well before the thread pool's configured limit is reached. Diagnose why moving CPU-bound work to a thread doesn't scale the way moving blocking I/O to a thread does.
 
 <Solution>
 
-```python
-result = await anyio.to_thread.run_sync(lambda: sdk.fetch(task_id))
-```
+Threads free the event loop from *waiting* on I/O, but Python's GIL means only one thread executes Python bytecode at a time regardless of how many threads exist. A CPU-bound function holds the GIL for its entire duration, so running it in a worker thread doesn't add real parallelism — it just relocates where the blocking happens while everything still serializes at the GIL.
 
-Also bound concurrency and apply a timeout around the operation.
+This is exactly why this lesson's I/O-boundary guidance puts CPU-heavy work in its own bucket (a process/job system) rather than "isolate it in a thread": threads solve blocking-on-I/O, not blocking-on-computation.
 
 </Solution>
 </Exercise>
+
+<Exercise id="api-async-4" difficulty="interview">
+
+Interview-style: "Why can't the event loop preempt a long-running synchronous function the way an OS scheduler preempts a thread?" Answer in three sentences or fewer.
+
+<Solution>
+
+`asyncio`'s event loop runs cooperative, single-threaded multitasking — a coroutine only hands control back to the loop at an `await` point it chooses to hit, not at some externally imposed interval. There's no timer interrupt forcibly suspending running Python bytecode mid-execution the way an OS scheduler preempts a thread. So a function with no `await` inside it, however long it runs, monopolizes the loop for that entire duration once started.
+
+</Solution>
+</Exercise>
+
+<Exercise id="api-async-5" difficulty="real-world">
+
+One user request triggers `asyncio.gather(*[fetch(id) for id in user_supplied_ids])`, where `user_supplied_ids` can contain thousands of entries. A downstream service becomes overwhelmed and starts timing out for every tenant, not just this one. Using only what this lesson covered, diagnose and fix it.
+
+<Solution>
+
+`gather()` launches every coroutine concurrently with no built-in limit, so a large enough user-supplied list turns one request into thousands of simultaneous downstream calls — exactly the unbounded fan-out from user-controlled input this lesson's production note warns against. Because the downstream service is shared, the damage isn't contained to the triggering user's request; every other tenant relying on that same downstream dependency degrades too.
+
+The fix is bounding concurrency explicitly — a semaphore, fixed-size batches, or a worker pool — so the number of simultaneous downstream calls has a hard ceiling regardless of input size, plus a timeout per call so one slow downstream response can't hold a concurrency slot indefinitely.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does declaring a function `async def` automatically make its body non-blocking?">
+
+No — `async def` only makes a function awaitable; it does nothing to the blocking behavior of whatever code runs inside it. A blocking library call inside an `async def` function still blocks the event-loop thread exactly as it would in a synchronous function, unless it's genuinely awaitable I/O.
+
+</Gotcha>
+
+<Gotcha question="Does moving CPU-bound work into a worker thread give it real parallelism in Python?">
+
+No — the GIL means only one thread executes Python bytecode at a time, so a CPU-bound function in a thread still serializes with every other thread doing Python work. Threads are the right tool for blocking I/O, where the thread spends most of its time waiting rather than computing — not for CPU-heavy work, which needs a separate process to actually run in parallel.
+
+</Gotcha>
+
+<Gotcha question="Can `asyncio.gather()` be trusted to run a list of coroutines at a safe, bounded concurrency automatically?">
+
+No — `gather()` has no concept of a concurrency limit; it schedules every coroutine you pass it at once. If the size of that list is influenced by user input, an explicit bound (a semaphore or batching) is required, or the fan-out scales directly with whatever the caller sends.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

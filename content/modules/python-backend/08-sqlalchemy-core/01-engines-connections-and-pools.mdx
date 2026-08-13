@@ -63,7 +63,7 @@ Set connection acquisition, statement, and transaction timeouts at appropriate l
 
 ## Exercises
 
-<Exercise id="sa-engine-1">
+<Exercise id="sa-engine-1" difficulty="easy">
 
 Calculate the maximum base pool connections for 6 workers with `pool_size=8`, excluding overflow.
 
@@ -74,7 +74,7 @@ Forty-eight connections. Add migration, worker, and administrative budgets befor
 </Solution>
 </Exercise>
 
-<Exercise id="sa-engine-2">
+<Exercise id="sa-engine-2" difficulty="medium">
 
 Repair SQL constructed with an interpolated task ID.
 
@@ -85,16 +85,66 @@ Use `text("... WHERE id=:id")` and pass `{"id": task_id}`. For dynamic identifie
 </Solution>
 </Exercise>
 
-<Exercise id="sa-engine-3">
+<Exercise id="sa-engine-3" difficulty="hard">
 
-What does `pool_pre_ping` solve and not solve?
+A Kubernetes deployment for this API autoscales from 4 pods to 20 pods under load, each configured with `pool_size=10, max_overflow=5`. The Postgres instance has 100 connections available after migrations and admin tooling reserve their share. Calculate worst-case connection demand at full scale, and explain the operational fix.
 
 <Solution>
 
-It detects a dead connection during checkout. It does not retry arbitrary transactions, fix slow queries, or make a connection survive failure mid-transaction.
+Worst case per pod is `pool_size + max_overflow = 15`; at 20 pods, that's up to 300 possible connections against 100 available — the autoscaler can drive the application straight into connection exhaustion during exactly the traffic spike it was scaling to handle.
+
+The fix is sizing per-pod pool settings against `available_connections / max_expected_pod_count`, not against a single pod considered in isolation, and often introducing a connection pooler (like PgBouncer) in front of the database so the database-facing connection count stays bounded regardless of how many application pods exist.
 
 </Solution>
 </Exercise>
+
+<Exercise id="sa-engine-4" difficulty="interview">
+
+Interview-style: "What does `pool_pre_ping` solve, and what does it not solve?" Answer in three sentences or fewer.
+
+<Solution>
+
+It detects a dead or stale pooled connection at checkout time — before handing it to your code — by issuing a lightweight test round trip, which prevents the common failure of getting a connection that silently died while sitting idle in the pool.
+
+It does not retry a transaction that was already in progress when a connection failed, fix slow queries, or make an in-flight connection survive a failure mid-transaction. It's a checkout-time health check, not general resilience for connections already in use.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sa-engine-5" difficulty="real-world">
+
+A dependency-injection refactor accidentally moves `engine = create_engine(...)` inside a per-request dependency function instead of application startup. Within an hour in production, the database's connection count maxes out and new requests start timing out waiting for a connection. Diagnose and fix.
+
+<Solution>
+
+Each request now creates a brand-new `Engine`, and every `Engine` owns its own connection pool — so instead of one shared pool being checked out from and returned to across requests, the app is minting a fresh pool on every single request, and those connections accumulate rather than being reused, quickly exhausting the database's connection limit.
+
+The fix is exactly this lesson's common mistake: an engine must be created once, at application scope (module level or lifespan startup), never per request. Per-request code should check out and return *connections* from the one shared pool, not construct the engine itself.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does creating an `Engine` immediately open a database connection?">
+
+No — engine creation is normally lazy. The first actual database operation is what opens (or checks out) a connection; creating the engine object itself just configures the dialect, driver, and pool.
+
+</Gotcha>
+
+<Gotcha question="Does `pool_pre_ping` guarantee a connection will survive for the duration of a transaction?">
+
+No — it only checks connection health at checkout, before your code starts using it. A connection that passes the pre-ping check can still fail partway through a long-running transaction; pre-ping reduces one specific failure window, it doesn't eliminate connection failures generally.
+
+</Gotcha>
+
+<Gotcha question="Is increasing `pool_size` on one application instance always a safe way to add capacity?">
+
+No — pool size has to be budgeted against the database's total connection limit shared across every instance, migration process, and admin tool, not decided per instance in isolation. Increasing it on one instance without accounting for the others is exactly how a fleet collectively exceeds what the database can actually support.
+
+</Gotcha>
+
+</Gotchas>
 
 <Checkpoint>
 

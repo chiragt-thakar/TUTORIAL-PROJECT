@@ -1,0 +1,205 @@
+---
+id: lc-langsmith-observability
+title: "LangSmith: Tracing, Evaluation, and Debugging in Production"
+description: See every step of a chain or agent run, and turn your Module 2 eval harness into a tracked LangSmith dataset.
+module: the-langchain-ecosystem
+order: 4
+estimatedMinutes: 50
+prerequisites: [lc-langgraph-agents]
+learningObjectives:
+  - Read a LangSmith trace to find exactly which step in a chain failed
+  - Turn an eval set into a LangSmith dataset with tracked runs over time
+  - Decide when tracing infrastructure is worth adding to a project
+---
+
+## Tracing that costs zero lines of instrumentation
+
+Lesson 1's chain was `prompt | model | parser` — three objects sharing one `Runnable` interface. That shared interface is exactly what makes automatic tracing possible: because every step already implements the same `.invoke()` contract, LangSmith can hook into that one interface once and capture every step of every chain or graph, without you adding a single logging call to any of them.
+
+```python title="enable_tracing.py"
+import os
+
+os.environ["LANGCHAIN_TRACING_V2"] = "true"
+os.environ["LANGCHAIN_API_KEY"] = "..."
+os.environ["LANGCHAIN_PROJECT"] = "support-agent"
+
+# no change to the chain itself — every .invoke() call is now traced
+result = chain.invoke({"text": long_document})
+```
+
+No code in `chain` changed. Three environment variables turned on tracing for every `Runnable` in the process, because the tracing hook lives at the interface level Lesson 1 introduced, not inside each individual step's implementation.
+
+<Concept>
+
+This is the direct payoff of Module 6 Lesson 4's hand-built structured trace logging, now automatic instead of something you write yourself. The reason it's automatic *here* and wasn't in Module 6 is specifically the shared `Runnable` interface — a hand-rolled agent loop has no equivalent shared interface for a tracer to hook into, which is exactly why it needed explicit `print(json.dumps(...))` calls at each step instead.
+
+</Concept>
+
+## Reading a trace to find the failing step
+
+A LangSmith trace for a chain or graph run is a tree: one entry per step, showing exact input, exact output, latency, and token count for that step specifically — not just the final result.
+
+Lesson 1's "which of my three steps produced garbage" question, and Module 6 Lesson 4's "was the bug in tool execution or model reasoning" split, both become a matter of opening the trace and reading down the tree instead of re-running the code with debug prints added after the fact.
+
+```text title="reading_a_trace.txt"
+RunnableSequence
+├─ ChatPromptTemplate     [12ms]  input: {text: "..."} → output: [SystemMessage, HumanMessage]
+├─ ChatOpenAI              [890ms] input: [...] → output: AIMessage(content="...")
+└─ StrOutputParser         [1ms]   input: AIMessage(...) → output: "..."
+```
+
+If the final output is wrong, the trace tells you immediately which step's *output* first diverged from what it should have been — the prompt step's rendered messages, the model step's raw response, or the parser step's extraction — rather than requiring a guess based on which step was written most recently, exactly the mistake Lesson 1's real-world exercise called out.
+
+<WhyItMatters>
+
+The gap between "a chain failed" and "step 2 of 3 returned an empty string when the input was fine" is the entire difference between a five-minute fix and an open-ended debugging session. Automatic tracing collapses that gap without requiring the discipline of remembering to add logging everywhere in advance — the same discipline Module 6 needed you to build in by hand.
+
+</WhyItMatters>
+
+## Turning an eval set into a tracked dataset
+
+Module 2's regression harness compared two prompt versions against a shared eval set, scored by hand-written check functions. LangSmith formalizes exactly that pattern: a **Dataset** of input/expected-output examples, run against a chain via `evaluate()`, scored by evaluator functions, with results tracked over time as the chain changes.
+
+```python title="langsmith_eval.py"
+from langsmith import Client
+from langsmith.evaluation import evaluate
+
+client = Client()
+dataset = client.create_dataset("faq-eval-v1")
+for case in EVAL_SET:
+    client.create_example(
+        inputs={"query": case["query"]},
+        outputs={"expected": case["expected_claim"]},
+        dataset_id=dataset.id,
+    )
+
+def correctness(run, example) -> dict:
+    return {"score": example.outputs["expected"].lower() in run.outputs["answer"].lower()}
+
+results = evaluate(
+    lambda inputs: chain.invoke(inputs),
+    data="faq-eval-v1",
+    evaluators=[correctness],
+)
+```
+
+The `correctness` evaluator here is the same substring-matching logic Module 5's `check_groundedness` used — the mechanism for *judging* a response correct or not doesn't change; what LangSmith adds is a dataset that persists across runs, so scores over time (across prompt changes, model swaps, retriever changes) are directly comparable instead of living in whatever ad-hoc script happened to produce them last.
+
+<CommonMistake>
+
+Enabling tracing in production without first deciding what's safe to send to a third-party service. Full prompts, retrieved context, and model outputs can contain user PII or sensitive business data — tracing captures all of it by default, and "we'll review that later" is how sensitive data ends up sitting in a tracing vendor's storage before anyone actually reviewed it.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Treat trace data with the same redaction, retention, and access-control policy as application logs — because that's functionally what it is, just captured automatically and in more structural detail than a typical log line. Decide what's redacted *before* enabling tracing in production, not after an audit finds something that shouldn't be there.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="lc-langsmith-observability-1" difficulty="easy">
+
+What has to change in `chain`'s own code to enable tracing for every `.invoke()` call on it?
+
+<Solution>
+
+Nothing — tracing is enabled entirely through environment variables (`LANGCHAIN_TRACING_V2`, `LANGCHAIN_API_KEY`, `LANGCHAIN_PROJECT`) set before the chain runs. No code inside the chain's definition needs to change.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-langsmith-observability-2" difficulty="medium">
+
+Explain why automatic tracing is possible for a LangChain `Runnable` chain but required manual `print` statements in Module 6's hand-written agent loop.
+
+<Solution>
+
+Every step in a LangChain chain implements the same `Runnable` interface (Lesson 1), so a tracer can hook into that one shared interface once and automatically capture every step of any chain built from it.
+
+Module 6's hand-written loop had no equivalent shared interface — it was plain Python function calls with no common contract a generic tracer could hook into — so getting the same visibility required explicitly writing a log line after each step by hand.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-langsmith-observability-3" difficulty="hard">
+
+`evaluate()` runs against `faq-eval-v1`, but every example scores 0 despite the chain's answers looking correct when read manually. The `correctness` evaluator checks `example.outputs["expected"] in run.outputs["answer"]`, but the chain actually returns a plain string, not a dict with an `"answer"` key. Diagnose using this lesson's concepts.
+
+<Solution>
+
+`run.outputs["answer"]` assumes the chain's output is a dict with a specific key, but the chain returns a bare string — so `run.outputs["answer"]` either raises or, if the evaluator harness wraps unstructured output under a default key, doesn't contain what the evaluator expects, causing every comparison to fail regardless of whether the actual answer content is correct.
+
+The evaluator function's assumptions about output shape need to match the chain's actual return type — this is a data-shape mismatch between what `evaluate()` is testing and what the evaluator was written to expect, not evidence that the chain itself is producing wrong answers.
+
+The fix is either changing the chain to return a dict with an `"answer"` key, or changing `correctness` to read the output shape the chain actually produces.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-langsmith-observability-4" difficulty="interview">
+
+Interview-style: "Why can LangSmith trace an entire multi-step chain automatically with zero manual logging code, when Module 6's hand-built agent needed explicit print statements for equivalent visibility?" Answer in three sentences or fewer.
+
+<Solution>
+
+Every step in a LangChain chain shares one interface — `Runnable` — so a tracer only needs to hook into that single shared contract once to capture input, output, and timing for every step of any chain built from it. A hand-written agent loop has no such shared interface between its pieces; it's just function calls, so there's no single point a generic tracer could hook into automatically.
+
+The manual print statements in Module 6 were doing by hand exactly what the shared interface in LangChain does structurally.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lc-langsmith-observability-5" difficulty="real-world">
+
+A team enables LangSmith tracing in production the day before a launch, without reviewing what gets captured. Two weeks later, a security review discovers full customer support conversations — including account numbers customers typed directly into the chat — sitting in the tracing vendor's storage, unredacted. Using only this lesson's concepts, describe what should have happened before enabling tracing.
+
+<Solution>
+
+This is exactly the common mistake this lesson calls out: tracing captures full inputs and outputs at every step by default, and account numbers typed directly into a chat message would appear verbatim in the traced prompt and model output with nothing redacting them.
+
+"We'll review that later" isn't a safe sequencing — by the time a review happens, sensitive data has already been sent to and stored by a third-party service.
+
+What should have happened is deciding, before tracing was ever enabled, what categories of data needed redaction (account numbers, any other PII patterns relevant to the product) and implementing that redaction at the point data enters the traced chain — then treating the resulting trace data under the same retention and access-control policy as any other application log containing customer data, per this lesson's production note.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does enabling LangSmith tracing require adding logging code to each step of a chain?">
+
+No — because every step shares the `Runnable` interface, tracing hooks in at that shared interface level and is enabled through environment variables alone. No per-step instrumentation code is needed, which is exactly why it's automatic for LangChain chains but wasn't for Module 6's hand-written loop.
+
+</Gotcha>
+
+<Gotcha question="Does a trace showing a step's output being wrong automatically tell you the fix?">
+
+No — a trace tells you *where* in the chain something first went wrong, narrowing a debugging session from "somewhere in this chain" to "this specific step, given this specific input." It doesn't diagnose *why* that step produced the wrong output; that still requires understanding what the step should have done with that input.
+
+</Gotcha>
+
+<Gotcha question="Is trace data automatically safe to send to a third-party tracing service, since it's just debugging information?">
+
+No — trace data captures full inputs and outputs by default, which can include user PII or sensitive business data exactly as it appeared in the real request. It needs the same redaction, retention, and access-control treatment as application logs, decided before tracing is enabled, not discovered afterward.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can enable tracing for a chain with no code changes to the chain itself, read a trace to identify which specific step produced a wrong output, convert an eval set into a tracked LangSmith dataset, and identify what data needs redaction before enabling tracing in production.
+
+</Checkpoint>
+
+## Summary
+
+LangSmith traces every step of a chain or graph automatically, because every step already implements the shared `Runnable` interface Lesson 1 introduced — no manual logging code required, unlike Module 6's hand-instrumented agent loop. A LangSmith dataset formalizes Module 2's eval-harness pattern with persistent, comparable tracked runs over time, using the same evaluator logic you'd otherwise hand-write.
+
+None of this is free of responsibility: trace data needs the same data-handling discipline as any other log containing real user content.
+
+This closes the module: you can now recognize LCEL, retrievers, memory wiring, LangGraph agents, and LangSmith tracing as packaged versions of mechanics you built by hand in Modules 1 through 7. Just as importantly, you know exactly which design responsibilities — memory policy, stopping conditions, data handling — the framework leaves entirely in your hands.
+
+The assignment puts that judgment to direct use: porting a hand-built agent to LangGraph and defending, specifically, what the framework bought and what it cost.

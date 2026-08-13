@@ -1,0 +1,200 @@
+---
+id: genai-agent-state
+title: State and Multi-step Memory
+description: Track what an agent has already tried across steps.
+module: agents-and-workflows
+order: 3
+estimatedMinutes: 40
+prerequisites: [genai-agent-loop-design]
+learningObjectives:
+  - Maintain working state across agent steps
+  - Summarize history instead of resending everything
+  - Avoid state that silently grows unbounded
+---
+
+## The message list is already state — that's the problem
+
+Every turn of the agent loop appends the model's message and every tool result to `messages`, and every subsequent call resends the *entire* list — Module 1's statelessness again, just accumulating. That's correct and necessary; it's also unbounded by default.
+
+A 12-turn agent task with verbose tool outputs (a full search result, a full order record) can easily grow into thousands of tokens resent on every single turn, most of it detail the model no longer needs and is paying to re-read.
+
+```python title="growing_history.py"
+messages = [system_prompt, user_goal]
+# turn 1: + assistant message + tool result  (maybe 200 tokens)
+# turn 2: + assistant message + tool result  (maybe 600 tokens, cumulative)
+# turn 3: + assistant message + tool result  (maybe 1400 tokens, cumulative)
+# ... every turn resends everything before it, and cost grows roughly quadratically
+# with turn count, not linearly, because each turn re-pays for all prior turns too
+```
+
+The fix isn't "send less" in some vague sense — it's distinguishing two different things an agent needs to remember, and treating them differently.
+
+## Working facts versus raw history
+
+**Working state** is the small set of concrete facts the agent has actually learned and will need later — an order ID, a computed eligibility result, a document ID a citation depends on. **Raw history** is the full verbatim record of every call and response that produced those facts.
+
+The model needs working state on every turn. It rarely needs the full raw history of *how* each fact was obtained, once the fact itself is captured.
+
+```python title="agent_state.py"
+from dataclasses import dataclass, field
+
+@dataclass
+class AgentState:
+    goal: str
+    facts: dict[str, str] = field(default_factory=dict)   # working state
+    messages: list[dict] = field(default_factory=list)     # raw history
+
+def record_fact(state: AgentState, key: str, value: str) -> None:
+    state.facts[key] = value
+
+def facts_block(state: AgentState) -> str:
+    if not state.facts:
+        return ""
+    lines = "\n".join(f"- {k}: {v}" for k, v in state.facts.items())
+    return f"Known facts so far:\n{lines}"
+```
+
+Extracting a fact (`record_fact`) after a tool call, and re-injecting `facts_block(state)` as a compact system-adjacent message on later turns, gives the model the *conclusions* it needs without re-sending the raw tool output that produced them.
+
+This is the same instinct as Module 5's citation discipline in reverse: there, you kept the source text so a claim could be verified; here, once a fact is captured and trusted, the source tool output has usually done its job and doesn't need to keep riding along in every subsequent call.
+
+<Concept>
+
+Not every fact is safe to detach from its source this way — Module 5's retrieved chunks stayed in the prompt specifically so the model could cite and you could verify. Working-state extraction is appropriate for facts you're confident are stable and won't need re-verification mid-task (an order ID doesn't change), not for claims still under active scrutiny.
+
+</Concept>
+
+## Summarizing instead of forgetting
+
+For the raw history itself, the usual answer isn't "delete old turns" — that loses genuine context the model might still need — it's periodic **summarization**: after every few turns, replace the oldest raw tool messages with one compact synthesis message that preserves what mattered and drops the verbatim detail.
+
+```python title="compress_history.py"
+def compress_history(state: AgentState, keep_recent: int = 2) -> None:
+    if len(state.messages) <= keep_recent * 2:
+        return  # not enough history yet to be worth compressing
+
+    old, recent = state.messages[:-keep_recent * 2], state.messages[-keep_recent * 2:]
+    summary = summarize_turns(old)  # one LLM call: "summarize these turns concisely"
+    state.messages = [{"role": "system", "content": f"Earlier progress: {summary}"}] + recent
+```
+
+This costs one extra model call per compression, which is a real tradeoff — it's worth making only when the alternative (resending everything, every turn, for the rest of a long task) costs more than the summarization call itself. For short tasks under a handful of turns, don't bother; the previous lesson's turn cap already bounds how bad unmanaged growth can get.
+
+<WhyItMatters>
+
+An agent that never compresses history doesn't just get slower and more expensive as a task runs longer — past a certain length it silently exceeds the model's context window and starts failing in ways that look unrelated to memory management at all. Bounding state isn't an optimization you add later; it's what makes long-running agent tasks possible at all.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Storing every tool's full raw output in working state "just in case it's needed later," which just recreates the unbounded-growth problem one layer up — now in `facts` instead of `messages`. Working state should hold conclusions, not archives; if you need the archive, that's what compressed (not deleted) history is for.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Log the token count of the outgoing message list on every turn, not just at the end of a task. A slow creep toward the context limit is easy to catch from that log well before it causes a hard failure in front of a user — waiting for the failure itself is the expensive way to discover the pattern.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-agent-state-1" difficulty="easy">
+
+An agent calls `check_order_status` and gets back `{"order_id": "ORD-4471", "status": "shipped"}`. Using `record_fact`, capture the one fact the rest of the task will actually need.
+
+<Solution>
+
+```python
+record_fact(state, "order_status", "ORD-4471: shipped")
+```
+
+The order ID and status are the conclusions later turns need; the full raw JSON response doesn't need to keep riding along once this fact is captured.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-state-2" difficulty="medium">
+
+Explain why `compress_history` keeps the most recent `keep_recent * 2` messages uncompressed instead of summarizing everything, including the last turn.
+
+<Solution>
+
+The most recent turns are the ones most likely to still be directly relevant to the model's immediate next decision — summarizing them risks losing detail the model needs right now, for a compression benefit that's smallest exactly where the messages are smallest (they haven't accumulated much yet). Compression pays off on *old* history precisely because it's less likely to need fine-grained detail preserved.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-state-3" difficulty="hard">
+
+A long-running agent's `facts` dict has an entry `"search_results": "<2000 tokens of raw search output>"` that a teammate added because "we might need it again." Diagnose the problem and fix it using both concepts from this lesson.
+
+<Solution>
+
+This is working state being used as an archive, which recreates the same unbounded-growth failure this lesson describes for raw history — except now it's hiding in `facts`, which the system treats as small and always-resent, not subject to compression at all.
+
+The fix is two-part: extract the specific conclusion the task actually needs from that search (a document ID, a specific figure) into a genuinely small fact, and if the raw search output might legitimately be needed again, let it live in `messages` instead, where it's subject to `compress_history` on the normal schedule rather than permanently bypassing memory management.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-state-4" difficulty="interview">
+
+Interview-style: "Why summarize old agent history instead of just deleting it once it's several turns old?" Answer in three sentences or fewer.
+
+<Solution>
+
+Deleting old turns outright risks losing context the model genuinely still needs — an earlier decision or constraint that turns out to matter again later in the task. Summarization keeps a compressed version of what happened instead of nothing, trading detail for size rather than trading correctness for size. The goal is bounding token growth without silently making the agent forget things that were actually load-bearing.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-agent-state-5" difficulty="real-world">
+
+A 20-turn agent task that used to cost about $0.30 started costing over $2.00 after a feature update that made tool outputs more verbose (richer JSON with more fields). No logic changed elsewhere. Using only what this lesson covered, explain the mechanism and the fix.
+
+<Solution>
+
+Because every turn resends the full accumulated message list, a per-tool-output size increase doesn't just add its own extra tokens once — those extra tokens get re-sent and re-paid-for on every subsequent turn of the task, so a moderate verbosity increase early in a 20-turn task compounds across the remaining turns.
+
+This is exactly the unbounded-growth mechanism this lesson opened with, just triggered by a payload-size change rather than a turn-count change.
+
+The fix is the same one this lesson built: extract the specific facts each verbose tool output actually contributes into working state, and apply `compress_history` on the raw message list so old, now-more-verbose tool outputs get folded into a compact summary instead of riding along at full size for the rest of the task.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does resending the full message list on every turn mean cost grows linearly with turn count?">
+
+No — it tends to grow faster than linearly, because each turn re-pays for every prior turn's content in addition to its own. A task that's twice as long isn't roughly twice the cost; the accumulated resending makes it worse than that, which is exactly why unmanaged history growth matters more than it might first appear.
+
+</Gotcha>
+
+<Gotcha question="Is working state ('facts') exempt from the same unbounded-growth risk as raw message history?">
+
+No — it's exempt only if it's used for what it's meant for: small, extracted conclusions. Storing full raw tool outputs in working state "to be safe" just relocates the unbounded-growth problem into a place that isn't subject to the same compression discipline as the message list.
+
+</Gotcha>
+
+<Gotcha question="Does summarizing history lose information the same way deleting it does?">
+
+Not the same way — summarization is lossy by design (it compresses, and some detail is genuinely dropped), but it preserves the gist of what happened rather than removing it outright. The tradeoff is detail for size, not correctness for size; whether that tradeoff is safe depends on whether the dropped detail was actually load-bearing for the rest of the task.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can separate an agent's working state from its raw history, explain why unmanaged history grows worse than linearly with turn count, and apply periodic summarization to keep a long-running task's token cost bounded.
+
+</Checkpoint>
+
+## Summary
+
+The message list an agent resends every turn is state, and it grows unless something manages it. Separate small, extracted working facts from the raw history that produced them, and periodically compress old raw history into a summary instead of either deleting it or letting it accumulate forever — bounded state is what makes long-running agent tasks viable rather than a slow-motion cost and context-window failure.
+
+The next lesson covers what to do when, despite all of this, an agent still does something wrong — and how to find out why.

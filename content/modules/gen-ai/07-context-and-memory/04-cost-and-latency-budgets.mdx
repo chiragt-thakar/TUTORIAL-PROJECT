@@ -1,0 +1,211 @@
+---
+id: genai-cost-latency
+title: Cost and Latency Budgets
+description: Treat tokens like a resource with a budget, not an afterthought.
+module: context-and-memory
+order: 4
+estimatedMinutes: 40
+prerequisites: [genai-persistent-memory]
+learningObjectives:
+  - Estimate cost per request at scale
+  - Trade off model size against latency and cost
+  - Cache repeated or predictable requests
+---
+
+## A cheap request times a large number is not cheap
+
+Every technique in this module — truncation, summarization, retrieval-scoped memory — has quietly been a cost-control technique as much as a coherence technique. This lesson makes that lens explicit: tokens cost money and take time, per call, and neither fact stays negligible once you multiply by real traffic.
+
+```python title="cost_at_scale.py"
+def request_cost(input_tokens: int, output_tokens: int, price_in: float, price_out: float) -> float:
+    return (input_tokens * price_in + output_tokens * price_out) / 1_000_000
+
+# a single request: looks trivial
+single = request_cost(2_000, 500, price_in=0.15, price_out=0.60)  # ≈ $0.0006
+
+# the same request pattern, 1 million times a day
+daily = single * 1_000_000  # ≈ $600/day, ≈ $18,000/month
+```
+
+A per-request cost of a fraction of a cent reads as "doesn't matter" in isolation and as a genuine budget line the moment you multiply by actual daily volume — the arithmetic doesn't change, only the number of zeros does. Estimate at scale *before* shipping a feature, not after the first invoice.
+
+<Concept>
+
+This is the same discipline as Module 6's per-task `max_cost` budget, applied one level up: that lesson bounded cost for *one agent task*; this one bounds cost for *the whole system's traffic*. Both come from treating tokens as a metered resource with a number attached, not an implementation detail you don't think about until it's expensive.
+
+</Concept>
+
+## Bigger models aren't automatically the right default
+
+A more capable model is typically slower and more expensive per token, but it may need fewer retries or follow-up turns to land a correct answer the first time — while a smaller, cheaper model is fast and inexpensive per call, but may need a fallback path for the requests it genuinely can't handle well.
+
+Neither is "correct" as a blanket default; the right choice depends on matching model capability to task difficulty.
+
+```python title="model_routing.py"
+def route_request(query: str) -> str:
+    if is_simple_lookup(query):        # classification/extraction/simple Q&A
+        return "gpt-4.1-mini"
+    return "gpt-4.1"                    # multi-step reasoning, ambiguous or high-stakes
+
+def answer_with_escalation(query: str) -> str:
+    response = call_model(route_request(query), query)
+    if looks_low_confidence(response):
+        response = call_model("gpt-4.1", query)  # escalate only when the cheap path struggled
+    return response
+```
+
+Routing by task complexity — cheap model first, escalate only when needed — usually beats either extreme (always-cheap, which produces more failures downstream, or always-expensive, which pays premium prices for requests that never needed it).
+
+<WhyItMatters>
+
+Model choice compounds the same way token count does: a system that defaults to the most capable model for every request, including the large share that are simple lookups a cheaper model would handle correctly, pays a multiplier on its entire traffic volume for capability most requests never actually needed.
+
+</WhyItMatters>
+
+## Caching: the cheapest tokens are the ones you don't send
+
+Some fraction of real traffic is genuinely repeated or near-repeated — the same FAQ question worded slightly differently, the same classification task run on similar inputs. A cache that recognizes this avoids paying for a model call at all.
+
+```python title="response_cache.py"
+import hashlib
+import json
+import time
+from pathlib import Path
+
+CACHE_PATH = Path("response_cache.json")
+
+def cache_key(prompt: str) -> str:
+    return hashlib.sha256(prompt.encode()).hexdigest()
+
+def cached_call(prompt: str, ttl_seconds: int = 3600) -> str:
+    cache = json.loads(CACHE_PATH.read_text()) if CACHE_PATH.exists() else {}
+    key = cache_key(prompt)
+    entry = cache.get(key)
+
+    if entry and time.time() - entry["cached_at"] < ttl_seconds:
+        return entry["response"]
+
+    response = call_model("gpt-4.1-mini", prompt)
+    cache[key] = {"response": response, "cached_at": time.time()}
+    CACHE_PATH.write_text(json.dumps(cache))
+    return response
+```
+
+Exact-match caching (identical prompt text) is the safe, simple version. Semantic caching — Module 4 and 5's embedding-similarity retrieval, applied to *past requests* instead of documents — catches near-duplicates too, at the cost of needing a relevance threshold and the same false-positive risk any similarity-based system carries.
+
+<CommonMistake>
+
+Caching a response that includes personalized or time-sensitive content as if it were generic — serving a cached answer that references "your order from yesterday" to a different user, or a stale cached answer to "what's today's date." Cache only content whose correctness doesn't depend on who's asking or when.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Track cache hit rate as a first-class metric, not an implementation detail. A low hit rate on traffic you expected to be repetitive is a signal something's wrong — cache keys too specific, TTL too short, or the traffic wasn't actually as repetitive as assumed — worth investigating before assuming the cache is simply "not helping."
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-cost-latency-1" difficulty="easy">
+
+A request averages 1,500 input tokens and 300 output tokens, at $0.15/1M input and $0.60/1M output. Estimate the cost for 100,000 such requests.
+
+<Solution>
+
+Per-request: `(1500 * 0.15 + 300 * 0.60) / 1_000_000 ≈ $0.000405`. For 100,000 requests: `≈ $40.50`. A fraction-of-a-cent request adds up quickly once real volume is applied.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-cost-latency-2" difficulty="medium">
+
+Explain the tradeoff `route_request` is making, and why "always use the most capable model" isn't the safe default it might seem.
+
+<Solution>
+
+Always using the most capable model avoids ever under-serving a hard request, but it pays that model's higher per-token price and latency for every request — including the large share that a cheaper model would have answered just as correctly.
+
+The tradeoff `route_request` makes is accepting a small risk of needing an escalation call on genuinely hard requests, in exchange for not paying premium cost on every simple one — usually a net win because most real traffic skews toward the easy end.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-cost-latency-3" difficulty="hard">
+
+A team adds exact-match response caching to a customer support bot and is surprised the cache hit rate is under 2%, despite handling what they assumed was highly repetitive traffic (the same handful of common questions, over and over). Diagnose the likely cause using only this lesson's concepts.
+
+<Solution>
+
+Exact-match caching keys on identical prompt text, but real user traffic is rarely *identical* even when the underlying intent repeats — "how do I reset my password," "can you help me reset my password," and "password reset help" are three different cache keys under exact match despite being the same question.
+
+The traffic likely is repetitive in intent, just not in exact wording, which is precisely the gap semantic caching (embedding-similarity matching against past requests) is meant to close and exact-match caching structurally cannot.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-cost-latency-4" difficulty="interview">
+
+Interview-style: "Why might a system that routes requests between a cheap and an expensive model outperform one that always uses the expensive model, on both cost and quality?" Answer in three sentences or fewer.
+
+<Solution>
+
+Cost improves directly because most real traffic is simple enough for the cheap model to handle correctly, so the expensive model's premium price is only paid on the smaller share of requests that actually need it.
+
+Quality can also improve, counterintuitively, because an escalation path means hard requests get routed to the model actually suited for them rather than being handled by whichever single model was chosen as the one-size-fits-all default.
+
+The combination — cheap by default, escalate on genuine difficulty — captures the strengths of both without inheriting either one's full downside.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-cost-latency-5" difficulty="real-world">
+
+A production incident: a caching layer served a cached response containing "your refund of $42.00 was processed on March 3rd" to a different user asking a similarly-worded refund question three weeks later. Using only what this lesson covered, diagnose the caching mistake and the fix.
+
+<Solution>
+
+This is the personalization mistake this lesson's common-mistake callout warns against directly: a response containing user-specific, time-sensitive content (a specific refund amount and date, for a specific person) was cached and served as if it were generic, reusable content. Whatever matching mechanism served the cache hit — exact or semantic — the deeper problem is that this response was ever eligible for caching in the first place.
+
+The fix isn't a smarter matching threshold; it's excluding personalized or time-sensitive responses from the cache entirely, or scoping cache keys to include the specific user and a short enough TTL that stale personal data can't resurface. Only genuinely generic content — content whose correctness doesn't depend on who's asking or when — belongs in a shared cache.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does a per-request cost of a fraction of a cent mean cost isn't worth planning for?">
+
+No — that fraction-of-a-cent figure is only meaningful multiplied by expected traffic volume. A cost that looks negligible per request can represent a real, budget-relevant number once multiplied across a production system's actual daily or monthly request count.
+
+</Gotcha>
+
+<Gotcha question="Is the most capable available model always the safest default choice for every request?">
+
+No — it's the safest choice for avoiding under-serving a hard request, but it pays that model's full cost and latency premium on every request, including the large share that a cheaper model would answer just as correctly. Routing by task difficulty, with escalation for genuinely hard cases, typically beats an always-expensive default on both cost and overall latency.
+
+</Gotcha>
+
+<Gotcha question="Does exact-match caching capture most of the benefit of caching repetitive user traffic?">
+
+Not necessarily — exact-match caching only recognizes literally identical prompt text, while real repetitive traffic is usually repetitive in *intent*, worded differently each time. A low cache hit rate on traffic that seems obviously repetitive is a common sign that semantic (similarity-based) caching is needed instead of, or alongside, exact match.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can estimate a feature's cost at realistic production scale before shipping it, justify routing requests between models by task difficulty instead of defaulting to the most capable one, and identify when a response is safe to cache versus when personalization or time-sensitivity rules caching out.
+
+</Checkpoint>
+
+## Summary
+
+Per-request cost looks negligible in isolation and becomes a real budget line multiplied by production traffic — estimate at scale before shipping, not after the invoice. Route requests between cheap and capable models by task difficulty rather than defaulting to the most expensive option for everything.
+
+Cache genuinely repeated or predictable requests — exact-match for identical text, semantic for repeated intent — while keeping personalized or time-sensitive responses out of any shared cache.
+
+This closes the module: you can now manage a conversation's context window deliberately, compress its history without losing what matters, give it durable memory across sessions, and treat the tokens all of that consumes as a budget rather than an afterthought.
+
+The next module puts a name to something you've been assembling by hand since Module 3 — the LangChain ecosystem, which packages tool calling, agent loops, and context management into a shared framework, once you already know what it's automating.

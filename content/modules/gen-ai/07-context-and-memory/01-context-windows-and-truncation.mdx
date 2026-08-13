@@ -1,0 +1,183 @@
+---
+id: genai-context-window
+title: Context Windows and Truncation
+description: What happens when a conversation gets too long, and how to plan for it.
+module: context-and-memory
+order: 1
+estimatedMinutes: 40
+prerequisites: []
+learningObjectives:
+  - Estimate token usage of a conversation
+  - Choose a truncation strategy
+  - Avoid silently dropping important context
+---
+
+## A context window is a hard ceiling, not a soft guideline
+
+Every model call processes a fixed maximum number of tokens — input and output combined. A 128k-token context window doesn't mean "128k tokens of conversation, plus however much response you want"; it means the request and the response share that one budget. Send 127,900 tokens of history and the model has 100 tokens left to answer with, whether or not that's enough to finish a thought.
+
+An app that just keeps appending every message to a growing list, with no budget check, is building toward a specific failure: eventually a request exceeds the window and the API rejects it outright — not gracefully, not partially, a hard error on a call the user was mid-conversation with.
+
+Module 6's agent loop had a bounded, known-length task where this rarely became the whole story; a long-running chat conversation with no natural end has no such bound, so the failure isn't hypothetical, it's a matter of when.
+
+```python title="naive_growth.py"
+messages = [system_prompt]
+# every turn: append user message, append assistant reply
+# nothing here ever checks size — the array just grows until the API says no
+```
+
+## Estimating before you send, not discovering after
+
+You don't need exact token counts to make good decisions — you need a budget check that runs *before* the call, using an estimate cheap enough to compute on every turn.
+
+A rough rule of thumb (roughly 4 characters per token for English text) is usually good enough to decide whether you're approaching the ceiling; a real tokenizer (`tiktoken` for OpenAI models) gives an exact count when the decision actually matters.
+
+```python title="token_budget.py"
+def estimate_tokens(text: str) -> int:
+    return len(text) // 4  # rough heuristic; swap for tiktoken when precision matters
+
+def conversation_tokens(messages: list[dict]) -> int:
+    return sum(estimate_tokens(m["content"]) for m in messages)
+
+def fits_budget(messages: list[dict], max_context: int = 128_000, reserve_for_response: int = 2_000) -> bool:
+    return conversation_tokens(messages) <= max_context - reserve_for_response
+```
+
+`reserve_for_response` matters as much as the ceiling itself — reserving nothing for the response means a full-context request leaves the model no room to actually answer, which produces a truncated or empty completion instead of a clean error.
+
+<Concept>
+
+This budget check is the context-management equivalent of Module 6's turn and cost caps: a circuit breaker that runs *before* the expensive thing happens, not a postmortem after it fails. The mechanism is different (token count versus turn count), but the discipline — check first, act second — is the same one this track keeps returning to.
+
+</Concept>
+
+## Truncation strategies, and what each one risks
+
+The simplest strategy is a **sliding window**: once the budget is exceeded, drop the oldest non-system messages until it fits again. It's cheap and requires no extra model call, and it works well when recent context is genuinely what matters most — which is true for a lot of conversational use cases.
+
+```python title="sliding_window.py"
+def truncate_to_fit(messages: list[dict], max_context: int = 128_000, reserve: int = 2_000) -> list[dict]:
+    system, history = messages[0], messages[1:]
+    while conversation_tokens([system, *history]) > max_context - reserve and history:
+        history.pop(0)  # drop oldest non-system message first
+    return [system, *history]
+```
+
+The risk is exactly what the naive version hides: a sliding window drops content *unconditionally*, regardless of whether it still matters. An instruction given in message 2 ("always respond in formal tone") that's still supposed to apply at message 40 gets silently discarded the moment it ages out of the window — the conversation doesn't error, it just quietly stops following an instruction nobody removed on purpose.
+
+<WhyItMatters>
+
+Silent context loss is worse than a hard failure in one specific way: a hard failure is visible immediately, while a sliding window that drops something important produces a conversation that *looks* fine and just subtly stops behaving the way it used to. Nobody gets paged for "the model forgot an instruction from 40 messages ago" the way they would for a 500 error.
+
+</WhyItMatters>
+
+<CommonMistake>
+
+Treating "keep the most recent N messages" as a complete solution rather than a starting point. It's a reasonable default, but it has a specific, known failure mode — early durable instructions or facts silently aging out — and shipping it without acknowledging that tradeoff means the failure surfaces in production instead of in a design review.
+
+</CommonMistake>
+
+<ProductionNote>
+
+Log when truncation actually removes messages, and how many, on every request where it fires. Without that signal, "the assistant stopped following an instruction from earlier" is nearly impossible to diagnose after the fact — with it, it's a log line away.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="genai-context-window-1" difficulty="easy">
+
+A conversation's messages sum to roughly 3,200 characters. Using the 4-characters-per-token heuristic, estimate its token count.
+
+<Solution>
+
+Roughly 800 tokens (`3200 / 4`). This is a rough estimate for budget checks, not an exact count — use a real tokenizer when the decision needs precision.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-context-window-2" difficulty="medium">
+
+`fits_budget` is called with `max_context=128_000` and `reserve_for_response=2_000`, and the conversation is currently at 126,500 estimated tokens. Does it fit? What happens to response quality if you ignore the reservation and let it grow to 127,999?
+
+<Solution>
+
+It does not fit: the effective budget is `128_000 - 2_000 = 126_000`, and 126,500 exceeds that, so truncation should trigger.
+
+If the reservation were ignored and the conversation grew to 127,999 tokens against a 128,000 window, the model would have only 1 token of room left to respond — producing an empty or immediately truncated completion instead of a usable answer.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-context-window-3" difficulty="hard">
+
+A sliding-window truncation strategy just silently dropped the message where a user said "I'm severely allergic to peanuts, never suggest anything containing them" from a long-running cooking-assistant conversation. Diagnose the failure mode and propose a fix using only this lesson's concepts.
+
+<Solution>
+
+This is the sliding window's known risk made concrete: a safety-critical instruction given early in the conversation aged out of the window purely because of message position, with no regard for its importance. Unconditional oldest-first dropping treats a throwaway "what's a good side dish" message from turn 3 identically to a standing safety constraint from turn 3 — which is exactly the flaw.
+
+The fix within this lesson's scope is not deleting such messages unconditionally: either pin specific high-importance messages (like safety constraints) so they're never eligible for truncation alongside the system prompt, or move that fact into a separate always-included block distinct from the sliding window entirely. The next lesson's summarization approach is the more complete fix, since it preserves the *content* of aged-out messages instead of an all-or-nothing keep/drop decision.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-context-window-4" difficulty="interview">
+
+Interview-style: "Why is a hard context-length error from the API actually the *safer* failure mode compared to silent truncation?" Answer in three sentences or fewer.
+
+<Solution>
+
+A hard error is loud and immediate — the request visibly fails, monitoring catches it, and nobody mistakes the response for a normal one. Silent truncation produces a response that looks completely normal while having quietly discarded content the model was supposed to have access to, which can go unnoticed for a long time.
+
+The safer failure is the one you find out about immediately, not the one that degrades quality invisibly.
+
+</Solution>
+</Exercise>
+
+<Exercise id="genai-context-window-5" difficulty="real-world">
+
+A production support chatbot has been running for months. A user complains the bot "forgot" they'd already explained their account was on a legacy billing plan, information they provided 60 messages ago in a single long session. Using only what this lesson covered, describe the most likely mechanism and what log line would confirm it.
+
+<Solution>
+
+The most likely mechanism is exactly what this lesson describes: a sliding-window truncation strategy dropped the message containing the legacy-billing-plan fact once the conversation grew past 60 messages and the token budget forced older history out, with nothing distinguishing that fact as more important than any other message at that position.
+
+The confirming signal is the truncation log line this lesson's production note recommends — for the request where the bot "forgot," the log should show truncation fired and specifically show the legacy-billing-plan message was among those dropped. Its absence from the trimmed message list, next to its presence in the full conversation history, is the direct evidence.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does a model's context window apply only to the input you send, leaving the full stated limit available for its response?">
+
+No — input and output share one combined budget. Sending a request that nearly fills the window leaves correspondingly little room for the response, which can produce a truncated or empty completion even though the request itself succeeded.
+
+</Gotcha>
+
+<Gotcha question="Is dropping the oldest messages when a conversation gets too long always a safe default?">
+
+Not unconditionally — it's a reasonable default for content where recency genuinely matters most, but it treats every message as equally disposable regardless of importance. A standing instruction or safety-critical fact given early in a conversation is exactly as likely to be dropped as small talk from the same turn, unless something explicitly protects it.
+
+</Gotcha>
+
+<Gotcha question="Does a character-count-based token estimate give an exact token count?">
+
+No — the 4-characters-per-token heuristic is a rough approximation useful for budget checks, not an exact count; actual tokenization depends on the specific model's tokenizer and varies by content (code and non-English text often tokenize differently than the heuristic assumes). Use a real tokenizer library when the decision needs precision, not just a "are we close to the limit" check.
+
+</Gotcha>
+
+</Gotchas>
+
+<Checkpoint>
+
+You can estimate a conversation's token usage before sending it, implement a budget check that reserves room for the response, and identify the specific silent-failure risk a naive sliding-window truncation strategy introduces.
+
+</Checkpoint>
+
+## Summary
+
+A context window is a hard, shared budget for input and output combined — check token usage before a call, not after a rejection. A sliding window is the simplest truncation strategy, but it drops content unconditionally by position, which risks silently discarding instructions or facts that still matter simply because they're old.
+
+The next lesson replaces "drop" with "compress": summarizing aged-out history instead of discarding it, so the conversation stays affordable without losing what actually mattered.
