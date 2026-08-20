@@ -10,7 +10,8 @@
     "build": "next build",
     "test": "tsx --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next"
+    "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
+    "generate:roadmap": "tsx scripts/generateRoadmapCurriculum.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.112.2",

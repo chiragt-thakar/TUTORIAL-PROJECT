@@ -1,0 +1,558 @@
+---
+id: "roadmap:phase-1-1.1:0"
+title: "Data model: __dunder__ methods, descriptors, __slots__"
+description: How Python's object protocol actually works — special-method lookup on the type, the equality/hash contract, descriptors as the mechanism under properties and ORMs, and what __slots__ really buys you.
+module: 1-1-python-fluency-beyond-the-basics
+order: 1
+estimatedMinutes: 95
+prerequisites: []
+learningObjectives:
+  - Explain why special methods are looked up on the type and not the instance, and predict what that breaks
+  - Implement the equality, hashing and ordering contracts correctly, including the trap that makes a class unhashable
+  - Write a data descriptor and explain where it sits in attribute lookup precedence
+  - Decide when __slots__ is worth it, and name three things it takes away
+---
+
+Python has no `interface` keyword. It has something stranger and more powerful: a fixed catalogue
+of method names that the *language itself* calls on your behalf. `len(x)` is not a function that
+knows about lists. It is a call to `type(x).__len__(x)`.
+
+That catalogue is the **data model**, and it is the single most important thing to understand
+about Python as a language. Nearly every "how does NumPy do that?" question bottoms out here.
+
+<TypeScriptComparison>
+
+In TypeScript, an interface is a compile-time claim: `implements Iterable<T>` is checked by the
+compiler and then erased. There is no runtime consequence.
+
+In Python, the protocol *is* the runtime. There is no declaration and no checking — you define
+`__iter__` and your object is iterable, immediately, everywhere. Nothing verifies you did it
+correctly. The contract lives in the docs and in your discipline.
+
+JavaScript's closest equivalent is `Symbol.iterator`. Python simply has fifty of them, and they
+cover arithmetic, comparison, attribute access, containment and object construction too.
+
+</TypeScriptComparison>
+
+## The rule that explains most of the surprises
+
+Special methods are looked up on the **type**, not on the instance. Always. This is not an
+optimisation detail you can ignore; it changes what your code does.
+
+```python
+class Sneaky:
+    def __len__(self):
+        return 1
+
+s = Sneaky()
+s.__len__ = lambda: 99      # set an attribute on the instance
+
+print(s.__len__())          # 99  — you called it explicitly
+print(len(s))               # 1   — Python asked the type
+```
+
+Ordinary attribute lookup checks the instance dictionary first. Implicit special-method lookup
+skips it entirely and goes straight to the type. That is why you cannot monkey-patch `len` onto
+one object, and why mocking a dunder in a test requires patching the class.
+
+<WhyItMatters>
+
+This one rule explains a long tail of confusing behaviour: why `__getattr__` never intercepts
+`len()`, why assigning `obj.__enter__` does not make an object usable in a `with` block, and why
+proxy objects have to define every dunder they want to forward rather than catching them
+dynamically.
+
+</WhyItMatters>
+
+## Construction: `__new__` and `__init__` are different jobs
+
+`__new__` **creates** the object. `__init__` **configures** the object that already exists.
+`__init__` must return `None`; `__new__` returns the new instance.
+
+```python
+class Point:
+    def __new__(cls, x, y):
+        print("new", cls)
+        return super().__new__(cls)      # allocate
+
+    def __init__(self, x, y):
+        print("init")
+        self.x, self.y = x, y            # populate
+```
+
+You almost never write `__new__`. The exceptions matter though: subclassing an immutable built-in
+(`int`, `str`, `tuple`) has to happen in `__new__`, because by the time `__init__` runs the value
+is already fixed and cannot be changed.
+
+```python
+class Celsius(float):
+    def __new__(cls, value):
+        if value < -273.15:
+            raise ValueError("below absolute zero")
+        return super().__new__(cls, value)
+```
+
+<CommonMistake>
+
+Returning something from `__init__`. Python raises `TypeError: __init__() should return None`.
+The instinct comes from constructors in other languages that hand you back an object — in Python
+`__new__` did that already, before `__init__` was ever called.
+
+</CommonMistake>
+
+## Representation: `__repr__` before `__str__`
+
+`__repr__` is for you — unambiguous, ideally something you could paste back into a REPL.
+`__str__` is for the user. If you only write one, write `__repr__`: `str()` falls back to it, but
+not the other way round.
+
+```python
+class Money:
+    def __init__(self, amount, currency):
+        self.amount, self.currency = amount, currency
+
+    def __repr__(self):
+        return f"Money({self.amount!r}, {self.currency!r})"
+
+    def __str__(self):
+        return f"{self.amount:.2f} {self.currency}"
+
+    def __format__(self, spec):
+        return format(self.amount, spec or ".2f") + f" {self.currency}"
+```
+
+`!r` inside an f-string calls `repr()`. `__format__` is what `f"{value:>12,.2f}"` routes to, and
+it is why `datetime` can support `f"{now:%Y-%m-%d}"` — the spec string is yours to interpret.
+
+<ProductionNote>
+
+A container's `repr` calls `repr` on its elements, never `str`. So a list of your objects printed
+in a log line shows `__repr__` output. A class without one logs as
+`<myapp.models.Order object at 0x7f...>`, which tells an on-call engineer nothing at 3am. Write
+the `__repr__`.
+
+</ProductionNote>
+
+## Equality and hashing: one contract, easy to break
+
+The rule: **objects that compare equal must have the same hash.** Dicts and sets rely on it. Break
+it and lookups silently miss.
+
+Python protects you with a trap that surprises everyone once:
+
+```python
+class Tag:
+    def __init__(self, name):
+        self.name = name
+
+    def __eq__(self, other):
+        return isinstance(other, Tag) and self.name == other.name
+
+# {Tag("a")}  ->  TypeError: unhashable type: 'Tag'
+```
+
+Defining `__eq__` sets `__hash__ = None` unless you define `__hash__` too. That is deliberate:
+the default hash is identity-based, so redefining equality without redefining hashing would
+guarantee a broken contract. Python would rather stop you.
+
+```python
+class Tag:
+    __slots__ = ("name",)
+
+    def __init__(self, name):
+        self.name = name
+
+    def __eq__(self, other):
+        return isinstance(other, Tag) and self.name == other.name
+
+    def __hash__(self):
+        return hash(self.name)
+```
+
+Hash on the same fields you compare on, and make sure those fields never change while the object
+is in a set or used as a dict key. A mutated key becomes unreachable — it is still in the table,
+under its old hash bucket.
+
+<Exercise id="dm-inline-hash" difficulty="easy">
+
+Given the fixed `Tag` above, what does this print, and why?
+
+```python
+tags = {Tag("db"), Tag("db"), Tag("cache")}
+print(len(tags))
+```
+
+<Solution>
+
+`2`. The two `Tag("db")` objects hash the same and compare equal, so the set keeps one. `Tag("cache")`
+is distinct. If `__hash__` had been omitted, the class would be unhashable and this would raise
+`TypeError` before printing anything.
+
+</Solution>
+</Exercise>
+
+## Ordering, cheaply
+
+`__lt__`, `__le__`, `__gt__`, `__ge__` are separate methods. Writing all four is tedious and easy
+to get subtly inconsistent, so `functools.total_ordering` fills in the rest from `__eq__` and one
+of them.
+
+```python
+from functools import total_ordering
+
+@total_ordering
+class Version:
+    def __init__(self, *parts):
+        self.parts = parts
+
+    def __eq__(self, other):
+        return self.parts == other.parts
+
+    def __lt__(self, other):
+        return self.parts < other.parts
+```
+
+It costs a little speed — the generated methods call yours — so a class in a tight sorting loop
+should still spell all four out. Better still, `sorted(items, key=...)` avoids comparison dunders
+entirely and is usually faster.
+
+## Containers: `__len__`, `__getitem__`, `__iter__`, `__contains__`
+
+Implement `__len__` and `__getitem__` and you get a surprising amount for free, because Python
+falls back to `__getitem__` with integer indices when `__iter__` is missing.
+
+```python
+class Deck:
+    def __init__(self, cards):
+        self._cards = list(cards)
+
+    def __len__(self):
+        return len(self._cards)
+
+    def __getitem__(self, index):
+        return self._cards[index]        # slices work too, because list handles them
+
+for card in Deck("♠♥♦♣"):                # iterates via the __getitem__ fallback
+    print(card)
+```
+
+`in` works too, by scanning. Define `__contains__` when you can answer faster than a scan — a set
+lookup instead of an O(n) walk.
+
+<Concept>
+
+This is exactly the interface PyTorch's `Dataset` requires: `__len__` and `__getitem__`. When you
+write a custom dataset for a `DataLoader`, you are implementing the data model, and the loader's
+sampler is just calling `dataset[i]` in whatever order it likes.
+
+</Concept>
+
+<Exercise id="dm-inline-iter" difficulty="medium">
+
+`Deck` has no `__iter__`. Iteration works anyway. What stops the loop, and what would happen if
+`__getitem__` accepted any integer without bounds checking?
+
+<Solution>
+
+The fallback protocol calls `obj[0]`, `obj[1]`, … and stops when `IndexError` is raised. `list`
+raises it for you. If `__getitem__` never raised `IndexError` — say it wrapped around with a
+modulo — the `for` loop would never terminate.
+
+</Solution>
+</Exercise>
+
+## Truthiness
+
+`bool(x)` tries `__bool__`, then falls back to `__len__`, then defaults to `True`.
+
+That last default catches people: an object with neither method is always truthy. And a container
+that defines `__len__` is falsy when empty, which is why `if my_deck:` means "has cards".
+
+<CommonMistake>
+
+Writing `if results is not None:` when you meant it, but writing `if results:` — and then being
+surprised that an empty DataFrame, empty array or empty list took the else branch. Worse, NumPy
+arrays raise on `bool()` when they have more than one element, precisely to stop this ambiguity.
+
+</CommonMistake>
+
+## Operators, reflection, and `NotImplemented`
+
+`a + b` calls `type(a).__add__(a, b)`. If that returns the special singleton `NotImplemented`,
+Python tries the reflected call `type(b).__radd__(b, a)`. Only if both decline does it raise
+`TypeError`.
+
+```python
+class Vector:
+    def __init__(self, *values):
+        self.values = tuple(values)
+
+    def __add__(self, other):
+        if not isinstance(other, Vector):
+            return NotImplemented          # let the other side try
+        return Vector(*(a + b for a, b in zip(self.values, other.values)))
+
+    __radd__ = __add__
+```
+
+Returning `NotImplemented` is not the same as raising `NotImplementedError`. Returning it is
+polite cooperation; raising is a hard stop. Getting this wrong is why `sum()` sometimes fails on
+custom types — `sum` starts from `0`, so the first operation is `0 + vector`, which needs
+`__radd__`.
+
+`__iadd__` handles `+=`. If you do not define it, `a += b` silently becomes `a = a + b`, which
+rebinds the name instead of mutating — a real difference when the object is shared.
+
+<Exercise id="dm-inline-radd" difficulty="hard">
+
+`sum([Vector(1, 2), Vector(3, 4)])` raises `TypeError` if `__radd__` is missing. Why does adding
+`__radd__ = __add__` fix it, given `0 + Vector(1, 2)` still involves an `int`?
+
+<Solution>
+
+`sum` starts with `0`, so it evaluates `0 + Vector(1, 2)`. `int.__add__` does not know `Vector`
+and returns `NotImplemented`, so Python tries `Vector.__radd__(vector, 0)`. With the alias, that
+runs `__add__`, sees `0` is not a `Vector`, and returns `NotImplemented` again — so it still fails.
+The real fix is to handle the `0` start case explicitly, or use `sum(vectors, start=Vector(0, 0))`.
+
+</Solution>
+</Exercise>
+
+## Attribute access: `__getattr__` versus `__getattribute__`
+
+`__getattribute__` runs on **every** attribute access. `__getattr__` runs **only after normal
+lookup has failed**. You want the second one roughly always.
+
+```python
+class LazyConfig:
+    def __init__(self, loader):
+        self._loader = loader
+        self._cache = {}
+
+    def __getattr__(self, name):          # only called on a miss
+        if name.startswith("_"):
+            raise AttributeError(name)
+        if name not in self._cache:
+            self._cache[name] = self._loader(name)
+        return self._cache[name]
+```
+
+Overriding `__getattribute__` means every `self._cache` inside your own methods re-enters it, and
+infinite recursion is the usual result. If you must, delegate through
+`super().__getattribute__(name)` rather than `self.__dict__`.
+
+Always raise `AttributeError` — not `KeyError` — from `__getattr__`. `hasattr()` and `copy` and
+`pickle` all probe for optional dunders and expect `AttributeError` to mean "not here".
+
+## Descriptors: the mechanism under nearly everything
+
+A **descriptor** is any object defining `__get__`, `__set__` or `__delete__`, stored as a *class*
+attribute. When you access `instance.attr` and the class attribute is a descriptor, Python calls
+the descriptor instead of handing back the object.
+
+This is not an exotic feature. It is how the language is built:
+
+- Functions are descriptors. `obj.method` works because `function.__get__` returns a bound method.
+- `property`, `classmethod` and `staticmethod` are descriptors.
+- SQLAlchemy columns, Django fields and Pydantic's typed attributes are descriptors.
+
+```python
+class Positive:
+    def __set_name__(self, owner, name):     # Python tells you the attribute name
+        self._name = f"_{name}"
+
+    def __get__(self, instance, owner):
+        if instance is None:
+            return self                      # accessed on the class
+        return getattr(instance, self._name)
+
+    def __set__(self, instance, value):
+        if value <= 0:
+            raise ValueError(f"{self._name[1:]} must be positive")
+        setattr(instance, self._name, value)
+
+
+class Order:
+    quantity = Positive()
+    price = Positive()
+
+    def __init__(self, quantity, price):
+        self.quantity = quantity             # goes through Positive.__set__
+        self.price = price
+```
+
+`__set_name__` is called once when the class body is executed, which is how the descriptor learns
+what it was called without you repeating the name.
+
+### Data versus non-data descriptors
+
+This distinction decides who wins when both the instance and the class have the attribute:
+
+1. **Data descriptor** on the type (defines `__set__` or `__delete__`) — wins.
+2. Instance `__dict__`.
+3. **Non-data descriptor** (only `__get__`) or plain class attribute.
+4. `__getattr__`, if everything above missed.
+
+So a `property` (a data descriptor) cannot be shadowed by setting `self.x`, while a plain method
+(non-data) *can* be shadowed by an instance attribute of the same name. That asymmetry is the
+answer to a lot of "why does this work here but not there" confusion.
+
+<Exercise id="dm-inline-descriptor" difficulty="interview">
+
+`Positive` stores its value in `instance._quantity`. What would break if it stored values in a
+dictionary on the descriptor itself, keyed by instance — `self._values[instance] = value`?
+
+<Solution>
+
+Two things. First, the descriptor is one object shared by every instance of the class, so it would
+hold a strong reference to every instance ever created — a memory leak, unless you use a
+`WeakKeyDictionary`. Second, it requires instances to be hashable, so any class that defines
+`__eq__` without `__hash__` could not use the descriptor at all.
+
+Storing on the instance under a mangled name avoids both. It does mean the value is visible in
+`instance.__dict__`, which is a trade the standard library makes too.
+
+</Solution>
+</Exercise>
+
+## `__slots__`: trading flexibility for memory
+
+By default every instance carries a `__dict__` — a whole hash table per object. `__slots__`
+replaces it with a fixed array of descriptors, one per named attribute.
+
+```python
+class Tick:
+    __slots__ = ("symbol", "price", "volume")
+
+    def __init__(self, symbol, price, volume):
+        self.symbol, self.price, self.volume = symbol, price, volume
+```
+
+What you gain: substantially less memory per instance, and slightly faster attribute access
+(array offset rather than dict lookup). On millions of small objects this is the difference
+between fitting in RAM and not.
+
+What you give up:
+
+- **No new attributes.** `tick.spread = 0.01` raises `AttributeError`. Often a feature.
+- **No `__dict__`**, so anything that expects `vars(obj)` or naive `__dict__`-based serialisation
+  breaks.
+- **No weak references**, unless you add `"__weakref__"` to the slots.
+- **Inheritance rules.** If any base class lacks `__slots__`, instances get a `__dict__` anyway
+  and the saving evaporates. Repeating a slot name in a subclass wastes space and hides the parent's.
+- Multiple inheritance from two classes with non-empty slots is a `TypeError`.
+
+<CommonMistake>
+
+Writing `__slots__ = "symbol"` instead of `__slots__ = ("symbol",)`. A bare string is iterable, so
+Python creates slots named `s`, `y`, `m`, `b`, `o`, `l`. No error, completely broken class. Always
+use a tuple.
+
+</CommonMistake>
+
+<Exercise id="dm-inline-slots" difficulty="real-world">
+
+You profile an ingestion service holding 5 million `Tick` objects in memory and it is close to the
+container limit. A colleague suggests `__slots__`. Before agreeing, what three questions should you
+ask about the existing code?
+
+<Solution>
+
+1. **Does anything set attributes dynamically?** Plugins, test fixtures and caching layers that do
+   `obj.cached_x = ...` will start raising `AttributeError`.
+2. **Does anything rely on `__dict__` or `vars()`?** Naive serialisers, some logging helpers and
+   `copy`/`pickle` shims often do.
+3. **What do the base classes look like?** If `Tick` inherits from anything without `__slots__` —
+   including a plain mixin — every instance keeps its `__dict__` and you save nothing.
+
+A fourth worth raising: is a `dataclass(slots=True)`, a `NamedTuple`, or restructuring to columnar
+NumPy arrays a better answer? For five million homogeneous records, arrays usually win outright.
+
+</Solution>
+</Exercise>
+
+## Where you will meet all of this again
+
+- **PyTorch**: `Dataset` is `__len__` + `__getitem__`. `@` on tensors is `__matmul__`.
+  `nn.Module.__setattr__` is overridden so assigning a submodule registers it as a parameter.
+- **Pydantic and SQLAlchemy**: model fields are descriptors, which is how `User.email == "x"` can
+  build a SQL expression instead of returning `True` or `False`.
+- **NumPy**: `arr[mask]` is `__getitem__` with an array argument; the ambiguity error from
+  `if arr:` is a deliberate `__bool__` that refuses to guess.
+
+Reading library source stops being mysterious once you can name the protocol being implemented.
+
+## Checkpoint
+
+You should now be able to answer, without looking anything up:
+
+- Why does setting `obj.__len__` not change what `len(obj)` returns?
+- What exactly does defining `__eq__` do to `__hash__`, and why?
+- Which lookup wins: a data descriptor on the class, or an entry in the instance `__dict__`?
+- Name three things `__slots__` takes away.
+
+If any of those is fuzzy, reread that section before moving to the Practice tab.
+
+<Gotchas>
+
+<Gotcha question="Does __getattr__ intercept len(obj) when __len__ is missing?">
+
+No. Implicit special-method lookup bypasses `__getattr__` entirely, because it goes to the type
+and skips the normal lookup machinery. `len(obj)` raises `TypeError: object of type X has no len()`.
+
+</Gotcha>
+
+<Gotcha question="Is __slots__ inherited?">
+
+The restriction is not. A subclass without its own `__slots__` gets a `__dict__` back, and its
+instances can take arbitrary attributes again — silently undoing the saving. Every class in the
+chain needs `__slots__` for it to hold.
+
+</Gotcha>
+
+<Gotcha question="Why does 0 == False return True, and what does that do to a dict?">
+
+`bool` subclasses `int`, and `False` hashes and compares equal to `0`. So `{0: "a", False: "b"}`
+is a one-key dict whose value is `"b"` — the second assignment overwrote the first, keeping the
+original key object.
+
+</Gotcha>
+
+<Gotcha question="If I define __eq__ and __hash__, is my object safe as a dict key?">
+
+Only if the fields you hash on never change afterwards. Mutating them leaves the object sitting in
+the bucket for its old hash, so `key in d` returns `False` for the very object you put there.
+Freeze the identity fields, or don't use mutable objects as keys.
+
+</Gotcha>
+
+<Gotcha question="Does functools.total_ordering make my class fully ordered?">
+
+It fills in the missing comparison methods, but they are only as correct as the one you wrote. If
+`__lt__` returns `NotImplemented` for foreign types, the generated methods propagate that
+correctly; if it raises, they raise too. It also cannot make a partial order total.
+
+</Gotcha>
+
+<Gotcha question="Is a plain method shadowed by self.method = something?">
+
+Yes. Functions are *non-data* descriptors, so the instance `__dict__` wins. A `property` is a data
+descriptor and wins over the instance, which is why `self.x = 1` inside a class with a `property x`
+calls the setter instead of writing to `__dict__`.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+The data model is a fixed vocabulary of method names the language calls for you. Learn the rule
+that they are looked up on the type, and most of Python's surprising behaviour becomes predictable.
+
+Get the equality and hashing contract right, because dicts and sets depend on it silently. Reach
+for descriptors when you need per-attribute behaviour shared across a class — and recognise them
+when you read a framework, because that is what `property`, ORM columns and typed model fields
+all are. Use `__slots__` deliberately, for many small objects, knowing exactly what it removes.
+
+The Practice tab has the exercises, the Debug tab has broken code that fails in ways this lesson
+explains, and the Project tab has an audited record type to build.

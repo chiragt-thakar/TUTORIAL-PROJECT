@@ -1,0 +1,1832 @@
+# Practice bank for roadmap topic 1.1 #1 — the Python data model.
+#
+# Authored to the standard in PRACTICE_SYSTEM.md: every exercise tests a distinct idea, hints are
+# progressive, and nothing reveals an answer before it is asked for. Ids are progress keys — never
+# rename one that has shipped.
+
+lessonId: "roadmap:phase-1-1.1:0"
+module: 1-1-python-fluency-beyond-the-basics
+lesson: 01-data-model-dunder-methods-descriptors-slots
+title: "Data model: dunder methods, descriptors, __slots__"
+summary: Special-method lookup, the equality/hash contract, descriptors, and the real cost of __slots__.
+
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+
+# ---------------------------------------------------------------------------- exercises
+
+exercises:
+  # ------------------------------------------------------------ normal
+  - id: dm-repr-money
+    tier: normal
+    kind: write-code
+    title: A repr you would actually want in a log
+    minutes: 10
+    requiredForMastery: true
+    concepts: ["__repr__", "__str__", "f-string conversion"]
+    prompt: |
+      Give this class a `__repr__` that could be pasted back into a REPL to rebuild the object,
+      and a `__str__` that a non-programmer would be happy to read.
+
+      Then predict what `print([Money(3, "GBP")])` shows, and why it is not the `__str__` output.
+    code: |
+      class Money:
+          def __init__(self, amount, currency):
+              self.amount = amount
+              self.currency = currency
+    hints:
+      - Use the `!r` conversion inside the f-string so nested strings keep their quotes.
+      - A container's repr calls `repr` on each element, never `str`.
+    solution: |
+      `__repr__` should reproduce the constructor call, `__str__` should format for a human, and
+      printing a list shows the repr of every element because list's own `__repr__` calls
+      `repr()` on its items.
+    solutionCode: |
+      class Money:
+          def __init__(self, amount, currency):
+              self.amount = amount
+              self.currency = currency
+
+          def __repr__(self):
+              return f"Money({self.amount!r}, {self.currency!r})"
+
+          def __str__(self):
+              return f"{self.amount:.2f} {self.currency}"
+
+      print(Money(3, "GBP"))          # 3.00 GBP        -> __str__
+      print([Money(3, "GBP")])        # [Money(3, 'GBP')] -> __repr__
+    explanation: |
+      `str()` falls back to `__repr__` when `__str__` is missing, but never the reverse. That
+      asymmetry is why the advice is always "write `__repr__` first" — it is the one that shows up
+      in tracebacks, debugger watch windows and log lines, which is where you need it most.
+
+  - id: dm-truthiness-predict
+    tier: normal
+    kind: predict-output
+    title: Which of these objects is falsy?
+    minutes: 6
+    requiredForMastery: true
+    concepts: ["__bool__", "__len__", "truthiness"]
+    prompt: |
+      Write down the four values this prints, before running anything.
+    code: |
+      class Empty:
+          pass
+
+      class Sized:
+          def __len__(self):
+              return 0
+
+      class Explicit:
+          def __bool__(self):
+              return False
+
+          def __len__(self):
+              return 42
+
+      print(bool(Empty()), bool(Sized()), bool(Explicit()), bool(object()))
+    hints:
+      - "`bool()` tries `__bool__` first, then `__len__`, then gives up."
+      - What does "gives up" default to for a plain object with neither method?
+    solution: |
+      `True False False True`.
+
+      `Empty` defines neither, so it takes the default, which is `True`. `Sized` has no `__bool__`,
+      so `__len__` decides and zero is falsy. `Explicit` defines both and `__bool__` wins outright,
+      so its length of 42 is irrelevant. A bare `object()` is truthy for the same reason as `Empty`.
+    explanation: |
+      The default-to-`True` rule is the one that bites. A custom result wrapper with no `__len__`
+      and no `__bool__` is always truthy, so `if result:` silently passes even for an empty result —
+      which is exactly why NumPy makes `bool(array)` raise for multi-element arrays instead of
+      guessing.
+
+  - id: dm-eq-hash-set
+    tier: normal
+    kind: write-code
+    title: Make a value object usable in a set
+    minutes: 10
+    requiredForMastery: true
+    concepts: ["__eq__", "__hash__", "hash contract"]
+    prompt: |
+      This class raises `TypeError: unhashable type: 'Tag'` the moment you put one in a set.
+      Fix it, and be able to say exactly what made it unhashable.
+    code: |
+      class Tag:
+          def __init__(self, name):
+              self.name = name
+
+          def __eq__(self, other):
+              return isinstance(other, Tag) and self.name == other.name
+
+      print(len({Tag("db"), Tag("db")}))
+    hints:
+      - Nothing removed `__hash__`. Something you added set it to `None`.
+      - Hash on exactly the fields you compare on, so equal objects always agree.
+    solution: |
+      Defining `__eq__` sets `__hash__ = None` unless you define `__hash__` too. Add one that
+      hashes the same field equality uses, and the set prints `1`.
+    solutionCode: |
+      class Tag:
+          def __init__(self, name):
+              self.name = name
+
+          def __eq__(self, other):
+              return isinstance(other, Tag) and self.name == other.name
+
+          def __hash__(self):
+              return hash(self.name)
+    explanation: |
+      Python does this on purpose. The inherited hash is identity-based, so keeping it after
+      redefining equality would mean two equal objects with different hashes — a violated contract
+      and a dict that silently loses entries. Refusing to be hashable is the safe failure.
+
+  - id: dm-getitem-len
+    tier: normal
+    kind: write-code
+    title: The two methods that make a dataset
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["__len__", "__getitem__", "container protocol"]
+    prompt: |
+      Implement `__len__` and `__getitem__` on `WindowView` so it exposes a fixed-size sliding
+      window over a list without copying it. `WindowView(data, size=3)[i]` should return the list
+      slice starting at `i`.
+
+      Iterating it should work without writing `__iter__`. Make sure it does.
+    code: |
+      class WindowView:
+          def __init__(self, data, size):
+              self.data = data
+              self.size = size
+    hints:
+      - The number of complete windows is `len(data) - size + 1`, floored at zero.
+      - Iteration stops when `__getitem__` raises `IndexError` — so range-check the index yourself.
+    solution: |
+      Return the window count from `__len__`, and slice from `__getitem__` after an explicit
+      bounds check. The bounds check is what makes the `for` loop terminate, because the
+      `__getitem__` iteration fallback keeps counting up until it sees `IndexError`.
+    solutionCode: |
+      class WindowView:
+          def __init__(self, data, size):
+              self.data = data
+              self.size = size
+
+          def __len__(self):
+              return max(0, len(self.data) - self.size + 1)
+
+          def __getitem__(self, index):
+              if not 0 <= index < len(self):
+                  raise IndexError(index)
+              return self.data[index : index + self.size]
+
+
+      for window in WindowView([1, 2, 3, 4, 5], 3):
+          print(window)          # [1,2,3] [2,3,4] [3,4,5]
+    explanation: |
+      This is precisely the interface `torch.utils.data.Dataset` requires. A `DataLoader` never
+      iterates your object — it asks a sampler for indices and calls `dataset[i]`. Understanding
+      that is the difference between copying a dataset template and writing one that streams.
+
+  - id: dm-contains-fast
+    tier: normal
+    kind: write-code
+    title: When to bother writing __contains__
+    minutes: 8
+    requiredForMastery: false
+    concepts: ["__contains__", "in operator", "complexity"]
+    prompt: |
+      `in` already works on the class below, through iteration. Add `__contains__` so membership is
+      O(1) instead of O(n), and say what `in` was doing before you added it.
+    code: |
+      class Roster:
+          def __init__(self, names):
+              self._names = list(names)
+              self._index = set(self._names)
+
+          def __iter__(self):
+              return iter(self._names)
+    hints:
+      - The `_index` set is already there and already correct — use it.
+      - Without `__contains__`, `x in obj` walks `__iter__` comparing each item with `==`.
+    solution: |
+      Add a one-line `__contains__` that consults the set. Before it existed, `in` fell back to
+      iterating and comparing every element, which is O(n) and also runs `__eq__` n times.
+    solutionCode: |
+          def __contains__(self, name):
+              return name in self._index
+    explanation: |
+      The fallback chain for `in` is `__contains__`, then `__iter__`, then the `__getitem__` index
+      protocol. Each fallback still works, just slower — a good example of Python giving you correct
+      behaviour by default and leaving the optimisation as an opt-in.
+
+  - id: dm-slots-convert
+    tier: normal
+    kind: write-code
+    title: Put a hot-path record on slots
+    minutes: 8
+    requiredForMastery: true
+    concepts: ["__slots__", "memory layout"]
+    prompt: |
+      Convert `Tick` to use `__slots__`, then write the one line that proves an instance no longer
+      has a `__dict__`, and the one line that now raises `AttributeError`.
+    code: |
+      class Tick:
+          def __init__(self, symbol, price, volume):
+              self.symbol = symbol
+              self.price = price
+              self.volume = volume
+    hints:
+      - "`__slots__` takes a tuple of names — a bare string would be iterated character by character."
+      - Accessing `instance.__dict__` on a slotted class raises, and so does setting an unlisted attribute.
+    solution: |
+      Declare the three attribute names as a tuple. `Tick("X", 1.0, 1).__dict__` now raises
+      `AttributeError`, and so does assigning any attribute that is not in the tuple.
+    solutionCode: |
+      class Tick:
+          __slots__ = ("symbol", "price", "volume")
+
+          def __init__(self, symbol, price, volume):
+              self.symbol = symbol
+              self.price = price
+              self.volume = volume
+
+      t = Tick("AAPL", 1.0, 10)
+      t.__dict__            # AttributeError: 'Tick' object has no attribute '__dict__'
+      t.spread = 0.01       # AttributeError: 'Tick' object has no attribute 'spread'
+    explanation: |
+      The slots are class-level descriptors, one per name, each pointing at a fixed offset in the
+      instance's memory. That is why access is a little faster than a dict lookup and why the set
+      of legal names is frozen when the class is created.
+
+  # ------------------------------------------------------------ intermediate
+  - id: dm-type-lookup-predict
+    tier: intermediate
+    kind: predict-output
+    title: The instance attribute that len() ignores
+    minutes: 8
+    requiredForMastery: true
+    concepts: ["special method lookup", "type vs instance"]
+    prompt: |
+      Predict both printed numbers, and write one sentence explaining the difference before you
+      reveal anything.
+    code: |
+      class Box:
+          def __len__(self):
+              return 1
+
+      b = Box()
+      b.__len__ = lambda: 99
+
+      print(b.__len__())
+      print(len(b))
+    hints:
+      - One of these two calls is an ordinary attribute lookup. The other is not.
+      - Implicit special-method lookup skips the instance dictionary entirely.
+    solution: |
+      `99` then `1`. Calling `b.__len__()` yourself is a normal attribute access, so the instance
+      dictionary wins. `len(b)` is implicit special-method lookup: it goes straight to
+      `type(b).__len__` and never looks at the instance.
+    explanation: |
+      This is the rule that explains a whole family of surprises — why you cannot patch a dunder
+      onto a single object, why `mock.patch.object(instance, "__enter__")` does not work, and why
+      dynamic proxies must define every dunder they intend to forward instead of catching them in
+      `__getattr__`.
+
+  - id: dm-total-ordering
+    tier: intermediate
+    kind: write-code
+    title: A version type that sorts correctly
+    minutes: 15
+    requiredForMastery: true
+    concepts: ["__eq__", "__lt__", "functools.total_ordering", "tuple comparison"]
+    prompt: |
+      Build a `Version` type that parses `"1.10.2"` and sorts the way engineers expect, so that
+      `Version("1.10.0") > Version("1.9.9")` is `True`.
+
+      Write only `__eq__` and `__lt__`; get the other three comparisons for free. Make it hashable.
+    hints:
+      - String comparison is wrong here — `"1.10" < "1.9"` is `True`. Compare tuples of ints.
+      - "`functools.total_ordering` fills in the rest from `__eq__` plus one ordering method."
+      - Tuples already compare element by element, so delegating to `self.parts` does the work.
+    solution: |
+      Parse into a tuple of integers and delegate both comparisons to that tuple. Decorate with
+      `@total_ordering` so `__le__`, `__gt__` and `__ge__` are generated, and hash the tuple so the
+      type can be used as a dict key.
+    solutionCode: |
+      from functools import total_ordering
+
+      @total_ordering
+      class Version:
+          __slots__ = ("parts",)
+
+          def __init__(self, text):
+              self.parts = tuple(int(piece) for piece in text.split("."))
+
+          def __repr__(self):
+              return f"Version({'.'.join(map(str, self.parts))!r})"
+
+          def __eq__(self, other):
+              return isinstance(other, Version) and self.parts == other.parts
+
+          def __lt__(self, other):
+              if not isinstance(other, Version):
+                  return NotImplemented
+              return self.parts < other.parts
+
+          def __hash__(self):
+              return hash(self.parts)
+    explanation: |
+      Two details separate a correct implementation from a nearly correct one. Returning
+      `NotImplemented` rather than `False` for foreign types lets the other operand try, which is
+      how comparison against a future `LooseVersion` would still work. And hashing the same tuple
+      you compare keeps the equality/hash contract intact.
+
+  - id: dm-format-spec
+    tier: intermediate
+    kind: write-code
+    title: Own the format spec
+    minutes: 12
+    requiredForMastery: false
+    concepts: ["__format__", "format spec mini-language"]
+    prompt: |
+      Give `Duration` a `__format__` so that `f"{d}"` prints `"1h 05m"`, `f"{d:s}"` prints total
+      seconds, and `f"{d:ms}"` prints total milliseconds. Anything else should raise `ValueError`.
+    code: |
+      class Duration:
+          def __init__(self, seconds):
+              self.seconds = int(seconds)
+    hints:
+      - "`__format__` receives the text after the colon as a plain string — an empty one for `f\"{d}\"`."
+      - Raise `ValueError` for an unknown spec, which is what the built-in types do.
+    solution: |
+      Branch on the spec string, treating `""` as the default human format, and raise `ValueError`
+      for anything unrecognised so a typo in a format string fails loudly instead of printing
+      something wrong.
+    solutionCode: |
+      class Duration:
+          def __init__(self, seconds):
+              self.seconds = int(seconds)
+
+          def __format__(self, spec):
+              if spec == "":
+                  return f"{self.seconds // 3600}h {self.seconds % 3600 // 60:02d}m"
+              if spec == "s":
+                  return str(self.seconds)
+              if spec == "ms":
+                  return str(self.seconds * 1000)
+              raise ValueError(f"unknown format spec {spec!r} for Duration")
+    explanation: |
+      This is exactly how `datetime` supports `f"{now:%Y-%m-%d}"` — the spec is not parsed by the
+      language, it is handed to your object verbatim. `format(obj, spec)`, `f"{obj:spec}"` and
+      `"{:spec}".format(obj)` all route to the same method.
+
+  - id: dm-descriptor-validated
+    tier: intermediate
+    kind: write-code
+    title: Write a validating descriptor
+    minutes: 18
+    requiredForMastery: true
+    concepts: ["descriptors", "__set_name__", "__get__", "__set__"]
+    prompt: |
+      Write a reusable `Positive` descriptor so that both attributes below validate on assignment,
+      including the assignments made inside `__init__`, and the error message names the right
+      attribute.
+
+      Do not repeat the attribute name when declaring it — the descriptor must learn its own name.
+    code: |
+      class Order:
+          quantity = ...   # your descriptor
+          price = ...      # your descriptor
+
+          def __init__(self, quantity, price):
+              self.quantity = quantity
+              self.price = price
+    hints:
+      - "`__set_name__(self, owner, name)` is called once, when the class body finishes executing."
+      - Store the value on the instance under a private name so each instance keeps its own copy.
+      - Defining `__set__` makes it a *data* descriptor, which is what lets it intercept assignment at all.
+    solution: |
+      Capture the name in `__set_name__`, store the value on the instance under a mangled name,
+      and validate in `__set__`. Handle `instance is None` in `__get__` so class-level access
+      returns the descriptor rather than exploding.
+    solutionCode: |
+      class Positive:
+          def __set_name__(self, owner, name):
+              self.public = name
+              self.private = f"_{name}"
+
+          def __get__(self, instance, owner=None):
+              if instance is None:
+                  return self
+              return getattr(instance, self.private)
+
+          def __set__(self, instance, value):
+              if not isinstance(value, (int, float)) or isinstance(value, bool):
+                  raise TypeError(f"{self.public} must be a number")
+              if value <= 0:
+                  raise ValueError(f"{self.public} must be positive, got {value!r}")
+              setattr(instance, self.private, value)
+
+
+      class Order:
+          quantity = Positive()
+          price = Positive()
+
+          def __init__(self, quantity, price):
+              self.quantity = quantity
+              self.price = price
+    explanation: |
+      The `bool` check matters more than it looks: `True` is an `int`, is greater than zero, and
+      would sail through a naive numeric check. Rejecting it explicitly is the kind of edge case
+      that separates a descriptor you can reuse from one that surprises somebody in six months.
+
+  - id: dm-new-immutable
+    tier: intermediate
+    kind: write-code
+    title: Normalise in __new__, not __init__
+    minutes: 12
+    requiredForMastery: false
+    concepts: ["__new__", "immutable subclassing", "str subclass"]
+    prompt: |
+      Write a `Symbol` type that subclasses `str` and always upper-cases and strips its input, so
+      `Symbol(" aapl ") == "AAPL"`.
+
+      Try it in `__init__` first and observe why that cannot work.
+    hints:
+      - "`str` is immutable — by the time `__init__` runs, the character data is already fixed."
+      - "`__new__` is a static method that receives the class and returns the new object."
+    solution: |
+      Normalise the text before the object exists, inside `__new__`, and pass the cleaned value to
+      `super().__new__`. Doing it in `__init__` is impossible because there is no way to change a
+      `str`'s value after creation — you would only be setting an unrelated attribute.
+    solutionCode: |
+      class Symbol(str):
+          __slots__ = ()
+
+          def __new__(cls, value):
+              return super().__new__(cls, str(value).strip().upper())
+
+
+      s = Symbol("  aapl ")
+      print(s, s == "AAPL", type(s))     # AAPL True <class '__main__.Symbol'>
+    explanation: |
+      This is the main reason to ever write `__new__`. The rule of thumb: `__new__` when the type is
+      immutable or you are controlling *which* object comes back (caching, singletons, returning a
+      subclass); `__init__` for everything else. `__slots__ = ()` keeps the subclass from
+      re-adding a per-instance dict.
+
+  # ------------------------------------------------------------ tricky
+  - id: dm-mutable-key
+    tier: tricky
+    kind: predict-output
+    title: The key that disappears
+    minutes: 10
+    requiredForMastery: true
+    concepts: ["hash stability", "dict internals", "mutable keys"]
+    prompt: |
+      Predict all three lines. This is not a trick of syntax — it follows directly from how dicts
+      find things.
+    code: |
+      class Tag:
+          def __init__(self, name):
+              self.name = name
+
+          def __eq__(self, other):
+              return isinstance(other, Tag) and self.name == other.name
+
+          def __hash__(self):
+              return hash(self.name)
+
+      t = Tag("db")
+      seen = {t: 1}
+
+      t.name = "cache"
+      print(t in seen)
+      print(list(seen.keys())[0].name)
+      print(len(seen))
+    hints:
+      - The dict stored the entry in the bucket for `hash("db")` and has not been told anything since.
+      - Lookup hashes the key *now*, then compares. Iteration does neither.
+    solution: |
+      `False`, `cache`, `1`.
+
+      The entry is still there — iteration walks the table and finds it, and its `name` is the
+      mutated one because it is the same object. But `t in seen` hashes `t` now, gets
+      `hash("cache")`, looks in the wrong bucket and finds nothing. The object is unreachable by
+      lookup while remaining present.
+    explanation: |
+      This is why the standard advice is to only use immutable objects as keys. If a type must be
+      both mutable and hashable, hash on an identity field that is frozen at construction — never
+      on a field that can change — or use `__slots__` plus read-only properties to make mutation
+      impossible in the first place.
+
+  - id: dm-bool-int-dict
+    tier: tricky
+    kind: predict-output
+    title: How many keys?
+    minutes: 8
+    requiredForMastery: true
+    concepts: ["bool is int", "hash equality", "dict key identity"]
+    prompt: |
+      How many entries does this dict have, and what is printed?
+    code: |
+      d = {0: "zero", False: "false", 0.0: "float", 1: "one", True: "true"}
+      print(len(d))
+      print(d)
+    hints:
+      - "`bool` is a subclass of `int`, and `0 == False == 0.0` is `True` all the way down."
+      - When a key already exists, assignment replaces the *value* and keeps the *original* key object.
+    solution: |
+      Two entries: `{0: 'float', 1: 'true'}`.
+
+      `0`, `False` and `0.0` are all equal and hash identically, so they are the same key; each
+      later assignment overwrote the value while leaving the first key object — the integer `0` —
+      in place. The same happens for `1` and `True`.
+    explanation: |
+      Two data-model rules combine here. Numeric types are required to hash equal when they compare
+      equal, so `hash(0) == hash(0.0) == hash(False)`. And dict assignment on an existing key
+      updates the value only. The visible consequence — a dict whose keys look like the wrong type —
+      catches people writing config parsers and JSON round-trippers constantly.
+
+  - id: dm-nondata-shadow
+    tier: tricky
+    kind: predict-output
+    title: Which one can be shadowed?
+    minutes: 10
+    requiredForMastery: true
+    concepts: ["data vs non-data descriptors", "attribute lookup order"]
+    prompt: |
+      One of these two assignments takes effect and one does not. Predict both printed lines, and
+      state the rule that decides it.
+    code: |
+      class Thing:
+          @property
+          def kind(self):
+              return "property"
+
+          def method(self):
+              return "method"
+
+      t = Thing()
+      t.__dict__["method"] = lambda: "shadowed"
+      print(t.method())
+
+      try:
+          t.__dict__["kind"] = "shadowed"
+          print(t.kind)
+      except Exception as error:
+          print(type(error).__name__)
+    hints:
+      - Functions define `__get__` only. `property` defines `__get__` and `__set__`.
+      - One of those categories is checked *before* the instance dictionary and one *after*.
+    solution: |
+      `shadowed` then `property`.
+
+      A plain function is a *non-data* descriptor, so the instance `__dict__` wins and the lambda is
+      called. A `property` is a *data* descriptor, so it is consulted before the instance dict and
+      the injected string is simply ignored — no error, just no effect.
+    explanation: |
+      The full precedence order is: data descriptor on the type, then instance `__dict__`, then
+      non-data descriptor or plain class attribute, then `__getattr__`. Committing that ladder to
+      memory answers most "why does this work here but not there" attribute questions, and it is a
+      very common senior-level interview probe.
+
+  - id: dm-slots-inherit
+    tier: tricky
+    kind: predict-output
+    title: The slots saving that quietly evaporates
+    minutes: 10
+    requiredForMastery: true
+    concepts: ["__slots__", "inheritance", "__dict__"]
+    prompt: |
+      Both classes below use `__slots__`. Predict what each of the four lines prints or raises.
+    code: |
+      class Base:
+          __slots__ = ("a",)
+
+      class Mixin:
+          pass
+
+      class WithMixin(Base, Mixin):
+          __slots__ = ("b",)
+
+      class Plain(Base):
+          __slots__ = ("b",)
+
+      print(hasattr(Plain("x" and None) if False else Plain(), "__dict__"))
+      print(hasattr(WithMixin(), "__dict__"))
+
+      p = Plain()
+      try:
+          p.c = 1
+          print("assigned")
+      except AttributeError:
+          print("AttributeError")
+    hints:
+      - A class only avoids a `__dict__` if *every* class in its MRO declares `__slots__`.
+      - "`Mixin` declares nothing, so it contributes the default layout."
+    solution: |
+      `False`, `True`, `AttributeError`.
+
+      `Plain` has slots the whole way up, so no `__dict__` and no new attributes. `WithMixin`
+      inherits from `Mixin`, which has no `__slots__`, so instances get a `__dict__` back and the
+      memory saving is gone even though `WithMixin` declared its own slots.
+    explanation: |
+      This is the single most common way `__slots__` silently fails to do anything. Adding an
+      innocuous mixin — a logging helper, an equality helper, `object`-like base from a library —
+      restores the per-instance dict for every object. If you rely on slots for memory, assert on
+      it: `assert not hasattr(instance, "__dict__")` in a test.
+
+  - id: dm-radd-sum
+    tier: tricky
+    kind: explain
+    title: Why sum() rejects your type
+    minutes: 12
+    requiredForMastery: false
+    concepts: ["__add__", "__radd__", "NotImplemented", "sum start value"]
+    prompt: |
+      `Vector` defines `__add__` and returns `NotImplemented` for foreign types.
+      `sum([Vector(1, 2), Vector(3, 4)])` still raises `TypeError`.
+
+      Explain the exact sequence of calls that leads to the error, then give two different fixes and
+      say which one you would ship.
+    code: |
+      class Vector:
+          def __init__(self, *values):
+              self.values = tuple(values)
+
+          def __add__(self, other):
+              if not isinstance(other, Vector):
+                  return NotImplemented
+              return Vector(*(a + b for a, b in zip(self.values, other.values)))
+    hints:
+      - "`sum` does not start from the first element. Look up its default `start`."
+      - When the left operand returns `NotImplemented`, Python tries the reflected method on the right.
+    solution: |
+      `sum` starts from `0`, so the first operation is `0 + Vector(1, 2)`. `int.__add__` does not
+      know `Vector` and returns `NotImplemented`, so Python tries `Vector.__radd__` — which does not
+      exist, so it raises `TypeError`.
+
+      Fix one: pass a start value, `sum(vectors, start=Vector(0, 0))`. Fix two: define `__radd__` to
+      treat `0` as the additive identity and delegate to `__add__` otherwise. Ship fix two — callers
+      should not have to know about the zero, and `sum` is the natural way to write it.
+    solutionCode: |
+          def __radd__(self, other):
+              if other == 0:            # sum()'s start value
+                  return self
+              return self.__add__(other)
+    explanation: |
+      Note that simply aliasing `__radd__ = __add__` does not work: it would see `0`, find it is not
+      a `Vector`, and return `NotImplemented` again. Handling the identity element explicitly is the
+      idiom, and it is why NumPy arrays and `collections.Counter` both special-case it.
+
+  # ------------------------------------------------------------ challenge
+  - id: dm-frozen-record
+    tier: challenge
+    kind: design
+    title: Design an immutable, hashable, slotted record
+    minutes: 40
+    requiredForMastery: true
+    concepts: ["__slots__", "__setattr__", "__eq__", "__hash__", "immutability"]
+    prompt: |
+      Design a base class `Frozen` such that any subclass listing its fields in `__slots__` gets:
+      construction from keyword arguments, real immutability (assignment after construction raises),
+      value equality, a correct hash, a useful repr, and ordering by field order.
+
+      Do not use `dataclasses`. The point is to build what it builds.
+
+      Decide for yourself how `Frozen.__init__` sets attributes at all, given that `__setattr__` is
+      supposed to refuse.
+    hints:
+      - Override `__setattr__` to raise, and use `object.__setattr__` to bypass your own guard during construction.
+      - Collect the field names by walking `type(self).__mro__` and gathering each class's `__slots__`.
+      - Build the value tuple once and let it do equality, hashing and ordering for you.
+    solution: |
+      The shape of a working answer: gather fields from the MRO, populate them through
+      `object.__setattr__` in `__init__`, block every later assignment in your own `__setattr__`,
+      and derive `__eq__`, `__hash__`, `__lt__` and `__repr__` from a single `_key()` tuple.
+
+      Two decisions separate a good answer from a passable one. Equality should require the same
+      type, not just the same values, or two unrelated records with matching fields compare equal.
+      And `__hash__` must be defined explicitly, because defining `__eq__` removed it.
+    solutionCode: |
+      from functools import total_ordering
+
+      @total_ordering
+      class Frozen:
+          __slots__ = ()
+
+          def __init__(self, **values):
+              missing = set(self._fields()) - set(values)
+              if missing:
+                  raise TypeError(f"missing fields: {sorted(missing)}")
+              unknown = set(values) - set(self._fields())
+              if unknown:
+                  raise TypeError(f"unknown fields: {sorted(unknown)}")
+              for name, value in values.items():
+                  object.__setattr__(self, name, value)   # bypasses our own guard
+
+          @classmethod
+          def _fields(cls):
+              names = []
+              for klass in reversed(cls.__mro__):
+                  names.extend(getattr(klass, "__slots__", ()))
+              return tuple(names)
+
+          def _key(self):
+              return tuple(getattr(self, name) for name in self._fields())
+
+          def __setattr__(self, name, value):
+              raise AttributeError(f"{type(self).__name__} is immutable")
+
+          def __delattr__(self, name):
+              raise AttributeError(f"{type(self).__name__} is immutable")
+
+          def __eq__(self, other):
+              return type(self) is type(other) and self._key() == other._key()
+
+          def __lt__(self, other):
+              if type(self) is not type(other):
+                  return NotImplemented
+              return self._key() < other._key()
+
+          def __hash__(self):
+              return hash((type(self), self._key()))
+
+          def __repr__(self):
+              inner = ", ".join(f"{name}={getattr(self, name)!r}" for name in self._fields())
+              return f"{type(self).__name__}({inner})"
+
+
+      class Trade(Frozen):
+          __slots__ = ("symbol", "price", "quantity")
+    explanation: |
+      Everything the standard library's `@dataclass(frozen=True, slots=True)` does, you have now
+      done by hand — including the trick it uses itself, calling `object.__setattr__` to populate a
+      frozen instance. Reading `dataclasses.py` after this is worth twenty minutes: the generated
+      `__init__` is built by `exec`ing a source string, for speed.
+
+  - id: dm-typed-attrs
+    tier: challenge
+    kind: design
+    title: Design the descriptor system behind a model layer
+    minutes: 45
+    requiredForMastery: false
+    concepts: ["descriptors", "__set_name__", "class-level API", "framework design"]
+    prompt: |
+      Design a miniature model layer: a `Field` descriptor with type coercion, validation and a
+      default, plus a `Model` base class that collects its fields.
+
+      It must support: `Model(**kwargs)` construction with defaults, per-field validation on every
+      assignment, `Model.field_names()` listing declared fields in declaration order, and
+      class-level access (`User.email`) returning something useful rather than raising.
+
+      Then answer the design question in writing: why does `User.email == "x"` return `True` in your
+      design, and what would you change to make it return a query object instead — the way
+      SQLAlchemy does?
+    hints:
+      - Declaration order is preserved because class bodies execute top to bottom, so record an incrementing counter in `__init__`.
+      - Class-level access is the `instance is None` branch of `__get__`.
+      - To return a query object from a comparison, the thing returned by `User.email` must itself define `__eq__`.
+    solution: |
+      A working design has `Field.__set_name__` recording the name, `Field.__get__` returning the
+      descriptor itself when `instance is None`, and `Model.field_names()` sorting the class's
+      `Field` attributes by their creation counter.
+
+      The design answer: `User.email` currently returns the `Field` object, and `Field` inherits
+      `object.__eq__`, so the comparison is identity-based and gives `False` — or `True` only when
+      comparing the same object. SQLAlchemy makes `Field.__eq__` return an *expression object*
+      rather than a bool, so `User.email == "x"` builds `email = :email_1` instead of answering a
+      question. That is the whole trick behind ORM query syntax, and it is why those objects are
+      dangerous to use in an `if`.
+    explanation: |
+      This is the exercise that makes framework source readable. Pydantic, SQLAlchemy, Django and
+      attrs are all variations on the same three moving parts: descriptors for per-attribute
+      behaviour, `__set_name__` for self-naming, and a metaclass or `__init_subclass__` for
+      collecting them. Once you have written the small version, the large ones stop being magic.
+
+  # ------------------------------------------------------------ debugging
+  - id: dm-bug-unhashable
+    tier: intermediate
+    kind: debug
+    title: "Bug: the cache that refuses to cache"
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["__eq__", "__hash__", "unhashable type"]
+    prompt: |
+      This dedupe helper crashes with `TypeError: unhashable type: 'Endpoint'` in production but
+      passed review. Find the cause, explain it in one sentence, and fix it without weakening
+      equality.
+    code: |
+      class Endpoint:
+          def __init__(self, host, port, weight=1):
+              self.host = host
+              self.port = port
+              self.weight = weight        # tuning knob, changes at runtime
+
+          def __eq__(self, other):
+              return (self.host, self.port) == (other.host, other.port)
+
+
+      def unique(endpoints):
+          return list({endpoint for endpoint in endpoints})
+    hints:
+      - Nothing here deletes `__hash__`. Something here *assigns* it.
+      - Hash the same fields equality uses — and notice which field equality deliberately ignores.
+    solution: |
+      Defining `__eq__` implicitly sets `__hash__ = None`, so `Endpoint` is unhashable and the set
+      comprehension fails.
+
+      The fix is `__hash__ = lambda self: hash((self.host, self.port))` — hashing exactly the pair
+      that equality uses. Deliberately excluding `weight` is correct here and important: it is
+      mutable, so including it would make live objects vanish from sets when tuned.
+    solutionCode: |
+          def __eq__(self, other):
+              if not isinstance(other, Endpoint):
+                  return NotImplemented
+              return (self.host, self.port) == (other.host, other.port)
+
+          def __hash__(self):
+              return hash((self.host, self.port))
+    explanation: |
+      Two bugs, not one. The missing `__hash__` is the crash; the missing `isinstance` guard is the
+      latent one — `Endpoint() == 3` raises `AttributeError` instead of returning `False`, which
+      breaks `in` on any mixed collection.
+
+  - id: dm-bug-getattribute
+    tier: tricky
+    kind: debug
+    title: "Bug: RecursionError on attribute access"
+    minutes: 14
+    requiredForMastery: true
+    concepts: ["__getattribute__", "__getattr__", "recursion"]
+    prompt: |
+      Instantiating this class works. Touching any attribute blows the stack with
+      `RecursionError: maximum recursion depth exceeded`.
+
+      Explain exactly which line re-enters, then fix it twice — once keeping
+      `__getattribute__`, and once by using the right hook instead.
+    code: |
+      class Tracked:
+          def __init__(self, data):
+              self._data = data
+              self._reads = 0
+
+          def __getattribute__(self, name):
+              self._reads += 1
+              return self.__dict__[name]
+    hints:
+      - "`__getattribute__` runs for *every* attribute access on the instance — including the ones inside itself."
+      - "`self._reads` inside the method is itself an attribute access."
+      - The hook that only fires when normal lookup fails is a different method.
+    solution: |
+      `self._reads += 1` is an attribute access, so it calls `__getattribute__` again, which does it
+      again, forever. `self.__dict__[name]` would recurse for the same reason.
+
+      Keeping the hook: route every access through `object.__getattribute__` so you never re-enter.
+      Better: if the goal is only to observe *missing* or lazy attributes, use `__getattr__`, which
+      is not called at all for attributes that already exist.
+    solutionCode: |
+      class Tracked:
+          def __init__(self, data):
+              object.__setattr__(self, "_reads", 0)
+              object.__setattr__(self, "_data", data)
+
+          def __getattribute__(self, name):
+              get = object.__getattribute__
+              if not name.startswith("_"):
+                  get(self, "__dict__")["_reads"] = get(self, "_reads") + 1
+              return get(self, name)
+    explanation: |
+      The rule of thumb: reach for `__getattr__` unless you genuinely need to intercept attributes
+      that *do* exist. Overriding `__getattribute__` puts your Python code on the hot path of every
+      single attribute read in the object's lifetime, which is both a performance decision and a
+      recursion hazard.
+
+  - id: dm-bug-slots-string
+    tier: normal
+    kind: debug
+    title: "Bug: the slots declaration that silently does nothing useful"
+    minutes: 10
+    requiredForMastery: true
+    concepts: ["__slots__", "iterable of names"]
+    prompt: |
+      This class was "converted to slots" to save memory. It raises `AttributeError: 'Config' object
+      has no attribute 'endpoint'` on the first line of `__init__`.
+
+      Say precisely what slots were created, and fix it.
+    code: |
+      class Config:
+          __slots__ = "endpoint"
+
+          def __init__(self, endpoint):
+              self.endpoint = endpoint
+    hints:
+      - "`__slots__` accepts any iterable of strings. A string is an iterable."
+      - Print `Config.__slots__` and then look at what descriptors actually exist on the class.
+    solution: |
+      Python iterated the string, creating eight single-character slots named `e`, `n`, `d`, `p`,
+      `o`, `i`, `t` — no slot called `endpoint` at all.
+
+      A bare string is legal for a single slot only if you meant that exact name as one item, which
+      it never is in practice. Always use a tuple: `__slots__ = ("endpoint",)`.
+    explanation: |
+      There is no error and no warning because a string genuinely satisfies "iterable of names".
+      The trailing comma in the one-element tuple is the whole fix, which makes this a good
+      candidate for a lint rule or a one-line test asserting
+      `Config.__slots__ == ("endpoint",)` on classes you care about.
+
+  - id: dm-bug-iadd-shared
+    tier: intermediate
+    kind: debug
+    title: "Bug: += that mutates somebody else's list"
+    minutes: 14
+    requiredForMastery: true
+    concepts: ["__iadd__", "in-place operators", "shared mutable state"]
+    prompt: |
+      `Basket.add` is supposed to give each basket its own items. Two baskets built from the same
+      template end up sharing everything.
+
+      Identify both mistakes — there is one about `+=` and one about the default argument — and say
+      what `+=` actually does to a list attribute.
+    code: |
+      class Basket:
+          def __init__(self, items=[]):
+              self.items = items
+
+          def add(self, *new):
+              self.items += new
+              return self
+
+
+      template = Basket()
+      a = template.add("apple")
+      b = Basket().add("pear")
+      print(a.items, b.items)
+    hints:
+      - The default list is created once, when the `def` line executes — not per call.
+      - "`list.__iadd__` mutates in place and returns `self`; it does not build a new list."
+    solution: |
+      The default `[]` is a single object shared by every `Basket()` that omits `items`, and
+      `self.items += new` calls `list.__iadd__`, which extends that shared list in place. So both
+      baskets print `['apple', 'pear']`.
+
+      Fix the default with `items=None` plus `self.items = list(items or ())`, which also copies any
+      caller-supplied list instead of aliasing it.
+    solutionCode: |
+      class Basket:
+          def __init__(self, items=None):
+              self.items = list(items) if items is not None else []
+
+          def add(self, *new):
+              self.items = self.items + list(new)   # or self.items.extend(new)
+              return self
+    explanation: |
+      The `+=` half is the data-model lesson: for a mutable type `a += b` is `a = a.__iadd__(b)`,
+      which mutates and rebinds the same object, while for an immutable type there is no `__iadd__`
+      so it falls back to `a = a + b` and creates a new one. The same line means two different
+      things depending on the operand's type — which is exactly why the tuple-of-lists
+      `t[0] += [1]` puzzle both raises `TypeError` *and* succeeds in mutating.
+
+  # ------------------------------------------------------------ code reading
+  - id: dm-read-lazy-proxy
+    tier: intermediate
+    kind: code-reading
+    title: "Read this: what does the proxy actually forward?"
+    minutes: 14
+    requiredForMastery: true
+    concepts: ["__getattr__", "special method lookup", "proxy objects"]
+    prompt: |
+      Read this before running it. Answer four questions:
+
+      - What does the class do, in one sentence?
+      - What does `len(proxy)` do?
+      - What does `proxy.upper()` do?
+      - Is there a bug, and what is the smallest fix that makes `len(proxy)` work?
+    code: |
+      class Proxy:
+          def __init__(self, target):
+              self._target = target
+
+          def __getattr__(self, name):
+              print(f"forwarding {name}")
+              return getattr(self._target, name)
+
+
+      proxy = Proxy("hello")
+      print(proxy.upper())
+      print(len(proxy))
+    hints:
+      - "`__getattr__` only runs when normal lookup fails — and `len()` does not use normal lookup at all."
+      - The fix is not cleverer forwarding. It is an explicit method.
+    solution: |
+      It is an attribute-forwarding proxy. `proxy.upper()` prints `forwarding upper` and returns
+      `HELLO`, because `upper` is not found on the `Proxy` instance or class, so `__getattr__` runs.
+
+      `len(proxy)` raises `TypeError: object of type 'Proxy' has no len()`. Implicit special-method
+      lookup goes straight to `type(proxy).__len__` and never consults `__getattr__`, so nothing is
+      forwarded. The smallest fix is to define the dunder explicitly.
+    solutionCode: |
+          def __len__(self):
+              return len(self._target)
+    explanation: |
+      Every real proxy library hits this. `unittest.mock.MagicMock` exists precisely because plain
+      `Mock` uses `__getattr__` and therefore does not support dunders — `MagicMock` pre-defines
+      them all. If you write a proxy, you must enumerate the protocol you intend to support; there
+      is no dynamic shortcut.
+
+  - id: dm-read-descriptor-order
+    tier: tricky
+    kind: code-reading
+    title: "Read this: whose value wins?"
+    minutes: 12
+    requiredForMastery: false
+    concepts: ["attribute lookup order", "data descriptors", "__dict__"]
+    prompt: |
+      Work out what each `print` shows, then state the general rule the code is demonstrating.
+    code: |
+      class Loud:
+          def __get__(self, instance, owner=None):
+              return "descriptor-get"
+
+
+      class Louder(Loud):
+          def __set__(self, instance, value):
+              instance.__dict__["x"] = value
+
+
+      class A:
+          x = Loud()
+
+      class B:
+          x = Louder()
+
+
+      a, b = A(), B()
+      a.__dict__["x"] = "instance"
+      b.__dict__["x"] = "instance"
+
+      print(a.x)
+      print(b.x)
+    hints:
+      - "`Loud` defines only `__get__`. `Louder` also defines `__set__`."
+      - One of those two categories is consulted before the instance dictionary.
+    solution: |
+      `instance` then `descriptor-get`.
+
+      `Loud` is a non-data descriptor, so it sits *below* the instance dictionary in precedence and
+      the injected value wins. `Louder` defines `__set__`, making it a data descriptor, which is
+      consulted *before* the instance dictionary — so its `__get__` runs even though `b.__dict__`
+      has an `x`.
+    explanation: |
+      The rule: whether a descriptor outranks the instance dictionary is decided purely by the
+      presence of `__set__` or `__delete__`, not by what those methods do. `Louder.__set__` here
+      writes to the instance dict and is still never consulted on read, which makes the
+      shadowing look arbitrary until you know the rule.
+
+# ---------------------------------------------------------------------------- quizzes
+
+quizzes:
+  - id: dm-checkpoint-protocol
+    title: "Checkpoint: the core protocol"
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: dm-cp1-lookup
+        kind: mcq
+        prompt: "Why does assigning `obj.__len__ = lambda: 99` not change what `len(obj)` returns?"
+        options:
+          - id: a
+            text: Because `len()` caches the first result it ever computed for the object
+          - id: b
+            text: Because implicit special-method lookup goes to the type and skips the instance dictionary
+          - id: c
+            text: Because lambdas cannot be used as special methods
+          - id: d
+            text: Because `__len__` is read-only on instances
+        answer: ["b"]
+        concepts: ["special method lookup"]
+        points: 1
+        explanation: |
+          `len(obj)` is `type(obj).__len__(obj)`. Ordinary attribute access checks the instance
+          dict first; implicit special-method lookup never does.
+
+      - id: dm-cp2-hash
+        kind: true-false
+        prompt: Defining `__eq__` without `__hash__` leaves the inherited identity-based hash in place.
+        options:
+          - id: t
+            text: "True"
+          - id: f
+            text: "False"
+        answer: ["f"]
+        concepts: ["__eq__", "__hash__"]
+        points: 1
+        explanation: |
+          It sets `__hash__ = None`, making the class unhashable. Keeping the identity hash would
+          guarantee a broken contract, so Python refuses instead.
+
+      - id: dm-cp3-iteration
+        kind: multi
+        prompt: Which of these make a plain object usable in a `for` loop? Select all that apply.
+        options:
+          - id: a
+            text: Defining `__iter__`
+          - id: b
+            text: Defining `__getitem__` that raises `IndexError` past the end
+          - id: c
+            text: Defining `__len__` alone
+          - id: d
+            text: Defining `__next__` alone
+        answer: ["a", "b"]
+        concepts: ["iteration protocol", "__getitem__ fallback"]
+        points: 2
+        explanation: |
+          `__iter__` is the real protocol, and the legacy `__getitem__` fallback still works if it
+          raises `IndexError` to stop. `__len__` alone does nothing for iteration, and `__next__`
+          without `__iter__` makes an iterator that `for` cannot obtain.
+
+      - id: dm-cp4-notimplemented
+        kind: explain
+        prompt: What is the difference between returning `NotImplemented` and raising `NotImplementedError` from `__add__`?
+        modelAnswer: |
+          Returning `NotImplemented` tells Python "I don't know how to handle this operand", so it
+          tries the reflected method on the other operand (`__radd__`) and only raises `TypeError`
+          if that also declines. Raising `NotImplementedError` is an immediate, unrecoverable error
+          that stops the whole operation and prevents the other operand from cooperating.
+        concepts: ["NotImplemented", "reflected operators"]
+        points: 2
+        explanation: |
+          The names are similar and the behaviours are opposite. `NotImplemented` is a singleton
+          value used for operator negotiation; `NotImplementedError` is an exception used for
+          abstract methods.
+
+  - id: dm-assessment
+    title: "Assessment: the data model"
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: dm-as1-precedence
+        kind: mcq
+        prompt: Which wins when both are present — a data descriptor on the class, or an entry with the same name in the instance `__dict__`?
+        options:
+          - id: a
+            text: The instance `__dict__`, always
+          - id: b
+            text: The data descriptor
+          - id: c
+            text: Whichever was assigned most recently
+          - id: d
+            text: It raises `AttributeError` for ambiguity
+        answer: ["b"]
+        concepts: ["attribute lookup order"]
+        points: 2
+        explanation: |
+          Order is: data descriptor, instance `__dict__`, non-data descriptor or class attribute,
+          `__getattr__`. That is why a `property` cannot be shadowed but a method can.
+
+      - id: dm-as2-slots-loss
+        kind: multi
+        prompt: Which of these does adding `__slots__` to a class take away? Select all that apply.
+        options:
+          - id: a
+            text: The ability to add attributes not listed in the slots
+          - id: b
+            text: Per-instance `__dict__`
+          - id: c
+            text: Weak-reference support, unless `__weakref__` is listed
+          - id: d
+            text: The ability to define methods on the class
+        answer: ["a", "b", "c"]
+        concepts: ["__slots__"]
+        points: 3
+        explanation: |
+          Methods are class attributes and are entirely unaffected. The other three are real
+          losses, and the weakref one is the most commonly forgotten.
+
+      - id: dm-as3-predict-dict
+        kind: predict-output
+        prompt: What does this print?
+        code: |
+          d = {1: "int", True: "bool", 1.0: "float"}
+          print(len(d), d[True])
+        options:
+          - id: a
+            text: "3 bool"
+          - id: b
+            text: "1 float"
+          - id: c
+            text: "1 bool"
+          - id: d
+            text: "2 float"
+        answer: ["b"]
+        concepts: ["hash equality", "bool is int"]
+        points: 2
+        explanation: |
+          `1 == True == 1.0` and all three hash identically, so there is one entry. Each assignment
+          replaced the value, leaving `"float"`, while the stored key object stays the original `1`.
+
+      - id: dm-as4-find-bug
+        kind: find-bug
+        prompt: This class is used as a dictionary key and entries keep going missing. What is the defect?
+        code: |
+          class Session:
+              def __init__(self, user_id, last_seen):
+                  self.user_id = user_id
+                  self.last_seen = last_seen
+
+              def __eq__(self, other):
+                  return (self.user_id, self.last_seen) == (other.user_id, other.last_seen)
+
+              def __hash__(self):
+                  return hash((self.user_id, self.last_seen))
+        options:
+          - id: a
+            text: "`__hash__` and `__eq__` use different fields"
+          - id: b
+            text: "`last_seen` is mutable, so updating it moves the object's hash and orphans the entry"
+          - id: c
+            text: "`__eq__` should return `NotImplemented` and that causes the loss"
+          - id: d
+            text: The class needs `__slots__` to be hashable
+        answer: ["b"]
+        concepts: ["hash stability", "mutable keys"]
+        points: 3
+        explanation: |
+          The contract is satisfied at any instant, but hashing a field that changes breaks lookup
+          over time. Hash only on `user_id`, or freeze the object. (The missing `isinstance` guard
+          in `__eq__` is a second, separate defect.)
+
+      - id: dm-as5-write-descriptor
+        kind: write-function
+        prompt: |
+          Write a `ReadOnly` descriptor that allows exactly one assignment and raises
+          `AttributeError` on every later one. State whether it must be a data descriptor and why.
+        modelAnswer: |
+          It must be a data descriptor: only `__set__` gets a chance to intercept assignment, and
+          only a data descriptor outranks the instance `__dict__` on read.
+
+          A correct implementation records the name in `__set_name__`, stores the value on the
+          instance under a private name, and in `__set__` checks whether that private name already
+          exists — raising `AttributeError` if it does. `__get__` must handle `instance is None` by
+          returning `self`, so class-level access works.
+        concepts: ["descriptors", "__set__", "__set_name__"]
+        points: 3
+        explanation: |
+          If it only defined `__get__`, the first ordinary assignment would write straight into the
+          instance dict and then shadow the descriptor forever — the write would never even be seen.
+
+      - id: dm-as6-radd
+        kind: mcq
+        prompt: "`a + b` where `type(a).__add__` returns `NotImplemented`. What happens next?"
+        options:
+          - id: a
+            text: "`TypeError` is raised immediately"
+          - id: b
+            text: Python calls `type(b).__radd__(b, a)`, and only raises `TypeError` if that also returns `NotImplemented`
+          - id: c
+            text: Python calls `type(a).__radd__(a, b)`
+          - id: d
+            text: The expression evaluates to `NotImplemented`
+        answer: ["b"]
+        concepts: ["reflected operators", "NotImplemented"]
+        points: 2
+        explanation: |
+          Reflection is the whole point of the sentinel. Note option (d) is a real hazard: if you
+          call `a.__add__(b)` directly you *do* get the `NotImplemented` object back, and it is
+          truthy.
+
+      - id: dm-as7-slots-inherit
+        kind: true-false
+        prompt: A subclass of a slotted class automatically also avoids having a `__dict__`.
+        options:
+          - id: t
+            text: "True"
+          - id: f
+            text: "False"
+        answer: ["f"]
+        concepts: ["__slots__", "inheritance"]
+        points: 2
+        explanation: |
+          Only if the subclass declares its own `__slots__` — and every class in the MRO does too.
+          One plain mixin anywhere in the chain restores the dict for every instance.
+
+      - id: dm-as8-scenario
+        kind: scenario
+        prompt: |
+          A service holds 8 million small records in memory and is being OOM-killed. A colleague
+          proposes `__slots__`. Give your recommendation and the reasoning, including at least one
+          alternative you would evaluate first.
+        modelAnswer: |
+          `__slots__` is a reasonable, cheap step and typically cuts per-instance memory
+          substantially, but it must be checked rather than assumed: every class in the MRO needs
+          slots, nothing may set attributes dynamically, and nothing may rely on `__dict__` or
+          `vars()`.
+
+          At 8 million homogeneous records the better question is whether they should be objects at
+          all. Columnar storage — NumPy arrays or a pandas/Arrow frame, one array per field —
+          usually beats any per-object optimisation by an order of magnitude, because it removes the
+          per-object header entirely. `dataclass(slots=True)` or a `NamedTuple` are the middle
+          options. I would measure with `tracemalloc` or `pympler` before changing anything.
+        concepts: ["__slots__", "memory", "engineering judgement"]
+        points: 3
+        explanation: |
+          The point of the question is the judgement, not the API. An answer that only says "yes,
+          add slots" misses that the real win at this scale is usually a different data layout.
+
+      - id: dm-as9-getattr
+        kind: explain
+        prompt: Why does `__getattr__` not intercept `len(obj)` when `__len__` is missing?
+        modelAnswer: |
+          Because `len()` uses implicit special-method lookup, which resolves `__len__` on the type
+          directly and bypasses the normal attribute-lookup machinery — and `__getattr__` is part of
+          that machinery, being the last step of a failed *normal* lookup. So it is never reached,
+          and `TypeError: object of type X has no len()` is raised instead.
+        concepts: ["__getattr__", "special method lookup"]
+        points: 2
+        explanation: |
+          Same reason a proxy must define every dunder it forwards, and the reason `MagicMock`
+          exists alongside `Mock`.
+
+      - id: dm-as10-refactor
+        kind: refactor
+        prompt: |
+          Rewrite this so that `Config` instances are hashable, compare by value, and cannot be
+          mutated after construction — without using `dataclasses`.
+        code: |
+          class Config:
+              def __init__(self, host, port):
+                  self.host = host
+                  self.port = port
+        modelAnswer: |
+          Add `__slots__ = ("host", "port")`, set the attributes through `object.__setattr__` in
+          `__init__`, override `__setattr__` and `__delattr__` to raise `AttributeError`, and define
+          `__eq__` comparing `(type, host, port)` alongside a matching `__hash__`. A `__repr__`
+          rounds it out.
+
+          The key insight is that `__init__` must bypass its own guard, which is why
+          `object.__setattr__` is used rather than plain assignment.
+        concepts: ["__slots__", "immutability", "__eq__", "__hash__", "__setattr__"]
+        points: 3
+        explanation: |
+          This is what `@dataclass(frozen=True, slots=True)` generates. Writing it once by hand is
+          why the decorator stops being magic.
+
+# ---------------------------------------------------------------------------- interview
+
+interview:
+  - id: dm-iv-lookup
+    level: internals
+    requiredForMastery: true
+    concepts: ["special method lookup"]
+    question: When Python evaluates `len(x)`, what does it actually do, and why does that matter?
+    shortAnswer: |
+      It calls `type(x).__len__(x)` — the lookup goes to the type, not the instance. That is why you
+      cannot patch a dunder onto a single object, and why proxies and mocks have to define dunders
+      explicitly on the class.
+    fullAnswer: |
+      Implicit special-method invocation deliberately skips the instance dictionary and the
+      `__getattribute__`/`__getattr__` machinery, resolving the slot on the type directly. CPython
+      caches these on the type object as C-level slots, which is also why it is fast.
+
+      Consequences worth naming: instance-level dunder assignment is ignored; `__getattr__` cannot
+      forward dunders, which is the entire reason `MagicMock` exists next to `Mock`; and patching a
+      dunder in a test means patching the class, not the object.
+    commonWrongAnswer: |
+      "It looks up `__len__` on the object like any other attribute." That is the answer that leads
+      people to write a `__getattr__`-based proxy and then spend an afternoon confused about why
+      `len()` and `with` do not work through it.
+    followUps:
+      - Where does `__getattr__` sit in the lookup order, and what is the last thing tried before it?
+      - How would you make a proxy support `len()`, iteration and `with`?
+      - Why is `MagicMock` different from `Mock`?
+
+  - id: dm-iv-hash-contract
+    level: intermediate
+    requiredForMastery: true
+    concepts: ["__eq__", "__hash__"]
+    question: What happens if you define `__eq__` but not `__hash__`, and why did the language choose that behaviour?
+    shortAnswer: |
+      Python sets `__hash__` to `None`, so the class becomes unhashable and cannot go in a set or be
+      a dict key. The default hash is identity-based, so keeping it after redefining equality would
+      mean equal objects with different hashes — a broken contract. Failing loudly is safer.
+    fullAnswer: |
+      The contract is: if `a == b` then `hash(a) == hash(b)`. The reverse need not hold; unequal
+      objects may collide.
+
+      The reason it matters is mechanical. A dict finds a key by hashing to a bucket and then
+      comparing with `==` inside it. If two equal objects hash differently they land in different
+      buckets, and the second lookup misses even though the key is "present". Silent misses are far
+      worse than a `TypeError` at insertion.
+
+      The related trap is stability over time: hashing a mutable field satisfies the contract at any
+      instant but orphans entries as soon as the field changes.
+    commonWrongAnswer: |
+      "It inherits `object.__hash__`, so it still works." It does not — and the reason it does not is
+      the interesting half of the answer.
+    followUps:
+      - Which fields should a hash use if the object is mutable?
+      - "Why is `{0: 'a', False: 'b'}` a one-element dict?"
+      - When is it correct for `__hash__` to be based on fewer fields than `__eq__`?
+
+  - id: dm-iv-descriptor
+    level: advanced
+    requiredForMastery: true
+    concepts: ["descriptors", "property", "framework internals"]
+    question: What is a descriptor, and name three things in Python that are one without most people realising.
+    shortAnswer: |
+      Any object defining `__get__`, `__set__` or `__delete__`, stored as a class attribute — Python
+      calls it instead of returning it. Functions are descriptors, which is how methods bind;
+      `property`, `classmethod` and `staticmethod` are descriptors; and ORM columns and Pydantic
+      fields are descriptors.
+    fullAnswer: |
+      The mechanism is the interesting part. `obj.method` works because `function.__get__` returns a
+      bound method object capturing `obj` — method binding is not special-cased in the language, it
+      is a descriptor.
+
+      The data/non-data distinction is what interviewers actually probe. A descriptor defining
+      `__set__` or `__delete__` is a *data* descriptor and outranks the instance `__dict__`; one
+      defining only `__get__` sits below it. That is why a `property` cannot be shadowed by
+      `self.x = 1` while a method can be replaced by an instance attribute of the same name.
+
+      `__set_name__`, added in 3.6, is how a descriptor learns the attribute name it was assigned
+      to, which is what removes the old `Field("name")` duplication from framework APIs.
+    commonWrongAnswer: |
+      "It's how `@property` works" and nothing more. True but shallow — it misses that it is the
+      general mechanism, and it misses the precedence rule that makes it useful.
+    followUps:
+      - Where should a descriptor store per-instance state, and what goes wrong with a dict keyed by instance?
+      - How does SQLAlchemy make `User.email == "x"` build SQL instead of returning a bool?
+      - What is the full attribute lookup order?
+
+  - id: dm-iv-slots
+    level: intermediate
+    requiredForMastery: true
+    concepts: ["__slots__", "memory"]
+    question: What does `__slots__` do, and when would you refuse to use it?
+    shortAnswer: |
+      It replaces the per-instance `__dict__` with a fixed array of descriptors, saving memory and
+      slightly speeding up attribute access. I would refuse it when the class is not instantiated in
+      large numbers, when anything sets attributes dynamically, or when a base class lacks slots —
+      because then it saves nothing.
+    fullAnswer: |
+      The saving comes from removing a hash table per object. On small objects created in the
+      millions the difference is large; on a few hundred objects it is noise, and the constraint is
+      pure cost.
+
+      The failure modes are what matter in an interview. Any class in the MRO without `__slots__`
+      restores the dict for every instance. Weak references stop working unless `"__weakref__"` is
+      listed. Multiple inheritance from two classes with non-empty slots is a `TypeError`. And
+      `__slots__ = "name"` silently creates one slot per character.
+
+      At real scale, the more effective answer is usually a different layout entirely — columnar
+      NumPy arrays instead of millions of objects — because that removes the per-object header too.
+    commonWrongAnswer: |
+      "It makes attribute access faster." Marginally, but that is not why anyone uses it, and
+      leading with speed suggests the memory model is not clear.
+    followUps:
+      - What does `dataclass(slots=True)` generate?
+      - How would you prove in a test that instances really have no `__dict__`?
+      - When is a `NamedTuple` a better answer?
+
+  - id: dm-iv-new-init
+    level: basic
+    requiredForMastery: true
+    concepts: ["__new__", "__init__"]
+    question: What is the difference between `__new__` and `__init__`, and when have you needed `__new__`?
+    shortAnswer: |
+      `__new__` creates and returns the instance; `__init__` configures an instance that already
+      exists and must return `None`. You need `__new__` when subclassing an immutable built-in like
+      `str`, `int` or `tuple`, or when you want to control which object comes back — caching,
+      singletons, or returning a subclass.
+    fullAnswer: |
+      `type.__call__` runs `__new__` and then, if the result is an instance of the class, `__init__`.
+      That conditional is worth knowing: if `__new__` returns something else entirely, `__init__` is
+      never called.
+
+      The immutable case is the one that comes up in real code. By the time `__init__` runs on a
+      `str` subclass, the character data is fixed, so any normalisation has to happen in `__new__`
+      before `super().__new__` is called.
+    commonWrongAnswer: |
+      "`__new__` is the constructor and `__init__` is the initialiser" — correct wording with no
+      content behind it. The follow-up "so when did you last write `__new__`?" is the real question.
+    followUps:
+      - What happens if `__new__` returns an object of a different class?
+      - Why must `__init__` return `None`?
+      - How would you implement a per-argument instance cache?
+
+  - id: dm-iv-notimplemented
+    level: tricky
+    requiredForMastery: true
+    concepts: ["NotImplemented", "operators"]
+    question: What is the difference between `NotImplemented` and `NotImplementedError`?
+    shortAnswer: |
+      `NotImplemented` is a singleton *value* you return from a binary operator to say "I don't
+      handle this operand", which lets Python try the reflected method on the other side.
+      `NotImplementedError` is an *exception* you raise for an abstract method that a subclass must
+      override. Returning the exception, or raising the value, both go wrong.
+    fullAnswer: |
+      Operator dispatch is a negotiation. `a + b` tries `type(a).__add__`; if that returns
+      `NotImplemented`, it tries `type(b).__radd__`; only if both decline does the interpreter raise
+      `TypeError` with a message naming both types.
+
+      The practical hazard: `NotImplemented` is truthy, so `if a.__add__(b):` on a declined
+      operation takes the true branch. Since Python 3.9 using it in a boolean context emits a
+      `DeprecationWarning` for exactly this reason.
+    commonWrongAnswer: |
+      "They're the same thing, one's just the exception version." They have opposite purposes —
+      cooperation versus a hard stop.
+    followUps:
+      - Why does `sum()` fail on a type that defines only `__add__`?
+      - What does `a += b` do differently from `a = a + b` for a list?
+      - How does `functools.total_ordering` handle `NotImplemented`?
+
+  - id: dm-iv-getattr-compare
+    level: comparison
+    requiredForMastery: false
+    concepts: ["__getattr__", "__getattribute__"]
+    question: Compare `__getattr__` and `__getattribute__`. Which do you reach for, and what goes wrong with the other?
+    shortAnswer: |
+      `__getattribute__` runs on every attribute access; `__getattr__` runs only after normal lookup
+      fails. I reach for `__getattr__` for lazy loading and forwarding. Overriding
+      `__getattribute__` puts Python code on the hot path of every read and recurses instantly if
+      you touch `self.anything` inside it.
+    fullAnswer: |
+      The recursion is the classic failure: `self._cache` inside `__getattribute__` re-enters the
+      method. The escape is `object.__getattribute__(self, name)`, or `super().__getattribute__`.
+
+      There are legitimate uses — full transparent proxies, access auditing, sandboxing — but they
+      are rare, and they still cannot intercept implicit dunder lookup, which is often what people
+      actually wanted.
+
+      One detail people miss: `__getattr__` must raise `AttributeError`, not `KeyError`. `hasattr`,
+      `copy`, `pickle` and `dataclasses` all probe for optional attributes and treat any other
+      exception as a real failure.
+    commonWrongAnswer: |
+      "They're the same, one's just older." They differ in when they fire, and that difference is
+      the entire answer.
+    followUps:
+      - Why must `__getattr__` raise `AttributeError` specifically?
+      - Can either of them intercept `len(obj)`?
+      - How would you audit every attribute read without the recursion hazard?
+
+  - id: dm-iv-repr-debug
+    level: debugging
+    requiredForMastery: false
+    concepts: ["__repr__", "operational debugging"]
+    question: |
+      A production log line reads `processing [<app.models.Order object at 0x7f2a1c>, ...]`.
+      What went wrong, and what would you change?
+    shortAnswer: |
+      `Order` has no `__repr__`, so it fell back to the default. Containers call `repr` on their
+      elements, so a list of orders logs as memory addresses. I would add a `__repr__` naming the
+      identifying fields — order id, status — and avoid putting anything sensitive in it.
+    fullAnswer: |
+      Two design points sit behind this. First, `__repr__` is the one that shows up where you need
+      it — tracebacks, debugger windows, log lines, container reprs — so it is the one to write
+      first, and `__str__` is optional.
+
+      Second, a `repr` is an operational interface. It should be short, stable and safe: no
+      secrets, no tokens, no lazy-loading database calls triggered by formatting a log line. A
+      `__repr__` that hits the network is a genuine outage cause.
+    commonWrongAnswer: |
+      "Add `__str__`." That fixes `print(order)` and does nothing for the list, because containers
+      use `repr` unconditionally.
+    followUps:
+      - What is the difference between `f"{x}"` and `f"{x!r}"`?
+      - What should a `__repr__` never include?
+      - Where does `__format__` fit in?
+
+# ---------------------------------------------------------------------------- projects
+
+projects:
+  - id: dm-project-audited-record
+    kind: major
+    title: A typed, audited, memory-tight record layer
+    minutes: 180
+    summary: Build the small version of what Pydantic and SQLAlchemy are, using only the data model.
+    problem: |
+      An ingestion service reads several million market events per run. The current code uses plain
+      dicts: field typos surface hours later as `KeyError` in an unrelated module, nothing validates
+      ranges, and the process is being OOM-killed.
+
+      Build a `record` module that fixes all three, using only the standard library and only the
+      data-model features from this topic. No `dataclasses`, no `attrs`, no `pydantic` — the point
+      is to build the machinery, so that reading theirs afterwards is easy.
+    requirements:
+      - "A `Field` descriptor supporting a declared type, an optional default, and an optional validator callable."
+      - "A `Record` base class whose subclasses declare fields as class attributes and get keyword-argument construction, with defaults applied and unknown or missing fields rejected with a clear `TypeError`."
+      - "Validation on every assignment, not only at construction — `event.price = -1` must raise."
+      - "Value equality and a correct hash, both derived from the declared fields in declaration order."
+      - "Ordering between instances of the same record type, and `NotImplemented` between different ones."
+      - "A `__repr__` that reproduces the constructor call."
+      - "An opt-in `frozen = True` class flag that makes instances immutable after construction."
+      - "Instances must not carry a per-instance `__dict__`. Prove it with a test, not by inspection."
+    constraints:
+      - Standard library only.
+      - "No `dataclasses`, `attrs`, `pydantic`, `namedtuple` or `typing.NamedTuple`."
+      - "Field declaration order must be preserved without the caller repeating names — use `__set_name__`."
+      - Python 3.11 or newer.
+    expectedBehaviour:
+      - "`Event(symbol='AAPL', price=1.5, volume=10)` constructs; a missing `volume` raises `TypeError` naming the field."
+      - "`Event(symbol='AAPL', price=1.5, volume=10, extra=1)` raises `TypeError` naming `extra`."
+      - "`event.price = 'cheap'` raises `TypeError`; `event.price = -1` raises `ValueError`."
+      - "Two events with identical field values are equal and hash equally; a set of duplicates collapses."
+      - "`sorted(events)` orders by declared field order."
+      - "`hasattr(event, '__dict__')` is `False`."
+      - "With `frozen = True`, any assignment after construction raises `AttributeError`."
+    structure: |
+      record/
+        __init__.py
+        fields.py        # Field descriptor, type coercion, validators
+        base.py          # Record base class, construction, equality, ordering, repr
+        errors.py        # RecordError, FieldTypeError, FieldValueError
+      tests/
+        test_fields.py
+        test_records.py
+        test_memory.py   # asserts no __dict__, measures per-instance size
+      benchmark.py       # dict vs Record vs slotted Record, 1e6 instances
+    milestones:
+      - title: "1 — Field as a data descriptor"
+        detail: |
+          `__set_name__`, `__get__`, `__set__`, private-name storage, type check on assignment.
+          Stop when a hand-written class with two `Field`s validates on assignment.
+      - title: "2 — Record construction"
+        detail: |
+          Collect fields by walking the MRO, apply defaults, reject unknown and missing keys with
+          messages that name the field. Do not write equality yet.
+      - title: "3 — The value protocol"
+        detail: |
+          A single `_key()` tuple, then `__eq__`, `__hash__`, `__lt__` (with `@total_ordering`) and
+          `__repr__` on top of it. Decide deliberately whether equality requires the same type.
+      - title: "4 — Memory"
+        detail: |
+          Add `__slots__` generated from the declared fields, and the test that proves no
+          `__dict__` exists. Then run `benchmark.py` and record the real numbers.
+      - title: "5 — Frozen mode"
+        detail: |
+          The `frozen = True` flag, `__setattr__`/`__delattr__` guards, and the `object.__setattr__`
+          escape hatch that lets `__init__` populate a frozen instance.
+    testing:
+      - "A test per validation failure mode, asserting the exception type *and* that the message names the field."
+      - "A property-style test that `a == b` implies `hash(a) == hash(b)` across generated instances."
+      - "A test that a mutated field changes equality — and, for the frozen variant, that mutation is impossible."
+      - "`test_memory.py` asserting `not hasattr(instance, '__dict__')`, so a future mixin cannot silently undo the slots."
+      - "A test that ordering between two different `Record` subclasses raises `TypeError` rather than comparing."
+    failureCases:
+      - "Slots declared on `Record` but not regenerated per subclass — subclass instances get a `__dict__` back."
+      - "The descriptor storing values in a dict keyed by `instance`, which leaks memory and requires hashability."
+      - "`__hash__` forgotten after `__eq__`, making every record unhashable."
+      - "`frozen` implemented by overriding `__setattr__` without an `object.__setattr__` escape, so `__init__` cannot set anything."
+      - "Field order taken from `dir()` or `__dict__` iteration order of the wrong object, producing unstable ordering."
+      - "Using a mutable default (`default=[]`) shared across every instance."
+    bonus:
+      - "Add `__init_subclass__` so `__slots__` is generated automatically from declared fields instead of by hand."
+      - "Add a `to_dict()` / `from_dict()` pair that round-trips without a `__dict__`."
+      - "Support `Optional[int]`-style annotations by reading `__annotations__` instead of explicit `Field(type=...)`."
+      - "Make `Event.price` at class level return a comparison object so `Event.price > 100` builds a filter predicate — the SQLAlchemy trick."
+    architectureHints:
+      - "`__set_name__(self, owner, name)` fires once per descriptor when the class body finishes. It is the only clean way to learn the attribute name."
+      - "To collect fields in declaration order, either rely on `__set_name__` firing in body order and append to a class-level list, or give each `Field` an incrementing creation counter and sort by it. The counter survives inheritance better."
+      - "`__slots__` must be set *while the class is being created*, so generate it in `__init_subclass__` or a metaclass — you cannot add it after the fact."
+      - "Store each field's value under a private name on the instance (`_price`), and list those private names in `__slots__`, not the public ones."
+      - "For frozen mode, `object.__setattr__(self, name, value)` bypasses your own `__setattr__` guard. That is exactly what `dataclasses` does internally."
+      - "Derive everything comparable from one `_key()` method. Four dunders reading four different field lists is how they drift apart."
+    referenceOutline: |
+      A good solution ends up around 200 lines and has these seams:
+
+      - `Field` holds `name`, `private_name`, `type`, `default`, `validator`, `order`. `__set_name__`
+        sets the two names. `__set__` does type check, then validator, then
+        `object.__setattr__(instance, self.private_name, value)`. `__get__` returns `self` when
+        `instance is None`, otherwise reads the private name and falls back to the default.
+      - `Record.__init_subclass__` collects `Field` instances from the class body, sorts by creation
+        counter, stores them on `cls._fields`, and — because slots must exist at creation time —
+        this is the point where a metaclass becomes tempting. Both work; document which you chose
+        and why.
+      - `Record.__init__` validates the key set, then assigns through the descriptors so validation
+        runs, using `object.__setattr__` only for the frozen case.
+      - `_key()` returns `tuple(getattr(self, f.name) for f in self._fields)`. `__eq__`, `__hash__`,
+        `__lt__` and `__repr__` all read it and nothing else.
+
+      The interesting write-up question, worth answering in the README: your `Field.__get__` returns
+      the descriptor for class-level access, which is what makes the SQLAlchemy-style bonus possible
+      at all. Explain what changes if it returned the default instead.
+
+  - id: dm-final-challenge
+    kind: final-challenge
+    title: "Final challenge: make this legacy class behave"
+    minutes: 60
+    summary: One class, eleven defects, every one of them a data-model mistake from this topic.
+    problem: |
+      Below is a class from a real-shaped codebase. It works well enough to have shipped, and it is
+      wrong in eleven distinct ways that this topic covers.
+
+      Find them all, write down what each one breaks and under what conditions, then rewrite the
+      class correctly. Do not look at the reference outline until you have a written list.
+    requirements:
+      - "Produce a written list of defects before changing any code — each with the symptom it causes and when it would surface."
+      - "Rewrite the class so that it is hashable, safely usable as a dict key, memory-efficient, and correct under `sum()`, `sorted()` and `in`."
+      - "Every fix must be justified in a comment naming the data-model rule behind it."
+      - "Write a regression test for at least six of the eleven."
+    constraints:
+      - "Keep the public API: `Position(symbol, quantity, price)`, `+`, `==`, `<`, `len()`, and `in`."
+      - Standard library only.
+    expectedBehaviour:
+      - "`sum(positions)` works and returns a `Position`."
+      - "`{p1, p2}` collapses duplicates and never raises."
+      - "Mutating a position already in a set is either impossible or provably harmless."
+      - "`Position(...) == 3` returns `False` rather than raising."
+      - "`print([p])` shows something a human can read."
+    structure: |
+      position.py        # the rewritten class
+      DEFECTS.md         # your written list, one heading per defect
+      test_position.py   # regression tests
+    milestones:
+      - title: "1 — Read and list"
+        detail: Work through the class line by line and write DEFECTS.md before touching the code.
+      - title: "2 — Fix the contract violations"
+        detail: Equality, hashing, ordering and the operators, in that order.
+      - title: "3 — Fix the layout and the repr"
+        detail: Slots, immutability where appropriate, and an operationally useful repr.
+      - title: "4 — Prove it"
+        detail: A regression test per defect, each failing against the original class.
+    testing:
+      - "Each regression test must fail on the original class and pass on yours — check that, do not assume it."
+      - "Include a test that `Position(...) == object()` returns `False` and does not raise."
+      - "Include a test asserting `not hasattr(position, '__dict__')`."
+    failureCases:
+      - "Finding the obvious `__hash__` bug and stopping — most of the eleven are quieter than that."
+      - "Adding `isinstance` guards that return `False` instead of `NotImplemented`, which breaks cooperation with future subclasses."
+      - "Making the class immutable without noticing that `__iadd__` in the original mutated shared state."
+    bonus:
+      - "Add `__format__` so `f\"{position:short}\"` prints a one-line summary."
+      - "Benchmark the original against the rewrite at one million instances and report both memory and construction time."
+    architectureHints:
+      - "Work through the topic's section order — construction, repr, equality/hash, ordering, container protocol, truthiness, operators, attribute access, slots. Each section has at least one defect in it."
+      - "Three of the eleven are about mutability interacting with hashing. Two are about `NotImplemented`. One is a `__slots__` declaration that does nothing."
+      - "The `in` operator behaving oddly is a clue about which fallback is being used."
+    referenceOutline: |
+      The eleven, grouped:
+
+      **Contract** — `__eq__` without `__hash__`; `__eq__` without an `isinstance` guard so foreign
+      comparison raises; `__hash__` over a mutable field; ordering methods inconsistent with equality.
+
+      **Operators** — `__add__` returning `False` instead of `NotImplemented` for foreign operands;
+      no `__radd__`, so `sum()` fails on the `0` start; `__iadd__` mutating a list shared through a
+      mutable default argument.
+
+      **Protocol** — no `__contains__`, so `in` silently falls back to iteration with different
+      semantics than intended; `__len__` returning a non-`int`, which raises at the C level.
+
+      **Layout and operations** — `__slots__` declared as a bare string, creating per-character
+      slots and saving nothing; no `__repr__`, so logs are unreadable.
+
+      If your list has fewer than eleven, the ones most often missed are the `__len__` return type
+      and the bare-string `__slots__` — both are invisible until exactly the wrong moment.
+
+# ---------------------------------------------------------------------------- resources
+
+resources:
+  - name: "The Python Language Reference — Data model"
+    type: docs
+    difficulty: deep
+    url: "https://docs.python.org/3/reference/datamodel.html"
+    usefulness: 5
+    why: This is the normative text every other explanation is derived from, and it is the only place the exact lookup and fallback rules are stated precisely.
+    covers: Every special method, special-method lookup, `__slots__`, attribute access, and the operator fallback rules.
+
+  - name: "Descriptor HowTo Guide"
+    type: docs
+    difficulty: core
+    url: "https://docs.python.org/3/howto/descriptor.html"
+    usefulness: 5
+    why: Raymond Hettinger's guide builds descriptors from scratch and then shows pure-Python equivalents of `property`, `classmethod` and bound methods, which is the fastest route to seeing that they are all the same mechanism.
+    covers: "`__get__`/`__set__`/`__set_name__`, data vs non-data precedence, and how functions become methods."
+
+  - name: "dataclasses — the standard library's own answer"
+    type: docs
+    difficulty: core
+    url: "https://docs.python.org/3/library/dataclasses.html"
+    usefulness: 4
+    why: Read this after building the project, not before — it is the production version of exactly what you will have written, and the `frozen` and `slots` sections confirm the design decisions you had to make yourself.
+    covers: "Generated `__eq__`/`__repr__`/ordering, `frozen=True`, `slots=True`, and field defaults."
+
+  - name: "PyTorch — torch.utils.data"
+    type: docs
+    difficulty: core
+    url: "https://pytorch.org/docs/stable/data.html"
+    usefulness: 4
+    why: Shows the container protocol from this lesson doing real work downstream, since a map-style Dataset is defined as nothing more than `__len__` plus `__getitem__`.
+    covers: "Where `__len__`/`__getitem__` are required in the ML stack, and how samplers drive them."
+
+  - name: "Raymond Hettinger — Python's Class Development Toolkit"
+    type: talk
+    difficulty: intro
+    url: "https://www.youtube.com/watch?v=HTLu2DFOdTg"
+    usefulness: 4
+    why: A conference talk that walks a class from naive to production-quality one decision at a time, which is the reasoning process this topic is really teaching rather than the individual method names.
+    covers: "When to add `__repr__`, properties, class methods and invariants, with the trade-offs stated out loud."

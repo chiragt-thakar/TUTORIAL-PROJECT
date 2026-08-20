@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
-import { Geist, Geist_Mono } from "next/font/google";
+import { Geist, Geist_Mono, Fraunces } from "next/font/google";
 import { MotionConfig } from "framer-motion";
-import { getModules, getTracks } from "@/lib/content/loader";
+import { getGroups, getModules, getTracks } from "@/lib/content/loader";
 import { ProgressProvider } from "@/components/progress/ProgressProvider";
 import { MobileNavigation, Sidebar } from "@/components/navigation/Sidebar";
 import { ThemeToggle } from "@/components/layout/ThemeToggle";
@@ -11,6 +11,7 @@ import "./globals.css";
 
 const geistSans = Geist({ variable: "--font-geist-sans", subsets: ["latin"] });
 const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"] });
+const fraunces = Fraunces({ variable: "--font-fraunces", subsets: ["latin"], axes: ["opsz", "SOFT"] });
 const deploymentUrl = process.env.NEXT_PUBLIC_SITE_URL ?? (process.env.VERCEL_URL ? `https://${process.env.VERCEL_URL}` : "http://localhost:3000");
 
 export const metadata: Metadata = {
@@ -18,14 +19,14 @@ export const metadata: Metadata = {
   title: { default: "Zero to Hero: Python, Backend, AI & ML", template: "%s · ZeroToHero" },
   description: "A personal, project-driven learning platform: Python, backend engineering, generative AI, machine learning, and the maths behind them, from zero to advanced.",
   icons: { icon: "/favicon.svg", shortcut: "/favicon.svg" },
-  openGraph: { title: "Zero to Hero: Python, Backend, AI & ML", description: "One learning platform, five tracks, zero to advanced.", images: [{ url: "/og.png", width: 1728, height: 917, alt: "Zero to Hero learning platform" }] },
-  twitter: { card: "summary_large_image", title: "Zero to Hero: Python, Backend, AI & ML", description: "One learning platform, five tracks, zero to advanced.", images: ["/og.png"] },
+  openGraph: { title: "Zero to Hero: Python, Backend, AI & ML", description: "The AI/ML Mastery Roadmap as a site: every phase, every section, every topic.", images: [{ url: "/og.png", width: 1728, height: 917, alt: "Zero to Hero learning platform" }] },
+  twitter: { card: "summary_large_image", title: "Zero to Hero: Python, Backend, AI & ML", description: "The AI/ML Mastery Roadmap as a site: every phase, every section, every topic.", images: ["/og.png"] },
 };
 
 const themeScript = "try{const t=localStorage.getItem('zerotohero-theme');if(t==='light')document.documentElement.dataset.theme='light';else if(!t&&matchMedia('(prefers-color-scheme: light)').matches)document.documentElement.dataset.theme='light'}catch{}";
 
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
-  const [modules, tracks] = await Promise.all([getModules(), getTracks()]);
+  const [modules, groups, tracks] = await Promise.all([getModules(), getGroups(), getTracks()]);
   const lessons = modules.filter((module) => module.status === "available").flatMap((module) => module.lessons.map((lesson) => ({ id: lesson.id, title: lesson.title, moduleTitle: module.title, href: `/learn/${module.slug}/${lesson.slug}` })));
 
   return (
@@ -33,21 +34,22 @@ export default async function RootLayout({ children }: Readonly<{ children: Reac
       <head>
         <script dangerouslySetInnerHTML={{ __html: themeScript }} />
       </head>
-      <body className={`${geistSans.variable} ${geistMono.variable}`}>
+      <body className={`${geistSans.variable} ${geistMono.variable} ${fraunces.variable}`}>
         <MotionConfig reducedMotion="user">
           <ProgressProvider>
-            <CommandPaletteProvider tracks={tracks} modules={modules} lessons={lessons}>
+            <CommandPaletteProvider groups={groups} modules={modules} lessons={lessons}>
               <div className="bg-grid" aria-hidden="true">
                 <div className="bg-grid-lines" />
                 <div className="bg-glow bg-glow-a" />
                 <div className="bg-glow bg-glow-b" />
+                <div className="bg-glow bg-glow-c" />
               </div>
               <a className="skip-link" href="#main-content">Skip to content</a>
               <div className="app-shell">
-                <Sidebar modules={modules} tracks={tracks} />
+                <Sidebar modules={modules} groups={groups} tracks={tracks} />
                 <div className="page-shell">
                   <header className="mobile-header">
-                    <MobileNavigation modules={modules} tracks={tracks} />
+                    <MobileNavigation modules={modules} groups={groups} tracks={tracks} />
                     <span>ZeroToHero_</span>
                     <div className="mobile-header-actions"><PaletteTrigger /><ThemeToggle /></div>
                   </header>

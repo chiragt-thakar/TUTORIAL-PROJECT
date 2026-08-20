@@ -1,22 +1,24 @@
 import type { Metadata } from "next";
-import { getModules, getTracks } from "@/lib/content/loader";
+import Link from "next/link";
+import { getGroups, getModules } from "@/lib/content/loader";
 import { RoadmapGraphLoader } from "@/components/roadmap/RoadmapGraphLoader";
 
 export const metadata: Metadata = {
   title: "Roadmap",
-  description: "The full zero-to-hero skill tree: every track and module, how they connect, and what's next.",
+  description: "The full skill tree: every phase of the mastery roadmap, every section inside it, and the extra material that covers the same ground.",
 };
 
 export default async function RoadmapPage() {
-  const [modules, tracks] = await Promise.all([getModules(), getTracks()]);
+  const [modules, groups] = await Promise.all([getModules(), getGroups()]);
   return (
     <div className="roadmap-page">
       <header className="page-header roadmap-header">
         <p className="eyebrow">SKILL TREE</p>
         <h1>The whole map, zero to hero.</h1>
-        <p>Nothing here is gated — every track and module is always open. Pan and zoom to explore; solid lines are the in-track sequence, dashed cyan lines are real cross-track prerequisites. Click any node to jump straight to it.</p>
+        <p className="roadmap-mastery-link"><Link href="/roadmap/mastery">Open the Mastery Roadmap hub →</Link> — the phase-by-phase plan you actually work through, with every topic tracked by the 3-pass rule. The verbatim source document lives at <Link href="/roadmap/mastery/source">/roadmap/mastery/source</Link>.</p>
+        <p>Nothing here is gated — every section is always open. Each row is one roadmap phase, in the document&rsquo;s order, with its sections along it; the last row is Extra Learning. Nodes carry the roadmap&rsquo;s own section number, and dashed cyan lines connect an extra module to the roadmap section it covers. Click any node to jump straight to it.</p>
       </header>
-      <RoadmapGraphLoader tracks={tracks} modules={modules} />
+      <RoadmapGraphLoader groups={groups} modules={modules} />
       <ul className="roadmap-legend" aria-hidden="true">
         <li><span className="dot status-available" /> Available</li>
         <li><span className="dot status-in-progress" /> In progress</li>

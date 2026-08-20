@@ -1,5 +1,6 @@
 "use client";
 import { buildActivityWeeks, computeLongestStreak, computeStreak } from "@/lib/progress/progress";
+import { AnimatedNumber } from "@/components/motion/AnimatedNumber";
 import { useProgress } from "./ProgressProvider";
 
 export function LearningStreak() {
@@ -15,12 +16,12 @@ export function LearningStreak() {
       <div className="streak-numbers">
         <div>
           <span className="streak-flame" aria-hidden="true">🔥</span>
-          <strong>{streak}</strong>
+          <strong><AnimatedNumber value={streak} /></strong>
           <span>day{streak === 1 ? "" : "s"} current</span>
         </div>
         <div className="streak-divider" aria-hidden="true" />
         <div>
-          <strong>{longest}</strong>
+          <strong><AnimatedNumber value={longest} /></strong>
           <span>longest streak</span>
         </div>
       </div>

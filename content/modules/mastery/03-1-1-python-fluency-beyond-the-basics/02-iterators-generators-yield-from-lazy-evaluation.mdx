@@ -1,0 +1,537 @@
+---
+id: "roadmap:phase-1-1.1:1"
+title: "Iterators, generators, yield from, lazy evaluation"
+description: The iterator protocol, generators as suspendable functions, yield from and delegation, and the real trade-offs of laziness — memory, single-pass exhaustion, deferred errors and resource lifetime.
+module: 1-1-python-fluency-beyond-the-basics
+order: 2
+estimatedMinutes: 100
+prerequisites: ["roadmap:phase-1-1.1:0"]
+learningObjectives:
+  - Distinguish an iterable from an iterator and explain why the difference causes the exhaustion bug
+  - Write generators that hold state across suspensions, and know what yield from forwards that a loop does not
+  - Predict when laziness saves memory, when it defers an error, and when it holds a resource open too long
+  - Compose itertools pipelines and name the two functions that quietly break the memory guarantee
+---
+
+A list holds every element. An iterator holds a *position*. That one difference is what lets a
+Python program process a file larger than memory, and it is also the source of the most common
+bug in lazy code — the sequence that works the first time and is empty the second.
+
+This topic builds on the data model from the previous lesson: iteration is a protocol, and
+generators are the language's shorthand for implementing it.
+
+<TypeScriptComparison>
+
+JavaScript has the same machinery, and it is worth mapping precisely because the differences are
+small enough to trip you.
+
+- `Symbol.iterator` is `__iter__`; `next()` is `__next__`.
+- JS signals exhaustion with `{ done: true }`; Python raises `StopIteration`. That is why Python
+  can have `next(it, default)` and JS cannot.
+- `function*` / `yield` are identical in spirit. `yield*` is `yield from`.
+- Python generators are also the basis of `@contextmanager` and, with `async def`, of async
+  iteration — the same object model stretched further than JS stretches its own.
+
+</TypeScriptComparison>
+
+## Iterable is not iterator
+
+An **iterable** can produce an iterator: it defines `__iter__`. An **iterator** produces values
+one at a time: it defines `__next__`, and its `__iter__` returns itself.
+
+```python
+numbers = [1, 2, 3]
+
+print(iter(numbers) is numbers)          # False — a list is iterable, not an iterator
+it = iter(numbers)
+print(iter(it) is it)                    # True  — an iterator is its own iterator
+print(next(it), next(it), next(it))      # 1 2 3
+next(it)                                 # StopIteration
+```
+
+A list can be looped over repeatedly because each `for` calls `iter()` and gets a *fresh*
+iterator. A generator cannot, because it *is* the iterator — there is nothing to restart.
+
+<Concept>
+
+`for x in thing:` is roughly: call `iter(thing)` once, then call `next()` on the result until
+`StopIteration`, then stop. Everything about iteration follows from those two lines.
+
+</Concept>
+
+## Writing the protocol by hand
+
+You rarely need to, but doing it once makes generators legible.
+
+```python
+class Countdown:
+    def __init__(self, start):
+        self.start = start
+
+    def __iter__(self):                  # iterable: hands out a fresh iterator each time
+        return CountdownIterator(self.start)
+
+
+class CountdownIterator:
+    def __init__(self, current):
+        self.current = current
+
+    def __iter__(self):
+        return self
+
+    def __next__(self):
+        if self.current <= 0:
+            raise StopIteration
+        self.current -= 1
+        return self.current + 1
+```
+
+Two classes, explicit state, and a bug waiting to happen if you ever return `self` from
+`Countdown.__iter__` by accident — the object would then be single-use.
+
+## Generators: the same thing, written as a function
+
+A function containing `yield` does not run when you call it. It returns a generator object. Each
+`next()` runs the body until the next `yield` and then **suspends the frame**, keeping every
+local variable alive.
+
+```python
+def countdown(start):
+    while start > 0:
+        yield start
+        start -= 1
+```
+
+That is the whole of `Countdown` and `CountdownIterator`, with the state kept in an ordinary
+local. This is why generators dominate real code: the suspension *is* the state machine.
+
+```python
+def running_mean():
+    total, count = 0.0, 0
+    while True:
+        value = yield (total / count if count else 0.0)
+        total += value
+        count += 1
+```
+
+Assigning from `yield` turns the generator into a consumer: `gen.send(x)` resumes it and makes
+the `yield` expression evaluate to `x`. You must `next(gen)` once first to reach the first yield.
+
+<WhyItMatters>
+
+Every streaming data pipeline you will write for training — read shards, decode, tokenize, batch,
+shuffle within a window — is a chain of generators. The reason it fits in memory is that only one
+item per stage is alive at a time, not one list per stage.
+
+</WhyItMatters>
+
+## Laziness: what it buys and what it costs
+
+**Buys you:** constant memory over arbitrarily long input; the ability to model infinite sequences;
+early exit that never computes the rest; and pipeline composition where stages interleave instead
+of running to completion one after another.
+
+**Costs you:**
+
+- **Single pass.** Consume it twice and the second read is empty. No error, just nothing.
+- **Deferred errors.** The exception surfaces where you *iterate*, not where you built the
+  pipeline, so the traceback points at the consumer.
+- **No `len()`, no indexing, no slicing.** `itertools.islice` replaces slicing and cannot go backwards.
+- **Resource lifetime.** A generator that opened a file keeps it open until exhausted or closed.
+- **Per-item overhead.** For small collections a list comprehension is usually faster.
+
+```python
+rows = (line.split(",") for line in open("huge.csv"))   # nothing has been read yet
+first = next(rows)                                       # now the file is opened and one line read
+```
+
+<CommonMistake>
+
+Treating a generator as a collection:
+
+```python
+records = (parse(line) for line in lines)
+print(len(list(records)))     # fine — but records is now exhausted
+for record in records:        # silently does nothing
+    ...
+```
+
+If you need it twice, materialise it once with `list()` and reuse that, or build the generator
+twice from a factory function. Do not hope.
+
+</CommonMistake>
+
+<Exercise id="gen-inline-exhaust" difficulty="easy">
+
+What does this print, and why is there no error?
+
+```python
+squares = (n * n for n in range(4))
+print(sum(squares))
+print(sum(squares))
+```
+
+<Solution>
+
+`14` then `0`. The first `sum` drives the generator to exhaustion. The second gets a generator
+that immediately raises `StopIteration`, which `sum` interprets as an empty sequence — so it
+returns its start value, `0`. An empty result is indistinguishable from "no data", which is
+exactly what makes this bug expensive.
+
+</Solution>
+</Exercise>
+
+## `yield from`: delegation, not a loop
+
+`yield from sub` looks like `for x in sub: yield x`, and for simple cases it behaves the same. It
+is not the same thing.
+
+`yield from` establishes a **transparent channel** to the subgenerator. It forwards `send()`,
+`throw()` and `close()` down, and it evaluates to the subgenerator's **return value**.
+
+```python
+def inner():
+    yield 1
+    yield 2
+    return "done"                 # becomes StopIteration.value
+
+def outer():
+    result = yield from inner()   # result == "done"
+    yield result
+```
+
+A manual `for` loop would discard that return value and would not forward `send`. If your
+subgenerator is a plain producer the difference does not show; the moment it is a coroutine or
+needs cleanup, it does.
+
+```python
+def flatten(nested):
+    for item in nested:
+        if isinstance(item, list):
+            yield from flatten(item)     # recursion reads naturally
+        else:
+            yield item
+```
+
+<Concept>
+
+A generator's `return value` is not yielded. It is attached to the `StopIteration` it raises, and
+the only two ways to read it are `yield from` or catching `StopIteration` yourself. That design is
+what made `yield from` able to carry results back up a delegation chain, which is how `asyncio`
+was built before `async`/`await` existed.
+
+</Concept>
+
+<Exercise id="gen-inline-yieldfrom" difficulty="medium">
+
+Rewrite `outer` without `yield from`, keeping the same yielded values *and* still capturing
+`inner`'s return value. What do you have to write?
+
+<Solution>
+
+```python
+def outer():
+    it = inner()
+    while True:
+        try:
+            yield next(it)
+        except StopIteration as stop:
+            result = stop.value
+            break
+    yield result
+```
+
+The explicit `StopIteration` catch is what `yield from` does for you — and this version still
+does not forward `send()` or `throw()`, which `yield from` also handles.
+
+</Solution>
+</Exercise>
+
+## `StopIteration` inside a generator is a trap Python closed
+
+Before Python 3.7, a `StopIteration` raised *inside* a generator body silently ended the
+generator, which turned a bug in a helper into a truncated result set.
+
+```python
+def firsts(groups):
+    for group in groups:
+        yield next(iter(group))      # empty group -> StopIteration
+```
+
+Since PEP 479 this raises `RuntimeError: generator raised StopIteration` instead — loud, and
+pointing at the real line. The fix is to give `next` a default, or catch it locally.
+
+```python
+        yield next(iter(group), None)
+```
+
+<ProductionNote>
+
+This is why bare `next(it)` inside a generator is worth a lint rule. The failure mode it replaced
+— a pipeline that quietly processed 400 of 10,000 records and reported success — is the kind of
+bug that is found weeks later by someone reconciling row counts.
+
+</ProductionNote>
+
+## Cleanup, `close()`, and resources
+
+When a generator is garbage collected or `.close()`d, Python raises `GeneratorExit` at the
+suspended `yield`. A `finally` block therefore runs — which is what makes generators safe for
+resource handling, and what `@contextmanager` is built on.
+
+```python
+def read_records(path):
+    handle = open(path)
+    try:
+        for line in handle:
+            yield line.rstrip("\n")
+    finally:
+        handle.close()               # runs on exhaustion, close(), or GC
+```
+
+The catch: if the consumer stops early and drops the reference, cleanup happens whenever the
+garbage collector gets round to it. Under CPython that is usually immediate; it is not guaranteed.
+For anything scarce — file handles, sockets, database cursors — close deterministically:
+
+```python
+from contextlib import closing
+
+with closing(read_records(path)) as records:
+    for record in records:
+        ...
+```
+
+<CommonMistake>
+
+Swallowing `GeneratorExit`. A bare `except:` inside a generator, or a `yield` inside the `finally`
+block, prevents the generator from shutting down and raises `RuntimeError: generator ignored
+GeneratorExit`. Catch specific exceptions, and never yield during cleanup.
+
+</CommonMistake>
+
+## itertools: the standard vocabulary
+
+Learn these six and most pipeline code writes itself.
+
+```python
+from itertools import islice, chain, tee, groupby, count, cycle
+
+islice(stream, 10)                 # the lazy equivalent of stream[:10]
+chain(a, b)                        # concatenate without materialising
+chain.from_iterable(batches)       # flatten one level, lazily
+count(start=0, step=1)             # infinite counter
+cycle(seq)                         # infinite repetition — materialises seq internally
+```
+
+Two of them will quietly break the memory guarantee you thought you had:
+
+- **`tee(it, n)`** buffers everything one branch has seen that another has not. If the branches
+  are consumed at different rates — one filters early, one reads to the end — the buffer grows to
+  the size of the gap. Over a long stream that is the whole stream.
+- **`groupby(it, key)`** only groups *consecutive* equal keys. It does not sort. On unsorted input
+  it produces many small groups and looks like it silently lost data. And each group is itself a
+  lazy iterator that is invalidated as soon as you advance to the next group.
+
+```python
+for key, group in groupby(rows, key=lambda r: r["day"]):
+    items = list(group)            # materialise now, or lose it
+```
+
+<Exercise id="gen-inline-groupby" difficulty="hard">
+
+This is meant to count records per day and always reports too many days. Why, and what are the
+two possible fixes?
+
+```python
+from itertools import groupby
+
+counts = {}
+for day, group in groupby(records, key=lambda r: r["day"]):
+    counts[day] = len(list(group))
+```
+
+<Solution>
+
+`groupby` breaks a group whenever the key *changes*, not whenever it repeats. If `records` is not
+sorted by day, the same day appears as several separate groups, and each assignment to
+`counts[day]` overwrites the previous one — so the count is wrong as well as the group count.
+
+Fix one: sort by the same key first, `groupby(sorted(records, key=key), key=key)` — correct, but
+it materialises everything and gives up laziness. Fix two: don't use `groupby` at all; a
+`collections.Counter` over a lazy stream is one pass, constant memory, and unsorted-safe. For
+counting, fix two is strictly better.
+
+</Solution>
+</Exercise>
+
+## When a generator is the wrong answer
+
+- **Small collections.** Per-item suspension has real overhead. A list comprehension over 100
+  items is faster and easier to debug.
+- **You need the data more than once.** Two passes over a generator means either `list()` or
+  rebuilding it; if you always need both, just build the list.
+- **You need random access, length, or slicing.** Those are sequence operations.
+- **The work is CPU-bound and you want parallelism.** Generators are single-threaded and lazy;
+  `concurrent.futures` wants a materialised work list or careful chunking.
+
+<Exercise id="gen-inline-choice" difficulty="interview">
+
+You are asked to load a 40 GB JSONL file, keep the records where `score > 0.9`, and write them to
+a new file. Sketch the shape of the solution and justify each laziness decision.
+
+<Solution>
+
+A three-stage generator chain, consumed once, streaming straight to the output handle:
+
+```python
+def read(path):
+    with open(path) as handle:
+        for line in handle:
+            yield json.loads(line)
+
+def keep(records, threshold):
+    return (record for record in records if record["score"] > threshold)
+
+with open(out_path, "w") as out:
+    for record in keep(read(in_path), 0.9):
+        out.write(json.dumps(record) + "\n")
+```
+
+Justifications: reading is lazy because 40 GB does not fit in memory; filtering is lazy because
+materialising the survivors could still be tens of GB; writing is eager per record because the
+output must be durable and the handle is already open. The `with` inside `read` ties the file's
+lifetime to the generator's, and the single consumer means exhaustion is never a risk.
+
+The one thing to raise unprompted: this processes records one at a time, so if throughput matters
+you batch — but you batch *within* the lazy chain, not by materialising it.
+
+</Solution>
+</Exercise>
+
+<Exercise id="gen-inline-batch" difficulty="real-world">
+
+Write `batched(iterable, size)` that yields lists of up to `size` items from any iterable,
+including an infinite one, without materialising the input. Then say what happens if the caller
+keeps a reference to a yielded batch — and what changes in Python 3.12.
+
+<Solution>
+
+```python
+from itertools import islice
+
+def batched(iterable, size):
+    if size < 1:
+        raise ValueError("size must be at least one")
+    iterator = iter(iterable)          # crucial: iter() once, not per loop
+    while batch := list(islice(iterator, size)):
+        yield batch
+```
+
+Calling `iter()` once is the whole trick — `islice` then resumes from where the previous slice
+stopped. Building a fresh `iter(iterable)` inside the loop would restart from the beginning on a
+list, and loop forever.
+
+Each batch is a new list, so a caller holding onto one is safe; the memory ceiling is
+`size` items plus whatever the caller retains. Python 3.12 added `itertools.batched`, which does
+the same thing in C and yields **tuples** rather than lists — use it when you are on 3.12+.
+
+</Solution>
+</Exercise>
+
+## Where you will meet this again
+
+- **Training data pipelines.** A PyTorch `IterableDataset` is exactly this protocol; Hugging Face
+  `load_dataset(..., streaming=True)` returns a lazy dataset you can `.map()` and `.filter()`
+  without downloading the whole thing.
+- **Tokenizer and LLM streaming.** Token-by-token output from a model API is an iterator; so is
+  reading a sharded corpus.
+- **`@contextmanager`.** A generator with exactly one `yield`, wrapped so `__enter__` runs up to
+  the yield and `__exit__` resumes it — covered properly in the context managers topic.
+
+## Checkpoint
+
+Answer these without looking back:
+
+- What is the difference between an iterable and an iterator, and which one is a generator?
+- Name two things `yield from` does that `for x in sub: yield x` does not.
+- Where does a generator's `return` value go?
+- Which two `itertools` functions can silently destroy a constant-memory guarantee, and how?
+- What runs in a generator's `finally` block, and when?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why does looping over a list twice work, but a generator only once?">
+
+`for` calls `iter()` on the object each time. A list hands back a brand-new iterator; a generator
+*is* the iterator and returns itself, already positioned at the end. Nothing resets it.
+
+</Gotcha>
+
+<Gotcha question="Does calling a generator function run any of its body?">
+
+No. Calling it only builds the generator object. Not a single line runs until the first `next()`.
+That is why a validation check at the top of a generator function never fires until someone
+iterates — put argument validation in a plain wrapper function that returns the generator.
+
+</Gotcha>
+
+<Gotcha question="Is a generator expression the same as a list comprehension with round brackets?">
+
+Only in syntax. `[x for x in it]` builds the whole list immediately; `(x for x in it)` builds
+nothing and evaluates on demand. One important shared trap: the outermost iterable is evaluated
+eagerly at creation, so `(x for x in undefined_name)` raises straight away while the rest does not.
+
+</Gotcha>
+
+<Gotcha question="What happens if I raise StopIteration inside a generator?">
+
+Since PEP 479 it becomes `RuntimeError: generator raised StopIteration`. Before Python 3.7 it
+silently ended the generator, which turned a bug in a helper into truncated output with no error.
+Give `next()` a default instead.
+
+</Gotcha>
+
+<Gotcha question="Does itertools.tee let me iterate a generator twice for free?">
+
+No. It buffers every item one branch has consumed that another has not. Consume the branches at
+different rates and the buffer grows to the size of the gap — potentially the entire stream. If
+you need two full passes, `list()` is more honest and often cheaper.
+
+</Gotcha>
+
+<Gotcha question="Is the group from itertools.groupby still usable after the loop moves on?">
+
+No. Each group is a lazy view over the same underlying iterator, and advancing to the next group
+invalidates it. `[list(g) for k, g in groupby(...)]` works; `[g for k, g in groupby(...)]` gives
+you a list of exhausted iterators.
+
+</Gotcha>
+
+<Gotcha question="Does a generator holding an open file close it when I stop iterating early?">
+
+Eventually. Abandoning it schedules cleanup for garbage collection, which under CPython is usually
+immediate but is not guaranteed and is not immediate on other implementations. For scarce
+resources, close deterministically with `contextlib.closing` or by exhausting the generator.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Iteration is a two-object protocol: something that hands out iterators, and iterators that hand
+out values and then stop. Generators collapse both into a function whose suspended frame holds the
+state, which is why they are the natural way to express a pipeline stage.
+
+Laziness is a trade, not a free win. It buys constant memory, infinite sequences and early exit.
+It costs you a second pass, moves your errors to the point of consumption, and ties resource
+lifetime to iteration.
+
+`yield from` is the delegation primitive that also carries return values and forwards
+`send`/`throw`/`close`. And in `itertools`, `tee` and `groupby` are the two functions that will
+break the memory or correctness assumption you did not realise you were making.
+
+The Practice tab has the exercises, Debug has pipelines that fail in exactly these ways, and
+Project has a streaming record pipeline to build with a memory ceiling you must prove.

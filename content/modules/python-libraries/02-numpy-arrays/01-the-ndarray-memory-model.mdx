@@ -1,0 +1,345 @@
+---
+id: numpy-the-ndarray-memory-model
+title: The ndarray Memory Model
+description: Strides, contiguity, and the views-vs-copies distinction that silently corrupts data.
+module: numpy-arrays
+order: 1
+estimatedMinutes: 40
+prerequisites: []
+learningObjectives:
+  - Explain an ndarray as a buffer plus shape, strides, and dtype
+  - Predict whether an operation returns a view or a copy
+  - Diagnose an aliasing bug caused by an unintended view
+---
+
+Every tensor operation you will ever write — in PyTorch, in JAX, on a GPU — is a NumPy idea wearing a different name. And nearly all of those ideas come from one design decision that NumPy made in 2006.
+
+So we start there, not with `np.array([1, 2, 3])`.
+
+<WhyItMatters>
+
+Most NumPy bugs that survive code review are not arithmetic mistakes. They are memory mistakes: you thought you had a copy, you had a view, and a function 200 lines away mutated your training data. This lesson is the vaccine.
+
+</WhyItMatters>
+
+## An array is a buffer plus a lens
+
+A Python list is a list of *pointers*. Each element is a separate object, scattered across the heap, each with its own type tag and refcount. That is why `sum(my_list)` is slow — it chases a pointer per element.
+
+A NumPy array is one flat, contiguous block of raw bytes, plus a small amount of metadata describing how to read it.
+
+```python title="the four attributes that define an array"
+import numpy as np
+
+a = np.arange(12, dtype=np.int64)
+
+print(a.shape)     # (12,)
+print(a.strides)   # (8,)
+print(a.dtype)     # int64
+print(a.nbytes)    # 96
+```
+
+Four pieces of metadata do all the work:
+
+- **the buffer** — 96 raw bytes, and nothing about them says "twelve integers"
+- **`dtype`** — how many bytes per element, and how to interpret them (8 bytes, two's-complement signed)
+- **`shape`** — the logical grid you want to see
+- **`strides`** — how many *bytes* to step to move one position along each axis
+
+<Concept>
+
+The buffer is the data. Shape, strides, and dtype are a **lens** over it. Change the lens and you see a different array — without touching a single byte.
+
+</Concept>
+
+## Strides make reshaping free
+
+Reshape the same twelve integers into a 3×4 grid:
+
+```python title="same bytes, different lens"
+a = np.arange(12, dtype=np.int64)
+b = a.reshape(3, 4)
+
+print(b.strides)              # (32, 8)
+print(b.base is a)            # True  -> b is a view onto a's buffer
+print(np.shares_memory(a, b)) # True
+```
+
+`strides == (32, 8)` reads directly: to move one row down, skip 32 bytes (four int64s); to move one column right, skip 8 bytes.
+
+No data moved. `reshape` allocated a new metadata header and pointed it at the existing buffer. This is why reshaping a 4 GB array is instant.
+
+Transposing works the same way — it just swaps the strides:
+
+```python title="transpose is a stride swap"
+c = b.T
+print(c.shape)                # (4, 3)
+print(c.strides)              # (8, 32)   <- swapped, not copied
+print(np.shares_memory(b, c)) # True
+```
+
+`b.T` is not "the transposed data". It is *the same bytes, read column-first*. That costs nothing, which is exactly why `A @ B.T` is not slower than `A @ B`.
+
+## Contiguity: the thing that breaks
+
+An array is **C-contiguous** when walking the buffer front to back visits elements in row-major order — the last axis varying fastest. Fresh arrays are. Transposes usually are not.
+
+```python title="the flag that explains surprising errors"
+b = np.arange(12).reshape(3, 4)
+print(b.flags["C_CONTIGUOUS"])   # True
+print(b.T.flags["C_CONTIGUOUS"]) # False
+print(b.T.flags["F_CONTIGUOUS"]) # True  -> column-major instead
+```
+
+Contiguity matters for two practical reasons.
+
+**Speed.** CPUs load memory in cache lines. Striding across a non-contiguous array skips around, wastes most of each line, and can cost an order of magnitude on large data.
+
+**Hard errors.** Some operations refuse to work on non-contiguous memory, because they need a flat run of bytes:
+
+```python title="the error that sends people to Stack Overflow"
+b = np.arange(12).reshape(3, 4)
+b.T.reshape(12)          # works: NumPy silently copies
+b.T.view(np.int32)       # raises: view() cannot reinterpret a strided buffer
+```
+
+`np.ascontiguousarray(x)` forces a compact copy when you need one. Reach for it deliberately — it costs a full allocation.
+
+<ProductionNote>
+
+`torch.Tensor.contiguous()` is the same idea, and PyTorch is stricter: `.view()` on a non-contiguous tensor raises instead of quietly copying. The `RuntimeError: view size is not compatible with input tensor's size and stride` that everyone hits after a `.transpose()` is this exact lesson, one library over.
+
+</ProductionNote>
+
+## Views versus copies: the part that bites
+
+Because slicing only adjusts shape and strides, **basic slicing returns a view**. Mutating the slice mutates the original.
+
+```python title="the aliasing bug, in five lines"
+data = np.arange(10)
+window = data[2:5]       # a VIEW
+window[:] = 0            # writing through the view...
+
+print(data)              # [0 1 0 0 0 5 6 7 8 9]   <- ...changed the original
+```
+
+This is the opposite of Python list behaviour, where `my_list[2:5]` copies. The rule that actually predicts it:
+
+| Operation | Result | Why |
+|---|---|---|
+| `a[2:5]`, `a[::2]`, `a[:, 0]` | **view** | expressible as an offset + strides |
+| `a.reshape(...)`, `a.T`, `a.ravel()` | **view** when possible | metadata-only |
+| `a[[0, 2, 4]]` (fancy indexing) | **copy** | arbitrary positions have no single stride |
+| `a[a > 3]` (boolean mask) | **copy** | result length isn't known from strides |
+| `a.flatten()`, `a.copy()`, `a.astype(...)` | **copy** | always, by contract |
+
+<Callout>
+
+The unifying principle: **if the selection can be described by a starting offset and a constant step per axis, NumPy gives you a view. If it cannot, it must copy.** You never have to memorise the table — derive it from that sentence.
+
+</Callout>
+
+Two functions worth internalising: `np.shares_memory(a, b)` answers the question definitively, and `.base` tells you what an array is a view of (`None` means it owns its buffer).
+
+```python title="stop guessing"
+a = np.arange(10)
+
+print(np.shares_memory(a, a[2:5]))      # True   basic slice
+print(np.shares_memory(a, a[[2, 3, 4]])) # False  fancy index
+print(a[2:5].base is a)                  # True
+print(a.copy().base)                     # None
+```
+
+## Checkpoint
+
+You should now be able to answer, without running anything: why is `x.T` free, why does `x.T.view(np.int32)` raise, and why did writing to a slice change the original array?
+
+If any of those is still fuzzy, re-read the strides section — all three have the same answer.
+
+## Exercises
+
+<Exercise id="numpy-memory-1" difficulty="easy">
+
+`a = np.arange(24, dtype=np.int64).reshape(2, 3, 4)`. Give `a.strides` and explain each number.
+
+<Solution>
+
+`(96, 32, 8)`.
+
+Each `int64` is 8 bytes. Moving one step along the last axis moves 8 bytes. The last axis has 4 elements, so one step along the middle axis skips `4 × 8 = 32` bytes. The middle axis has 3 elements, so one step along the first axis skips `3 × 32 = 96` bytes.
+
+Strides are always built from the right in a C-contiguous array: each is the product of the sizes of all axes to its right, times the itemsize.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-memory-2" difficulty="medium">
+
+Predict the printed output, then say which operations produced views:
+
+```python
+a = np.arange(6)
+b = a.reshape(2, 3)
+c = b[:, 1]
+d = b[[0, 1], :]
+c[:] = 99
+print(a)
+print(d)
+```
+
+<Solution>
+
+```
+[ 0 99  2  3 99  5]
+[[0 1 2]
+ [3 4 5]]
+```
+
+`b` is a view of `a`, and `c = b[:, 1]` is basic slicing, so `c` is a view too — it selects positions 1 and 4 of the buffer with stride 24 bytes. Writing `99` through it lands in `a`.
+
+`d` used fancy indexing (a list of row indices), so `d` is a **copy**, taken before the mutation. It still shows the original values.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-memory-3" difficulty="hard">
+
+This function is meant to normalise a batch without touching the caller's data. It fails. Find both bugs and fix them with a one-word change plus one method call.
+
+```python
+def normalise(batch):
+    out = batch[:]
+    out -= out.mean(axis=0)
+    out /= out.std(axis=0)
+    return out
+```
+
+<Solution>
+
+**Bug one: `batch[:]` is a view, not a copy.** Unlike a Python list, slicing an array aliases it. Both `-=` and `/=` are in-place, so they write straight through to the caller's array.
+
+**Bug two: integer input crashes or truncates.** If `batch` has an integer dtype, `out -= float` raises `numpy.core._exceptions._UFuncOutputCastingError`, because the in-place op cannot store a float result in an int buffer.
+
+Both are fixed by taking a real, float copy:
+
+```python
+def normalise(batch):
+    out = batch.astype(np.float64)   # copies AND fixes the dtype
+    out -= out.mean(axis=0)
+    out /= out.std(axis=0)
+    return out
+```
+
+`astype` always copies by default, so this is a genuine copy even when the input is already float64. If you want to skip the copy when the dtype already matches, `astype(np.float64, copy=False)` does that — but then you are back to aliasing, so only use it when you own the input.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-memory-4" difficulty="interview">
+
+Interview-style: "You have a 6 GB array on a machine with 8 GB of RAM. Which of `arr.T`, `arr.reshape(-1)`, `arr[::2]`, and `arr.flatten()` can you safely call, and why?"
+
+<Solution>
+
+`arr.T` and `arr[::2]` are always safe — both are pure metadata changes (stride swap, stride doubling), so they allocate a few hundred bytes.
+
+`arr.flatten()` is never safe here. It is documented to always copy, so it needs another 6 GB.
+
+`arr.reshape(-1)` depends on contiguity. On a C-contiguous array it is a free view. On a non-contiguous one (say `arr` is itself already a transpose), flattening cannot be expressed with strides, so NumPy falls back to copying and you are out of memory.
+
+The senior-engineer answer names the ambiguity in `reshape` rather than treating it as unconditionally safe: check `arr.flags["C_CONTIGUOUS"]` first, or use `arr.ravel()` and be aware it has the same conditional-copy behaviour.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-memory-5" difficulty="real-world">
+
+You maintain a feature pipeline. A colleague reports that model metrics degrade slightly on every second run, and only in production where a caching layer is enabled.
+
+```python
+def get_features(key):
+    raw = cache.get(key)          # returns the cached ndarray itself
+    features = raw[:, :64]        # keep the first 64 columns
+    features[:, 0] = np.log1p(features[:, 0])
+    return features
+```
+
+Explain the mechanism, and fix it.
+
+<Solution>
+
+`raw[:, :64]` is basic slicing, so `features` is a **view onto the cached array**. The in-place write to column 0 mutates the cache entry itself.
+
+The first request logs column 0. The second request pulls the already-logged array from cache and logs it *again* — `log1p(log1p(x))`. Every subsequent hit compounds the distortion, which is exactly the "degrades a bit each run" symptom. It only shows in production because that is where the cache is enabled; in dev, every call re-reads fresh data.
+
+The fix is to copy before mutating:
+
+```python
+def get_features(key):
+    raw = cache.get(key)
+    features = raw[:, :64].copy()   # own our data
+    features[:, 0] = np.log1p(features[:, 0])
+    return features
+```
+
+The more robust fix is defence in depth: also mark the cached array read-only when it is stored, so the aliasing raises immediately instead of corrupting silently.
+
+```python
+cached = compute(...)
+cached.flags.writeable = False   # any accidental in-place write now raises
+cache.set(key, cached)
+```
+
+That turns a silent data-corruption bug into a loud `ValueError` at the exact line that caused it.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+
+<Gotcha question="Does `a[:]` copy an array, like it copies a list?">
+
+No — and this is the single most common NumPy bug for Python programmers. `my_list[:]` copies; `my_array[:]` returns a view. Use `.copy()` when you want independence.
+
+</Gotcha>
+
+<Gotcha question="Is `x.T` slow on a big matrix?">
+
+No, it is O(1). It swaps shape and strides and copies zero bytes. What can be slow is the *next* operation, if it has to traverse the now non-contiguous memory or force a copy to proceed.
+
+</Gotcha>
+
+<Gotcha question="`a.reshape(-1)` and `a.flatten()` both give me a 1-D array. Same thing?">
+
+No. `flatten()` always copies. `reshape(-1)` returns a view when the layout allows it, and copies otherwise. So `flatten()` is predictable but wasteful; `reshape(-1)` is cheap but means mutations may propagate. `ravel()` behaves like `reshape(-1)`.
+
+</Gotcha>
+
+<Gotcha question="Why did `arr += 1` work but `arr = arr + 1` behave differently in my function?">
+
+`arr += 1` is in-place: it writes into the existing buffer, so the caller sees the change. `arr = arr + 1` allocates a new array and rebinds the local name, leaving the caller's array untouched. With views in play, the first one can reach much further than you intended.
+
+</Gotcha>
+
+<Gotcha question="If a view is just metadata, why did NumPy still copy when I sliced with a boolean mask?">
+
+Because the result cannot be described by a fixed stride. `a[a > 3]` selects arbitrary, data-dependent positions, and its length isn't even known until the mask is evaluated. No offset-plus-step lens can express that, so NumPy must gather the elements into a new buffer.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+An ndarray is a flat byte buffer plus a lens: `dtype` (how to read each element), `shape` (the logical grid), and `strides` (byte steps per axis). Reshape and transpose only change the lens, which is why they are free.
+
+Basic slicing produces a **view** because it is expressible as offset-plus-strides; fancy indexing and boolean masking produce **copies** because they are not. Mutating a view mutates the original, which is the mechanism behind most silent data-corruption bugs in numerical Python.
+
+When you need certainty, `np.shares_memory` answers it, `.copy()` guarantees independence, and `flags.writeable = False` turns accidental aliasing into a loud error instead of a quiet one.
+
+<FurtherReading>
+
+- NumPy docs, *Internal organization of NumPy arrays* — the canonical description of the buffer/strides model.
+- `numpy.lib.stride_tricks.sliding_window_view` — striding pushed to its logical extreme: a rolling window with zero copies. Read its source once you are comfortable here.
+
+</FurtherReading>

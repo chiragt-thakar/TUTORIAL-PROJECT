@@ -3,7 +3,7 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { Command } from "cmdk";
-import type { Module, Track } from "@/types/curriculum";
+import type { CurriculumGroup, Module } from "@/types/curriculum";
 import { useProgress } from "@/components/progress/ProgressProvider";
 import { nextIncompleteLesson } from "@/lib/progress/progress";
 
@@ -26,7 +26,7 @@ export function PaletteTrigger() {
   );
 }
 
-export function CommandPaletteProvider({ children, tracks, modules, lessons }: { children: React.ReactNode; tracks: Track[]; modules: Module[]; lessons: PaletteLesson[] }) {
+export function CommandPaletteProvider({ children, groups, modules, lessons }: { children: React.ReactNode; groups: CurriculumGroup[]; modules: Module[]; lessons: PaletteLesson[] }) {
   const [isOpen, setIsOpen] = useState(false);
   const router = useRouter();
   const { progress } = useProgress();
@@ -54,7 +54,7 @@ export function CommandPaletteProvider({ children, tracks, modules, lessons }: {
     <PaletteContext.Provider value={{ open: () => setIsOpen(true) }}>
       {children}
       <Command.Dialog open={isOpen} onOpenChange={setIsOpen} label="Command palette">
-        <Command.Input autoFocus placeholder="Jump to a track, module, lesson, or action…" />
+        <Command.Input autoFocus placeholder="Jump to a topic group, module, lesson, or action…" />
         <Command.List>
           <Command.Empty>No matches. Try a different search.</Command.Empty>
 
@@ -65,11 +65,20 @@ export function CommandPaletteProvider({ children, tracks, modules, lessons }: {
             <Command.Item onSelect={() => go("/")}>
               <span className="cmdk-icon" aria-hidden="true">⌂</span> Dashboard
             </Command.Item>
+            <Command.Item onSelect={() => go("/practice")}>
+              <span className="cmdk-icon" aria-hidden="true">⌁</span> Practice — challenge, revision, weak areas
+            </Command.Item>
             <Command.Item onSelect={() => go("/roadmap")}>
               <span className="cmdk-icon" aria-hidden="true">◈</span> Open roadmap
             </Command.Item>
+            <Command.Item onSelect={() => go("/roadmap/mastery")}>
+              <span className="cmdk-icon" aria-hidden="true">◆</span> Open mastery roadmap
+            </Command.Item>
+            <Command.Item onSelect={() => go("/roadmap/mastery/source")}>
+              <span className="cmdk-icon" aria-hidden="true">▤</span> Roadmap source document
+            </Command.Item>
             <Command.Item onSelect={() => go("/learn")}>
-              <span className="cmdk-icon" aria-hidden="true">▤</span> All tracks
+              <span className="cmdk-icon" aria-hidden="true">▤</span> All topics
             </Command.Item>
             <Command.Item onSelect={() => go("/account")}>
               <span className="cmdk-icon" aria-hidden="true">☺</span> Account &amp; sync
@@ -86,11 +95,11 @@ export function CommandPaletteProvider({ children, tracks, modules, lessons }: {
             </Command.Item>
           </Command.Group>
 
-          <Command.Group heading="Tracks">
-            {tracks.map((track) => (
-              <Command.Item key={track.slug} value={`track ${track.title}`} onSelect={() => go(`/tracks/${track.slug}`)}>
+          <Command.Group heading="Topic groups">
+            {groups.map((track) => (
+              <Command.Item key={track.slug} value={`group ${track.title}`} onSelect={() => go(`/paths/${track.slug}`)}>
                 <span className="cmdk-icon" aria-hidden="true">◇</span> {track.title}
-                <span className="cmdk-meta">{track.status === "planned" ? "Planned" : "Track"}</span>
+                <span className="cmdk-meta">{track.tagline}</span>
               </Command.Item>
             ))}
           </Command.Group>

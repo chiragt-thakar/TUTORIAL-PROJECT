@@ -3,13 +3,16 @@ import "server-only";
 import { cache } from "react";
 import { readFile, readdir } from "node:fs/promises";
 import path from "node:path";
-import { frontmatterSchema, moduleSchema, trackSchema } from "./schema";
+import { frontmatterSchema, groupSchema, moduleSchema, trackSchema } from "./schema";
 import { parseMdxFrontmatter } from "./frontmatter";
 import { assertUniqueOrder, sortByNumber } from "@/lib/curriculum/ordering";
-import type { Lesson, Module, Track } from "@/types/curriculum";
+import { isLessonPublished } from "./published";
+import type { CurriculumGroup, Lesson, LessonSummary, Module, Track } from "@/types/curriculum";
+export { isLessonPublished };
 
 const contentRoot = path.join(process.cwd(), "content", "modules");
 const tracksFile = path.join(process.cwd(), "content", "tracks.json");
+const groupsFile = path.join(process.cwd(), "content", "groups.json");
 
 function invalid(error: unknown, file: string): never {
   const detail = error instanceof Error ? error.message : String(error);
@@ -22,6 +25,14 @@ export const getTracks = cache(async (): Promise<Track[]> => {
   catch (error) { return invalid(error, tracksFile); }
   assertUniqueOrder(tracks.map((track) => ({ order: track.number })), "tracks");
   return sortByNumber(tracks) as Track[];
+});
+
+export const getGroups = cache(async (): Promise<CurriculumGroup[]> => {
+  try {
+    const groups = groupSchema.array().parse(JSON.parse(await readFile(groupsFile, "utf8")));
+    assertUniqueOrder(groups.map((group) => ({ order: group.number })), "groups");
+    return sortByNumber(groups) as CurriculumGroup[];
+  } catch (error) { return invalid(error, groupsFile); }
 });
 
 export const getModules = cache(async (): Promise<Module[]> => {
@@ -48,6 +59,12 @@ export const getModules = cache(async (): Promise<Module[]> => {
     slugs.add(courseModule.slug);
   }
   for (const courseModule of modules) assertUniqueOrder(courseModule.lessons, `module ${courseModule.slug}`);
+  const groupSlugs = new Set((await getGroups()).map((group) => group.slug));
+  for (const courseModule of modules) {
+    if (!groupSlugs.has(courseModule.group)) {
+      throw new Error(`module "${courseModule.slug}" references unknown group "${courseModule.group}"`);
+    }
+  }
   return modules.sort((a, b) => a.track.localeCompare(b.track) || a.number - b.number) as Module[];
 });
 
@@ -59,10 +76,16 @@ export async function getModule(moduleSlug: string): Promise<Module | undefined>
   return (await getModules()).find((courseModule) => courseModule.slug === moduleSlug);
 }
 
+/** Every readable lesson in a module, including ones published ahead of their module. */
+export function publishedLessons(courseModule: Module): LessonSummary[] {
+  return [...courseModule.lessons, ...(courseModule.assignment ? [courseModule.assignment] : [])]
+    .filter((lesson) => isLessonPublished(courseModule, lesson));
+}
+
 export async function getLesson(moduleSlug: string, lessonSlug: string): Promise<Lesson | undefined> {
   const courseModule = await getModule(moduleSlug);
   const summary = courseModule?.lessons.find((lesson) => lesson.slug === lessonSlug) ?? (courseModule?.assignment?.slug === lessonSlug ? courseModule.assignment : undefined);
-  if (!courseModule || !summary || courseModule.status === "planned") return undefined;
+  if (!courseModule || !summary || !isLessonPublished(courseModule, summary)) return undefined;
   const directory = `${String(courseModule.number).padStart(2, "0")}-${courseModule.slug}`;
   const file = path.join(contentRoot, courseModule.track, directory, `${lessonSlug}.mdx`);
   try {
@@ -76,8 +99,7 @@ export async function getLesson(moduleSlug: string, lessonSlug: string): Promise
 export async function validateAvailableContent(): Promise<number> {
   let count = 0;
   for (const courseModule of await getModules()) {
-    if (courseModule.status !== "available") continue;
-    for (const item of [...courseModule.lessons, ...(courseModule.assignment ? [courseModule.assignment] : [])]) {
+    for (const item of publishedLessons(courseModule)) {
       await getLesson(courseModule.slug, item.slug);
       count += 1;
     }
@@ -87,9 +109,9 @@ export async function validateAvailableContent(): Promise<number> {
 
 export function getAdjacentLessons(modules: Module[], moduleSlug: string, lessonSlug: string) {
   const courseModule = modules.find((item) => item.slug === moduleSlug);
-  const trackModules = modules.filter((item) => item.status === "available" && item.track === courseModule?.track);
+  const trackModules = modules.filter((item) => item.track === courseModule?.track);
   const lessons = trackModules.flatMap((item) =>
-    [...item.lessons, ...(item.assignment ? [item.assignment] : [])].map((lesson) => ({ module: item, lesson })),
+    publishedLessons(item).map((lesson) => ({ module: item, lesson })),
   );
   const index = lessons.findIndex(({ module, lesson }) => module.slug === moduleSlug && lesson.slug === lessonSlug);
   return { previous: index > 0 ? lessons[index - 1] : undefined, next: index >= 0 ? lessons[index + 1] : undefined };

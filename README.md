@@ -38,9 +38,24 @@ The build command creates a static site in `out/`. It can be hosted on Vercel or
 
 ## Content structure
 
-`content/tracks.json` registers every track (slug, number, title, status). Each directory under `content/modules/<track-slug>` contains module directories with a small `module.json`. Every listed lesson and assignment for an `available` module has matching `.mdx` content with validated frontmatter; `planned` modules only need metadata. See `CONTENT_GUIDE.md` for the authoring contract.
+**The curriculum is generated from the roadmap.** `content/roadmap/AI_ML_MASTERY_ROADMAP.md` holds
+the learner's AI/ML Mastery Roadmap verbatim, and `scripts/generateRoadmapCurriculum.ts`
+(`npm run generate:roadmap`) turns it into navigation: one group per phase, one module per numbered
+subsection, one lesson per `- [ ]` checkbox, with a lesson's id equal to its roadmap topic id. The
+generated files — `content/groups.json` and everything under `content/modules/mastery/` — are not
+hand-edited. `tests/roadmapCurriculum.test.ts` fails if the document and the curriculum drift apart.
 
-Content loading is centralized in `lib/content/loader.ts`. Pages are statically generated from local files, and metadata failures stop the build with a file-specific error. Module slugs and lesson IDs stay globally unique across every track, since progress is stored by lesson ID and lesson routes are still `/learn/[moduleSlug]/[lessonSlug]`.
+`content/tracks.json` registers the storage tracks (which directory a module's files live in);
+`content/groups.json` defines what navigation actually shows. Material written before the site
+followed the roadmap lives in the **Extra Learning** group, sub-grouped by the track it came from.
+Every listed lesson and assignment for an `available` module has matching `.mdx` content with
+validated frontmatter; `planned` modules and lessons only need metadata. See `CONTENT_GUIDE.md` for
+the authoring contract.
+
+Content loading is centralized in `lib/content/loader.ts`. Pages are statically generated from local
+files, and metadata failures stop the build with a file-specific error. Module slugs and lesson IDs
+stay globally unique across every track, since progress is stored by lesson ID and lesson routes are
+`/learn/[moduleSlug]/[lessonSlug]`.
 
 ## Progress behavior
 
@@ -57,6 +72,24 @@ The site can mirror local progress to your own free Supabase project so it follo
 5. Visit `/account` to create an account and sign in. Passwords are stored and compared in plain text by explicit design — this is a personal single-user tool, not a place to reuse a real password.
 
 Without those two environment variables set, `/account` explains sync isn't configured and the rest of the site is completely unaffected — this is the default state and is fully supported.
+
+**Step 2 is not optional and is easy to skip.** Setting only the environment variables gets you a
+reachable project with no tables, and every sync call fails with `PGRST205 Could not find the table
+'public.progress'`. If sync silently never works, run `supabase/schema.sql` first and check again.
+
+What syncs, once it is on:
+
+- **Progress** — lessons, exercises, assignments, roadmap topic passes, Proof Gates, activity dates,
+  and logged focus sessions, in one `progress` row per user.
+- **Lesson notes** — one `notes` row per (user, lesson).
+
+Sync is **pull-merge-push**, not last-writer-wins. On load, on sign-in, and whenever the tab regains
+focus, the client pulls the server copy, merges it with the local one, and pushes the union back.
+The merge (`mergeProgress` in `lib/progress/progress.ts`, covered by `tests/progress.test.ts`) is
+additive: unions for completed items, the higher value for a topic's 3-pass level, and union-by-id
+for focus sessions so two devices never double-count. The deliberate consequence is that
+**un-ticking something only sticks once it has synced** — losing a device's work is a worse failure
+than keeping a tick you meant to clear.
 
 ## Free deployment
 

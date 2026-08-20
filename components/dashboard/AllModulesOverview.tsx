@@ -1,22 +1,24 @@
 "use client";
 import Link from "next/link";
-import type { Module, Track } from "@/types/curriculum";
+import type { CurriculumGroup, Module } from "@/types/curriculum";
 import { useProgress } from "@/components/progress/ProgressProvider";
 import { percentage } from "@/lib/progress/progress";
-import { trackIcon } from "@/lib/curriculum/trackMeta";
+import { groupIcon } from "@/lib/curriculum/trackMeta";
+import { buildGroups, isRoadmapModule, navRef } from "@/lib/curriculum/groups";
 
-export function AllModulesOverview({ tracks, modules }: { tracks: Track[]; modules: Module[] }) {
+export function AllModulesOverview({ groups, modules }: { groups: CurriculumGroup[]; modules: Module[] }) {
   const { progress, hydrated } = useProgress();
+  const built = buildGroups(groups, modules);
   return (
     <div className="all-modules">
-      <p className="eyebrow">ALL MODULES · NOTHING IS GATED — JUMP ANYWHERE</p>
-      {tracks.map((track) => {
-        const trackModules = modules.filter((module) => module.track === track.slug).sort((a, b) => a.number - b.number);
+      <p className="eyebrow">EVERY SECTION · IN ROADMAP ORDER · NOTHING IS GATED</p>
+      {built.map((track) => {
+        const trackModules = track.modules;
         return (
           <div className="all-modules-track" key={track.slug}>
             <div className="all-modules-track-heading">
-              <span aria-hidden="true">{trackIcon[track.slug] ?? "◆"}</span>
-              <Link href={`/tracks/${track.slug}`}>{track.title}</Link>
+              <span aria-hidden="true">{groupIcon[track.slug] ?? "◆"}</span>
+              <Link href={`/paths/${track.slug}`}>{track.title}</Link>
             </div>
             <div className="all-modules-row">
               {trackModules.map((module) => {
@@ -25,9 +27,9 @@ export function AllModulesOverview({ tracks, modules }: { tracks: Track[]; modul
                 const pct = hydrated ? percentage(done, lessonIds.length) : 0;
                 return (
                   <Link key={module.slug} href={`/learn/${module.slug}`} className={`module-chip ${module.status}`}>
-                    <span className="module-chip-index">{String(module.number).padStart(2, "0")}</span>
+                    <span className="module-chip-index">{isRoadmapModule(module) ? navRef(module) : "·"}</span>
                     <span className="module-chip-title">{module.title}</span>
-                    <span className="module-chip-pct">{module.status === "available" ? `${pct}%` : "outline"}</span>
+                    <span className="module-chip-pct">{module.status === "available" ? `${pct}%` : `${lessonIds.length}t`}</span>
                   </Link>
                 );
               })}

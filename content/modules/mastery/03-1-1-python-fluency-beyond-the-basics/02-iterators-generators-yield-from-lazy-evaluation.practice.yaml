@@ -1,0 +1,1724 @@
+# Practice bank for roadmap topic 1.1 #2 — iterators, generators, yield from, lazy evaluation.
+#
+# Authored to the standard in PRACTICE_SYSTEM.md. Ids are progress keys — never rename a shipped one.
+
+lessonId: "roadmap:phase-1-1.1:1"
+module: 1-1-python-fluency-beyond-the-basics
+lesson: 02-iterators-generators-yield-from-lazy-evaluation
+title: "Iterators, generators, yield from, lazy evaluation"
+summary: The iteration protocol, suspendable frames, delegation with yield from, and the real cost of laziness.
+
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+
+exercises:
+  # ------------------------------------------------------------ normal
+  - id: it-protocol-by-hand
+    tier: normal
+    kind: write-code
+    title: Implement the iterator protocol without a generator
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["__iter__", "__next__", "StopIteration", "iterable vs iterator"]
+    prompt: |
+      Write a `Fibonacci` class that is **iterable** and produces the first `n` Fibonacci numbers,
+      using no `yield` anywhere.
+
+      It must be re-iterable: two separate `for` loops over the same object must both produce the
+      full sequence.
+    hints:
+      - An object that returns `self` from `__iter__` can only be iterated once. You need two objects, or fresh state per call.
+      - "`__next__` signals the end by raising `StopIteration`, not by returning `None`."
+    solution: |
+      Keep the class itself stateless and return a *new* iterator each time `__iter__` is called.
+      That separation is exactly what makes a list re-iterable and a generator not.
+    solutionCode: |
+      class Fibonacci:
+          def __init__(self, count):
+              self.count = count
+
+          def __iter__(self):
+              return FibonacciIterator(self.count)
+
+
+      class FibonacciIterator:
+          def __init__(self, remaining):
+              self.remaining = remaining
+              self.current, self.following = 0, 1
+
+          def __iter__(self):
+              return self
+
+          def __next__(self):
+              if self.remaining <= 0:
+                  raise StopIteration
+              self.remaining -= 1
+              value, self.current, self.following = self.current, self.following, self.current + self.following
+              return value
+    explanation: |
+      This is the shape generators hide from you. Writing it once makes the exhaustion bug obvious:
+      if `Fibonacci.__iter__` returned `self` and mutated `self.current`, the second loop would
+      start wherever the first stopped, which is precisely what happens with a generator.
+
+  - id: it-generator-rewrite
+    tier: normal
+    kind: refactor
+    title: Collapse two classes into four lines
+    minutes: 6
+    requiredForMastery: true
+    concepts: ["generators", "suspended frames"]
+    prompt: |
+      Rewrite the previous exercise's `Fibonacci` as a generator function. Then state, in one
+      sentence, what you gave up by doing so.
+    hints:
+      - The two local variables you were storing on the iterator can just be locals in the function.
+      - What can a list do twice that a generator cannot?
+    solution: |
+      A four-line generator function replaces both classes, because the suspended frame holds the
+      state that `FibonacciIterator` held in attributes.
+
+      What you gave up: re-iterability. The generator *is* the iterator, so a second `for` loop over
+      the same generator object yields nothing. Calling `fibonacci(10)` again gives a fresh one.
+    solutionCode: |
+      def fibonacci(count):
+          current, following = 0, 1
+          for _ in range(count):
+              yield current
+              current, following = following, current + following
+    explanation: |
+      If you need both — generator convenience and re-iterability — write a small iterable class
+      whose `__iter__` *returns* a generator. That is what most library collections do.
+
+  - id: it-exhaustion-predict
+    tier: normal
+    kind: predict-output
+    title: The second sum
+    minutes: 6
+    requiredForMastery: true
+    concepts: ["exhaustion", "generator expressions"]
+    prompt: |
+      Predict all three lines.
+    code: |
+      values = (n for n in range(5))
+      print(sum(values))
+      print(sum(values))
+      print(list(values))
+    hints:
+      - How many times can a single generator object be driven to `StopIteration`?
+      - What does `sum` return for an empty iterable?
+    solution: |
+      `10`, `0`, `[]`.
+
+      The first `sum` exhausts the generator. The second gets `StopIteration` immediately, which
+      `sum` reads as an empty sequence and answers with its start value `0`. `list()` of an
+      exhausted generator is `[]`.
+    explanation: |
+      Notice there is no error at any point. An exhausted generator is indistinguishable from an
+      empty one, so this class of bug shows up as a zero, an empty report or a silently skipped
+      stage — never as a traceback.
+
+  - id: it-iter-sentinel
+    tier: normal
+    kind: write-code
+    title: The two-argument form of iter()
+    minutes: 8
+    requiredForMastery: false
+    concepts: ["iter sentinel", "callable iteration"]
+    prompt: |
+      Read a binary file in fixed 4096-byte chunks until exhausted, using `iter()` with two
+      arguments and no `while` loop.
+
+      Then explain what the second argument means.
+    hints:
+      - "`iter(callable, sentinel)` calls the callable repeatedly and stops when the result equals the sentinel."
+      - "`functools.partial` or a lambda turns `handle.read(4096)` into a zero-argument callable."
+    solution: |
+      The two-argument form builds an iterator from a zero-argument callable, stopping when the
+      callable returns the sentinel value. For a file, a read at EOF returns `b""`, so `b""` is the
+      sentinel.
+    solutionCode: |
+      from functools import partial
+
+      with open(path, "rb") as handle:
+          for chunk in iter(partial(handle.read, 4096), b""):
+              process(chunk)
+    explanation: |
+      It is the cleanest way to wrap any "call until it returns the terminator" API — socket reads,
+      queue `get_nowait`, a cursor's `fetchone`. Worth knowing because the `while True` / `if not
+      chunk: break` version is three lines longer and easier to get wrong.
+
+  - id: it-genexp-vs-list
+    tier: normal
+    kind: explain
+    title: Round brackets are not a cosmetic change
+    minutes: 8
+    requiredForMastery: true
+    concepts: ["generator expressions", "laziness", "memory"]
+    prompt: |
+      Give three concrete differences between these two lines, beyond one being a list and one
+      being a generator.
+    code: |
+      squares_list = [n * n for n in range(10_000_000)]
+      squares_gen  = (n * n for n in range(10_000_000))
+    hints:
+      - One of them has already done ten million multiplications by the time the line finishes.
+      - Think about what you can ask each object afterwards.
+    solution: |
+      1. **Memory and time at creation.** The list allocates ten million integers immediately; the
+         generator allocates one small object and does no arithmetic at all.
+      2. **What you can do with it.** The list supports `len()`, indexing, slicing and repeated
+         iteration. The generator supports none of those and can be iterated once.
+      3. **When errors appear.** A failure inside the expression surfaces on the list line, but at
+         the point of *consumption* for the generator — often in a different function, with a
+         traceback that does not point at the pipeline you built.
+    explanation: |
+      One shared subtlety worth knowing: the *outermost* iterable is evaluated eagerly even in a
+      generator expression, so `(x for x in typo_name)` raises `NameError` immediately while the
+      body does not run until iteration.
+
+  - id: it-take-while
+    tier: normal
+    kind: write-code
+    title: Early exit over an infinite sequence
+    minutes: 8
+    requiredForMastery: true
+    concepts: ["infinite generators", "early exit", "itertools.count"]
+    prompt: |
+      Using `itertools.count`, find the first integer above 1000 whose square has a digit sum
+      divisible by 7 — without building any list and without a `while True` of your own.
+    hints:
+      - "`itertools.count(1001)` is an infinite lazy counter."
+      - "A generator expression plus `next()` gives you the first match and stops there."
+    solution: |
+      Filter the infinite counter lazily and take one item. Nothing after the match is ever computed,
+      which is the whole point of laziness here — the sequence has no end to reach.
+    solutionCode: |
+      from itertools import count
+
+      digit_sum = lambda n: sum(int(digit) for digit in str(n))
+      answer = next(n for n in count(1001) if digit_sum(n * n) % 7 == 0)
+    explanation: |
+      Try the eager version to feel the difference: there is no eager version. You cannot build a
+      list of all integers above 1000 and filter it. Laziness is not an optimisation here, it is
+      what makes the expression possible at all.
+
+  - id: it-finally-cleanup
+    tier: normal
+    kind: write-code
+    title: Make a generator release its file
+    minutes: 10
+    requiredForMastery: true
+    concepts: ["finally", "GeneratorExit", "resource lifetime"]
+    prompt: |
+      This generator leaks a file handle when the consumer stops early. Fix it so the handle is
+      always released, and then show how the *caller* can guarantee release deterministically
+      rather than waiting for garbage collection.
+    code: |
+      def read_records(path):
+          handle = open(path)
+          for line in handle:
+              yield line.rstrip("\n")
+          handle.close()
+    hints:
+      - The `close()` after the loop never runs if the consumer breaks out early.
+      - "`with` inside the generator, or `try`/`finally`, both survive `GeneratorExit`."
+      - On the caller's side, `contextlib.closing` calls `.close()` on the generator itself.
+    solution: |
+      Put the handle in a `with` block inside the generator. When the consumer stops early and the
+      generator is closed or collected, `GeneratorExit` is raised at the suspended `yield`, the
+      `with` block unwinds, and the file closes.
+
+      For determinism the caller wraps the generator in `contextlib.closing`, which calls
+      `generator.close()` on exit instead of leaving it to the collector.
+    solutionCode: |
+      def read_records(path):
+          with open(path) as handle:
+              for line in handle:
+                  yield line.rstrip("\n")
+
+
+      from contextlib import closing
+
+      with closing(read_records(path)) as records:
+          for record in records:
+              if done(record):
+                  break        # file closes here, not "eventually"
+    explanation: |
+      CPython's reference counting usually collects the abandoned generator immediately, which is
+      why the broken version appears to work. On PyPy, or when the generator is caught in a
+      reference cycle, it does not — and you find out by running out of file descriptors under load.
+
+  # ------------------------------------------------------------ intermediate
+  - id: it-yield-from-forwards
+    tier: intermediate
+    kind: explain
+    title: What yield from does that a loop does not
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["yield from", "delegation", "StopIteration.value", "send"]
+    prompt: |
+      Name everything `yield from sub()` does that `for item in sub(): yield item` does not, and
+      give one concrete case where the difference changes the result.
+    hints:
+      - Think about what travels *down* into the subgenerator, not just what comes up.
+      - A generator can `return` a value. Where does it go?
+    solution: |
+      Three differences:
+
+      1. **It evaluates to the subgenerator's return value.** `result = yield from sub()` captures
+         what `sub` returned; the loop discards it entirely.
+      2. **It forwards `send()`, `throw()` and `close()`** to the subgenerator. With the loop, a
+         `send()` from the consumer lands on the *outer* generator's `yield` and never reaches the
+         inner one.
+      3. **It is a single frame transition per item**, not two, so deep delegation chains are
+         faster and produce shallower tracebacks.
+
+      Concrete case: a parser where subgenerators consume pushed input via `send()` and return the
+      parsed node. With a `for` loop, both the pushed data and the returned node are lost, and the
+      parser silently produces nothing.
+    explanation: |
+      Point 2 is why `yield from` was introduced at all (PEP 380) and why `asyncio` was built on it
+      before `async`/`await` existed — a coroutine could delegate to another coroutine without the
+      intermediate frames having to hand-forward every operation.
+
+  - id: it-return-value
+    tier: intermediate
+    kind: predict-output
+    title: Where does a generator's return value go?
+    minutes: 10
+    requiredForMastery: true
+    concepts: ["StopIteration.value", "generator return"]
+    prompt: |
+      Predict both printed lines.
+    code: |
+      def counted():
+          total = 0
+          for value in (1, 2, 3):
+              total += value
+              yield value
+          return total
+
+      print(list(counted()))
+
+      generator = counted()
+      while True:
+          try:
+              next(generator)
+          except StopIteration as stop:
+              print(stop.value)
+              break
+    hints:
+      - Does `list()` show you anything a generator `return`s?
+      - The return value is attached to the exception that ends the generator.
+    solution: |
+      `[1, 2, 3]` then `6`.
+
+      A generator's `return` value is never yielded, so `list()` cannot see it. It is attached to
+      the `StopIteration` that terminates the generator, readable either by catching that exception
+      or — far more usually — with `yield from`.
+    explanation: |
+      This is the mechanism that lets `yield from` return a value at all. It also explains why a
+      bare `return x` in a generator looks like it does nothing: the value is there, but only two
+      constructs in the language ever look at it.
+
+  - id: it-batched
+    tier: intermediate
+    kind: write-code
+    title: Batch an infinite stream without materialising it
+    minutes: 15
+    requiredForMastery: true
+    concepts: ["islice", "iter once", "batching"]
+    prompt: |
+      Write `batched(iterable, size)` that yields lists of up to `size` items from any iterable,
+      including an infinite one, using constant memory relative to the input.
+
+      There is one line that decides whether this works or loops forever. Identify it.
+    hints:
+      - "`itertools.islice(iterator, size)` takes the next `size` items and leaves the iterator positioned after them."
+      - Call `iter()` on the input exactly once, outside the loop. Doing it inside restarts a list from the beginning every time.
+    solution: |
+      Take a single iterator up front, then repeatedly `islice` it. The decisive line is
+      `iterator = iter(iterable)` outside the loop — with `iter(iterable)` inside, a list would
+      restart from element zero on every pass and the loop would never end.
+    solutionCode: |
+      from itertools import islice
+
+      def batched(iterable, size):
+          if size < 1:
+              raise ValueError("size must be at least one")
+          iterator = iter(iterable)
+          while batch := list(islice(iterator, size)):
+              yield batch
+    explanation: |
+      Python 3.12 added `itertools.batched`, which does this in C and yields **tuples** rather than
+      lists. Prefer it on 3.12+; write this version when you need list semantics or older support.
+
+      Note also that the `ValueError` for `size < 1` fires only on first iteration, because nothing
+      in a generator body runs until then. If you want it eager, split the validation into a
+      non-generator wrapper that returns the generator.
+
+  - id: it-tee-cost
+    tier: intermediate
+    kind: performance
+    title: What tee actually costs
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["itertools.tee", "buffering", "memory"]
+    prompt: |
+      Both branches below read the same 10-million-record stream. Estimate the peak memory of each
+      version and explain the difference.
+    code: |
+      from itertools import tee
+
+      # version A
+      first, second = tee(records, 2)
+      total = sum(r["value"] for r in first)
+      count = sum(1 for r in second)
+
+      # version B
+      first, second = tee(records, 2)
+      total = count = 0
+      for a, b in zip(first, second):
+          total += a["value"]
+          count += 1
+    hints:
+      - "`tee` buffers every item that one branch has consumed and another has not."
+      - How far ahead does the first branch get in version A before the second branch starts?
+    solution: |
+      Version A buffers the **entire stream**. `sum` over `first` runs to exhaustion before `second`
+      is touched at all, so `tee` must retain all ten million records for the second branch — the
+      same memory as `list(records)`, plus overhead.
+
+      Version B keeps the branches in lockstep, so the buffer holds roughly one item. Peak memory is
+      constant.
+    explanation: |
+      The rule: `tee` is only cheap when the branches advance together. Whenever one branch can run
+      ahead, the buffer grows to the size of the gap. If you genuinely need two independent full
+      passes, `list()` is more honest — same memory, less indirection, and it supports `len()`.
+
+  - id: it-pipeline-compose
+    tier: intermediate
+    kind: write-code
+    title: Compose a three-stage lazy pipeline
+    minutes: 15
+    requiredForMastery: true
+    concepts: ["pipeline composition", "generators", "chain.from_iterable"]
+    prompt: |
+      Given a list of file paths, build a pipeline that yields parsed JSON records from all of them
+      as a single stream, skipping blank lines, with no file's contents ever fully in memory.
+
+      Write it as three separate composable stages, not one function.
+    hints:
+      - Stage one yields lines from many files; `itertools.chain.from_iterable` flattens one level lazily.
+      - Each stage should take an iterable and return a generator, so they compose in any order.
+    solution: |
+      Three generators, each consuming the previous one. Because every stage is lazy, exactly one
+      line is alive at any moment regardless of how many files or how large they are.
+    solutionCode: |
+      import json
+      from itertools import chain
+
+      def lines_from(paths):
+          for path in paths:
+              with open(path) as handle:
+                  yield from handle
+
+      def non_blank(lines):
+          return (line for line in lines if line.strip())
+
+      def parsed(lines):
+          return (json.loads(line) for line in lines)
+
+
+      records = parsed(non_blank(lines_from(paths)))
+    explanation: |
+      Two details worth noticing. `yield from handle` delegates straight to the file object's own
+      iterator rather than looping, and the `with` inside the loop means each file closes as soon as
+      the stream moves past it — not at the end of the whole run. `chain.from_iterable` would be the
+      alternative to the outer loop, but it cannot hold the `with` block open.
+
+  - id: it-genexp-late-binding
+    tier: intermediate
+    kind: predict-output
+    title: When is the loop variable read?
+    minutes: 12
+    requiredForMastery: false
+    concepts: ["generator expressions", "eager outermost iterable", "late binding"]
+    prompt: |
+      Predict both printed lines. They differ for two independent reasons.
+    code: |
+      data = [1, 2, 3]
+      gen = (x * 10 for x in data)
+      data = [4, 5, 6]
+      print(list(gen))
+
+      multiplier = 10
+      gen2 = (x * multiplier for x in [1, 2, 3])
+      multiplier = 100
+      print(list(gen2))
+    hints:
+      - The outermost iterable of a generator expression is evaluated *immediately*, at creation.
+      - Everything else in the expression is looked up when the item is produced.
+    solution: |
+      `[10, 20, 30]` then `[100, 200, 300]`.
+
+      The first generator captured the *object* `[1, 2, 3]` when it was created, because the
+      outermost iterable is evaluated eagerly — rebinding the name `data` afterwards does not
+      affect it. The second reads `multiplier` at iteration time, by which point it is `100`.
+    explanation: |
+      Both halves matter in practice. The eager outermost iterable is why a typo in it raises
+      immediately, and the late-bound body is the same closure behaviour that makes
+      `[lambda: i for i in range(3)]` surprising — the classic late-binding bug, in a different hat.
+
+  - id: it-contextmanager-link
+    tier: intermediate
+    kind: code-reading
+    title: "Read this: a generator pretending to be a context manager"
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["contextmanager", "generator suspension", "finally"]
+    prompt: |
+      Read this before running it. What does it print, in what order, and what does the `yield` line
+      correspond to in a hand-written context manager class?
+
+      Then: what happens if the body of the `with` raises?
+    code: |
+      from contextlib import contextmanager
+
+      @contextmanager
+      def stage(name):
+          print(f"enter {name}")
+          try:
+              yield name.upper()
+          finally:
+              print(f"exit {name}")
+
+      with stage("load") as label:
+          print(f"body {label}")
+    hints:
+      - "`__enter__` runs the generator up to the `yield`; `__exit__` resumes it."
+      - The value yielded is what `as` binds.
+    solution: |
+      `enter load`, `body LOAD`, `exit load`.
+
+      Everything before the `yield` is `__enter__`. The yielded value is what `as` binds. Everything
+      after the `yield` is `__exit__`.
+
+      If the body raises, the exception is thrown *into* the generator at the `yield` line, so the
+      `finally` still runs and `exit load` still prints — then the exception propagates, because the
+      generator did not suppress it. Catching it around the `yield` and not re-raising would suppress
+      it, which is the generator equivalent of `__exit__` returning `True`.
+    explanation: |
+      This is the clearest demonstration that a generator is a suspendable frame rather than a lazy
+      list. `@contextmanager` is barely fifty lines because the language already provides everything
+      it needs — suspension, resumption, exception injection and cleanup.
+
+  # ------------------------------------------------------------ tricky
+  - id: it-pep479
+    tier: tricky
+    kind: predict-output
+    title: StopIteration where it does not belong
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["PEP 479", "StopIteration", "RuntimeError"]
+    prompt: |
+      What happens when this runs on a modern Python, and what would it have done before 3.7?
+    code: |
+      def firsts(groups):
+          for group in groups:
+              yield next(iter(group))
+
+      print(list(firsts([[1, 2], [], [3]])))
+    hints:
+      - The empty group makes `next()` raise. Which exception, and where does it end up?
+      - Before PEP 479, that exception was indistinguishable from the generator finishing normally.
+    solution: |
+      Modern Python raises `RuntimeError: generator raised StopIteration`, chained from the original
+      `StopIteration`.
+
+      Before 3.7 it printed `[1]`. The `StopIteration` from the empty group propagated out of the
+      generator body and was interpreted as "the generator is finished", so the list ended silently
+      after the first item — with no error at all.
+    explanation: |
+      This is the single strongest argument for never writing bare `next(it)` inside a generator.
+      The old behaviour turned a bug in one record into a truncated result set that looked
+      successful, which is the worst possible failure mode for a data pipeline. Fix it with
+      `next(iter(group), None)` or a local `try`.
+
+  - id: it-groupby-unsorted
+    tier: tricky
+    kind: debug
+    title: "Bug: the report that invents extra days"
+    minutes: 15
+    requiredForMastery: true
+    concepts: ["itertools.groupby", "consecutive grouping", "lazy group invalidation"]
+    prompt: |
+      This daily-count report is wrong in two independent ways when `records` is not sorted. Name
+      both, then fix it — and pick the fix you would actually ship.
+    code: |
+      from itertools import groupby
+
+      counts = {}
+      for day, group in groupby(records, key=lambda r: r["day"]):
+          counts[day] = len(list(group))
+    hints:
+      - "`groupby` starts a new group whenever the key *changes*, not whenever it repeats."
+      - Look at the assignment into `counts` when the same day appears twice.
+    solution: |
+      **One:** `groupby` groups only *consecutive* equal keys, so unsorted input produces many small
+      groups for the same day. **Two:** `counts[day] = ...` overwrites rather than accumulates, so
+      the final value is the size of the *last* run for that day, not the total.
+
+      Sorting first fixes both but materialises the whole stream. For counting, `Counter` is one
+      pass, constant memory and unsorted-safe — ship that.
+    solutionCode: |
+      from collections import Counter
+
+      counts = Counter(record["day"] for record in records)
+    explanation: |
+      A third latent bug lurks in the original if you change it slightly: each `group` is a lazy view
+      over the shared underlying iterator, so `[group for day, group in groupby(...)]` gives a list
+      of exhausted iterators. You must consume each group before advancing.
+
+  - id: it-nested-genexp
+    tier: tricky
+    kind: predict-output
+    title: The pipeline that reads the same iterator twice
+    minutes: 14
+    requiredForMastery: true
+    concepts: ["exhaustion", "nested generators", "shared iterator"]
+    prompt: |
+      Predict the output. It is not what the author intended.
+    code: |
+      stream = iter([1, 2, 3, 4])
+      pairs = ((a, b) for a in stream for b in stream)
+      print(list(pairs))
+    hints:
+      - Both loops draw from the *same* iterator object, not from a re-iterable list.
+      - The outer loop takes one item, then the inner loop drains everything that is left.
+    solution: |
+      `[(1, 2), (1, 3), (1, 4)]`.
+
+      The outer loop takes `1`. The inner loop then consumes `2`, `3` and `4` from the same
+      iterator, yielding three pairs. The outer loop asks for its next item, the iterator is
+      exhausted, and everything stops. With a list instead of `iter(...)`, this would have produced
+      sixteen pairs.
+    explanation: |
+      The general rule: a nested comprehension over the same *iterator* is almost never what you
+      want, because the inner loop consumes the outer loop's remaining items. Nested iteration needs
+      a re-iterable — a list, a tuple, a range — for at least the inner sequence.
+
+  - id: it-generator-ignored-exit
+    tier: tricky
+    kind: debug
+    title: "Bug: generator ignored GeneratorExit"
+    minutes: 15
+    requiredForMastery: true
+    concepts: ["GeneratorExit", "bare except", "cleanup"]
+    prompt: |
+      Closing this generator raises `RuntimeError: generator ignored GeneratorExit`. Explain the
+      mechanism precisely, then fix it.
+    code: |
+      def tolerant(source):
+          for item in source:
+              try:
+                  yield transform(item)
+              except Exception:
+                  continue
+    hints:
+      - What exception is raised *at the yield* when somebody calls `generator.close()`?
+      - Check the class hierarchy — is `GeneratorExit` a subclass of `Exception`?
+    solution: |
+      `close()` raises `GeneratorExit` at the suspended `yield`. The `except Exception` does not
+      catch it — `GeneratorExit` inherits from `BaseException`, not `Exception` — so that is not the
+      mechanism here.
+
+      The real mechanism is the `continue`: it sends control back to the `for` loop and reaches
+      another `yield`. A generator that yields again while shutting down is refusing to exit, which
+      is exactly what `RuntimeError: generator ignored GeneratorExit` reports.
+
+      The fix is to wrap only the part that can fail, so the `yield` is never inside the `try`.
+    solutionCode: |
+      def tolerant(source):
+          for item in source:
+              try:
+                  value = transform(item)
+              except Exception:
+                  continue
+              yield value
+    explanation: |
+      The general rule: keep `yield` out of `try` blocks whose handler can loop, and never catch
+      `BaseException` in a generator. Both make the generator un-closable, and an un-closable
+      generator holds every resource it opened until the process ends.
+
+  - id: it-bug-eager-validation
+    tier: intermediate
+    kind: debug
+    title: "Bug: the guard clause that never fires"
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["generator creation", "laziness", "argument validation"]
+    prompt: |
+      A caller passes `size=0` and expects an immediate `ValueError`. Instead the call succeeds, and
+      the program crashes much later somewhere else entirely.
+
+      Explain why the guard does not fire when it should, then fix it so it does — without giving up
+      laziness.
+    code: |
+      def chunked(records, size):
+          if size < 1:
+              raise ValueError("size must be at least one")
+          batch = []
+          for record in records:
+              batch.append(record)
+              if len(batch) == size:
+                  yield batch
+                  batch = []
+          if batch:
+              yield batch
+
+
+      chunks = chunked(records, size=0)   # expected ValueError, got a generator
+    hints:
+      - How many lines of a generator function body run when you call it?
+      - The guard is fine. Its location is the problem.
+    solution: |
+      Because the function contains `yield`, calling it executes **nothing** — it just builds a
+      generator object. The guard runs on the first `next()`, which may be in a different function,
+      long after the bad argument was supplied.
+
+      The fix is to split it: a plain function that validates eagerly and returns the generator
+      produced by an inner generator function.
+    solutionCode: |
+      def chunked(records, size):
+          if size < 1:
+              raise ValueError("size must be at least one")
+          return _chunked(records, size)
+
+
+      def _chunked(records, size):
+          batch = []
+          for record in records:
+              batch.append(record)
+              if len(batch) == size:
+                  yield batch
+                  batch = []
+          if batch:
+              yield batch
+    explanation: |
+      This split is a standard idiom and worth recognising in library source — you will see it in
+      `itertools` recipes and in most well-written streaming code. The rule: **anything that should
+      fail at call time cannot live in a generator function body.**
+
+  - id: it-bug-double-consume
+    tier: intermediate
+    kind: debug
+    title: "Bug: the stage that silently processes nothing"
+    minutes: 14
+    requiredForMastery: true
+    concepts: ["exhaustion", "single-pass streams", "pipeline design"]
+    prompt: |
+      This summary reports the correct record count and a total of `0.0` every time, on every input.
+      No exception is ever raised.
+
+      Find the defect, explain why there is no error, and give two fixes — one that keeps the stream
+      lazy and one that does not. Say which you would ship.
+    code: |
+      def summarise(records):
+          count = sum(1 for _ in records)
+          total = sum(record["value"] for record in records)
+          return {"count": count, "total": total}
+
+
+      print(summarise(parse(read(path))))
+    hints:
+      - "`records` here is a generator, not a list. How many times can it be driven to exhaustion?"
+      - Why does the second `sum` return `0.0` instead of raising?
+    solution: |
+      The first `sum` exhausts the generator. The second sees an immediately-exhausted iterator,
+      which is indistinguishable from an empty one, so `sum` returns its start value `0` — no error,
+      just a wrong number that looks plausible.
+
+      **Lazy fix:** one pass, two accumulators. **Eager fix:** `records = list(records)` at the top.
+
+      Ship the lazy fix. It is constant memory, it is one pass instead of two, and it is what you
+      would have to do anyway once the input no longer fits in memory. The eager fix is acceptable
+      only when you already know the input is small and you say so.
+    solutionCode: |
+      def summarise(records):
+          count = 0
+          total = 0.0
+          for record in records:
+              count += 1
+              total += record["value"]
+          return {"count": count, "total": total}
+    explanation: |
+      Note what the reflex fix — `itertools.tee` — would do here: the first branch runs to
+      exhaustion before the second starts, so `tee` buffers the entire stream and you have
+      reintroduced `list()` with extra steps. Whenever you catch yourself reaching for `tee` to fix
+      a double-consumption bug, check first whether a single loop with two accumulators works. It
+      usually does.
+
+  - id: it-send-priming
+    tier: tricky
+    kind: predict-output
+    title: Why the first send() fails
+    minutes: 12
+    requiredForMastery: false
+    concepts: ["send", "priming", "generator as consumer"]
+    prompt: |
+      What does this raise, and what is the minimal change that makes it work?
+    code: |
+      def accumulator():
+          total = 0
+          while True:
+              value = yield total
+              total += value
+
+      acc = accumulator()
+      print(acc.send(10))
+    hints:
+      - "`send(x)` makes the *current* `yield` expression evaluate to `x`. Is there a current yield yet?"
+      - A freshly created generator has not executed a single line.
+    solution: |
+      `TypeError: can't send non-None value to a just-started generator`.
+
+      A new generator is suspended *before* the first line, so there is no `yield` expression to
+      receive the value. It must be advanced to the first `yield` first — with `next(acc)` or
+      `acc.send(None)` — after which `acc.send(10)` returns `10`.
+    solutionCode: |
+      acc = accumulator()
+      next(acc)              # prime: run up to the first yield
+      print(acc.send(10))    # 10
+    explanation: |
+      This "priming" step is why decorator helpers that call `next()` for you were common before
+      `async`/`await` existed. If you find yourself writing send-based generators today, check first
+      whether a coroutine or a plain class with a `push()` method would be clearer — send-based
+      generators are powerful and famously hard to read.
+
+  - id: it-lazy-error-timing
+    tier: tricky
+    kind: code-reading
+    title: "Read this: where does the exception surface?"
+    minutes: 14
+    requiredForMastery: true
+    concepts: ["deferred errors", "laziness", "traceback location"]
+    prompt: |
+      `parse` raises `ValueError` on the third record. Read the code and answer:
+
+      - Which line number does the traceback point at?
+      - Has `output.txt` been created when the exception is raised? Does it contain anything?
+      - What one change makes the failure surface at `build_pipeline` instead?
+    code: |
+      def build_pipeline(path):
+          lines = open(path)
+          return (parse(line) for line in lines)
+
+      def main():
+          records = build_pipeline("input.txt")
+          with open("output.txt", "w") as out:
+              for record in records:
+                  out.write(record.summary() + "\n")
+    hints:
+      - Nothing in `build_pipeline` runs `parse`. When does `parse` first execute?
+      - The write loop has already run twice before the failure.
+    solution: |
+      The traceback points at the `for record in records:` line in `main` (and into `parse`), not at
+      `build_pipeline` — that function returned successfully long before any parsing happened.
+
+      `output.txt` exists and contains the first two records' summaries, because the file was opened
+      and written to before the third record was pulled. That partial output is the real hazard: a
+      failed run leaves a truncated file that looks like a complete one.
+
+      Making it eager — `return [parse(line) for line in lines]` — moves the failure to
+      `build_pipeline`, before the output file is ever created. That trades memory for atomicity.
+    explanation: |
+      The lesson is not "laziness is bad", it is that laziness moves failures downstream of side
+      effects. If a partial output is unacceptable, either validate eagerly, or write to a temporary
+      file and rename it only after the stream completes — the standard atomic-write pattern.
+
+  # ------------------------------------------------------------ challenge
+  - id: it-design-resumable
+    tier: challenge
+    kind: design
+    title: Design a resumable, restartable lazy stream
+    minutes: 45
+    requiredForMastery: true
+    concepts: ["iterable vs iterator", "checkpointing", "generator design"]
+    prompt: |
+      Design a `Stream` type that is lazy like a generator but **re-iterable** like a list, and that
+      can additionally resume from a checkpoint after a crash.
+
+      Requirements: iterating it twice yields the full sequence both times; it never materialises
+      the source; `stream.position` reports how many items the current iteration has produced; and
+      `Stream.resume(source_factory, offset)` skips the first `offset` items cheaply.
+
+      Decide and justify: where does the state live, given that a generator's state dies with it?
+    hints:
+      - The re-iterable trick is to store a *factory* — a zero-argument callable that produces a fresh iterator — rather than an iterator.
+      - "`__iter__` should return a new generator each call, which is how a list stays re-iterable."
+      - "`itertools.islice(source, offset, None)` skips cheaply without building a list."
+    solution: |
+      The key decision: store a **callable that produces the source**, not the source itself. Then
+      `__iter__` calls it and returns a fresh generator every time, so the `Stream` is an iterable
+      while each iteration is its own iterator — exactly the split from the first exercise.
+
+      Position tracking has a subtlety worth stating: if `position` lives on the `Stream`, two
+      concurrent iterations fight over it. Either document it as "the most recent iteration", or
+      return a small iterator object that owns its own counter. The honest answer names the
+      trade-off rather than pretending there is none.
+    solutionCode: |
+      from itertools import islice
+
+      class Stream:
+          def __init__(self, source_factory, offset=0):
+              self._factory = source_factory
+              self._offset = offset
+              self.position = 0
+
+          @classmethod
+          def resume(cls, source_factory, offset):
+              return cls(source_factory, offset=offset)
+
+          def __iter__(self):
+              self.position = self._offset
+              source = islice(self._factory(), self._offset, None)
+              for item in source:
+                  self.position += 1
+                  yield item
+
+          def map(self, function):
+              factory = self._factory
+              return Stream(lambda: (function(item) for item in factory()))
+
+          def filter(self, predicate):
+              factory = self._factory
+              return Stream(lambda: (item for item in factory() if predicate(item)))
+    explanation: |
+      `map` and `filter` returning new `Stream`s keeps the whole chain re-iterable and lazy, which a
+      chain of raw generators cannot be. This is precisely the design behind Hugging Face's streaming
+      datasets and Spark's RDDs: describe the computation as a factory, and materialise only on
+      demand — which is also what makes them replayable after a failure.
+
+  - id: it-design-merge
+    tier: challenge
+    kind: design
+    title: Merge sorted streams larger than memory
+    minutes: 40
+    requiredForMastery: false
+    concepts: ["heapq.merge", "k-way merge", "external sort", "laziness"]
+    prompt: |
+      You have 200 sorted files, each far larger than RAM, sorted by a timestamp field. Produce a
+      single globally sorted stream.
+
+      Design it, then answer three questions in writing: what is the peak memory in terms of the
+      number of files; what happens when two records share a timestamp; and what breaks if one file
+      turns out not to be sorted after all?
+    hints:
+      - The building block already exists in the standard library and takes a `key` argument.
+      - A k-way merge only needs the current head of each stream in memory at once.
+      - Think about what a heap does with two equal keys, and whether that ordering is guaranteed.
+    solution: |
+      `heapq.merge(*streams, key=...)` is a lazy k-way merge: peak memory is one record per file
+      plus the heap, so O(number of files) — 200 records, not 200 files.
+
+      Ties: `heapq.merge` is documented as stable, so equal keys come out in the order the streams
+      were passed. Relying on that requires passing the streams in a deliberate order; if the tie
+      order matters, make it explicit by extending the key with a stream index rather than depending
+      on stability by accident.
+
+      An unsorted input file does **not** raise. The merge assumes sortedness and simply produces an
+      unsorted result, silently. Guard it with a cheap validating wrapper that asserts the key is
+      non-decreasing as it passes each record through — one comparison per record, and it turns a
+      silent corruption into a loud failure.
+    solutionCode: |
+      import heapq
+
+      def records(path):
+          with open(path) as handle:
+              for line in handle:
+                  yield json.loads(line)
+
+      def assert_sorted(stream, key):
+          previous = None
+          for item in stream:
+              if previous is not None and key(item) < previous:
+                  raise ValueError(f"{key(item)!r} follows {previous!r}: input not sorted")
+              previous = key(item)
+              yield item
+
+      key = lambda record: record["timestamp"]
+      streams = [assert_sorted(records(path), key) for path in paths]
+      merged = heapq.merge(*streams, key=key)
+    explanation: |
+      This is the merge half of an external sort, and it is the same shape as merging sorted shards
+      of a training set or compacting LSM-tree segments. The validating wrapper is the part people
+      skip; it costs one comparison per record and is the only thing standing between you and a
+      silently mis-ordered dataset.
+
+quizzes:
+  - id: it-checkpoint-protocol
+    title: "Checkpoint: the protocol and laziness"
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: it-cp1-iterable
+        kind: mcq
+        prompt: What distinguishes an iterator from an iterable?
+        options:
+          - id: a
+            text: An iterator defines `__next__` and returns itself from `__iter__`; an iterable only has to produce one
+          - id: b
+            text: An iterator is always lazy and an iterable is always eager
+          - id: c
+            text: An iterator must define `__len__`
+          - id: d
+            text: They are two names for the same protocol
+        answer: ["a"]
+        concepts: ["iterable vs iterator"]
+        points: 1
+        explanation: |
+          A list is iterable but not an iterator — `iter(list) is not list`. A generator is both,
+          which is why it can only be consumed once.
+
+      - id: it-cp2-callrun
+        kind: true-false
+        prompt: Calling a generator function executes the first statement of its body.
+        options:
+          - id: t
+            text: "True"
+          - id: f
+            text: "False"
+        answer: ["f"]
+        concepts: ["generator creation", "laziness"]
+        points: 1
+        explanation: |
+          Calling it only builds the generator object. Nothing in the body runs until the first
+          `next()` — which is why argument validation at the top of a generator never fires on the
+          call itself.
+
+      - id: it-cp3-yieldfrom
+        kind: multi
+        prompt: "Which of these does `yield from sub()` do that `for x in sub(): yield x` does not? Select all that apply."
+        options:
+          - id: a
+            text: Evaluate to the subgenerator's return value
+          - id: b
+            text: Forward `send()` and `throw()` to the subgenerator
+          - id: c
+            text: Make the subgenerator re-iterable
+          - id: d
+            text: Automatically sort the yielded values
+        answer: ["a", "b"]
+        concepts: ["yield from", "delegation"]
+        points: 2
+        explanation: |
+          Delegation is about the channel in both directions. Nothing about `yield from` changes
+          re-iterability or ordering.
+
+      - id: it-cp4-lazycost
+        kind: explain
+        prompt: Name three costs of converting an eager list pipeline into a lazy generator pipeline.
+        modelAnswer: |
+          Any three of: it can only be consumed once, so a second pass silently sees nothing; errors
+          surface at the point of consumption rather than construction, often after side effects have
+          already happened; you lose `len()`, indexing and slicing; resources opened inside the
+          pipeline stay open until it is exhausted or closed; and per-item overhead makes it slower
+          than a list comprehension on small inputs.
+        concepts: ["laziness trade-offs"]
+        points: 2
+        explanation: |
+          The point is that laziness is a trade rather than a strict improvement. An answer that
+          only lists benefits has not understood the topic.
+
+  - id: it-assessment
+    title: "Assessment: iterators, generators and laziness"
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: it-as1-exhaust
+        kind: predict-output
+        prompt: What does this print?
+        code: |
+          values = (n for n in range(4))
+          print(max(values), sum(values))
+        options:
+          - id: a
+            text: "3 6"
+          - id: b
+            text: "3 0"
+          - id: c
+            text: It raises `ValueError`
+          - id: d
+            text: "3 3"
+        answer: ["b"]
+        concepts: ["exhaustion"]
+        points: 2
+        explanation: |
+          `max` drains the generator, so `sum` sees an empty sequence and returns its start value
+          `0`. Note `max` of an empty sequence *would* raise — `sum` is the one that silently
+          returns a plausible-looking answer.
+
+      - id: it-as2-returnvalue
+        kind: mcq
+        prompt: Where does a generator's `return value` end up?
+        options:
+          - id: a
+            text: It is yielded as the final item
+          - id: b
+            text: It is attached to the `StopIteration` that ends the generator
+          - id: c
+            text: It is discarded by the interpreter
+          - id: d
+            text: It becomes the generator's `__value__` attribute
+        answer: ["b"]
+        concepts: ["StopIteration.value"]
+        points: 2
+        explanation: |
+          Which is why `list(gen)` never shows it, and why `yield from` — which reads
+          `StopIteration.value` — is the normal way to get at it.
+
+      - id: it-as3-tee
+        kind: multi
+        prompt: When is `itertools.tee` a reasonable choice? Select all that apply.
+        options:
+          - id: a
+            text: When the branches are consumed roughly in lockstep
+          - id: b
+            text: When one branch runs to exhaustion before the other starts
+          - id: c
+            text: When you need constant memory over an arbitrarily long stream regardless of consumption order
+          - id: d
+            text: When re-running the source is expensive and the branches stay close together
+        answer: ["a", "d"]
+        concepts: ["itertools.tee", "buffering"]
+        points: 3
+        explanation: |
+          `tee` buffers the gap between the fastest and slowest branch. Lockstep consumption is
+          cheap; a branch that races ahead makes the buffer the size of the whole stream, so (b) and
+          (c) are exactly the cases where it fails.
+
+      - id: it-as4-findbug
+        kind: find-bug
+        prompt: This helper is meant to yield the first element of each group. What is wrong with it?
+        code: |
+          def firsts(groups):
+              for group in groups:
+                  yield next(iter(group))
+        options:
+          - id: a
+            text: It should use `yield from` instead of `yield`
+          - id: b
+            text: An empty group makes `next()` raise `StopIteration`, which on modern Python becomes `RuntimeError` and before 3.7 silently truncated the output
+          - id: c
+            text: "`iter()` on a list is unnecessary and causes the bug"
+          - id: d
+            text: Generators cannot contain a `for` loop over their argument
+        answer: ["b"]
+        concepts: ["PEP 479", "StopIteration"]
+        points: 3
+        explanation: |
+          Bare `next()` inside a generator is the hazard. `next(iter(group), None)` or a local
+          `try` fixes it. PEP 479 turned the silent truncation into a loud `RuntimeError`.
+
+      - id: it-as5-batched
+        kind: write-function
+        prompt: |
+          Write `batched(iterable, size)` yielding lists of up to `size` items, working on infinite
+          inputs and using constant memory. Then name the single line that decides whether it works
+          at all.
+        modelAnswer: |
+          Take one iterator up front and repeatedly `islice` it:
+
+          ```python
+          from itertools import islice
+
+          def batched(iterable, size):
+              iterator = iter(iterable)
+              while batch := list(islice(iterator, size)):
+                  yield batch
+          ```
+
+          The decisive line is `iterator = iter(iterable)` **outside** the loop. Calling
+          `iter(iterable)` inside would restart a list from the beginning on every pass, producing
+          the same first batch forever.
+        concepts: ["islice", "iter once", "batching"]
+        points: 3
+        explanation: |
+          Python 3.12's `itertools.batched` does this in C and yields tuples. Knowing it exists is
+          worth a point on its own.
+
+      - id: it-as6-genexit
+        kind: mcq
+        prompt: Why does a bare `except:` around a `yield` inside a loop break `generator.close()`?
+        options:
+          - id: a
+            text: Because `close()` is not allowed on generators that contain loops
+          - id: b
+            text: "Because it can swallow `GeneratorExit` and then reach another `yield`, which raises `RuntimeError: generator ignored GeneratorExit`"
+          - id: c
+            text: Because `close()` requires a `finally` block to exist
+          - id: d
+            text: Because bare `except:` is a syntax error inside a generator
+        answer: ["b"]
+        concepts: ["GeneratorExit", "cleanup"]
+        points: 2
+        explanation: |
+          `close()` raises `GeneratorExit` at the suspended `yield`; the generator is required to
+          exit rather than yield again. Note `except Exception:` would *not* catch it — only a bare
+          `except:` or `except BaseException:` would.
+
+      - id: it-as7-groupby
+        kind: true-false
+        prompt: "`itertools.groupby` sorts its input before grouping."
+        options:
+          - id: t
+            text: "True"
+          - id: f
+            text: "False"
+        answer: ["f"]
+        concepts: ["groupby"]
+        points: 2
+        explanation: |
+          It groups only *consecutive* equal keys. On unsorted input it produces many small groups
+          for the same key, which usually looks like data loss rather than a grouping bug.
+
+      - id: it-as8-performance
+        kind: performance
+        prompt: |
+          A colleague converts every list comprehension in a hot function to a generator expression
+          "for performance". The function operates on lists of about 50 items and the results are
+          iterated exactly once. What do you tell them?
+        modelAnswer: |
+          That it will most likely be slower, not faster. Generators trade a one-off allocation for
+          per-item suspension and resumption overhead, so they win when the collection is large
+          enough that memory or early exit matters — not on 50 items consumed in full.
+
+          Laziness pays for itself when the input is large or unbounded, when you exit early, or
+          when you are composing pipeline stages that would otherwise each materialise. None of those
+          apply here. I would ask for a benchmark before either change, and point out that the
+          readability cost is real too.
+        concepts: ["generator overhead", "when not to be lazy"]
+        points: 3
+        explanation: |
+          The mark of understanding here is refusing a change that is *directionally* associated
+          with performance but wrong for this input size.
+
+      - id: it-as9-explain
+        kind: explain
+        prompt: |
+          A lazy pipeline writes to an output file and fails halfway through. Explain why the output
+          file exists and is partially written, and give the standard fix.
+        modelAnswer: |
+          Because laziness moves the failure downstream of the side effects. The output file is
+          opened and written record by record as the pipeline is consumed, so by the time a later
+          record raises, earlier records are already on disk. The traceback points at the consuming
+          loop, not at where the pipeline was built.
+
+          The standard fix is the atomic-write pattern: stream into a temporary file and `os.replace`
+          it onto the final path only once the stream completes. The alternative — validating
+          eagerly before writing anything — costs memory and only catches errors you can detect up
+          front.
+        concepts: ["deferred errors", "atomic writes"]
+        points: 3
+        explanation: |
+          `os.replace` is atomic on the same filesystem on both POSIX and Windows, which is what
+          makes the pattern safe rather than merely tidy.
+
+      - id: it-as10-scenario
+        kind: scenario
+        prompt: |
+          You need to compute both the mean and the 95th percentile of a 60 GB stream of floats.
+          Describe your approach and justify where you are and are not lazy.
+        modelAnswer: |
+          The mean is a streaming computation: one pass, running sum and count, constant memory —
+          fully lazy.
+
+          The percentile is not, in general: an exact percentile needs the whole sorted population.
+          The options are (a) an external sort — spill sorted chunks to disk, then `heapq.merge` them
+          lazily and pick the index, exact but I/O-heavy; (b) a streaming approximation such as
+          t-digest or a reservoir sample, one pass and bounded memory, at the cost of a small
+          bounded error; (c) a histogram over known bounds, exact to bucket width.
+
+          I would pick the approximation unless the percentile feeds something requiring exactness,
+          state the error bound explicitly, and compute both statistics in the *same* pass — reading
+          60 GB twice is the cost worth avoiding. That means one lazy read feeding two accumulators,
+          not `tee`, which would buffer the whole stream.
+        concepts: ["streaming algorithms", "laziness limits", "tee hazard"]
+        points: 4
+        explanation: |
+          The key insight being tested is that not every computation can be lazy — and that the
+          reflex fix, `tee`, is exactly wrong here because the two branches would advance together
+          only if you were careful, and a single loop feeding two accumulators is simpler and
+          strictly better.
+
+interview:
+  - id: it-iv-iterable-iterator
+    level: basic
+    requiredForMastery: true
+    concepts: ["iterable vs iterator"]
+    question: What is the difference between an iterable and an iterator?
+    shortAnswer: |
+      An iterable can produce an iterator — it defines `__iter__`. An iterator produces values one
+      at a time via `__next__` and returns itself from `__iter__`. A list is iterable but not an
+      iterator; a generator is both, which is why it can only be consumed once.
+    fullAnswer: |
+      `for x in thing` calls `iter(thing)` once and then `next()` repeatedly until `StopIteration`.
+      Because a list hands back a fresh iterator each time, you can loop it repeatedly; because a
+      generator returns itself, the second loop starts already exhausted.
+
+      That is the whole explanation for the most common bug in lazy code — a pipeline that works,
+      then silently produces nothing when something reads it twice. There is no error, because an
+      exhausted iterator is indistinguishable from an empty one.
+
+      The design fix, if you need both, is a small class whose `__iter__` *returns* a new generator
+      each call. That is lazy and re-iterable at once.
+    commonWrongAnswer: |
+      "They're the same thing." Or "an iterator is just a lazy list" — which sounds right and then
+      leads straight to indexing it, calling `len()` on it, and looping it twice.
+    followUps:
+      - Why can you loop a list twice but not a generator?
+      - How would you make something lazy *and* re-iterable?
+      - What exactly does a `for` statement do, in terms of `iter` and `next`?
+
+  - id: it-iv-generator-mechanics
+    level: internals
+    requiredForMastery: true
+    concepts: ["generators", "frame suspension"]
+    question: What actually happens when you call a generator function?
+    shortAnswer: |
+      Nothing in the body runs. You get a generator object holding a suspended stack frame. Each
+      `next()` resumes that frame until the next `yield`, then suspends it again with all locals
+      intact. The suspended frame *is* the state machine.
+    fullAnswer: |
+      The compiler marks any function containing `yield` as a generator function, so calling it
+      allocates a frame and returns immediately without executing it. `next()` resumes the frame at
+      the saved instruction pointer; `yield` saves it again.
+
+      Two consequences people miss. First, argument validation at the top of a generator function
+      never fires on the call — only on first iteration — so eager validation belongs in a plain
+      wrapper that returns the generator. Second, because the frame stays alive, so does everything
+      it references: an open file, a database cursor, a large intermediate. That is a feature for
+      resource management via `finally`, and a leak if the generator is abandoned mid-stream.
+    commonWrongAnswer: |
+      "It runs until the first `yield` and pauses there." A very common answer, and wrong — it does
+      not execute a single line until you ask for the first item.
+    followUps:
+      - Where would you put argument validation so it fires immediately?
+      - What happens to an open file held by a generator that is never exhausted?
+      - How does `@contextmanager` use this?
+
+  - id: it-iv-yieldfrom
+    level: advanced
+    requiredForMastery: true
+    concepts: ["yield from", "delegation"]
+    question: Is `yield from sub()` just shorthand for a loop that yields each item?
+    shortAnswer: |
+      No. It also evaluates to the subgenerator's return value, and it forwards `send()`, `throw()`
+      and `close()` down to it. For a plain producer the loop looks equivalent; for anything that
+      receives values or needs cleanup, it is not.
+    fullAnswer: |
+      PEP 380 introduced it precisely because hand-forwarding a delegation channel is verbose and
+      easy to get wrong. The manual equivalent has to catch `StopIteration` to read `.value`, and
+      still would not forward operations pushed in from the consumer.
+
+      That bidirectional channel is why `asyncio` was originally built on `yield from`: a coroutine
+      could delegate to another coroutine and have awaits, results and exceptions travel through the
+      intermediate frames untouched. `await` later replaced the syntax, but the mechanism is the
+      same idea.
+
+      Practically it also produces one frame transition per item instead of two, so deep chains are
+      measurably faster and tracebacks are shallower.
+    commonWrongAnswer: |
+      "It's just syntactic sugar for `for x in sub(): yield x`." True for the simplest case, which
+      is why the answer sounds safe — and it misses the entire reason the syntax exists.
+    followUps:
+      - Where does a generator's `return` value actually go?
+      - Write the manual equivalent, including the return value.
+      - What did `asyncio` use before `async`/`await`?
+
+  - id: it-iv-laziness-tradeoff
+    level: intermediate
+    requiredForMastery: true
+    concepts: ["laziness trade-offs"]
+    question: When would you *not* use a generator?
+    shortAnswer: |
+      When the collection is small — per-item overhead makes a list comprehension faster. When you
+      need the data more than once, or need `len()`, indexing or slicing. When a partial side effect
+      on failure is unacceptable, since laziness defers errors past the writes. And when you want to
+      parallelise, because a lazy single-threaded stream is the wrong shape for a worker pool.
+    fullAnswer: |
+      The honest framing is that laziness is a trade. It buys constant memory, infinite sequences,
+      early exit and pipeline composition. It costs single-pass consumption, deferred errors,
+      resource lifetime tied to iteration, and per-item overhead.
+
+      The deferred-errors point is the one that causes production incidents: a lazy pipeline writing
+      to an output file leaves a partial file when a late record fails, and the traceback points at
+      the consumer rather than the stage that built the bad data. The fix is the atomic-write
+      pattern, not abandoning laziness.
+    commonWrongAnswer: |
+      "Generators are always better because they save memory." It is the answer that gets a 50-item
+      list comprehension rewritten into something slower and harder to debug.
+    followUps:
+      - What is the memory difference on a list of 50 items? Does it matter?
+      - How do you keep a lazy pipeline from leaving partial output?
+      - How would you parallelise a generator pipeline?
+
+  - id: it-iv-pep479
+    level: tricky
+    requiredForMastery: true
+    concepts: ["PEP 479", "StopIteration"]
+    question: What happens if a `StopIteration` is raised inside a generator body, and why was that changed?
+    shortAnswer: |
+      Since Python 3.7 it becomes `RuntimeError: generator raised StopIteration`. Before that, it
+      was indistinguishable from the generator finishing, so a bug in a helper silently truncated
+      the output with no error at all. PEP 479 made it loud.
+    fullAnswer: |
+      The classic trigger is a bare `next(it)` inside a generator: if that inner iterator is empty,
+      its `StopIteration` propagates out of the body and the interpreter reads it as "this generator
+      is done".
+
+      The failure mode is why it was worth a language change. A pipeline that processed 400 of
+      10,000 records and reported success is far more expensive than one that crashes — it is found
+      weeks later by someone reconciling counts, and by then the downstream data is contaminated.
+
+      The fix is `next(it, default)` or a local `try`. It is worth a lint rule in any codebase with
+      real data pipelines.
+    commonWrongAnswer: |
+      "It just ends the generator, which is what you want." That was the old behaviour, and the fact
+      that it sounds reasonable is exactly why it caused so many silent bugs.
+    followUps:
+      - Write a helper that hits this bug, then fix it two ways.
+      - Does this affect `for` loops outside generators?
+      - Why is silent truncation worse than a crash?
+
+  - id: it-iv-tee
+    level: comparison
+    requiredForMastery: true
+    concepts: ["itertools.tee", "memory"]
+    question: A colleague uses `itertools.tee` so they can iterate a generator twice. What do you say?
+    shortAnswer: |
+      That it depends entirely on how the branches are consumed. `tee` buffers everything one branch
+      has seen that another has not, so if one runs to exhaustion first, the buffer becomes the
+      entire stream — the same memory as `list()`, with more indirection. In lockstep it is cheap.
+    fullAnswer: |
+      The mental model: `tee` is not free duplication, it is a shared buffer sized by the gap between
+      the fastest and slowest consumer.
+
+      So `sum(a for a in first)` followed by `sum(1 for _ in second)` is the worst case — full
+      buffering. `zip(first, second)` is the best case — roughly one item.
+
+      If two independent full passes are genuinely needed, `list()` is more honest: same memory,
+      supports `len()` and indexing, and the cost is visible in the code rather than hidden inside a
+      utility. And often the real answer is to restructure into one pass with two accumulators.
+    commonWrongAnswer: |
+      "`tee` makes a generator re-iterable, so it solves the exhaustion problem." It does not solve
+      it, it pays for it — and pays the full price when the branches diverge.
+    followUps:
+      - Rewrite a two-pass computation as one pass with two accumulators.
+      - When *is* `tee` the right tool?
+      - What is the peak memory of `zip(*tee(stream, 2))`?
+
+  - id: it-iv-groupby
+    level: debugging
+    requiredForMastery: false
+    concepts: ["groupby"]
+    question: |
+      A daily aggregation report using `itertools.groupby` reports far more days than exist. What is
+      your first hypothesis?
+    shortAnswer: |
+      That the input is not sorted by the grouping key. `groupby` groups only *consecutive* equal
+      keys, so unsorted input splits one day into many runs. I would also check whether the code
+      assigns into a dict rather than accumulating, because that compounds it into wrong counts as
+      well as wrong group counts.
+    fullAnswer: |
+      There is a third bug commonly hiding nearby: each group is a lazy view over the same underlying
+      iterator, invalidated as soon as you advance. So `[g for k, g in groupby(...)]` gives a list of
+      exhausted iterators, and `list(g)` must happen inside the loop.
+
+      For counting specifically, `collections.Counter` over the stream is the better answer outright:
+      one pass, constant memory, no sorting requirement, and none of these three failure modes.
+      `groupby` earns its place when you need the grouped *items* and the input is already sorted —
+      for example, reading a sorted export where sorting again would be wasteful.
+    commonWrongAnswer: |
+      "`groupby` must be broken" or reaching for `sorted()` without noticing it materialises the
+      whole stream, which may be the thing you were avoiding.
+    followUps:
+      - What does `sorted()` cost you here?
+      - Why is `Counter` better for counting?
+      - What happens to a group after the loop advances?
+
+  - id: it-iv-cleanup
+    level: scenario
+    requiredForMastery: true
+    concepts: ["GeneratorExit", "resource lifetime"]
+    question: |
+      A service that streams records from files starts running out of file descriptors under load.
+      The reading code is a generator. Walk me through the diagnosis.
+    shortAnswer: |
+      My first hypothesis is consumers breaking out of the loop early, leaving generators suspended
+      with files open, relying on garbage collection to close them. I would check for early `break`
+      or `next()`-and-discard patterns, confirm the handle is opened *inside* the generator, and fix
+      it with `contextlib.closing` at the call sites plus a `with` inside the generator.
+    fullAnswer: |
+      The mechanism: a generator suspended at a `yield` holds its frame, and the frame holds the open
+      handle. Cleanup only runs when the generator is exhausted, explicitly closed, or collected.
+      CPython's reference counting usually collects it promptly, which is why this works in
+      development and fails under load — reference cycles, exception tracebacks holding frames alive,
+      or a cache retaining the generator all delay collection indefinitely.
+
+      Diagnosis order: reproduce with `ulimit -n` lowered; `lsof` or `/proc/self/fd` to confirm the
+      handles are the ones being read; `gc.get_objects()` filtered to generators, or
+      `warnings.simplefilter("error", ResourceWarning)` which turns unclosed-file warnings into
+      exceptions pointing at the allocation site.
+
+      The fix is `with` inside the generator so cleanup survives `GeneratorExit`, plus deterministic
+      closing at the call site. And a check that no generator catches `BaseException` or yields
+      inside a `finally`, either of which makes it un-closable entirely.
+    commonWrongAnswer: |
+      "Increase the file descriptor limit." It buys time and hides a leak that will come back at the
+      next traffic increase.
+    followUps:
+      - What is `ResourceWarning` and how do you make it fail loudly?
+      - What breaks if the generator catches `BaseException`?
+      - Why does this work in dev and fail in production?
+
+projects:
+  - id: it-project-streaming-pipeline
+    kind: major
+    title: A streaming record pipeline with a proven memory ceiling
+    minutes: 180
+    summary: Composable generator stages over data far larger than memory, with resumability and a memory bound you must prove in a test.
+    problem: |
+      An ML data team receives daily JSONL exports — dozens of files, tens of GB total — and needs
+      them cleaned, deduplicated, batched and written out as validated shards for training.
+
+      The current script does `json.loads` over `f.readlines()` and is killed by the OOM reaper on
+      anything above 4 GB. Rebuild it as a lazy pipeline where memory is bounded by the batch size
+      and the dedupe index, not by the input.
+
+      Standard library only. The point is to build the composition, not to import a framework.
+    requirements:
+      - "Composable stages, each a generator taking an iterable and returning an iterable, so they can be reordered and unit-tested in isolation: read, parse, validate, deduplicate, batch, write."
+      - "A `read` stage that streams many files as one logical stream and closes each file as soon as the stream moves past it."
+      - "A `validate` stage that routes bad records to a rejects file with the reason and the source line number, and never stops the run for a single bad record."
+      - "A `deduplicate` stage keyed on a configurable field, with the memory cost of its index stated explicitly in the README."
+      - "A `batch` stage yielding fixed-size batches, correct on an input whose length is not a multiple of the batch size."
+      - "Atomic output: write to a temporary path and rename on success, so a crashed run never leaves a partial shard that looks complete."
+      - "Resumability: record the number of input records consumed, and support restarting with `--skip N` that does not re-read what it can cheaply skip."
+      - "A `--limit N` flag that stops early and demonstrably does not read the rest of the input."
+    constraints:
+      - Standard library only — no pandas, no pyarrow, no third-party streaming libraries.
+      - "No stage may call `list()` on its input. The only bounded materialisation allowed is one batch and the dedupe index."
+      - Python 3.11 or newer.
+      - Every stage must be testable with an in-memory iterable, so nothing may take a file path except the read stage.
+    expectedBehaviour:
+      - "Processing a 5 GB input never exceeds a memory ceiling you state and test."
+      - "A malformed line produces one entry in the rejects file and does not abort the run."
+      - "`--limit 10` on a 10 million line input finishes effectively instantly."
+      - "Killing the process mid-run leaves no output shard at the final path."
+      - "Re-running with `--skip` produces output identical to the tail of an uninterrupted run."
+    structure: |
+      pipeline/
+        __init__.py
+        sources.py       # read: paths -> lines, one file open at a time
+        stages.py        # parse, validate, deduplicate, batch
+        sinks.py         # atomic writer
+        cli.py           # argument parsing, wiring, --limit / --skip
+      tests/
+        test_stages.py   # each stage against in-memory iterables
+        test_memory.py   # the ceiling, proved
+        test_atomic.py   # simulated crash leaves no final file
+      README.md          # the memory analysis
+    milestones:
+      - title: "1 — Read and parse"
+        detail: |
+          `lines_from(paths)` using `yield from handle` inside a `with`, then a `parsed` stage.
+          Stop when you can count lines across three files without memory growing.
+      - title: "2 — Validate with rejects"
+        detail: |
+          Route failures sideways rather than raising. Decide how the reject reason and line number
+          travel — a wrapper object, a tuple, or a second output iterator — and justify the choice.
+      - title: "3 — Dedupe and batch"
+        detail: |
+          A `set` of seen keys, plus `batched` built on `islice`. Write the README paragraph on what
+          the dedupe index costs at 10 million distinct keys before you move on.
+      - title: "4 — Atomic sink"
+        detail: |
+          Temporary file plus `os.replace`. Add the crash test now, while the failure is easy to
+          simulate.
+      - title: "5 — Limit, skip, and the memory proof"
+        detail: |
+          `islice` for both flags, then `tracemalloc` in a test asserting peak memory stays under
+          your stated ceiling on a generated 200k-record input.
+    testing:
+      - "Every stage tested against a plain list input — if a stage needs a file to test, its interface is wrong."
+      - "A `tracemalloc` test asserting peak traced memory stays under your stated ceiling while streaming at least 200k records."
+      - "A test that `--limit 3` reads no more than a bounded number of source records, using a counting generator as the source."
+      - "A test that a simulated crash mid-write leaves nothing at the final output path."
+      - "A test for the batch stage on an input length that is *not* a multiple of the batch size."
+      - "A test that the rejects file gets exactly one entry per malformed record, with the right line number."
+    failureCases:
+      - "Calling `list()` inside a stage 'just to check the length', which silently reintroduces the OOM."
+      - "Opening all input files up front instead of one at a time, exhausting file descriptors on a large batch."
+      - "Building `iter(iterable)` inside the batching loop, which restarts a list source forever."
+      - "A bare `next()` inside a stage, hitting PEP 479's `RuntimeError` on an empty group."
+      - "Using `tee` to feed both the writer and a metrics counter, which buffers the entire stream."
+      - "Writing directly to the final path, so a crash leaves a truncated shard indistinguishable from a complete one."
+      - "The dedupe index growing without bound and quietly becoming the new memory limit — state it in the README rather than discovering it in production."
+    bonus:
+      - "Add a metrics stage that counts records passing through without consuming the stream — a pass-through generator, not `tee`."
+      - "Support gzipped input transparently by choosing the opener based on the file suffix."
+      - "Add a bounded-memory sample of N records using reservoir sampling in a single pass."
+      - "Make dedupe memory-bounded with a Bloom filter, and write down the false-positive trade you accepted."
+    architectureHints:
+      - "Every stage should have the signature `def stage(records, **config) -> Iterator[Record]`. Uniformity is what makes them reorderable and testable."
+      - "`yield from handle` inside a `with` block is how you stream one file at a time and still close each one promptly. `chain.from_iterable` cannot hold the `with` open."
+      - "For rejects, the cleanest shape is a stage that takes a `reject` callback, so the stage stays pure-ish and the sink decides where rejects go."
+      - "`islice(stream, skip, None)` implements `--skip`; `islice(stream, limit)` implements `--limit`. Both stay lazy."
+      - "`tempfile.NamedTemporaryFile(dir=...)` plus `os.replace` gives atomicity on the same filesystem, on both POSIX and Windows. Different filesystem means no atomicity."
+      - "`tracemalloc.start()` / `get_traced_memory()` is enough for the memory test; you do not need an external profiler."
+    referenceOutline: |
+      A good solution is roughly 250 lines plus tests, and its seams are:
+
+      - `sources.lines_from(paths)` — a generator over paths, each opened in a `with`, yielding with
+        `yield from handle`. One handle open at a time.
+      - `stages.parsed(lines, on_reject)` — `json.loads` in a `try`, calling `on_reject(index, line,
+        error)` and `continue` on failure. Never lets a bad record raise.
+      - `stages.deduplicated(records, key)` — a `set` of seen keys. The README must state that this
+        is O(distinct keys) memory and is therefore the real ceiling, not the batch size.
+      - `stages.batched(records, size)` — `iter()` once outside the loop, `islice` inside.
+      - `sinks.atomic_writer(path)` — a context manager yielding a write function, writing to a
+        temporary file in the same directory and `os.replace`-ing on clean exit only.
+      - "`cli.build(args)` — composes the stages by function application. Worth noticing: because"
+        every stage is `Iterable -> Iterator`, the composition is just nesting, and you can express
+        it as a `reduce` over a list of partials if you want the ordering to be data.
+
+      The paragraph to write in the README, and the one this project is really for: **what exactly
+      bounds memory here?** The batch is bounded by `size`. The dedupe index is not bounded at all.
+      So the honest answer is that this pipeline is constant-memory in the input length only if the
+      number of distinct keys is bounded — and if it is not, you need the Bloom filter bonus or an
+      on-disk index. Saying that clearly is worth more than the code.
+
+  - id: it-final-challenge
+    kind: final-challenge
+    title: "Final challenge: repair a lazy pipeline"
+    minutes: 60
+    summary: One pipeline, nine defects, each one a laziness mistake from this topic.
+    problem: |
+      The module below is a real-shaped ETL pipeline. It runs, it produces output, and it is wrong
+      in nine distinct ways covered by this topic — including at least one that produces a plausible
+      but incorrect result with no error.
+
+      Find all nine before changing anything. Write them down with the symptom each produces and the
+      conditions under which it appears. Then rewrite the module.
+    requirements:
+      - "A written defect list before any code changes, one heading per defect, each with its symptom and its trigger condition."
+      - "A rewritten module that streams in constant memory relative to the input length."
+      - "Each fix carried by a comment naming the rule behind it."
+      - "A regression test for at least six defects, each failing against the original."
+    constraints:
+      - Standard library only.
+      - "Keep the public entry point `run(paths, out_path)` unchanged."
+      - "The rewrite must not call `list()` on the input stream anywhere."
+    expectedBehaviour:
+      - "Running twice over the same input produces identical output."
+      - "An empty input file produces an empty output, not a crash."
+      - "A file that is unreadable partway through does not leave a complete-looking output file."
+      - "Memory stays flat as input size grows."
+    structure: |
+      pipeline.py     # the rewrite
+      DEFECTS.md      # nine headings, symptom and trigger for each
+      test_pipeline.py
+    milestones:
+      - title: "1 — Read and list"
+        detail: Work through the module against the topic's section order and write DEFECTS.md first. Do not open the reference outline.
+      - title: "2 — Fix the silent ones"
+        detail: The defects that produce wrong output with no error, before the ones that crash.
+      - title: "3 — Fix memory and resources"
+        detail: The stages that materialise or hold handles open.
+      - title: "4 — Prove it"
+        detail: A regression test per defect; verify each one fails against the original.
+    testing:
+      - "Each regression test must fail on the original module — run it against the original and check, do not assume."
+      - "A memory test showing flat peak usage across two input sizes an order of magnitude apart."
+      - "A test that consuming the pipeline's result twice either works or raises — but does not silently return nothing."
+    failureCases:
+      - "Finding the obvious double-consumption bug and stopping. Most of the nine are quieter."
+      - "Fixing memory by adding `tee`, which is the same bug wearing a different hat."
+      - "Rewriting to be fully eager, which passes correctness tests and fails the memory one."
+    bonus:
+      - "Add a property-based test that the pipeline's output is invariant to input file split points."
+      - "Measure and report the throughput difference between the original and the rewrite on a 100k-record input."
+    architectureHints:
+      - "Walk the topic's own section order: iterable vs iterator, generator creation, laziness costs, yield from, PEP 479, cleanup, itertools. Each section has at least one defect in it."
+      - "Two of the nine are about a stream being consumed more than once. Two are about resource lifetime. One is a bare `next()`. One is `groupby` on unsorted input."
+      - "One defect produces plausible-but-wrong numbers rather than an error — that is the one to find first and the one most likely to be missed."
+    referenceOutline: |
+      The nine, grouped:
+
+      **Consumption** — a stream passed to two stages so the second silently sees nothing; a
+      generator argument validated with `len()`, which raises on anything lazy.
+
+      **Laziness costs** — output written directly to the final path, so a mid-stream failure leaves
+      a partial file that looks complete; a validation check placed at the top of a generator
+      function, which therefore never runs until first iteration and not at call time.
+
+      **Correctness** — `groupby` over unsorted input, producing plausible but wrong aggregates with
+      no error (this is the quiet one); a bare `next(it)` inside a generator, which on an empty group
+      raises `RuntimeError` under PEP 479.
+
+      **Resources** — a file opened outside a `try`/`with` so an early `break` leaks the handle; a
+      bare `except:` around a `yield`, which makes the generator ignore `GeneratorExit`.
+
+      **Memory** — `tee` used to feed a writer and a counter, buffering the whole stream because the
+      writer runs ahead.
+
+      If your list has fewer than nine, the two most often missed are the eagerly-evaluated
+      validation that never runs, and the `groupby` aggregate — because neither one ever produces an
+      error message.
+
+resources:
+  - name: "PEP 380 — Syntax for Delegating to a Subgenerator"
+    type: docs
+    difficulty: deep
+    url: "https://peps.python.org/pep-0380/"
+    usefulness: 5
+    why: The only place that states exactly what `yield from` forwards and why a plain loop is not equivalent, which is the distinction almost every tutorial skips and every senior interview asks about.
+    covers: "Delegation, `StopIteration.value`, and forwarding of `send`, `throw` and `close`."
+
+  - name: "PEP 479 — Change StopIteration handling inside generators"
+    type: docs
+    difficulty: core
+    url: "https://peps.python.org/pep-0479/"
+    usefulness: 4
+    why: Short, and it documents the exact silent-truncation failure mode that the change was made to prevent — worth reading once so you recognise the shape of the bug in old code.
+    covers: "Why bare `next()` inside a generator is dangerous, and what modern Python does instead."
+
+  - name: "itertools — the standard library reference"
+    type: docs
+    difficulty: core
+    url: "https://docs.python.org/3/library/itertools.html"
+    usefulness: 5
+    why: Every function carries a pure-Python equivalent in the docs, so it doubles as a set of worked generator implementations — and the `tee` and `groupby` notes contain the memory and sorting caveats in the source text itself.
+    covers: "`islice`, `chain`, `tee`, `groupby`, `count`, `cycle`, `batched`, and their exact semantics."
+
+  - name: "Functional Programming HOWTO"
+    type: tutorial
+    difficulty: intro
+    url: "https://docs.python.org/3/howto/functional.html"
+    usefulness: 4
+    why: The official narrative introduction to iterators and generators, which builds the protocol up in the same order this lesson does and is a good second pass if any of it is still fuzzy.
+    covers: "The iterator protocol, generator expressions, generators, and passing values in with `send`."
+
+  - name: "Hugging Face Datasets — streaming mode"
+    type: docs
+    difficulty: core
+    url: "https://huggingface.co/docs/datasets/stream"
+    usefulness: 4
+    why: Shows this exact protocol doing production work in the ML stack, where `IterableDataset` is lazily mapped and filtered over datasets far larger than disk — the destination this Python topic is preparing you for.
+    covers: "Lazy `map`/`filter` over an iterable dataset, shuffling with a buffer, and why streaming datasets are not re-iterable in the way you expect."
