@@ -13,8 +13,9 @@ TypeScript / Express / Postgres / Redis / Kafka background) going from Python ze
 advanced Generative AI / AI-ML engineer, capable of shipping real production AI systems. It is
 explicitly **not** a commercial course site — no marketing copy, no gating, no artificial
 gamification. See `README.md` for the elevator pitch and stack, `ARCHITECTURE.md` for how the
-pieces fit together, and `CONTENT_GUIDE.md` for the authoring contract (read that one in full
-before writing or editing any lesson).
+pieces fit together, `CONTENT_GUIDE.md` for the authoring contract, and
+**`AUTHORING_PATTERN.md` for the exact two-file shape every topic is written in** (read those last
+two in full before writing or editing any lesson).
 
 > **The purpose changed on 2026-08-20: this is a practice-first system, not a reading site.**
 > **`PRACTICE_SYSTEM.md` is the brief and the current state of that rebuild — read it before
@@ -139,7 +140,7 @@ files actually on disk.
 | # | Group | Sections | Topics | Written |
 |---|---|---|---|---|
 | 1 | Phase 0 — Audit What You Already Have | 2 | 13 | 0 |
-| 2 | Phase 1 — Python as an ML Engineer's Language | 3 | 28 | 2 |
+| 2 | Phase 1 — Python as an ML Engineer's Language | 3 | 28 | 4 |
 | 3 | Phase 2 — Mathematics | 6 | 67 | 0 |
 | 4 | Phase 3 — Classical ML & Data Science | 5 | 52 | 0 |
 | 5 | Phase 4 — Deep Learning Foundations | 5 | 52 | 0 |
@@ -152,13 +153,13 @@ files actually on disk.
 | 12 | Cross-Cutting Tracks | 3 | 18 | 0 |
 | 13 | Extra Learning | 32 | 154 | 135 |
 
-**79 modules, 593 lessons + 24 assignments, 137 MDX files written.**
+**79 modules, 593 lessons + 24 assignments, 139 MDX files written.**
 47 modules / 439 lessons are generated from the roadmap (434 checkbox topics + Track B's 5
-portfolio targets, **2 written**); 32 modules / 154 lessons + 24 assignments are the
+portfolio targets, **4 written**); 32 modules / 154 lessons + 24 assignments are the
 previously authored material now in Extra Learning, of which 135 files exist on disk.
 The roadmap curriculum is otherwise still honest outline, which is the point: the learner is
 rewriting all of it, one topic at a time, to the practice-first standard in `PRACTICE_SYSTEM.md`.
-**2 topics carry a practice bank** (`content/modules/mastery/03-1-1-.../*.practice.yaml`).
+**4 topics carry a practice bank** (`content/modules/mastery/03-1-1-.../*.practice.yaml`).
 
 Shell/UI status: dark-first design system (warm graphite + ember/teal palette, Fraunces display
 headings, aurora background), glass sidebar, Ctrl/Cmd+K command palette (`cmdk`).
@@ -384,11 +385,33 @@ each time a module finishes so the phase order stays on track across sessions.
       (2026-08-20).** Same shape as topic 1: a deep lesson plus a 24-exercise practice bank,
       checkpoint, 10-question assessment, 8 interview questions, a streaming-pipeline project with a
       proven memory ceiling, and a nine-defect final challenge.
-- [ ] **← start here next session: module 1.1 / topic 3,
-      `Decorators, closures, functools (lru_cache, partial, wraps)`.** Same shape: `.mdx` plus
-      `.practice.yaml`, published by flipping that one lesson to `"status": "available"`. Follow
-      `PRACTICE_SYSTEM.md` § "Per-topic definition of done", then work down module 1.1's remaining
-      topics in the roadmap's order before touching any other module.
+- [x] **Wrote module 1.1 / topic 3 — decorators, closures, functools (2026-08-20).** Same shape as
+      topics 1 and 2: a deep lesson (cells and captured variables, the late-binding trap, decorators
+      desugared to import-time function application, `wraps`/`__wrapped__`, parameterised and stacked
+      decorators, `lru_cache`/`cache`/`cached_property`/`partial`/`singledispatch`, and why a
+      class-based decorator breaks on a method without `__get__`) plus a 25-exercise practice bank,
+      checkpoint, 10-question assessment, 8 interview questions, a six-decorator production toolkit
+      project and a nine-defect final challenge, and 5 curated resources.
+- [x] **Wrote module 1.1 / topic 4 — context managers and contextlib (2026-08-20).** Same shape as
+      topics 1–3: a deep lesson (the protocol as an action paired with its undo, the full
+      desugaring, what `as` binds, the `__exit__` return value and why suppression *abandons* the
+      block, `@contextmanager` built on `gen.throw` and why the `try`/`finally` around the `yield`
+      is a correctness requirement, single-use vs reusable vs reentrant, then `suppress`/`closing`/
+      `nullcontext`/`chdir`/`ExitStack` with `pop_all`/`ContextDecorator`, and the async family)
+      plus a 25-exercise practice bank, checkpoint, 10-question assessment, 8 interview questions,
+      a resource-lifecycle toolkit project and a nine-defect final challenge, and 5 curated
+      resources.
+- [x] **Wrote `AUTHORING_PATTERN.md` (2026-08-20).** A self-contained specification of the content
+      pattern — the two-file shape, the Learn/Practice/Debug/Interview/Test/Project/Review mapping,
+      both schemas, every test-enforced limit and the target volumes — written so the pattern can be
+      handed to any model (including ChatGPT) and continued without this repo's context. **Read it
+      before authoring a topic**, and keep its reference-topic pointer current as topics ship.
+- [ ] **← start here next session: module 1.1 / topic 5,
+      `Type hints in depth: Generic, TypeVar, Protocol, Literal, overload`.**
+      Same shape: `.mdx` plus `.practice.yaml`, published by flipping that one lesson to
+      `"status": "available"`. Follow `AUTHORING_PATTERN.md` and `PRACTICE_SYSTEM.md` §
+      "Per-topic definition of done", then work down module 1.1's remaining topics in the roadmap's
+      order before touching any other module.
 - [ ] Consider porting the relevant Extra Learning prose into roadmap lessons where it genuinely
       fits (e.g. `numpy-arrays` Lesson 1 "The ndarray Memory Model" is exactly roadmap topic
       `1.2` #1). The learner said they intend to rewrite everything, so **ask before reusing** —

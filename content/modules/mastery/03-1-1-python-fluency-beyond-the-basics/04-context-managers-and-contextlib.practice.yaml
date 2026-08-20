@@ -1,0 +1,2337 @@
+# Practice bank for roadmap topic 1.1 #4 — context managers and contextlib.
+#
+# Authored to the standard in AUTHORING_PATTERN.md. Ids are progress keys — never rename a shipped one.
+
+lessonId: "roadmap:phase-1-1.1:3"
+module: 1-1-python-fluency-beyond-the-basics
+lesson: 04-context-managers-and-contextlib
+title: "Context managers and contextlib"
+summary: The with statement desugared, what __exit__ can do about an exception, and the contextlib toolkit — contextmanager, ExitStack, suppress, nullcontext, asynccontextmanager — with the failure each one hides.
+
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+
+exercises:
+  # ------------------------------------------------------------ normal
+  - id: cm-timer-class
+    tier: normal
+    kind: write-code
+    title: Write the protocol by hand
+    minutes: 10
+    requiredForMastery: true
+    concepts: ["__enter__", "__exit__", "context manager protocol"]
+    prompt: |
+      Write a class `Timer` usable as `with Timer() as t:` that records elapsed wall time in
+      `t.elapsed`.
+
+      It must record the time even when the block raises, and it must not interfere with that
+      exception in any way. Use `time.perf_counter`, not `time.time`.
+    hints:
+      - Two methods, and the second one receives three arguments describing the exception.
+      - The value bound by `as` is whatever the first method returns.
+    solution: |
+      The protocol is `__enter__` (setup, returns the `as` target) and `__exit__` (teardown, receives
+      exception information). Falling off the end of `__exit__` returns `None`, which is falsy, which
+      means "do not suppress" — that is exactly what you want here, and it is why the correct version
+      has no `return` statement at all.
+
+      `perf_counter` rather than `time.time` because it is monotonic: a clock adjustment mid-block
+      cannot produce a negative duration. This is the same reasoning as the timing decorator in the
+      previous topic, and for the same reason.
+    solutionCode: |
+      import time
+
+
+      class Timer:
+          def __enter__(self):
+              self.start = time.perf_counter()
+              return self
+
+          def __exit__(self, exc_type, exc, traceback):
+              self.elapsed = time.perf_counter() - self.start
+              # no return: None is falsy, so the exception propagates untouched
+
+
+      with Timer() as t:
+          sum(range(1_000_000))
+      print(f"{t.elapsed:.4f}s")
+    explanation: |
+      Compare with the `@timed` decorator you wrote for topic 3. The decorator times a *function*;
+      the context manager times an arbitrary *block*. Reach for the decorator when the unit is a
+      function you own, and the context manager when it is a region of code inside one.
+
+  - id: cm-desugar-write
+    tier: normal
+    kind: explain
+    title: Desugar three with statements
+    minutes: 8
+    requiredForMastery: true
+    concepts: ["desugaring", "try/finally", "as binding"]
+    prompt: |
+      Write out the equivalent of each, using no `with` anywhere:
+
+      ```python
+      with lock:
+          a()
+
+      with open(path) as handle:
+          b(handle)
+
+      with open(src) as source, open(dst, "w") as target:
+          c(source, target)
+      ```
+
+      Then say, for the third, which manager's `__exit__` runs first when `c` raises.
+    hints:
+      - Each `with` becomes one call, a `try`, and a call on the way out.
+      - A comma-separated `with` is not one construct — rewrite it as something you already know.
+    solution: |
+      ```python
+      # 1
+      manager = lock
+      manager.__enter__()
+      try:
+          a()
+      finally:
+          manager.__exit__(*sys.exc_info())
+
+      # 2
+      manager = open(path)
+      handle = manager.__enter__()
+      try:
+          b(handle)
+      finally:
+          manager.__exit__(*sys.exc_info())
+
+      # 3 — a comma-separated with is exactly nesting
+      with open(src) as source:
+          with open(dst, "w") as target:
+              c(source, target)
+      ```
+
+      For the third, `target`'s `__exit__` runs first. Exit is strict reverse order of entry, because
+      the statement is nested, not parallel — the inner manager was entered last, so it is unwound
+      first.
+
+      The `finally` shorthand above is a simplification. The real desugaring uses `except`/`else` so
+      that a `__exit__` returning a truthy value can suppress the exception; a plain `finally` has no
+      way to swallow one.
+    explanation: |
+      The nesting equivalence also explains an availability question people get wrong: in
+      `with a() as x, b(x) as y:`, `x` is already bound when `b(x)` is evaluated, because the second
+      manager is constructed inside the first block.
+
+  - id: cm-enter-returns
+    tier: normal
+    kind: predict-output
+    title: What does `as` actually bind?
+    minutes: 6
+    requiredForMastery: true
+    concepts: ["as binding", "__enter__ return value"]
+    prompt: |
+      Predict the exact output, then explain the rule in one sentence.
+    code: |
+      class A:
+          def __enter__(self): return self
+          def __exit__(self, *args): pass
+
+      class B:
+          def __enter__(self): return "hello"
+          def __exit__(self, *args): pass
+
+      class C:
+          def __enter__(self): pass
+          def __exit__(self, *args): pass
+
+      for cls in (A, B, C):
+          with cls() as value:
+              print(cls.__name__, type(value).__name__)
+    hints:
+      - Only one of the three has an explicit `return` of the instance.
+      - A function with no `return` still returns something.
+    solution: |
+      ```text
+      A A
+      B str
+      C NoneType
+      ```
+
+      `as` binds whatever `__enter__` returns — never the manager itself unless the manager chooses
+      to return itself. `C` looks correct and is the single most common beginner bug in the protocol:
+      it fails one line later with `AttributeError: 'NoneType' object has no attribute ...`, which
+      points at the wrong place entirely.
+
+      Returning something other than `self` is a legitimate design, not an accident. `open()` returns
+      the file, `pytest.raises` returns an `ExceptionInfo` that is only populated *after* the block,
+      and a database manager usually returns a session rather than the transaction wrapper.
+    explanation: |
+      When you see `AttributeError` on `None` immediately after a `with`, check `__enter__` for a
+      missing `return` before checking anything else.
+
+  - id: cm-suppress-narrow
+    tier: normal
+    kind: refactor
+    title: Replace try/except/pass honestly
+    minutes: 8
+    concepts: ["contextlib.suppress", "narrow exception handling"]
+    prompt: |
+      Rewrite this using `contextlib.suppress`, and then explain why the naive one-line translation
+      would be worse than the original.
+    code: |
+      try:
+          os.remove(cache_path)
+      except OSError:
+          pass
+
+      try:
+          shutil.rmtree(build_dir)
+      except FileNotFoundError:
+          pass
+    hints:
+      - "`suppress` takes the exception classes as arguments, and the block is what it guards."
+      - Ask what else `OSError` covers besides the file being absent.
+    solution: |
+      ```python
+      from contextlib import suppress
+
+      with suppress(FileNotFoundError):
+          os.remove(cache_path)
+
+      with suppress(FileNotFoundError):
+          shutil.rmtree(build_dir)
+      ```
+
+      The naive translation keeps `OSError` in the first one, and `OSError` is enormous: it covers
+      `PermissionError`, `IsADirectoryError`, `OSError(EBUSY)` and a filesystem going read-only. The
+      code says "the file might not be there" but implements "nothing that goes wrong with this path
+      matters".
+
+      The refactor is an opportunity to narrow, and narrowing is the whole value of `suppress` — it
+      forces the exception class into the *header*, where a reviewer reads it, instead of burying it
+      three lines down next to a bare `pass`.
+
+      One thing to keep in mind: `suppress` abandons the rest of its block. Guard one statement, not
+      five, or a later statement in the block will be skipped by an exception raised in an earlier
+      one without any signal.
+    explanation: |
+      `shutil.rmtree` also takes `ignore_errors=True`, which is broader still. Prefer the explicit
+      `suppress` unless you genuinely want every error ignored.
+
+  - id: cm-generator-timed
+    tier: normal
+    kind: write-code
+    title: The same timer, as a generator
+    minutes: 8
+    requiredForMastery: true
+    concepts: ["@contextmanager", "generators", "try/finally"]
+    prompt: |
+      Rewrite `Timer` as a `@contextmanager` generator called `timed(label)` that prints
+      `"<label>: <seconds>s"` on the way out.
+
+      It must still print when the block raises. Then say, in one line, which part of your generator
+      is `__enter__` and which is `__exit__`.
+    hints:
+      - Exactly one `yield`, and everything above it is setup.
+      - The exception arrives *at* the `yield`, so think about what must surround it.
+    solution: |
+      Everything before the `yield` is `__enter__`; everything after it is `__exit__`. The `yield`
+      itself is the block.
+
+      The `try/finally` is mandatory rather than stylistic. `__exit__` calls `gen.throw(exc)`, which
+      raises the exception at the `yield` statement — so a print sitting below an unguarded `yield`
+      is simply never reached when the body fails.
+    solutionCode: |
+      import time
+      from contextlib import contextmanager
+
+
+      @contextmanager
+      def timed(label):
+          start = time.perf_counter()
+          try:
+              yield start
+          finally:
+              print(f"{label}: {time.perf_counter() - start:.4f}s")
+
+
+      with timed("load"):
+          sum(range(1_000_000))
+    explanation: |
+      Note that `yield start` gives the block something useful without the manager needing to be a
+      class with attributes. The generator form is usually shorter; reach for a class when the
+      manager needs to be reusable, reentrant, or to expose state after the block.
+
+  - id: cm-nullcontext-optional
+    tier: normal
+    kind: write-code
+    title: Make a resource optional without duplicating the block
+    minutes: 8
+    concepts: ["contextlib.nullcontext", "optional resources"]
+    prompt: |
+      Rewrite this so the body appears exactly once.
+
+      ```python
+      def report(rows, path=None):
+          if path is None:
+              for row in rows:
+                  print(format_row(row))
+          else:
+              with open(path, "w") as out:
+                  for row in rows:
+                      out.write(format_row(row) + "\n")
+      ```
+
+      The stdout path must not close `sys.stdout`.
+    hints:
+      - There is a contextlib helper whose whole job is to be a context manager that does nothing.
+      - It can also yield a value you supply.
+    solution: |
+      ```python
+      import sys
+      from contextlib import nullcontext
+
+
+      def report(rows, path=None):
+          manager = open(path, "w") if path else nullcontext(sys.stdout)
+          with manager as out:
+              for row in rows:
+                  out.write(format_row(row) + "\n")
+      ```
+
+      `nullcontext(value)` yields `value` from `__enter__` and does nothing on the way out — which is
+      precisely the requirement, because closing `sys.stdout` would break every subsequent write in
+      the process.
+
+      The mistake to avoid is `with open(path) if path else open(os.devnull)`, which silently
+      discards output, and the other mistake is wrapping `sys.stdout` in `closing()`, which is the
+      bug the exercise is guarding against.
+    explanation: |
+      `nullcontext` also serves as the "feature disabled" branch for profilers, tracers and mocks:
+      `with (profile() if enabled else nullcontext()):` keeps one code path instead of two.
+
+  - id: cm-closing-urlopen
+    tier: normal
+    kind: write-code
+    title: Give a close-only object the protocol
+    minutes: 7
+    concepts: ["contextlib.closing", "protocol adaptation"]
+    prompt: |
+      You are handed an object from a third-party library that has a `close()` method but no
+      `__enter__`/`__exit__`. Show two ways to use it safely in a block, and say which you would
+      choose for a class you own versus one you do not.
+    hints:
+      - One of them is a contextlib helper named after exactly this job.
+      - The other is what that helper is doing internally.
+    solution: |
+      ```python
+      from contextlib import closing
+
+      with closing(library.connect(dsn)) as connection:
+          connection.query(...)
+      ```
+
+      Equivalently, by hand:
+
+      ```python
+      connection = library.connect(dsn)
+      try:
+          connection.query(...)
+      finally:
+          connection.close()
+      ```
+
+      For a class you **do not** own, `closing` is the right answer — it adapts the object at the
+      call site without patching anything. For a class you **do** own, add `__enter__` and `__exit__`
+      to the class itself so every caller gets the guarantee, rather than making every caller
+      remember to wrap it.
+
+      `closing` is deliberately minimal: it always calls `close()`, ignores the exception, and never
+      suppresses. If cleanup needs to branch on whether the block failed — commit versus rollback —
+      `closing` is the wrong tool and you need a real `__exit__`.
+    explanation: |
+      Most modern libraries define the protocol already. `closing` still earns its place around
+      `urllib.request.urlopen` on old Pythons, generator objects (whose `close()` runs their
+      `finally` blocks), and internal legacy classes.
+
+  # ------------------------------------------------------------ intermediate
+  - id: cm-restore-state
+    tier: intermediate
+    kind: write-code
+    title: Restore state that might not have existed
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["state restoration", "sentinel values", "@contextmanager"]
+    prompt: |
+      Write `@contextmanager def override(mapping, key, value)` that sets `mapping[key] = value` for
+      the duration of the block and restores the previous state afterwards.
+
+      "Previous state" must include the case where the key **did not exist** — after the block, it
+      must not exist again. And a key whose stored value is legitimately `None` must be restored to
+      `None`, not deleted.
+    hints:
+      - Restoring must happen on the exception path too.
+      - "`mapping.get(key)` cannot distinguish two cases you need to tell apart."
+    solution: |
+      The trap is using `mapping.get(key)` as the saved value: it returns `None` both for "absent"
+      and for "present and set to `None`". Restoring from that either resurrects a key that should be
+      gone, or deletes one that should hold `None`.
+
+      A module-level sentinel object solves it, because no user value can ever be that object. Use a
+      dedicated sentinel rather than `object()` created inline, so it is inspectable and identical
+      across calls.
+    solutionCode: |
+      from contextlib import contextmanager
+
+      _MISSING = object()
+
+
+      @contextmanager
+      def override(mapping, key, value):
+          original = mapping.get(key, _MISSING)
+          mapping[key] = value
+          try:
+              yield mapping
+          finally:
+              if original is _MISSING:
+                  del mapping[key]
+              else:
+                  mapping[key] = original
+
+
+      config = {"timeout": None}
+      with override(config, "timeout", 5):
+          assert config["timeout"] == 5
+      assert config["timeout"] is None          # restored, not deleted
+
+      with override(config, "retries", 3):
+          pass
+      assert "retries" not in config            # never existed, so removed
+    explanation: |
+      This is `unittest.mock.patch.dict` in miniature, and it is the pattern behind every
+      "temporarily change global state" manager — `decimal.localcontext`, `numpy.errstate`,
+      `torch.no_grad`. The sentinel-versus-`None` distinction is the part people rediscover the hard
+      way when a test starts leaking configuration into the next test.
+
+  - id: cm-exit-order
+    tier: intermediate
+    kind: predict-output
+    title: Entry and exit order across several managers
+    minutes: 8
+    concepts: ["nesting", "exit ordering", "exception propagation"]
+    prompt: |
+      Predict the complete output, including whether the program ends with a traceback.
+    code: |
+      from contextlib import contextmanager
+
+
+      @contextmanager
+      def tracer(name):
+          print(f"enter {name}")
+          try:
+              yield
+          finally:
+              print(f"exit {name}")
+
+
+      with tracer("outer"), tracer("inner"):
+          print("body")
+          raise ValueError("boom")
+    hints:
+      - A comma-separated `with` is nesting, not a parallel construct.
+      - Neither manager returns anything truthy from its exit path.
+    solution: |
+      ```text
+      enter outer
+      enter inner
+      body
+      exit inner
+      exit outer
+      Traceback (most recent call last):
+        ...
+      ValueError: boom
+      ```
+
+      Entry is left to right, exit is strict reverse. `inner` was entered last so it unwinds first,
+      which is the only ordering that can be correct — `inner` may depend on resources `outer`
+      acquired, so `outer` must outlive it.
+
+      The exception propagates because a `finally` in a generator-based manager cannot suppress. To
+      suppress you would need to `except ValueError:` around the `yield` and return normally; a
+      `finally` only guarantees the cleanup runs.
+    explanation: |
+      The same reverse-order guarantee is what `ExitStack` reproduces for a runtime-determined number
+      of managers, and it is why `stack.callback` registrations also unwind last-registered-first.
+
+  - id: cm-debug-no-finally
+    tier: intermediate
+    kind: debug
+    title: The cleanup that only runs when nothing goes wrong
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["@contextmanager", "gen.throw", "try/finally"]
+    prompt: |
+      This ran in production for months. Under load, connections began to exhaust the pool, and the
+      only correlation anyone found was with an unrelated spike in validation errors.
+
+      Find the defect, explain the mechanism precisely, and fix it. Then say why the bug was invisible
+      in the happy-path tests.
+    code: |
+      from contextlib import contextmanager
+
+
+      @contextmanager
+      def borrow(pool):
+          connection = pool.acquire()
+          yield connection
+          pool.release(connection)
+
+
+      def handle(pool, payload):
+          with borrow(pool) as connection:
+              validate(payload)              # raises on bad input
+              connection.execute(payload)
+    hints:
+      - Ask what `__exit__` does to the generator when the block raised.
+      - The fix is three characters of structure, not a new library.
+    solution: |
+      `pool.release(connection)` sits after an unguarded `yield`. When `validate` raises, `__exit__`
+      calls `generator.throw(exception)`, which raises that exception **at the `yield` statement**.
+      Control never reaches the line below it, the generator is closed with the exception
+      propagating, and the connection is never returned to the pool.
+
+      Every failed request therefore leaks one connection permanently. That is why the pool
+      exhaustion tracked the validation-error spike: the leak rate is exactly the error rate.
+
+      ```python
+      @contextmanager
+      def borrow(pool):
+          connection = pool.acquire()
+          try:
+              yield connection
+          finally:
+              pool.release(connection)
+      ```
+
+      It was invisible in tests because every happy-path test exercises the success route, where the
+      generator resumes normally and the release line does run. The bug lives exclusively on the
+      exception path, so it needs a test that asserts the pool size after a *failing* call — which is
+      the test nobody writes until after the incident.
+    explanation: |
+      Generalise it: in a `@contextmanager`, any statement below the `yield` that is not inside a
+      `finally` is conditional on the block succeeding. Treat an unguarded `yield` in a manager as a
+      review-blocking defect on sight.
+
+  - id: cm-debug-return-true
+    tier: intermediate
+    kind: debug
+    title: The manager that eats every exception
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["__exit__ return value", "exception suppression"]
+    prompt: |
+      A team added this manager to "make cleanup robust". Two weeks later, a batch job reported
+      success on every run while writing no output at all.
+
+      Identify the defect, say exactly what the return value does, and fix it. Then explain why
+      `finally: self.close()` in the caller would not have had this problem.
+    code: |
+      class Workspace:
+          def __enter__(self):
+              self.directory = tempfile.mkdtemp()
+              return self.directory
+
+          def __exit__(self, exc_type, exc, traceback):
+              shutil.rmtree(self.directory, ignore_errors=True)
+              return True
+
+
+      with Workspace() as directory:
+          build(directory)
+          publish(directory)
+      print("batch complete")
+    hints:
+      - Read the last line of `__exit__` and ask what the protocol does with that value.
+      - Where does execution resume after a suppressed exception?
+    solution: |
+      `return True` tells the interpreter the exception was handled. Every exception raised inside the
+      block — including `build` failing outright — is discarded with no traceback, and execution
+      resumes at the statement *after* the `with`, which is the "batch complete" print.
+
+      Worse than silence: if `build` raises, `publish` is never called either, because suppression
+      abandons the remainder of the block rather than resuming inside it. So the job skips the work,
+      deletes the evidence in `rmtree`, and reports success.
+
+      ```python
+      def __exit__(self, exc_type, exc, traceback):
+          shutil.rmtree(self.directory, ignore_errors=True)
+          # no return — None is falsy, so the exception propagates
+      ```
+
+      A `finally: self.close()` in the caller could not have caused this because `finally` has no
+      channel for suppressing an exception. It runs the cleanup and the exception continues. The
+      extra power of `__exit__` is exactly what made this failure possible.
+
+      Two related smells worth flagging in the same review: `ignore_errors=True` hides a failed
+      cleanup, and `__enter__` returning the path string rather than `self` means the caller cannot
+      reach anything else on the manager. Neither is the bug, but both make the bug harder to see.
+    explanation: |
+      The rule to internalise: an `__exit__` should return `None` unless suppressing a *named*
+      exception class is the manager's stated purpose. `contextlib.suppress` and `pytest.raises` are
+      the two you will meet that legitimately return truthy.
+
+  - id: cm-exitstack-merge
+    tier: intermediate
+    kind: write-code
+    title: A number of resources you do not know until runtime
+    minutes: 14
+    requiredForMastery: true
+    concepts: ["ExitStack", "enter_context", "dynamic resources"]
+    prompt: |
+      Write `merge_sorted(paths, out_path)` that opens every file in `paths`, merges their
+      already-sorted lines into `out_path`, and closes everything — including on failure, and
+      including when the fourth of six files fails to open.
+
+      A `with` statement cannot do this. Say in one sentence why not, then write it.
+    hints:
+      - "`with a, b, c:` requires you to know at authoring time that there are three."
+      - There is a contextlib object whose job is to hold managers entered one at a time.
+    solution: |
+      A `with` statement's manager list is fixed in the source, so it cannot express "one manager per
+      element of a list whose length is a runtime value". Nesting in a loop does not help either —
+      the block would end on each iteration.
+
+      `ExitStack` is the answer. `stack.enter_context(m)` calls `m.__enter__()` immediately, returns
+      its value, and registers `m.__exit__` to run when the stack unwinds — in reverse order, on
+      every path out.
+
+      If the fourth `open` raises, the list comprehension propagates the exception, the `with` block
+      exits, and the three files already entered are closed. There is no partial-open leak.
+    solutionCode: |
+      import heapq
+      from contextlib import ExitStack
+
+
+      def merge_sorted(paths, out_path):
+          with ExitStack() as stack:
+              sources = [stack.enter_context(open(path)) for path in paths]
+              target = stack.enter_context(open(out_path, "w"))
+              target.writelines(heapq.merge(*sources))
+    explanation: |
+      `heapq.merge` is lazy, so this streams — memory is one line per file, not one file per file.
+      That is the generator lesson from the previous topic composing with this one, and it is the
+      reason this shape scales to merging shards that do not fit in memory.
+
+  - id: cm-reading-transaction
+    tier: intermediate
+    kind: code-reading
+    title: Read a transaction manager and state its contract
+    minutes: 12
+    concepts: ["conditional cleanup", "__exit__ arguments", "transactions"]
+    prompt: |
+      Read this without running it. Answer four questions.
+
+      1. Under exactly which conditions does it commit, and under which does it roll back?
+      2. What happens if `commit()` itself raises?
+      3. What does the caller see if the block raises `KeyboardInterrupt`?
+      4. Name one thing this manager does that `contextlib.closing` structurally cannot.
+    code: |
+      class Transaction:
+          def __init__(self, connection):
+              self.connection = connection
+
+          def __enter__(self):
+              self.connection.execute("BEGIN")
+              return self.connection
+
+          def __exit__(self, exc_type, exc, traceback):
+              if exc_type is None:
+                  self.connection.execute("COMMIT")
+              else:
+                  self.connection.execute("ROLLBACK")
+    hints:
+      - The three arguments are all `None` on exactly one path.
+      - Ask what `KeyboardInterrupt` inherits from, not what it feels like.
+    solution: |
+      **1.** It commits when `exc_type is None`, which is the case only when the block completed
+      without raising. Any exception — including one raised by a `return` inside the block? no,
+      a `return` is not an exception, so that commits too — takes the rollback branch.
+
+      Precisely: `return`, `break` and `continue` inside the block all leave with `exc_type is None`
+      and therefore **commit**. That surprises people who expect an early return to abort the
+      transaction, and it is the correct behaviour: an early return is a successful exit.
+
+      **2.** If `COMMIT` raises, the exception propagates out of `__exit__` and out of the `with`
+      statement. No rollback is attempted, so the transaction is left in whatever state the database
+      put it in. A hardened version wraps the commit and rolls back on failure.
+
+      **3.** `KeyboardInterrupt` inherits from `BaseException`, not `Exception` — but `__exit__`
+      receives it regardless, because the protocol catches `BaseException`. So it rolls back and then
+      re-raises. This is one of the places where the context manager is strictly better than a
+      `try/except Exception`, which would miss it entirely.
+
+      **4.** It branches on **whether the block failed**. `closing` always performs the same action
+      and never sees the exception, so it cannot express commit-versus-rollback. That is the dividing
+      line between "needs `closing`" and "needs a real `__exit__`".
+    explanation: |
+      SQLAlchemy's `Session.begin()` is this manager with the hardening added: it rolls back if the
+      commit fails, and it nests via savepoints. Reading its source once is worth an hour.
+
+  - id: cm-reentrant-lock
+    tier: intermediate
+    kind: design
+    title: Reusable, reentrant, or neither
+    minutes: 12
+    concepts: ["reusability", "reentrancy", "threading.RLock"]
+    prompt: |
+      Define "reusable" and "reentrant" for a context manager, then classify each of these and
+      justify it in one line:
+
+      - `threading.Lock`
+      - `threading.RLock`
+      - a `@contextmanager` generator function's returned object
+      - `contextlib.suppress(ValueError)`
+      - an `ExitStack` instance
+
+      Then give one concrete failure that follows from getting the reentrancy answer wrong.
+    hints:
+      - One of the two words is about using it again *after* the block, the other about *during*.
+      - Only one of the five is single-use.
+    solution: |
+      **Reusable**: the same manager object can be entered again after its block finished.
+      **Reentrant**: the same manager object can be entered again while an outer block using it is
+      still open.
+
+      - `threading.Lock` — reusable, **not** reentrant. A second acquire in the same thread waits for
+        a release only that blocked thread could perform.
+      - `threading.RLock` — reusable and reentrant. It counts acquisitions per owning thread.
+      - A `@contextmanager` object — **neither**. The generator is exhausted after one block;
+        re-entering raises `RuntimeError: generator didn't yield`.
+      - `contextlib.suppress(ValueError)` — reusable and reentrant. It holds no state beyond the
+        exception classes, so nothing can be consumed or double-held.
+      - `ExitStack` — reusable and reentrant, though re-entering one that already holds callbacks is
+        a design smell rather than an error.
+
+      The concrete failure: a helper takes a lock, and later someone calls that helper from inside
+      another function that already holds the same lock. With a plain `Lock`, the thread deadlocks
+      against itself, permanently, with no exception and no traceback — the process simply stops
+      making progress on that path. `RLock` fixes it, but the need for `RLock` is a signal that the
+      lock's ownership boundaries are not clearly drawn.
+    explanation: |
+      The Python docs use exactly these two words for this distinction, and interviewers use them
+      too. Being able to answer "is this reusable or reentrant" about a manager you just wrote is a
+      real signal of understanding the protocol rather than the syntax.
+
+  - id: cm-decorator-form
+    tier: intermediate
+    kind: write-code
+    title: One object, both `with` and `@`
+    minutes: 12
+    concepts: ["ContextDecorator", "@contextmanager", "decorators"]
+    prompt: |
+      Write a manager `logged(name)` that prints on entry and exit, usable **both** as
+      `with logged("x"):` and as a decorator `@logged("handler")` on a function.
+
+      Do it twice: once with `@contextmanager`, once as a class. Then explain why the class version
+      needs a caution that the generator version does not.
+    hints:
+      - "`@contextmanager` already gives you the decorator form; try it before writing anything."
+      - The class needs a base from contextlib to gain the `@` form.
+    solution: |
+      ```python
+      from contextlib import contextmanager, ContextDecorator
+
+
+      @contextmanager
+      def logged(name):
+          print(f"-> {name}")
+          try:
+              yield
+          finally:
+              print(f"<- {name}")
+
+
+      class Logged(ContextDecorator):
+          def __init__(self, name): self.name = name
+          def __enter__(self): print(f"-> {self.name}"); return self
+          def __exit__(self, *exc): print(f"<- {self.name}")
+      ```
+
+      Both work as `with` and as `@`.
+
+      The caution is about reuse. When `ContextDecorator` is applied with `@`, the **same instance**
+      is entered on every call to the decorated function. So a class-based decorator manager must be
+      reusable, and if the function can recurse or run on several threads it must be reentrant too.
+      A manager that stores per-block state on `self` will corrupt it across concurrent calls.
+
+      `@contextmanager` avoids this entirely: its `_GeneratorContextManager` implements `_recreate_cm`,
+      so the decorator form calls the generator function again per invocation and every call gets a
+      fresh generator. That is why the single-use limitation does not bite in decorator position.
+    explanation: |
+      `unittest.mock.patch` is the canonical dual-form manager, which is why you can write either
+      `with patch(...)` or `@patch(...)` and both are idiomatic.
+
+  - id: cm-async-session
+    tier: intermediate
+    kind: write-code
+    title: The async family
+    minutes: 12
+    concepts: ["asynccontextmanager", "__aenter__", "__aexit__", "event loop"]
+    prompt: |
+      Write an async context manager `session(base_url)` that creates a client, yields it, and closes
+      it — awaiting the close correctly.
+
+      Then answer: what happens if a caller writes `with session(url) as client:` instead of
+      `async with`, and what is the quieter mistake that a reviewer is more likely to miss?
+    hints:
+      - The decorator has an async-shaped name, and the function must be an async generator.
+      - The quieter mistake is about *which* call inside the cleanup you use.
+    solution: |
+      ```python
+      from contextlib import asynccontextmanager
+
+
+      @asynccontextmanager
+      async def session(base_url):
+          client = httpx.AsyncClient(base_url=base_url)
+          try:
+              yield client
+          finally:
+              await client.aclose()
+      ```
+
+      A plain `with` raises `TypeError` immediately: the object defines `__aenter__`/`__aexit__` and
+      `with` looks for `__enter__`/`__exit__`. Loud and easy to fix.
+
+      The quieter mistake is **blocking inside the async cleanup** — calling `client.close()`
+      synchronously, or `time.sleep(...)` for a backoff, or a synchronous `requests` call to
+      deregister from a service. None of that raises. It stalls the entire event loop during what
+      looks like harmless teardown, so every other coroutine in the process freezes for that duration.
+      Under load, the symptom is latency spikes that correlate with request *completion* rather than
+      with request volume, which sends people looking in entirely the wrong place.
+
+      For a runtime-determined number of async resources, `AsyncExitStack` is the counterpart to
+      `ExitStack`, and it takes both families via `enter_async_context` and `enter_context`.
+    explanation: |
+      FastAPI's `lifespan` is exactly this shape: everything before the `yield` is startup, everything
+      after is shutdown. Knowing it is just `@asynccontextmanager` demystifies the whole feature.
+
+  # ------------------------------------------------------------ tricky
+  - id: cm-debug-enter-raises
+    tier: tricky
+    kind: debug
+    title: The cleanup that never got a chance
+    minutes: 15
+    requiredForMastery: true
+    concepts: ["__enter__ failure", "partial acquisition", "ExitStack"]
+    prompt: |
+      Under intermittent database outages this service wedges: worker threads block forever and never
+      recover, even after the database comes back.
+
+      The `__exit__` releases the lock, and it is correct. Find the actual defect, explain why
+      `__exit__` is irrelevant to it, and fix it so the fix survives adding a third resource.
+    code: |
+      class Job:
+          def __init__(self, lock, pool):
+              self.lock = lock
+              self.pool = pool
+
+          def __enter__(self):
+              self.lock.acquire()
+              self.connection = self.pool.acquire(timeout=2)   # raises on outage
+              return self.connection
+
+          def __exit__(self, exc_type, exc, traceback):
+              self.pool.release(self.connection)
+              self.lock.release()
+    hints:
+      - The protocol makes one guarantee about `__exit__`, and it has a precondition.
+      - Think about what has already happened when line two of `__enter__` raises.
+    solution: |
+      `__exit__` is only called if `__enter__` **returns**. When `pool.acquire` raises, `__enter__`
+      propagates that exception, the `with` statement never enters its body, and `__exit__` is never
+      invoked. The lock acquired on the previous line is held by a thread that has already unwound.
+
+      Every outage therefore leaks one lock per attempt, permanently. The service never recovers
+      because no code path exists that could release it.
+
+      The naive fix — a `try/except` around the second acquisition that releases and re-raises — is
+      correct but does not compose: a third resource means nested handlers, and the ordering is easy
+      to get wrong under edit.
+
+      The fix that scales is an `ExitStack` owned by the manager, with `pop_all()` performed only
+      after every acquisition has succeeded:
+
+      ```python
+      from contextlib import ExitStack
+
+
+      class Job:
+          def __init__(self, lock, pool):
+              self.lock = lock
+              self.pool = pool
+
+          def __enter__(self):
+              with ExitStack() as stack:
+                  stack.enter_context(self.lock)
+                  self.connection = stack.enter_context(closing(self.pool.acquire(timeout=2)))
+                  self._stack = stack.pop_all()
+              return self.connection
+
+          def __exit__(self, exc_type, exc, traceback):
+              return self._stack.__exit__(exc_type, exc, traceback)
+      ```
+
+      If any acquisition raises, the inner `with` unwinds and releases whatever was already acquired.
+      `pop_all()` runs only on the success path, transferring ownership to `self._stack`, which
+      `__exit__` then unwinds in reverse order. Adding a fourth resource is one more line.
+    explanation: |
+      This `ExitStack` + `pop_all` shape inside `__enter__` is the standard answer to partial
+      acquisition and is worth memorising verbatim. The Python docs call it "cleaning up in an
+      `__enter__` implementation" and it appears almost unchanged in real connection-pool code.
+
+  - id: cm-suppress-resume
+    tier: tricky
+    kind: predict-output
+    title: Where does execution resume after suppression?
+    minutes: 10
+    concepts: ["suppression semantics", "control flow", "contextlib.suppress"]
+    prompt: |
+      Predict the exact output. The interesting part is which lines are *missing*.
+    code: |
+      from contextlib import suppress
+
+      results = []
+
+      with suppress(ValueError):
+          results.append("a")
+          int("not a number")
+          results.append("b")
+      results.append("c")
+
+      for item in ["1", "x", "3"]:
+          with suppress(ValueError):
+              results.append(int(item))
+
+      print(results)
+    hints:
+      - Suppression does not resume the block it interrupted.
+      - The loop and the single block differ in where the manager's scope sits.
+    solution: |
+      ```text
+      ['a', 'c', 1, 3]
+      ```
+
+      In the first block, `"a"` is appended, `int("not a number")` raises, and `suppress` swallows it.
+      Execution resumes at the statement **after** the `with` block, so `"b"` is never appended —
+      it is unreachable code the moment the line above it fails. Then `"c"` appends normally.
+
+      In the loop, the `with` is *inside* the loop body, so suppression abandons only that one
+      iteration's block. `"x"` is skipped and the loop continues, giving `1` and `3`.
+
+      That contrast is the whole lesson. `suppress` is not `try/except` around a statement — it is
+      `try/except` around everything that follows it in the block. The narrower the block, the closer
+      it is to what you meant. Guarding five statements when you meant one is how a `suppress` quietly
+      skips work nobody noticed was skipped.
+    explanation: |
+      The same rule applies to any suppressing `__exit__`, including one you write. Suppression is
+      abandonment, never resumption — Python has no construct that resumes a block after an exception.
+
+  - id: cm-debug-single-use
+    tier: tricky
+    kind: debug
+    title: The manager that works once
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["single-use managers", "@contextmanager", "generator exhaustion"]
+    prompt: |
+      A test helper builds a manager once and shares it across tests to "avoid the setup cost". The
+      first test passes; every subsequent one fails with `RuntimeError: generator didn't yield`.
+
+      Explain the mechanism, give the one-line fix, and then say under what circumstance the original
+      shape *would* have been fine.
+    code: |
+      from contextlib import contextmanager
+
+
+      @contextmanager
+      def temp_config(**overrides):
+          original = CONFIG.copy()
+          CONFIG.update(overrides)
+          try:
+              yield CONFIG
+          finally:
+              CONFIG.clear()
+              CONFIG.update(original)
+
+
+      FAST = temp_config(timeout=1, retries=0)
+
+
+      def test_one():
+          with FAST:
+              assert CONFIG["timeout"] == 1
+
+
+      def test_two():
+          with FAST:                      # RuntimeError here
+              assert CONFIG["retries"] == 0
+    hints:
+      - "`FAST` is not a function — ask what object the decorated call actually produced."
+      - Generators have a property that makes them unable to do this.
+    solution: |
+      `temp_config(timeout=1, retries=0)` **calls** the function, producing one
+      `_GeneratorContextManager` wrapping one generator object. `test_one` drives that generator to
+      completion. `test_two` enters the same object, `__enter__` calls `next()` on an already
+      exhausted generator, gets `StopIteration`, and reports `RuntimeError: generator didn't yield`.
+
+      Generator-based context managers are single-use, always. There is no flag to change it.
+
+      The one-line fix is to store the arguments rather than the manager:
+
+      ```python
+      FAST = functools.partial(temp_config, timeout=1, retries=0)
+
+      def test_one():
+          with FAST():
+              ...
+      ```
+
+      That is `functools.partial` from the previous topic doing exactly what it is for: binding
+      arguments eagerly without invoking anything.
+
+      The original shape would have been fine if `temp_config` were a **class-based** manager written
+      to be reusable — one that recomputes its saved state in `__enter__` rather than at construction
+      time. Note the second condition there: a class-based manager that snapshots state in
+      `__init__` is reusable in form only, and will restore a stale snapshot the second time.
+    explanation: |
+      This is why `pytest` fixtures are functions the framework calls per test, not objects it holds.
+      Any "share the manager to save setup" instinct is a sign the thing you want is a factory.
+
+  - id: cm-generator-two-yields
+    tier: tricky
+    kind: predict-output
+    title: A generator that yields twice
+    minutes: 8
+    concepts: ["@contextmanager", "StopIteration", "protocol violations"]
+    prompt: |
+      Predict what each of the three blocks prints or raises, and name the mechanism in each case.
+    code: |
+      from contextlib import contextmanager
+
+
+      @contextmanager
+      def two():
+          yield 1
+          yield 2
+
+
+      @contextmanager
+      def none():
+          if False:
+              yield
+
+
+      @contextmanager
+      def swallow():
+          try:
+              yield
+          except ValueError:
+              print("handled")
+
+
+      with two() as v: print("A", v)
+      try:
+          with none(): print("B")
+      except RuntimeError as error: print("C", error)
+      with swallow(): raise ValueError("x")
+      print("D")
+    hints:
+      - "`__exit__` expects the generator to stop; consider what it does when the generator yields again."
+      - The third one catches rather than returning a value — ask what that means for the protocol.
+    solution: |
+      ```text
+      A 1
+      C generator didn't yield
+      handled
+      D
+      ```
+
+      **`two()`** — `__enter__` gets `1` and prints "A 1". On exit, `__exit__` calls `next()`
+      expecting `StopIteration`, gets `2` instead, and raises `RuntimeError: generator didn't stop`.
+      That traceback is not shown above because the sample lets it propagate; in an interactive run it
+      terminates the program right after "A 1".
+
+      **`none()`** — the generator never yields, so `__enter__`'s `next()` raises `StopIteration`
+      immediately, which `contextlib` converts to `RuntimeError("generator didn't yield")`. Caught and
+      printed as "C".
+
+      **`swallow()`** — `__exit__` calls `gen.throw(ValueError)`. The generator catches it, prints
+      "handled", and returns normally. A generator-based manager that returns normally after a thrown
+      exception **suppresses** it, so control resumes after the block and "D" prints.
+
+      That third case is how you write a suppressing manager in generator form. You do not return
+      `True` — returning a value from a generator is not the mechanism; catching and returning
+      normally is.
+    explanation: |
+      `contextlib` translates `StopIteration` into `RuntimeError` deliberately, because a bare
+      `StopIteration` escaping would be silently absorbed by any enclosing generator — the same PEP
+      479 hazard from the iterators topic.
+
+  - id: cm-reading-exitstack-popall
+    tier: tricky
+    kind: code-reading
+    title: Read pop_all and say who owns what
+    minutes: 12
+    concepts: ["ExitStack.pop_all", "ownership transfer", "resource lifetime"]
+    prompt: |
+      Read these two factories. For each, say what the caller receives, whether the files are open
+      when the caller gets them, and what the caller must do next.
+
+      Then say which one you would ship, and name the third option that beats both.
+    code: |
+      from contextlib import ExitStack
+
+
+      def factory_a(paths):
+          with ExitStack() as stack:
+              handles = [stack.enter_context(open(p)) for p in paths]
+              return handles
+
+
+      def factory_b(paths):
+          with ExitStack() as stack:
+              handles = [stack.enter_context(open(p)) for p in paths]
+              return handles, stack.pop_all()
+    hints:
+      - A `return` inside a `with` still exits the block before the value reaches the caller.
+      - "`pop_all` moves the registered callbacks somewhere; ask where, and what the old stack has left."
+    solution: |
+      **`factory_a`** returns a list of **closed** files. The `return` exits the `with`, the stack
+      unwinds, every handle is closed, and only then does the value reach the caller. Any read raises
+      `ValueError: I/O operation on closed file`. This is a real bug and a common one, because the
+      code reads as if the return happens "before" the cleanup.
+
+      **`factory_b`** returns the handles still open, plus a **new** `ExitStack` holding the
+      registered `__exit__` callbacks. `pop_all()` transfers them and leaves the original stack empty,
+      so unwinding it closes nothing. The caller now owns the closing and must call `stack.close()`
+      or use `with stack:`.
+
+      I would ship neither. The third option removes the ownership question entirely by making the
+      factory itself a context manager:
+
+      ```python
+      @contextmanager
+      def open_all(paths):
+          with ExitStack() as stack:
+              yield [stack.enter_context(open(p)) for p in paths]
+      ```
+
+      Now the handles cannot outlive the block, there is nothing for the caller to remember, and the
+      cleanup is guaranteed on every exit path. Keep `factory_b` only when the resources genuinely
+      must outlive the function — a pool built at startup and closed at shutdown is the honest case.
+    explanation: |
+      "Returns a closed resource" is worth adding to your review checklist. It is invisible at the
+      definition site and only fails at the use site, which is often a different file.
+
+  - id: cm-nested-suppress-scope
+    tier: tricky
+    kind: explain
+    title: Why suppress is a block-level tool
+    minutes: 10
+    concepts: ["suppression scope", "error handling design"]
+    prompt: |
+      A colleague proposes replacing every `try/except X: pass` in a module with
+      `with suppress(X):` around the enclosing function body, arguing it is "the same thing, less
+      indentation".
+
+      Give the strongest version of their argument, then explain precisely why it is wrong, and state
+      the rule you would put in the review guide.
+    hints:
+      - Their argument is about readability and about where the exception class appears.
+      - Yours is about how much code stops running.
+    solution: |
+      **Their strongest case**: `suppress` puts the exception class in the header where a reviewer
+      reads it first, it removes a level of indentation, and it makes "this error is expected"
+      declarative rather than a `pass` buried at the bottom of a handler. All of that is true, and it
+      is why `suppress` exists.
+
+      **Why the proposal is wrong**: scope. `try/except X: pass` around one statement resumes at the
+      next statement. `with suppress(X):` around a function body abandons *everything remaining in
+      the block* the moment any covered exception fires anywhere inside it. Applied to a whole
+      function, one expected `KeyError` in the first line silently skips every subsequent line — and
+      the function still returns, with `None`, looking like success.
+
+      It also widens the catch across statements that were never meant to be guarded. Two lines later
+      a genuine bug raises the same class and is now indistinguishable from the expected case.
+
+      **The review rule**: `suppress` guards exactly one statement, or a small group whose statements
+      are all optional together, and it always names the narrowest class. If the block is longer than
+      about three lines, or if any statement in it must run regardless, use `try/except` so control
+      resumes where you intended.
+    explanation: |
+      The same argument applies to your own suppressing `__exit__` implementations. Suppression scope
+      is the block, and the block is whatever the author happened to indent — which is why narrow
+      blocks are a correctness property, not a style preference.
+
+  - id: cm-performance-with-overhead
+    tier: tricky
+    kind: performance
+    title: Is `with` too slow for the inner loop?
+    minutes: 12
+    concepts: ["overhead", "measurement", "loop invariants"]
+    prompt: |
+      A profile shows this training-loop helper is hot. A colleague wants to delete the context
+      manager "because `with` is slow".
+
+      Measure before arguing. Design the benchmark you would run, predict its result, and then give
+      the change you would actually make.
+    code: |
+      def train_step(batch):
+          with torch.no_grad():
+              baseline = model(batch.inputs)
+          loss = criterion(model(batch.inputs), batch.targets)
+          return loss, baseline
+    hints:
+      - Compare the manager against the same work with the manager hoisted, not against nothing.
+      - Ask what the body costs relative to two method calls.
+    solution: |
+      The benchmark: `timeit` three variants over a realistic batch — the code as written, the same
+      work with the manager entered once outside the loop, and the body alone with global state set
+      manually. Run each at a batch size that matches production, not size 1, because the ratio is
+      the entire question.
+
+      The predicted result: entering a context manager is two attribute lookups on the type and two
+      method calls, on the order of hundreds of nanoseconds. A forward pass on a real batch is
+      milliseconds. The manager is four to five orders of magnitude below the body, so it will not
+      appear in the profile at all, and deleting it changes nothing measurable.
+
+      What is actually wrong with this code is visible without a profiler: `model(batch.inputs)` is
+      computed **twice**, once under `no_grad` and once for the loss. That is a full duplicated
+      forward pass — roughly half the step. The fix is to compute it once and derive the baseline
+      from the same result, or to drop the baseline entirely if it is only diagnostic.
+
+      The general rule: `with` is worth hoisting out of a loop only when the body is genuinely tiny —
+      microseconds — and the manager is doing real work on entry, such as acquiring a lock or opening
+      a file. Never delete a `with` for speed without a measurement showing it, because what you lose
+      is a correctness guarantee on the exception path in exchange for nothing.
+    explanation: |
+      "Remove the safety construct because it looks expensive" is a recurring instinct and is almost
+      always wrong. The cost is real but is dominated by anything worth putting in the block; the
+      guarantee is what stops a leaked lock from taking the service down.
+
+  # ------------------------------------------------------------ challenge
+  - id: cm-design-pool
+    tier: challenge
+    kind: design
+    title: Design a leasing pool
+    minutes: 25
+    concepts: ["resource pools", "ExitStack", "reentrancy", "failure paths"]
+    prompt: |
+      Design (do not fully implement) a connection pool whose only public API is a context manager:
+
+      ```python
+      with pool.lease(timeout=5) as connection:
+          ...
+      ```
+
+      Specify: the protocol methods and where each piece of state lives; behaviour when the pool is
+      exhausted and the timeout expires; what happens to a connection whose block raised; whether
+      `lease` is reusable and whether it is reentrant, and why you chose each; and how a caller
+      leases three connections at once without you writing a `lease3`.
+
+      Then name the two failure modes your design still has, and how you would detect them in
+      production.
+    hints:
+      - Decide first whether `lease` returns a fresh object per call or the pool itself.
+      - A connection that raised inside the block is not obviously safe to hand to the next caller.
+    solution: |
+      **Shape.** `lease` is a factory returning a fresh manager per call — either a small class or a
+      `@contextmanager` generator. It must not be the pool itself, because the pool is shared and a
+      manager holds per-lease state (which connection, whether it was returned).
+
+      **State.** The pool owns the idle queue, the total count and the lock. The lease owns exactly
+      one connection reference and a returned flag. Nothing per-lease lives on the pool.
+
+      **Acquisition.** `__enter__` takes a connection from the idle queue, waiting up to `timeout`,
+      and raises `PoolTimeout` if it expires. Because it raises from `__enter__`, `__exit__` never
+      runs — so `__enter__` must not have taken anything it fails to release. Acquire through an
+      internal `ExitStack` and `pop_all()` only after every step succeeded.
+
+      **Release.** `__exit__` returns the connection to the idle queue and returns `None`. It must
+      never suppress. If the block raised, the connection is **discarded rather than reused** —
+      an exception may have left it mid-transaction or mid-protocol, and handing that to the next
+      caller converts one failure into a stream of unrelated ones. Discarding costs one reconnect;
+      reusing costs a debugging session. Health-check-and-reset is the middle option if reconnects
+      are expensive.
+
+      **Reusable / reentrant.** Each `lease()` call returns a new object, so reusability of the
+      returned manager does not matter and I would make re-entering one an error. The *pool* must be
+      reentrant: nested `lease` calls in one thread must work, or any helper that leases will deadlock
+      when called from inside another lease. That means the pool's internal lock is an `RLock` and,
+      more importantly, a nested lease takes a *second* connection rather than waiting for the first —
+      so pool sizing must account for the maximum nesting depth.
+
+      **Three at once.** The caller uses `ExitStack`:
+
+      ```python
+      with ExitStack() as stack:
+          connections = [stack.enter_context(pool.lease()) for _ in range(3)]
+      ```
+
+      No `lease3` needed, and partial failure unwinds correctly for free. This is the main argument
+      for making the public API a context manager at all.
+
+      **Remaining failure modes.** First, **deadlock by nesting**: N threads each holding one
+      connection and each waiting for a second, with a pool smaller than 2N. Detect it by exporting
+      wait-time and exhaustion-count metrics, and alert on sustained non-zero waits rather than on
+      timeouts, which arrive far too late. Second, **leaks from code that bypasses the manager** —
+      anyone who calls the internal acquire directly. Detect it by tracking checkout time per
+      connection and logging any lease held beyond a threshold with the stack captured at checkout;
+      that log line is what turns a two-day investigation into a two-minute one.
+    explanation: |
+      The discard-on-exception decision is the one that separates designs. Most people reuse the
+      connection because it is cheaper, and most people then spend a week on an incident where a
+      failed transaction poisoned unrelated requests. Say the trade-off out loud in an interview.
+
+  - id: cm-debug-async-blocking
+    tier: challenge
+    kind: debug
+    title: The teardown that freezes the service
+    minutes: 25
+    requiredForMastery: true
+    concepts: ["async context managers", "event loop blocking", "AsyncExitStack"]
+    prompt: |
+      This handler works correctly and passes every test. In production, p99 latency spikes to
+      several seconds under load, and the spikes correlate with request *completions*, not with
+      request volume.
+
+      There are three distinct defects here. Find all three, explain the mechanism of each, and
+      rewrite the module. At least one produces no error and no log line anywhere.
+    code: |
+      import time
+      from contextlib import asynccontextmanager
+
+
+      @asynccontextmanager
+      async def traced(span_name):
+          span = tracer.start(span_name)
+          yield span
+          span.finish()
+
+
+      @asynccontextmanager
+      async def leased(pool):
+          connection = await pool.acquire()
+          try:
+              yield connection
+          finally:
+              connection.close()                 # sync close on an async connection
+              time.sleep(0.05)                   # "give the socket time to drain"
+
+
+      async def handle(request, pool):
+          async with traced("handle"), leased(pool) as connection:
+              return await connection.fetch(request.query)
+    hints:
+      - One defect is the same unguarded-yield shape as the sync case.
+      - Two defects are about calls that are fine in a sync function and are not fine here.
+    solution: |
+      **Defect 1 — `traced` has an unguarded `yield`.** If the body raises, `__aexit__` throws the
+      exception in at the `yield` and `span.finish()` never runs. Every failed request leaves an open
+      span, so the tracing backend accumulates unfinished spans and the error traces — the ones you
+      most need — are exactly the ones missing. Silent: no error, no log line. Fix with `try/finally`.
+
+      **Defect 2 — `connection.close()` is synchronous.** An async connection's close performs I/O.
+      Called without `await` it either returns an un-awaited coroutine (which never runs, leaking the
+      connection, and emits only a `RuntimeWarning` that most services suppress) or blocks the event
+      loop while it does socket work. Use `await connection.aclose()`.
+
+      **Defect 3 — `time.sleep(0.05)` blocks the entire event loop.** Not this coroutine: the loop.
+      For 50ms nothing else in the process runs — not other handlers, not the heartbeat, not the
+      health check. At 200 requests per second that is 10 seconds of stall per second of wall clock,
+      which is why the service falls over under load and why the spikes track completions rather than
+      arrivals. If a delay is genuinely required, it is `await asyncio.sleep(...)`; here it is cargo
+      cult and should simply be deleted.
+
+      ```python
+      from contextlib import asynccontextmanager
+
+
+      @asynccontextmanager
+      async def traced(span_name):
+          span = tracer.start(span_name)
+          try:
+              yield span
+          finally:
+              span.finish()
+
+
+      @asynccontextmanager
+      async def leased(pool):
+          connection = await pool.acquire()
+          try:
+              yield connection
+          finally:
+              await connection.aclose()
+
+
+      async def handle(request, pool):
+          async with traced("handle"), leased(pool) as connection:
+              return await connection.fetch(request.query)
+      ```
+
+      The tests passed because they exercise one request at a time. A blocked event loop is invisible
+      without concurrency, and an unfinished span is invisible without asserting on the tracer. Both
+      need a test that runs several requests concurrently and asserts on total wall time, plus one
+      that raises inside the block and asserts the span was finished.
+    explanation: |
+      The general rule for async cleanup: every line in an `__aexit__` or after an `await`-generator's
+      `yield` must be either pure computation or awaited. A synchronous I/O call there is a
+      whole-process stall dressed up as tidy teardown — and it is the single most common way a
+      correct-looking async service fails only in production.
+
+quizzes:
+  - id: cm-checkpoint
+    title: Checkpoint — the protocol and its guarantees
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: cm-cp-as
+        kind: mcq
+        prompt: "In `with M() as x:`, what is `x` bound to?"
+        options:
+          - id: manager
+            text: The manager object returned by `M()`
+          - id: enter
+            text: Whatever `__enter__` returns
+          - id: exit
+            text: Whatever `__exit__` returns
+          - id: none
+            text: Always `None` unless the class defines `__as__`
+        answer: ["enter"]
+        concepts: ["as binding"]
+        explanation: |
+          `as` binds `__enter__`'s return value. Returning `self` is common but is a choice — `open()`
+          returns the file, and a manager with no `return` in `__enter__` binds `None`.
+
+      - id: cm-cp-enter-raises
+        kind: mcq
+        prompt: "`__enter__` acquires a lock, then its next line raises. What runs?"
+        options:
+          - id: exit
+            text: "`__exit__` runs with the exception information, then the exception propagates"
+          - id: noexit
+            text: "`__exit__` does not run at all; the exception propagates and the lock is still held"
+          - id: body
+            text: The block body runs anyway, with the `as` target set to `None`
+          - id: retry
+            text: Python retries `__enter__` once before giving up
+        answer: ["noexit"]
+        concepts: ["__enter__ failure", "partial acquisition"]
+        explanation: |
+          The protocol guarantees `__exit__` only after `__enter__` returns. Anything acquired before
+          the failure leaks — which is why partial acquisition inside `__enter__` needs an `ExitStack`
+          with `pop_all()`.
+
+      - id: cm-cp-return-true
+        kind: true-false
+        prompt: Returning `True` from `__exit__` causes execution to resume on the line after the one that raised, inside the block.
+        options:
+          - id: t
+            text: "True"
+          - id: f
+            text: "False"
+        answer: ["f"]
+        concepts: ["suppression semantics"]
+        explanation: |
+          Suppression abandons the rest of the block. Execution resumes at the first statement after
+          the `with`, so every remaining line in the block is skipped silently.
+
+      - id: cm-cp-finally
+        kind: multi
+        prompt: Why must a `@contextmanager` generator wrap its `yield` in `try`/`finally`? Select all that apply.
+        options:
+          - id: throw
+            text: "Because `__exit__` delivers the exception by calling `gen.throw()`, which raises it at the `yield`"
+          - id: skip
+            text: Because code below an unguarded `yield` is skipped whenever the block raises
+          - id: syntax
+            text: Because `contextlib` rejects a generator with no `try` at import time
+          - id: speed
+            text: Because it makes the generator resume faster
+        answer: ["throw", "skip"]
+        concepts: ["@contextmanager", "gen.throw"]
+        explanation: |
+          The first two are the mechanism and its consequence. Nothing validates the shape at import
+          time — that is exactly why the bug survives code review and ships.
+
+  - id: cm-assessment
+    title: Assessment — context managers and contextlib
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: cm-as-desugar
+        kind: mcq
+        prompt: "`with a() as x, b() as y:` is equivalent to which of these?"
+        options:
+          - id: nested
+            text: "`with a() as x:` containing `with b() as y:`"
+          - id: parallel
+            text: Both managers entered simultaneously, exited in entry order
+          - id: reversed
+            text: "`with b() as y:` containing `with a() as x:`"
+          - id: tuple
+            text: A single manager built from the tuple `(a(), b())`
+        answer: ["nested"]
+        concepts: ["nesting", "exit order"]
+        explanation: |
+          It is plain nesting. Entry is left to right, exit is strict reverse, and `x` is available
+          when `b()` is evaluated because the second manager is constructed inside the first block.
+
+      - id: cm-as-predict-suppress
+        kind: predict-output
+        prompt: What does this print?
+        code: |
+          from contextlib import suppress
+
+          out = []
+          with suppress(KeyError):
+              out.append(1)
+              {}["missing"]
+              out.append(2)
+          out.append(3)
+          print(out)
+        modelAnswer: |
+          `[1, 3]`. The `KeyError` is suppressed, but suppression abandons the rest of the block, so
+          `out.append(2)` never runs. Execution resumes after the `with`, appending `3`.
+        concepts: ["suppression scope"]
+        explanation: |
+          The missing `2` is the whole point. `suppress` guards the block, not the statement, so a
+          long block hides skipped work.
+
+      - id: cm-as-findbug
+        kind: find-bug
+        prompt: This manager is meant to always restore the working directory. Name the defect and the input that triggers it.
+        code: |
+          from contextlib import contextmanager
+          import os
+
+
+          @contextmanager
+          def working_dir(path):
+              previous = os.getcwd()
+              os.chdir(path)
+              yield path
+              os.chdir(previous)
+        modelAnswer: |
+          The `yield` is unguarded, so if the block raises, `os.chdir(previous)` never runs and the
+          process is left in the wrong directory for the rest of its life — corrupting every later
+          relative path. Trigger: any exception inside the block. Fix: wrap the `yield` in
+          `try`/`finally` with the restore in `finally`. Python 3.11+ also ships `contextlib.chdir`,
+          which is already correct.
+        concepts: ["@contextmanager", "try/finally", "global state"]
+        explanation: |
+          Working directory is process-global, so this defect escapes the failing request and breaks
+          unrelated code later — the hardest class of bug to trace back to its cause.
+
+      - id: cm-as-exit-return
+        kind: mcq
+        prompt: Which `__exit__` correctly suppresses only `TimeoutError` and lets everything else propagate?
+        options:
+          - id: correct
+            text: "`return exc_type is not None and issubclass(exc_type, TimeoutError)`"
+          - id: always
+            text: "`return True`"
+          - id: isinst
+            text: "`return isinstance(exc_type, TimeoutError)`"
+          - id: raise
+            text: "`if exc_type is TimeoutError: return; raise exc`"
+        answer: ["correct"]
+        concepts: ["suppression", "exc_type"]
+        explanation: |
+          `exc_type` is a class, so it needs `issubclass`, not `isinstance` — and it is `None` on the
+          success path, which must be checked first. `return True` swallows everything, and the last
+          option re-raises manually, which loses the original traceback chain.
+
+      - id: cm-as-truefalse-single
+        kind: true-false
+        prompt: A context manager built with `@contextmanager` can be stored in a variable and used in several `with` blocks.
+        options:
+          - id: t
+            text: "True"
+          - id: f
+            text: "False"
+        answer: ["f"]
+        concepts: ["single-use managers"]
+        explanation: |
+          The generator is exhausted after one block; a second entry raises
+          `RuntimeError: generator didn't yield`. Store the factory (or a `partial` of it) and call it
+          per block.
+
+      - id: cm-as-explain-enterexit
+        kind: explain
+        prompt: Explain why `contextlib.closing` cannot express a database transaction manager, and what capability is missing.
+        modelAnswer: |
+          `closing` always calls `close()` and never sees the exception — it takes no branch on how
+          the block ended. A transaction must commit on success and roll back on failure, which
+          requires reading `exc_type` in `__exit__`. The missing capability is conditional cleanup
+          based on the exception information the protocol passes to `__exit__`; `closing` discards
+          that entirely.
+        concepts: ["closing", "conditional cleanup"]
+        explanation: |
+          This is the practical dividing line: unconditional cleanup can use `closing`, conditional
+          cleanup needs a real `__exit__` or a `@contextmanager` with `except`/`else`.
+
+      - id: cm-as-write-function
+        kind: write-function
+        prompt: |
+          Write `@contextmanager def temporary_attr(obj, name, value)` that sets an attribute for the
+          duration of the block and restores it afterwards — including restoring "the attribute did
+          not exist" correctly, and working when the block raises.
+        modelAnswer: |
+          ```python
+          from contextlib import contextmanager
+
+          _MISSING = object()
+
+
+          @contextmanager
+          def temporary_attr(obj, name, value):
+              original = getattr(obj, name, _MISSING)
+              setattr(obj, name, value)
+              try:
+                  yield obj
+              finally:
+                  if original is _MISSING:
+                      delattr(obj, name)
+                  else:
+                      setattr(obj, name, original)
+          ```
+
+          The sentinel is required because `getattr(obj, name, None)` cannot distinguish "absent" from
+          "present and set to `None`". The `try`/`finally` is required because the restore must happen
+          on the exception path.
+        concepts: ["state restoration", "sentinels", "try/finally"]
+        explanation: |
+          This is `unittest.mock.patch.object` in miniature, and both halves — sentinel and `finally`
+          — are the parts people leave out.
+
+      - id: cm-as-refactor-stack
+        kind: refactor
+        prompt: |
+          Refactor this so that a failure on the third `open` does not leak the first two handles, and
+          so the number of paths is not fixed in the source.
+
+          ```python
+          def open_three(a, b, c):
+              fa = open(a)
+              fb = open(b)
+              fc = open(c)
+              return fa, fb, fc
+          ```
+        modelAnswer: |
+          ```python
+          from contextlib import ExitStack, contextmanager
+
+
+          @contextmanager
+          def open_all(paths):
+              with ExitStack() as stack:
+                  yield [stack.enter_context(open(path)) for path in paths]
+          ```
+
+          `enter_context` registers each handle's `__exit__` as it opens, so a failure part-way
+          through unwinds whatever is already open, in reverse order. Making the function itself a
+          context manager also removes the "returns a closed file" hazard of returning from inside a
+          `with`, and the caller cannot leak the handles past the block.
+        concepts: ["ExitStack", "partial failure", "ownership"]
+        explanation: |
+          If the handles genuinely must outlive the call, the alternative is `return handles,
+          stack.pop_all()` and an explicit ownership contract — but prefer the manager form.
+
+      - id: cm-as-scenario-async
+        kind: scenario
+        prompt: |
+          An async service shows p99 latency spikes correlated with request completions rather than
+          request arrivals. Cleanup code was recently added to an `@asynccontextmanager`. What is your
+          first hypothesis, how do you confirm it, and what is the fix?
+        modelAnswer: |
+          First hypothesis: a **blocking call in the async teardown** — `time.sleep`, a synchronous
+          `close()`, or a synchronous HTTP call — stalling the whole event loop. The correlation with
+          completions rather than arrivals points at teardown specifically, since that is the only
+          code that runs at completion.
+
+          Confirm it by enabling `asyncio` debug mode (`PYTHONASYNCIODEBUG=1` or
+          `loop.set_debug(True)`), which logs any callback exceeding the slow-callback threshold with
+          its location. `RuntimeWarning: coroutine ... was never awaited` in the logs is a second
+          strong signal, pointing at a missing `await` on an async close.
+
+          Fix: `await` the asynchronous close, replace `time.sleep` with `await asyncio.sleep` or
+          delete it, and move any genuinely blocking library call into
+          `asyncio.to_thread`/`run_in_executor`. Then add a concurrency test that issues many requests
+          at once and asserts total wall time, because a single-request test cannot see a blocked loop.
+        concepts: ["async cleanup", "event loop blocking", "diagnosis"]
+        explanation: |
+          The diagnostic value of "correlates with completions, not arrivals" is the part worth
+          keeping — it localises the problem to teardown before you read a single line of code.
+
+      - id: cm-as-performance
+        kind: performance
+        prompt: |
+          A reviewer wants to remove a `with lock:` from a hot loop for speed. State what you would
+          measure, what you expect to find, and what you would do instead.
+        modelAnswer: |
+          Measure three variants with `timeit` at production-realistic sizes: the loop as written, the
+          same loop with the manager hoisted outside it, and the body alone. The comparison that
+          matters is manager overhead against body cost, not against zero.
+
+          Expect the manager to cost a few hundred nanoseconds — two type-level lookups and two method
+          calls — which disappears against any body doing real work. Removing it will not show up in
+          the profile.
+
+          What I would do instead: hoist the acquisition outside the loop **only if** the critical
+          section genuinely spans the whole loop, accepting the longer hold time; otherwise leave it
+          alone and look for the real cost, which in a hot loop is usually redundant work or
+          allocation inside the body. I would not delete the `with`, because what it buys is release
+          on the exception path, and losing that trades a measurable nothing for a leaked lock.
+        concepts: ["measurement", "lock granularity", "overhead"]
+        explanation: |
+          Note the trade in hoisting: fewer acquisitions but a longer critical section, which reduces
+          concurrency. That is a real decision, unlike deleting the manager, which is not.
+
+interview:
+  - id: cm-iv-protocol
+    level: basic
+    requiredForMastery: true
+    concepts: ["context manager protocol", "try/finally"]
+    question: What is a context manager, and what does `with` actually do?
+    shortAnswer: |
+      Any object with `__enter__` and `__exit__`. `with` calls `__enter__`, binds its return value to
+      the `as` target, runs the block inside a `try`, and calls `__exit__` on every exit path —
+      normal completion, exception, `return`, `break`. It is a reusable `try`/`finally` where the
+      cleanup lives with the resource rather than at every call site.
+    fullAnswer: |
+      The desugaring is the answer. `with M() as x:` becomes: construct the manager, call
+      `type(m).__enter__(m)` and bind the result, then `try` the body, and on the way out call
+      `type(m).__exit__(m, exc_type, exc, traceback)` with either the exception information or three
+      `None`s. Special-method lookup is on the type, as with every dunder.
+
+      The design point I would make is that `with` moves the cleanup from the *caller* to the
+      *resource*. A `try/finally` has to be written correctly at every use site; a context manager is
+      written once and every caller gets the guarantee. That is why `open`, locks, transactions and
+      temporary directories all ship as managers.
+
+      The two guarantees worth stating precisely: `__exit__` runs on every path out of the block once
+      `__enter__` has returned — including `return`, `break` and `sys.exit` — and it does **not** run
+      if `__enter__` itself raised, which is where partial acquisition leaks come from.
+    commonWrongAnswer: |
+      "It automatically closes files." True for files and useless as a model — it predicts nothing
+      about locks, transactions, `no_grad`, or what happens when `__enter__` fails.
+    followUps:
+      - What is `as` bound to, exactly?
+      - What happens if `__enter__` raises half way through?
+      - How would you write one that suppresses an exception?
+
+  - id: cm-iv-exit-return
+    level: intermediate
+    requiredForMastery: true
+    concepts: ["suppression", "__exit__ return value"]
+    question: What does the return value of `__exit__` mean, and when should it be truthy?
+    shortAnswer: |
+      Truthy means "I handled the exception, do not propagate it". Falsy — including the `None` you
+      get by default — means "propagate normally". It should be truthy only when suppressing a
+      specific, named exception class is the manager's actual purpose, like `contextlib.suppress` or
+      `pytest.raises`. Everything else returns `None`.
+    fullAnswer: |
+      The critical detail people miss is *where execution resumes*. A suppressed exception does not
+      resume the block — it abandons it. Control continues at the first statement after the `with`,
+      so every remaining line in the block is skipped, silently and with no traceback. Python has no
+      construct that resumes a block after an exception.
+
+      That makes a stray `return True` one of the nastiest bugs in the language. It converts a
+      manager into an invisible `except BaseException: pass` wrapped around every block that uses it,
+      and the symptom is usually "the job reports success but produced nothing".
+
+      I check three things when reviewing an `__exit__`: does it end with an accidental `return` of
+      something truthy (a `return self.close()` is the usual route); if it does suppress, does it
+      check `exc_type is not None` before `issubclass`; and does it do anything that can itself raise
+      without being guarded, since an exception from `__exit__` replaces the original one and hides
+      the real cause.
+    commonWrongAnswer: |
+      "Return `True` to say cleanup succeeded." A very natural reading of the API and completely
+      wrong — the return value is about the *exception*, not about the cleanup.
+    followUps:
+      - Where does execution resume after a suppressed exception?
+      - How do you suppress from a `@contextmanager` generator, where there is no `__exit__` to return from?
+      - What happens if `__exit__` itself raises?
+
+  - id: cm-iv-generator-form
+    level: intermediate
+    requiredForMastery: true
+    concepts: ["@contextmanager", "generators", "gen.throw"]
+    question: How does `@contextmanager` work, and why must the `yield` be wrapped in `try`/`finally`?
+    shortAnswer: |
+      It wraps a single-yield generator. `__enter__` calls `next()` and returns the yielded value;
+      `__exit__` either calls `next()` again on success or `gen.throw(exc)` on failure, which raises
+      the exception at the `yield`. So any cleanup below an unguarded `yield` is skipped whenever the
+      block raises — the `try`/`finally` is what makes it run on both paths.
+    fullAnswer: |
+      It is the generator machinery from the iterators topic used as a control-flow trick. The
+      generator's suspended frame *is* the manager's state, everything above the `yield` is
+      `__enter__`, everything below is `__exit__`, and the `yield` itself is the block.
+
+      `gen.throw` is the part that surprises people. It does not "notify" the generator; it raises the
+      exception at the suspension point, exactly as if the `yield` statement itself had raised. That
+      is why the fix is structural — you need a `try` around the `yield` for `finally` to have
+      anything to attach to.
+
+      Two consequences fall out. Suppression is expressed by catching around the `yield` and returning
+      normally, not by returning a value. And the manager is **single-use**, because a generator
+      cannot be restarted — which is why you store the factory rather than the manager, and why
+      `@contextmanager` implements `_recreate_cm` so the decorator form still works per call.
+
+      When I choose between the two forms: generator for straight setup/teardown, which is most
+      cases; class when it must be reusable or reentrant, or when the caller needs to read state off
+      the manager after the block, the way `pytest.raises` exposes `ExceptionInfo`.
+    commonWrongAnswer: |
+      "The `finally` is good practice, like closing files." It is a correctness requirement — without
+      it the cleanup provably does not run on the exception path, which is the only path that matters.
+    followUps:
+      - How do you suppress an exception from a generator-based manager?
+      - Why does a generator with two yields raise, and what is the message?
+      - Why is the single-use limitation not a problem in decorator position?
+
+  - id: cm-iv-enter-failure
+    level: advanced
+    requiredForMastery: true
+    concepts: ["__enter__ failure", "ExitStack", "pop_all"]
+    question: Your `__enter__` acquires two resources and the second acquisition fails. What happens, and how do you make it correct?
+    shortAnswer: |
+      `__exit__` is never called, because the protocol only guarantees it once `__enter__` has
+      returned. The first resource leaks permanently. The general fix is an `ExitStack` inside
+      `__enter__`: enter each resource through it, and call `pop_all()` only after every acquisition
+      has succeeded, storing the result for `__exit__` to unwind.
+    fullAnswer: |
+      The pattern, which is worth being able to write from memory:
+
+      ```python
+      def __enter__(self):
+          with ExitStack() as stack:
+              stack.enter_context(self.lock)
+              self.connection = stack.enter_context(closing(self.pool.acquire()))
+              self._stack = stack.pop_all()
+          return self.connection
+
+      def __exit__(self, *exc):
+          return self._stack.__exit__(*exc)
+      ```
+
+      If any acquisition raises, the inner `with` unwinds and releases whatever was already acquired.
+      `pop_all()` runs only on the success path — it transfers the registered callbacks to a fresh
+      stack and empties the current one, so the outgoing block releases nothing.
+
+      Why not a `try/except` that releases and re-raises: it is correct for two resources and stops
+      composing at three. Nested handlers with hand-written reverse-order cleanup is precisely the
+      code that rots under edit, and `ExitStack` is the standard library saying so.
+
+      In production this failure mode is distinctive: the leak rate equals the *failure* rate of the
+      second resource, so the service degrades during an unrelated outage and never recovers
+      afterwards. That signature — "it broke during the incident and stayed broken" — is worth
+      recognising on sight.
+    commonWrongAnswer: |
+      "Python calls `__exit__` anyway to clean up." It does not, and believing it is what produces
+      permanently-held locks that survive the outage that caused them.
+    followUps:
+      - Why not just use `try`/`except` inside `__enter__`?
+      - What exactly does `pop_all` move, and what is left behind?
+      - How would you detect this leak in production before it wedges the service?
+
+  - id: cm-iv-exitstack
+    level: advanced
+    concepts: ["ExitStack", "dynamic resources", "callback"]
+    question: When do you need `ExitStack`, and what do its three main methods do?
+    shortAnswer: |
+      When the number of managers is not known until runtime, or when ownership must leave the block.
+      `enter_context(m)` enters a manager now and registers its exit; `callback(fn, *args)` registers
+      arbitrary cleanup that is not a context manager; `pop_all()` transfers every registration to a
+      new stack so the current block releases nothing.
+    fullAnswer: |
+      The motivating case is the one `with` cannot express: one manager per element of a
+      runtime-length list. Nesting in a loop does not work because the block ends each iteration, and
+      recursion to build nesting is a joke answer that people occasionally give seriously.
+
+      Three real uses beyond that. **Partial acquisition** inside `__enter__`, with `pop_all` on
+      success. **Optional resources**, where you conditionally `enter_context` inside the block rather
+      than building a `nullcontext` chain. And **mixed cleanup**, where `callback` lets you register a
+      plain function — restoring a global, deleting a temp file — alongside real managers so
+      everything unwinds in one reverse-ordered sequence.
+
+      The unwinding semantics match nested `with` exactly: reverse order, every registration runs even
+      if an earlier one raises, and exceptions chain rather than being lost. `AsyncExitStack` is the
+      async counterpart and takes both families via `enter_async_context` and `enter_context`, which
+      matters in any service that mixes a sync file handle with an async client.
+    commonWrongAnswer: |
+      "You can just nest `with` statements dynamically." You cannot, without recursion or `exec`, and
+      neither survives review. The inability to express it is the reason `ExitStack` exists.
+    followUps:
+      - What does `pop_all` leave behind in the original stack?
+      - How do you register cleanup for something that is not a context manager?
+      - What is the async equivalent, and can it hold synchronous managers?
+
+  - id: cm-iv-reusable-reentrant
+    level: tricky
+    concepts: ["reusability", "reentrancy", "RLock"]
+    question: What is the difference between a reusable and a reentrant context manager, and give an example of each failure?
+    shortAnswer: |
+      Reusable means the same object can be entered again *after* its block finished; reentrant means
+      it can be entered again *while* an outer block using it is still open. A `@contextmanager`
+      object is neither — a second use raises `RuntimeError: generator didn't yield`. A
+      `threading.Lock` is reusable but not reentrant, and nesting it in one thread deadlocks forever.
+    fullAnswer: |
+      The two failures look completely different, which is why the distinction earns its own
+      vocabulary.
+
+      The **reusability** failure is loud: `RuntimeError: generator didn't yield`, immediately, with a
+      traceback pointing at the `with`. Usually it comes from someone caching a manager to "avoid
+      setup cost". The fix is to store the factory — often a `functools.partial` of it — and call it
+      per block.
+
+      The **reentrancy** failure is silent and far worse: a plain `Lock` taken twice in one thread
+      blocks on itself, with no exception, no log, and no timeout. The thread simply stops. It usually
+      arrives through an innocent refactor, where a helper that takes the lock starts being called
+      from inside another function that already holds it. `RLock` fixes it, but needing `RLock` is a
+      signal that the lock's ownership boundaries have gone fuzzy and are worth redrawing.
+
+      When I write a manager I decide both properties deliberately and document them, because a caller
+      cannot infer either from the API. `contextlib.suppress` is both, `ExitStack` is both, a
+      generator-based manager is neither, and anything holding per-block state on `self` is at best
+      reusable.
+    commonWrongAnswer: |
+      "They mean the same thing." They are orthogonal: `Lock` is reusable and not reentrant, and a
+      hypothetical single-use-but-nestable manager would be the reverse.
+    followUps:
+      - Which is `contextlib.suppress`, and why?
+      - Why does the decorator form of `@contextmanager` escape the single-use limitation?
+      - What does needing an `RLock` tell you about the design?
+
+  - id: cm-iv-async
+    level: scenario
+    concepts: ["async context managers", "event loop", "diagnosis"]
+    question: A colleague added cleanup to an async context manager and p99 latency got much worse under load. Walk me through it.
+    shortAnswer: |
+      My first hypothesis is a blocking call in the teardown — `time.sleep`, a synchronous `close()`,
+      or a sync HTTP call — which stalls the whole event loop rather than one coroutine. I would
+      confirm with asyncio debug mode's slow-callback logging and look for
+      `coroutine was never awaited` warnings, then `await` the async close and replace or delete the
+      sleep.
+    fullAnswer: |
+      The diagnostic that localises it fastest is the correlation. If the spikes track request
+      *completions* rather than arrivals, the problem is in teardown, because that is the only code
+      that runs at completion. That narrows it to the `__aexit__` before reading any code.
+
+      Three specific defects I would look for, in order. A **missing `await`** on an async close —
+      which either leaks the connection with only a `RuntimeWarning`, or blocks. A **synchronous
+      blocking call**, most often `time.sleep` used as a backoff or a drain delay; at even moderate
+      request rates that multiplies into more stall time per second than there are seconds. And an
+      **unguarded `yield`** in the async generator, which is the same defect as the sync case and
+      leaks whatever the cleanup was meant to release on the error path.
+
+      The fixes are mechanical: `await` the async close, `await asyncio.sleep` or delete the delay,
+      push any genuinely blocking library call into `asyncio.to_thread`, and wrap the `yield` in
+      `try`/`finally`.
+
+      The part I would push hardest on is the test. This passed review and passed CI because every
+      test issues one request at a time, and a blocked event loop is invisible without concurrency.
+      The regression test has to fire many requests at once and assert on total wall time, and there
+      should be a second test that raises inside the block and asserts the cleanup ran.
+    commonWrongAnswer: |
+      "Async code is slower under load, we need more workers." It scales the symptom instead of fixing
+      it, and a blocked event loop does not improve with more concurrency on the same loop.
+    followUps:
+      - How would you prove the loop is blocked rather than the downstream service being slow?
+      - What is `AsyncExitStack` for?
+      - What test would have caught this before it shipped?
+
+  - id: cm-iv-when-not
+    level: comparison
+    concepts: ["design judgement", "try/finally", "decorators"]
+    question: When would you *not* use a context manager, and how do you choose between one, a decorator, and a plain `try`/`finally`?
+    shortAnswer: |
+      A context manager is for a paired action scoped to a *block*. A decorator is for the same thing
+      scoped to a *function you own*. A bare `try`/`finally` is right when the cleanup is genuinely
+      one-off and local. I would not write a manager for something with no undo, or where the
+      "resource" is really just a value.
+    fullAnswer: |
+      The question I ask is: is there an undo, and what is its scope?
+
+      **No undo** — no manager. A manager whose `__exit__` is empty is a function call wearing
+      costume, and I have reviewed several written to make code "look tidy". It obscures the call
+      graph for nothing.
+
+      **Undo scoped to a block** — context manager. Locks, transactions, temporary state, timers,
+      anything global that must be restored.
+
+      **Undo scoped to a whole function you own** — decorator, or a manager with `ContextDecorator` so
+      it does both. `@contextmanager` gives you the dual form for free, which is usually the right
+      default.
+
+      **One-off local cleanup, used once** — plain `try`/`finally`. Wrapping a single call site in a
+      class is overhead nobody reads.
+
+      Two anti-patterns worth naming. A manager used purely to inject a variable via `as`, with no
+      cleanup at all — that is a function call. And a manager that suppresses exceptions as its main
+      job when it is not `suppress` — the suppression is invisible at the call site and will be found
+      by someone debugging a missing traceback months later.
+    commonWrongAnswer: |
+      "Always use a context manager, it is the Pythonic way." Cargo cult. The construct earns its cost
+      only when there is a cleanup that must run on every exit path.
+    followUps:
+      - What does `ContextDecorator` give you, and what caution comes with it?
+      - Give an example of a manager that should have been a function.
+      - How does `pytest.raises` justify being a suppressing manager?
+
+projects:
+  - id: cm-project-lifecycle-toolkit
+    kind: major
+    title: A resource-lifecycle toolkit, with the tests that prove the failure paths
+    minutes: 180
+    summary: Six context managers built to library standard — correct on the exception path, correct on partial acquisition, sync and async — plus the test suite that proves each guarantee by making it fail first.
+    problem: |
+      Every service grows the same handful of lifecycle helpers, and almost all of them are correct
+      only on the happy path. Build them once, properly, as a small standard-library-only package.
+
+      The difficulty here is not the managers — each is twenty lines. It is the guarantees they must
+      hold *simultaneously*: cleanup on every exit path including exception, correct behaviour when
+      acquisition itself fails part-way, honest suppression semantics, a documented answer for
+      reusable and reentrant, and an async family that never blocks the event loop.
+
+      The real deliverable is the test suite. A test that only proves the happy path proves nothing
+      about a context manager, because the happy path is the one case where forgetting the protocol
+      still works.
+    requirements:
+      - "`timed(label, *, logger, threshold)` — records elapsed time on every exit path, logs only above the threshold, and exposes the elapsed value after the block."
+      - "`temporary_state(target, **overrides)` — sets attributes or mapping entries for the block and restores them exactly, including keys that did not exist and values that were legitimately `None`."
+      - "`acquired(*resources, timeout)` — acquires several resources in order and releases them in reverse, releasing correctly when acquisition number N fails, implemented with `ExitStack` and `pop_all`."
+      - "`retry_block(times, *, exceptions, backoff)` — a manager that re-runs its block on failure, or a documented explanation of why that is impossible and what you built instead."
+      - "`captured_output()` — redirects stdout and stderr, restores them unconditionally, and exposes both as strings after the block."
+      - "`leased(pool, *, timeout, discard_on_error=True)` — takes a connection from a pool, returns it on clean exit, and discards it when the block raised."
+      - "An async counterpart for `acquired` and `leased`, using `asynccontextmanager` and `AsyncExitStack`, with no blocking call anywhere in a teardown path."
+      - "Every manager documents, in its docstring, whether it is reusable and whether it is reentrant, and a test asserts each documented claim."
+    constraints:
+      - Standard library only. No third-party helpers.
+      - Python 3.11 or newer, so `contextlib.chdir` and the exception-group machinery are available.
+      - "No `__exit__` may return a truthy value unless suppression is that manager's documented purpose, and any that does must name the exception classes it suppresses."
+      - "No manager may leak a resource when acquisition fails part-way through — this must be proven, not asserted."
+      - "`mypy --strict` and `ruff` clean, with no unjustified `# type: ignore`."
+    expectedBehaviour:
+      - "Every manager's cleanup runs when the block raises, when it returns early, and when it breaks out of a loop."
+      - "`temporary_state` restores a key that was absent by removing it, and a key that held `None` by setting it back to `None`."
+      - "`acquired` with a failing third resource leaves the first two released and raises the original exception, not a secondary one from cleanup."
+      - "`leased` returns the connection to the pool on clean exit and discards it when the block raised, with the discard observable from the pool."
+      - "The async managers complete N concurrent blocks in roughly the time of the slowest one, not the sum — proving no teardown blocks the loop."
+      - "Reusing a manager documented as single-use raises immediately with a clear message rather than behaving strangely."
+    structure: |
+      lifecycle/
+        __init__.py
+        _support.py        # sentinel, ExitStack+pop_all helper, shared typing aliases
+        timing.py
+        state.py
+        acquiring.py       # acquired, and the __enter__ partial-acquisition pattern
+        output.py
+        pooling.py
+        aio.py             # the async counterparts
+      tests/
+        test_exception_paths.py   # parametrised over every manager: raise, return, break
+        test_partial_acquisition.py
+        test_state_restore.py     # absent key, None value, nested overrides
+        test_pooling.py           # discard-on-error, timeout, exhaustion
+        test_async.py             # concurrency test asserting on wall time
+        test_documented_claims.py # reusable/reentrant assertions per docstring
+      README.md            # what each manager does NOT guarantee
+    milestones:
+      - title: "1 — The exception path first"
+        detail: Before writing any manager, write `test_exception_paths.py` against an empty package. Every test must fail. This is the only ordering that stops you from testing the happy path by accident.
+      - title: "2 — The simple three"
+        detail: "`timed`, `temporary_state`, `captured_output`. Get the sentinel right in `temporary_state` before moving on — it is the part that looks finished when it is not."
+      - title: "3 — Partial acquisition"
+        detail: "`acquired`, using `ExitStack` and `pop_all` inside `__enter__`. Write the test with a resource that fails on the Nth acquisition, parametrised over N."
+      - title: "4 — The pool"
+        detail: "`leased`, including the discard-on-error decision. Write down why you chose discard or reuse; the reasoning is part of the deliverable."
+      - title: "5 — Async"
+        detail: Port `acquired` and `leased`. The concurrency wall-time test is what proves it; a sequential test cannot.
+      - title: "6 — The README"
+        detail: One section per manager stating what it does not guarantee, whether it is reusable, whether it is reentrant, and what it does with exceptions. This is the deliverable a reviewer reads first.
+    testing:
+      - "Every manager is parametrised over three exit paths — exception, early `return`, `break` — and the cleanup is asserted in all three."
+      - "`test_partial_acquisition.py` uses a fake resource that raises on the Nth acquire, parametrised over every N, asserting exactly N-1 releases happened in reverse order."
+      - "A test that no manager suppresses an exception it did not document — raise a unique sentinel exception through every manager and assert it emerges."
+      - "A test that an exception raised inside cleanup does not silently replace the original: assert on `__context__` or the exception group."
+      - "The async concurrency test runs at least 20 blocks with a 50ms teardown each and asserts total wall time is well under the sequential sum."
+      - "Every `reusable`/`reentrant` claim in a docstring has a corresponding test that exercises it."
+    failureCases:
+      - "Writing the happy-path tests first. They pass against a manager with no `try`/`finally` at all, so they certify nothing and give false confidence for the rest of the project."
+      - "Implementing `temporary_state` with `getattr(obj, name, None)`, which silently conflates an absent attribute with one holding `None`."
+      - "Implementing `acquired` with nested `try`/`except` instead of `ExitStack`. It works for two resources, and the bug appears when someone adds a third."
+      - "Testing the async managers sequentially. A blocked event loop is completely invisible without concurrency, which is exactly how this class of bug reaches production."
+      - "Building `retry_block` as a manager that re-runs its block. It cannot be done — `__exit__` has no way to re-execute the block — and discovering why is more valuable than the code."
+    bonus:
+      - "Add a `contextlib`-style `nullcontext` equivalent for the async family and explain why the standard library's `nullcontext` already covers it."
+      - "Make `acquired` accept a mix of sync and async managers via `AsyncExitStack`, and test both families in one block."
+      - "Add `ExceptionGroup` handling so a cleanup failure and a body failure both surface, and test that neither is lost."
+    architectureHints:
+      - "Put the `ExitStack`+`pop_all` partial-acquisition pattern in `_support.py` once and have every multi-resource manager use it. Writing it twice means writing it wrong once."
+      - "The sentinel for `temporary_state` must be a module-level object, not one created per call, so it is identity-comparable and inspectable in a debugger."
+      - "For `captured_output`, `contextlib.redirect_stdout` and `redirect_stderr` already exist — compose them with `ExitStack` rather than reimplementing, and spend the time on the restore-on-exception test instead."
+      - "The reusable/reentrant tests are the cheapest high-value tests here: enter twice in sequence, then enter twice nested, and assert whatever the docstring claims."
+    referenceOutline: |
+      The shape that works:
+
+      **`_support.py`** holds `_MISSING = object()` and a single `enter_all(stack, resources)` helper.
+      Every multi-resource manager calls it, so the partial-acquisition logic exists once.
+
+      **`timed`** is a class rather than a generator, because the elapsed value must be readable after
+      the block — the generator form has nowhere to put it. This is the clearest case in the package
+      for choosing the class form, and worth noting in the README.
+
+      **`temporary_state`** dispatches on whether the target is a mapping or an object
+      (`functools.singledispatch` is a reasonable choice here, connecting back to the previous topic).
+      The sentinel handles absence; the `finally` handles the exception path; nesting works for free
+      because each invocation snapshots independently.
+
+      **`acquired`** is where the project is won or lost. `__enter__` opens an internal `ExitStack`,
+      enters each resource through it, calls `pop_all()` only after the last one succeeds, and stores
+      the result. `__exit__` delegates to that stack. The parametrised failing-resource test is the
+      proof.
+
+      **`retry_block` cannot exist** as specified. `__exit__` is called after the block has already
+      unwound; there is no mechanism to re-execute it. The honest deliverable is a decorator
+      (`@retry`, from the previous topic) plus a README note explaining why the manager form is
+      impossible. Candidates who write a plausible-looking manager here and do not notice have missed
+      the most important thing in the project.
+
+      **`leased`** discards on error by default. Justification for the README: an exception may have
+      left the connection mid-transaction or mid-protocol, so reusing it converts one failure into a
+      stream of unrelated ones in other requests. The cost is one reconnect; the alternative cost is
+      an incident.
+
+      **`aio.py`** mirrors `acquiring.py` and `pooling.py` with `AsyncExitStack`. The only rule that
+      matters: every line in a teardown path is either pure computation or awaited. The wall-time
+      concurrency test is the enforcement mechanism.
+
+      If your test suite is smaller than your implementation, you have built the wrong thing.
+
+  - id: cm-challenge-leaky-module
+    kind: final-challenge
+    title: Nine leaks in one resources module
+    minutes: 60
+    summary: One realistic internal resources module, nine defects, every one a context manager mistake from this topic — including three that leak or corrupt silently with no exception anywhere.
+    problem: |
+      The module below is a real-shaped internal helper from a service. It imports cleanly, it passes
+      its existing happy-path tests, and it is wrong in nine distinct ways covered by this topic.
+      At least three produce leaks or wrong state with no exception and no log line.
+
+      Find all nine before changing anything. Write them down with the symptom each produces and the
+      condition that triggers it. Then rewrite the module.
+
+      ```python
+      import os, time, shutil, tempfile
+      from contextlib import contextmanager, suppress
+
+
+      @contextmanager
+      def workspace(prefix="job"):
+          path = tempfile.mkdtemp(prefix=prefix)
+          yield path
+          shutil.rmtree(path)
+
+
+      @contextmanager
+      def working_dir(path):
+          previous = os.getcwd()
+          os.chdir(path)
+          yield
+          os.chdir(previous)
+
+
+      class Locked:
+          def __init__(self, lock, pool):
+              self.lock, self.pool = lock, pool
+
+          def __enter__(self):
+              self.lock.acquire()
+              self.connection = self.pool.acquire(timeout=2)
+              return self.connection
+
+          def __exit__(self, exc_type, exc, tb):
+              self.pool.release(self.connection)
+              self.lock.release()
+              return True
+
+
+      SILENT = suppress(Exception)
+
+
+      def cleanup(paths):
+          with SILENT:
+              for path in paths:
+                  os.remove(path)
+                  log.info("removed %s", path)
+
+
+      def open_shards(paths):
+          with ExitStack() as stack:
+              return [stack.enter_context(open(p)) for p in paths]
+
+
+      @contextmanager
+      def timed_span(name):
+          span = tracer.start(name)
+          start = time.time()
+          try:
+              yield span
+          finally:
+              span.finish(time.time() - start)
+
+
+      def process_all(jobs, pool, lock):
+          results = []
+          with Locked(lock, pool) as connection:
+              for job in jobs:
+                  with workspace() as directory, working_dir(directory):
+                      results.append(connection.run(job))
+          return results
+      ```
+    requirements:
+      - "A written defect list before any code change, one heading per defect, each with its symptom and the condition that triggers it."
+      - "A rewritten module where every manager cleans up on the exception path, never suppresses without documenting it, and never leaks on partial acquisition."
+      - "Each fix carried by a comment naming the rule behind it, not just the change."
+      - "A regression test for at least seven of the nine, each verified to fail against the original module."
+      - "A short note on which three defects are silent and why each would survive a code review."
+    constraints:
+      - Standard library only.
+      - "Keep every public function's name and call signature unchanged."
+      - "Do not fix a defect by adding a broader `except` — every fix must narrow, never widen."
+      - "The rewrite must keep `process_all`'s external behaviour identical on the happy path."
+    expectedBehaviour:
+      - "A job that raises leaves no temporary directory behind, restores the working directory, and propagates the exception."
+      - "An exception anywhere in `process_all` reaches the caller with its original traceback."
+      - "`cleanup` removing three paths where the second fails still attempts the third, or documents explicitly that it does not."
+      - "`open_shards` returns handles the caller can actually read from."
+      - "A pool outage leaves no lock held once the failing call has unwound."
+      - "`timed_span` reports durations unaffected by an NTP correction during the block."
+    structure: |
+      resources.py      # the rewrite
+      DEFECTS.md        # nine headings, symptom and trigger for each, silent ones marked
+      test_resources.py
+    milestones:
+      - title: "1 — Read and list"
+        detail: Work through the module against this topic's own section order — protocol, exit return value, generator form, enter failure, contextlib tools, async — and write DEFECTS.md first. Do not start editing.
+      - title: "2 — The silent three"
+        detail: Fix the defects that produce wrong behaviour with no exception before the ones that crash. Those are the ones that would survive review and reach production.
+      - title: "3 — Ownership and layers"
+        detail: For every resource, ask which layer acquires it, which layer releases it, and what happens if acquisition fails half way. Two defects live in that gap.
+      - title: "4 — Prove it"
+        detail: A regression test per defect, each run against the original module first and confirmed to fail there. A test that passes on the original is testing the wrong thing.
+    testing:
+      - "Every regression test must fail on the original module — run it and check, do not assume."
+      - "A test that a raising job leaves zero temporary directories and the original working directory."
+      - "A test that an exception inside `process_all` reaches the caller at all."
+      - "A test that reads from every handle `open_shards` returns."
+      - "A test that simulates a pool acquisition failure and asserts the lock is not held afterwards."
+      - "A test that reuses the module-level `SILENT` object twice, asserting whatever the fixed design guarantees."
+    failureCases:
+      - "Finding the missing `try`/`finally` in `workspace` and stopping. That is the easiest of the nine and the one everyone finds."
+      - "Fixing the `return True` by moving it into a `try`/`except` that catches `Exception` — that widens the suppression instead of removing it, which the constraints forbid."
+      - "Rewriting `open_shards` to return `handles, stack.pop_all()` and calling it done. It works, but it moves the leak to the caller; the manager form removes the question."
+      - "Assuming `suppress` objects are single-use like generator managers. They are not — that is a different defect from the one actually present in `cleanup`."
+    bonus:
+      - "Add an async variant of `Locked` using `AsyncExitStack` and a concurrency test proving no teardown blocks the loop."
+      - "Make the rewrite pass `mypy --strict`."
+      - "Add a test asserting that a cleanup failure does not replace the body's exception, using `__context__` or an `ExceptionGroup`."
+    architectureHints:
+      - "Walk the topic's sections in order. Each has at least one defect: the protocol, the `__exit__` return value, the generator form's `try`/`finally`, `__enter__` partial failure, `suppress` scope, `ExitStack` ownership, and clock choice."
+      - "Two defects are about *scope* rather than about a missing construct — code guarded by something that guards too much, or a return that leaves a block earlier than the author thought."
+      - "The three silent ones produce a leaked directory, unreadable handles, and swallowed failures. None raises. All three pass a happy-path test."
+      - "One defect is not in any manager: look at how `process_all` composes them, and at what `Locked` holds for the duration of the whole loop."
+    referenceOutline: |
+      The nine, grouped:
+
+      **Unguarded `yield`** — `workspace` never removes the temporary directory when the block raises,
+      and `working_dir` never restores the working directory. The second is the worse of the pair: the
+      process is left in the wrong directory permanently, so every later relative path in an unrelated
+      request resolves wrongly. Both silent.
+
+      **Suppression** — `Locked.__exit__` returns `True`, swallowing every exception from every block
+      that uses it. In `process_all` that means a failing job silently ends the loop and returns
+      partial results that look complete. Silent, and the worst defect in the module.
+
+      **`suppress` scope** — `cleanup` wraps the entire loop in `suppress(Exception)`, so one
+      unremovable path abandons every remaining path *and* skips its own log line. The class is also
+      far too broad. Narrow to `FileNotFoundError` and move the `with` inside the loop.
+
+      **Partial acquisition** — `Locked.__enter__` takes the lock, then acquires a connection that can
+      raise. On failure `__exit__` never runs and the lock is held forever by an unwound thread. Fix
+      with `ExitStack` and `pop_all` inside `__enter__`.
+
+      **Ownership** — `open_shards` returns from inside its `with`, so the stack unwinds and every
+      handle is closed before the caller sees it. Reading raises `ValueError: I/O operation on closed
+      file`. Make the function a `@contextmanager` that yields the handles.
+
+      **Clock** — `timed_span` uses `time.time`, which is not monotonic; an NTP correction mid-block
+      produces a negative or wildly wrong duration. Use `time.perf_counter`.
+
+      **Composition** — `process_all` holds the lock and the connection across the entire job loop
+      rather than per job, so the critical section is unbounded in length and one slow job blocks every
+      other worker. Lease per job.
+
+      If your list has fewer than nine, the ones most often missed are the closed handles from
+      `open_shards` and the lock held across the whole loop in `process_all` — because neither
+      produces an error message, and both look exactly like working code.
+
+resources:
+  - name: "PEP 343 — The \"with\" Statement"
+    type: docs
+    difficulty: core
+    url: "https://peps.python.org/pep-0343/"
+    usefulness: 5
+    why: The design document that introduced the statement, and it gives the exact desugaring in executable pseudocode plus the reasoning for why __exit__ returns a suppression flag at all — which is the one part of the protocol nobody guesses correctly.
+    covers: "The full desugaring, the __enter__/__exit__ contract, the suppression return value, and the generator-based decorator that became contextlib.contextmanager."
+
+  - name: "contextlib — the standard library reference"
+    type: docs
+    difficulty: core
+    url: "https://docs.python.org/3/library/contextlib.html"
+    usefulness: 5
+    why: The primary source for every tool in this topic and unusually practical — it contains the ExitStack plus pop_all recipe for cleaning up in an __enter__ implementation verbatim, which is the single most useful pattern here and is documented almost nowhere else.
+    covers: "`contextmanager`, `asynccontextmanager`, `closing`, `suppress`, `redirect_stdout`, `nullcontext`, `chdir`, `ExitStack`, `AsyncExitStack`, `ContextDecorator`, and the reusable/reentrant discussion."
+
+  - name: "Python Reference — The with statement"
+    type: docs
+    difficulty: deep
+    url: "https://docs.python.org/3/reference/compound_stmts.html#the-with-statement"
+    usefulness: 4
+    why: The authoritative step-by-step semantics, including the detail that the comma-separated form is defined as nesting and that special-method lookup happens on the type — both of which settle arguments that otherwise go in circles.
+    covers: "Evaluation order, the as-target binding rule, multiple managers as nesting, exception handling and the exact suppression semantics."
+
+  - name: "Python Data Model — With Statement Context Managers"
+    type: docs
+    difficulty: core
+    url: "https://docs.python.org/3/reference/datamodel.html#with-statement-context-managers"
+    usefulness: 4
+    why: The two-page definition of the protocol itself, and it states outright that __exit__ must not re-raise the passed-in exception — a rule people break constantly and that produces a broken traceback chain when they do.
+    covers: "`__enter__` and `__exit__` signatures and contracts, the async `__aenter__`/`__aexit__` pair, and the rule against re-raising."
+
+  - name: "PEP 492 — Coroutines with async and await syntax"
+    type: docs
+    difficulty: deep
+    url: "https://peps.python.org/pep-0492/"
+    usefulness: 4
+    why: >-
+      The PEP that introduced async with and the __aenter__/__aexit__ pair, and it explains why a
+      separate protocol was needed rather than reusing the sync one — which is the reasoning behind
+      every "TypeError" you will hit when you use a plain with on an async manager.
+    covers: "`async with`, `__aenter__`/`__aexit__`, async generators, and why the sync and async protocols are deliberately not interchangeable."

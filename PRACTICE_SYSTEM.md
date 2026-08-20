@@ -229,9 +229,9 @@ self-test into a diagnostic quiz first, say so and it moves to the front of the 
 
 1. ~~`Data model: __dunder__ methods, descriptors, __slots__`~~ **done 2026-08-20**
 2. ~~`Iterators, generators, yield from, lazy evaluation`~~ **done 2026-08-20**
-3. `Decorators, closures, functools (lru_cache, partial, wraps)`  <- **start here**
-4. `Context managers and contextlib`
-5. `Type hints in depth: Generic, TypeVar, Protocol, Literal…`
+3. ~~`Decorators, closures, functools (lru_cache, partial, wraps)`~~ **done 2026-08-20**
+4. ~~`Context managers and contextlib`~~ **done 2026-08-20**
+5. `Type hints in depth: Generic, TypeVar, Protocol, Literal…`  <- **start here**
 6. …through topic 12. Read `module.json` for the full list; **keep every lesson `id` unchanged** —
    it is the roadmap topic id and it carries the 3-pass progress.
 
@@ -341,3 +341,65 @@ Append one entry per completed topic. Never delete entries.
   `lint`, `typecheck`, `test` (69) and `build` (238 static pages) all pass.
 
   **Next: module 1.1 / topic 3, `Decorators, closures, functools (lru_cache, partial, wraps)`.**
+
+- **2026-08-20 — module 1.1, topic 3 complete: decorators, closures, functools.**
+  `03-decorators-closures-functools-lru-cache-partial-wraps.{mdx,practice.yaml}`, published per-lesson.
+
+  The lesson covers closures as cells over an enclosing frame (with `__closure__`/`co_freevars`
+  inspected directly), the late-binding trap and its three fixes, decorators desugared to plain
+  function application at import time, what a wrapper destroys and what `functools.wraps` restores
+  including `__wrapped__`, parameterised decorators and the parentheses-optional pattern, stacking
+  order (bottom-up application, top-down execution), then `lru_cache`/`cache`, `cached_property`,
+  `partial`, `singledispatch`, class-based decorators and why they break on methods without
+  `__get__`. Grounded in `torch.no_grad`, FastAPI/pytest registration decorators and LLM embedding
+  caches.
+
+  The practice bank: **25 exercises / 51 hints** — by tier, 7 normal, 9 intermediate, 7 tricky,
+  2 challenge; by kind, 8 write-code, 5 debug, 4 predict-output, 3 design, 2 code-reading, 1 explain,
+  1 refactor, 1 performance. A 4-question checkpoint and a **10-question assessment** mixing
+  predict-output/find-bug/mcq/true-false/explain/write-function/refactor/scenario/performance;
+  **8 interview questions** across basic, intermediate, advanced, comparison, internals, tricky and
+  scenario; a 3-hour **project** (a six-decorator production toolkit that must survive
+  `mypy --strict`, methods, generators and threads, with the "what it does not guarantee" README as
+  the real deliverable) and a **final challenge** (one decorators module, nine defects, two of them
+  silent); **5 curated resources** (PEP 318, `functools`, the execution model reference, PEP 612,
+  `inspect`).
+
+  `lint`, `typecheck`, `test` (69) and `build` all pass. No browser tool here, so the page was
+  verified by reading the exported HTML, not by looking at it.
+
+  **Next: module 1.1 / topic 4, `Context managers and contextlib`.**
+
+- **2026-08-20 — module 1.1, topic 4 complete: context managers and contextlib.**
+  `04-context-managers-and-contextlib.{mdx,practice.yaml}`, published per-lesson.
+
+  The lesson covers the protocol as a pairing of an action with its undo, the full desugaring
+  (including why the strict form uses `except`/`else` rather than `finally`), what `as` binds, the
+  `__exit__` return value and the fact that suppression *abandons* the block rather than resuming
+  it, `@contextmanager` built on `gen.throw` and why the `try`/`finally` around the `yield` is a
+  correctness requirement, single-use versus reusable versus reentrant, then `suppress`, `closing`,
+  `nullcontext`, `chdir`, `ExitStack` with `enter_context`/`callback`/`pop_all`, `ContextDecorator`,
+  and the async family with `asynccontextmanager`/`AsyncExitStack`. Grounded in `torch.no_grad`,
+  FastAPI `lifespan`, SQLAlchemy `Session.begin`, `pytest.raises` and connection pools.
+
+  The practice bank: **25 exercises / 50 hints** — by tier, 7 normal, 9 intermediate, 7 tricky,
+  2 challenge; by kind, 8 write-code, 5 debug, 4 predict-output, 2 explain, 2 code-reading,
+  2 design, 1 refactor, 1 performance. A 4-question checkpoint and a **10-question assessment**
+  mixing mcq/predict-output/find-bug/true-false/explain/write-function/refactor/scenario/performance;
+  **8 interview questions** across basic, intermediate, advanced, tricky, scenario and comparison;
+  a 3-hour **project** (a resource-lifecycle toolkit whose real deliverable is a test suite written
+  against the exception paths *first*, and which includes one requirement that is deliberately
+  impossible — a retry *manager* — because noticing why is the point) and a **final challenge**
+  (one resources module, nine defects, three of them silent); **5 curated resources** (PEP 343,
+  `contextlib`, the `with` statement reference, the data model's context-manager section, PEP 492),
+  every URL checked for HTTP 200 at authoring time.
+
+  Also written this session: **`AUTHORING_PATTERN.md`**, a self-contained specification of this
+  content pattern — the two-file shape, the six-mode mapping, both schemas, every enforced limit and
+  the target volumes — so the pattern can be handed to any model, including ChatGPT, and continued
+  without this repo's context.
+
+  `lint`, `typecheck`, `test` (69) and `build` all pass. No browser tool here, so the page was
+  verified by reading the exported HTML (all seven mode tabs present), not by looking at it.
+
+  **Next: module 1.1 / topic 5, `Type hints in depth: Generic, TypeVar, Protocol, Literal, overload`.**

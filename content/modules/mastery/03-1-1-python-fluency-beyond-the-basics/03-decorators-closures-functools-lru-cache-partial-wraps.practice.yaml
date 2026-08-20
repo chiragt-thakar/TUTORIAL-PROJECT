@@ -1,0 +1,2251 @@
+# Practice bank for roadmap topic 1.1 #3 — decorators, closures, functools.
+#
+# Authored to the standard in PRACTICE_SYSTEM.md. Ids are progress keys — never rename a shipped one.
+
+lessonId: "roadmap:phase-1-1.1:2"
+module: 1-1-python-fluency-beyond-the-basics
+lesson: 03-decorators-closures-functools-lru-cache-partial-wraps
+title: "Decorators, closures, functools (lru_cache, partial, wraps)"
+summary: Cells and captured variables, decorators desugared to plain function application, and the functools toolkit with the failure mode each part brings.
+
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+
+exercises:
+  # ------------------------------------------------------------ normal
+  - id: dc-cell-inspect
+    tier: normal
+    kind: write-code
+    title: Prove where closure state lives
+    minutes: 10
+    requiredForMastery: true
+    concepts: ["closures", "__closure__", "co_freevars", "nonlocal"]
+    prompt: |
+      Write `make_toggle(initial=False)` returning a zero-argument function that flips a boolean and
+      returns the new value.
+
+      Then, without calling the returned function, print the names it closes over and the current
+      contents of its closure cells. Two toggles must be independent.
+    hints:
+      - The read-modify-write of an enclosing name needs one keyword, or the name becomes local.
+      - "`__code__.co_freevars` names them; `__closure__` holds the cells in the same order."
+    solution: |
+      The state lives in a cell created by the enclosing call, not in the inner function and not in
+      any namespace you can reach by name from outside. Each call to `make_toggle` builds a new
+      frame, so each returned function gets its own cell — which is why the two toggles cannot
+      interfere with each other.
+    solutionCode: |
+      def make_toggle(initial=False):
+          state = initial
+
+          def toggle():
+              nonlocal state
+              state = not state
+              return state
+
+          return toggle
+
+
+      first, second = make_toggle(), make_toggle(True)
+      print(first.__code__.co_freevars)                  # ('state',)
+      print([cell.cell_contents for cell in first.__closure__])   # [False]
+      print(first(), first(), second())                  # True False False
+    explanation: |
+      `co_freevars` and `__closure__` are always aligned, so zipping them gives you a readable dump
+      of a closure's captured environment. This is the single most useful debugging trick for
+      decorators that behave differently from how they read.
+
+  - id: dc-desugar-basic
+    tier: normal
+    kind: explain
+    title: Desugar three decoration sites
+    minutes: 8
+    requiredForMastery: true
+    concepts: ["decorator syntax", "function application", "import-time evaluation"]
+    prompt: |
+      Write the plain-assignment equivalent of each, with no `@` anywhere:
+
+      ```python
+      @log
+      def a(): ...
+
+      @retry(3)
+      def b(): ...
+
+      @log
+      @retry(3)
+      def c(): ...
+      ```
+
+      Then say, for the third one, which decorator's wrapper body runs first when `c()` is called.
+    hints:
+      - Every `@` line is one function call whose argument is what follows below it.
+      - A decorator with parentheses is called first, and its *return value* is the decorator.
+    solution: |
+      ```python
+      def a(): ...
+      a = log(a)
+
+      def b(): ...
+      b = retry(3)(b)
+
+      def c(): ...
+      c = log(retry(3)(c))
+      ```
+
+      For `c`, decoration happens bottom-up, so `retry(3)` is applied first and `log` wraps the
+      result. At call time the outermost wrapper runs first, so **`log`'s body runs first** and the
+      original `c` body runs last. Application order and execution order are opposites — that is the
+      one sentence to remember.
+    explanation: |
+      All three assignments run at import time. If `log` or `retry` does anything expensive or
+      environment-dependent, it happens as the module is imported, not when the function is called.
+
+  - id: dc-wraps-metadata
+    tier: normal
+    kind: predict-output
+    title: What the decorated name reports about itself
+    minutes: 7
+    requiredForMastery: true
+    concepts: ["functools.wraps", "__name__", "__doc__", "__wrapped__"]
+    prompt: Predict every line of output, then explain each difference between the two functions.
+    code: |
+      import functools
+
+      def plain(function):
+          def wrapper(*args, **kwargs):
+              return function(*args, **kwargs)
+          return wrapper
+
+      def wrapped(function):
+          @functools.wraps(function)
+          def wrapper(*args, **kwargs):
+              return function(*args, **kwargs)
+          return wrapper
+
+      @plain
+      def alpha():
+          """Alpha docs."""
+
+      @wrapped
+      def beta():
+          """Beta docs."""
+
+      print(alpha.__name__, alpha.__doc__)
+      print(beta.__name__, beta.__doc__)
+      print(hasattr(alpha, "__wrapped__"), hasattr(beta, "__wrapped__"))
+    hints:
+      - The name is bound to the wrapper object, so ask what the *wrapper* was called when defined.
+      - "`wraps` copies metadata across and also leaves a pointer back to the original."
+    solution: |
+      ```text
+      wrapper None
+      beta Beta docs.
+      False True
+      ```
+
+      `alpha` is now the `wrapper` function object, and that object was defined with the name
+      `wrapper` and no docstring, so that is what it honestly reports. `wraps` copies `__name__`,
+      `__qualname__`, `__doc__`, `__module__`, `__dict__` and `__annotations__` onto the wrapper, and
+      additionally sets `__wrapped__` to the original function.
+
+      `__wrapped__` is the one that matters most in practice: `inspect.signature` follows it by
+      default, so frameworks that dispatch on signatures keep working.
+
+  - id: dc-partial-vs-lambda
+    tier: normal
+    kind: write-code
+    title: Three jobs for partial
+    minutes: 10
+    concepts: ["functools.partial", "eager binding", "pickling"]
+    prompt: |
+      Using `functools.partial` only — no `lambda`, no `def` — build:
+
+      1. `read_utf8` that opens a path in text mode with UTF-8 encoding
+      2. `from_hex` that parses a base-16 string
+      3. a list of ten callables where the *n*-th returns `n`, built from a loop
+
+      Then say what the third one demonstrates that a lambda would get wrong.
+    hints:
+      - "`partial` binds positionally left to right; anything you cannot reach positionally, bind by keyword."
+      - Think about *when* the loop variable is read in each of the two approaches.
+    solution: |
+      ```python
+      from functools import partial
+      from operator import itemgetter
+
+      read_utf8 = partial(open, mode="r", encoding="utf-8")
+      from_hex = partial(int, base=16)
+      callables = [partial(lambda value: value, index) for index in range(10)]
+      # or, avoiding lambda entirely:
+      callables = [partial(itemgetter(0), (index,)) for index in range(10)]
+      ```
+
+      The third demonstrates **eager binding**. `partial(f, index)` stores the current value of
+      `index` in the partial object at creation time, so the tenth callable really does hold `9`. A
+      bare `lambda: index` closes over the loop *variable*, so every one of the ten returns `9`
+      only because the loop happened to end there — they are all reading the same cell.
+
+      The other two reasons to reach for `partial`: the object is picklable, so it can cross a
+      `multiprocessing` boundary that a lambda cannot, and it exposes `.func`, `.args` and
+      `.keywords` so a test can assert on what was bound.
+
+  - id: dc-cache-basic
+    tier: normal
+    kind: write-code
+    title: Memoise by hand, then with lru_cache
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["memoisation", "lru_cache", "closures over a dict", "cache_info"]
+    prompt: |
+      Write a `memoize` decorator by hand using a dict in a closure. It must preserve the wrapped
+      function's metadata and expose the underlying dict for inspection.
+
+      Then replace it with `functools.lru_cache` and print `cache_info()` after a mix of hits and
+      misses. Say one thing your hand-rolled version does that `lru_cache` does not, and one thing
+      `lru_cache` does that yours does not.
+    hints:
+      - Attach the dict to the wrapper as an attribute so callers can reach it after decoration.
+      - "`lru_cache` keys on the whole call shape — positional and keyword arguments are different keys."
+    solution: |
+      ```python
+      import functools
+
+      def memoize(function):
+          cache = {}
+
+          @functools.wraps(function)
+          def wrapper(*args):
+              if args not in cache:
+                  cache[args] = function(*args)
+              return cache[args]
+
+          wrapper.cache = cache
+          return wrapper
+
+
+      @functools.lru_cache(maxsize=32)
+      def fib(n):
+          return n if n < 2 else fib(n - 1) + fib(n - 2)
+
+      fib(20); fib(20)
+      print(fib.cache_info())   # CacheInfo(hits=20, misses=21, maxsize=32, currsize=21)
+      ```
+
+      Mine exposes the raw dict, so a test can assert exactly what was cached — `lru_cache` gives you
+      only aggregate counters and no way to read or seed an entry.
+
+      `lru_cache` gives you eviction (mine grows forever), thread safety around the bookkeeping, a
+      C implementation that is meaningfully faster than a Python dict lookup plus a call, and correct
+      handling of keyword arguments, which my `*args`-only version silently ignores.
+
+  - id: dc-registration-decorator
+    tier: normal
+    kind: write-code
+    title: A decorator that returns the function unchanged
+    minutes: 10
+    concepts: ["registration decorators", "side effects at import time", "dispatch tables"]
+    prompt: |
+      Build a tiny command registry: `@command("sync")` records the decorated function in a dict
+      keyed by name and returns it **unmodified**, so calling it directly is exactly as before.
+
+      Then say why this pattern is everywhere in web frameworks, and name the failure mode it
+      introduces.
+    hints:
+      - Not every decorator has to wrap. Returning the original function is a legitimate result.
+      - Ask when the registry is populated relative to when your program starts doing work.
+    solution: |
+      ```python
+      COMMANDS = {}
+
+      def command(name):
+          def decorator(function):
+              if name in COMMANDS:
+                  raise ValueError(f"duplicate command {name!r}")
+              COMMANDS[name] = function
+              return function          # unchanged — no wrapper at all
+          return decorator
+
+
+      @command("sync")
+      def sync(source, target):
+          """Still an ordinary function."""
+      ```
+
+      This is exactly `@app.get("/users")` in FastAPI, `@app.route` in Flask, `@celery.task`, and
+      `@pytest.fixture`. The decorator's value is the side effect, not the return value, which is why
+      the wrapped function keeps its identity, signature and testability entirely.
+
+      The failure mode: registration only happens **if the module is imported**. A command in a file
+      nobody imports simply does not exist, with no error anywhere — which is why frameworks all end
+      up with an explicit "autodiscover" or "include_router" step. The duplicate-name guard above is
+      the other half; without it, a second registration silently wins.
+
+  - id: dc-nonlocal-vs-global
+    tier: normal
+    kind: predict-output
+    title: Where does the assignment land
+    minutes: 8
+    concepts: ["scope rules", "nonlocal", "global", "UnboundLocalError"]
+    prompt: Predict the output, including any exception and the exact line that raises it.
+    code: |
+      value = "module"
+
+      def outer():
+          value = "outer"
+
+          def read():
+              return value
+
+          def rebind():
+              value = "rebound"
+              return value
+
+          def rebind_nonlocal():
+              nonlocal value
+              value = "nonlocal"
+              return value
+
+          def broken():
+              print(value)
+              value = "too late"
+
+          print(read(), rebind(), value)
+          print(rebind_nonlocal(), value)
+          broken()
+
+      outer()
+      print(value)
+    hints:
+      - Whether a name is local is decided by the compiler from the whole function body, not line by line.
+      - Only one of these four functions changes what `outer` sees afterwards.
+    solution: |
+      ```text
+      outer rebound outer
+      nonlocal nonlocal
+      UnboundLocalError: cannot access local variable 'value' where it is not associated with a value
+      ```
+
+      `read` closes over `value` and sees `"outer"`. `rebind` assigns, which makes `value` local to
+      `rebind` — it returns `"rebound"` but `outer`'s own `value` is untouched. `rebind_nonlocal`
+      declares `nonlocal`, so its assignment lands in `outer`'s cell and is visible afterwards.
+
+      `broken` raises. Because it contains `value = ...` anywhere in its body, the compiler marks
+      `value` local for the whole function, so the `print` on the line *before* the assignment reads
+      an unbound local. The module-level `value` is never touched by any of them, so the final line
+      prints `module`.
+
+  # ------------------------------------------------------------ intermediate
+  - id: dc-parameterised-both-forms
+    tier: intermediate
+    kind: write-code
+    title: A decorator usable with and without parentheses
+    minutes: 15
+    requiredForMastery: true
+    concepts: ["parameterised decorators", "functools.partial", "keyword-only arguments"]
+    prompt: |
+      Write `@traced` so that all three of these work identically apart from the prefix:
+
+      ```python
+      @traced
+      def a(): ...
+
+      @traced()
+      def b(): ...
+
+      @traced(prefix="db")
+      def c(): ...
+      ```
+
+      Do it without inspecting types with `isinstance`, and explain what makes `@traced(prefix=...)`
+      unambiguous from `@traced`.
+    hints:
+      - Give the first parameter a default of `None` and make everything else keyword-only.
+      - When the function argument is absent, return something that will accept it later.
+    solution: |
+      ```python
+      import functools
+
+      def traced(function=None, *, prefix="trace"):
+          if function is None:                       # called as @traced() or @traced(prefix=...)
+              return functools.partial(traced, prefix=prefix)
+
+          @functools.wraps(function)
+          def wrapper(*args, **kwargs):
+              print(f"[{prefix}] {function.__qualname__}")
+              return function(*args, **kwargs)
+
+          return wrapper
+      ```
+
+      The `*` makes every option keyword-only, so the single positional slot can *only* ever be the
+      decorated function. That is what removes the ambiguity: if something arrived positionally it is
+      the function, and if nothing did, we are in the parenthesised form and must return a decorator.
+
+      `functools.partial(traced, prefix=prefix)` is the elegant part — the returned object is a
+      callable expecting one positional argument, which is precisely the decorator protocol, so no
+      extra nested `def` is needed.
+    explanation: |
+      Without the `function=None` guard, `@traced` and `@traced()` are different shapes and only one
+      of them works. Libraries that get this right (`pytest.fixture`, `dataclasses.dataclass`,
+      `contextlib.contextmanager` adjacents) all use this pattern.
+
+  - id: dc-classmethod-order
+    tier: intermediate
+    kind: debug
+    title: The decorator stack that stops working on a method
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["staticmethod", "descriptors", "decorator ordering", "bound methods"]
+    prompt: |
+      This raises `TypeError: 'staticmethod' object is not callable` on Python 3.9 and behaves oddly
+      even on newer versions. Diagnose it, fix it, and state the general rule.
+    code: |
+      import functools
+
+      def logged(function):
+          @functools.wraps(function)
+          def wrapper(*args, **kwargs):
+              print("calling", function.__name__)
+              return function(*args, **kwargs)
+          return wrapper
+
+
+      class Report:
+          @logged
+          @staticmethod
+          def render(rows):
+              return f"{len(rows)} rows"
+      Report.render([1, 2])
+    hints:
+      - Desugar the stack. What object is `logged` actually receiving?
+      - "`staticmethod` produces a descriptor, and until 3.10 that object was not itself callable."
+    solution: |
+      Desugared, this is `render = logged(staticmethod(render))`. So `logged` receives a
+      `staticmethod` *descriptor object*, not a function. `functools.wraps` then fails to find a
+      `__name__` on it in some versions, and `function(*args)` tries to call a descriptor, which is
+      not callable before Python 3.10.
+
+      The fix is to put `staticmethod` outermost, so it wraps the already-decorated plain function:
+
+      ```python
+      class Report:
+          @staticmethod
+          @logged
+          def render(rows):
+              return f"{len(rows)} rows"
+      ```
+
+      The general rule: **`staticmethod`, `classmethod` and `property` produce descriptors, not
+      functions, so they must sit at the top of any decorator stack.** Everything below them operates
+      on a plain function, which is the only thing an ordinary decorator knows how to wrap.
+
+      Python 3.10 made `staticmethod` objects callable, which turns this from a crash into a subtler
+      problem — it may now appear to work while the descriptor protocol is applied in the wrong
+      order.
+
+  - id: dc-cache-on-method
+    tier: intermediate
+    kind: debug
+    title: The cache that never lets anything be collected
+    minutes: 15
+    requiredForMastery: true
+    concepts: ["lru_cache", "memory leaks", "cached_property", "strong references"]
+    prompt: |
+      This service shows steadily climbing memory in production and the count printed at the end is
+      not zero. Explain the mechanism precisely, then give two different fixes and say when you would
+      choose each.
+    code: |
+      import functools, gc
+
+      class Session:
+          def __init__(self, user_id, payload):
+              self.user_id = user_id
+              self.payload = payload
+
+          @functools.cache
+          def summary(self):
+              return f"{self.user_id}: {len(self.payload)} bytes"
+
+
+      for index in range(1000):
+          Session(index, b"x" * 10_000).summary()
+
+      gc.collect()
+      print(sum(isinstance(obj, Session) for obj in gc.get_objects()))
+    hints:
+      - The cache is not stored on the instance. Ask which object actually owns it.
+      - Every cache key is a tuple, and here the tuple's first element is the instance itself.
+    solution: |
+      `functools.cache` decorates the `summary` **function**, which is a class attribute shared by
+      every `Session`. Its cache dict is keyed on the argument tuple, and for a method the first
+      argument is `self` — so each entry holds a strong reference to one instance. Nothing is ever
+      evicted, because `cache` is `lru_cache(maxsize=None)`. Every `Session` ever created is retained
+      along with its 10 KB payload, and the count prints 1000.
+
+      **Fix one — `cached_property`,** when the value is a pure function of the instance:
+
+      ```python
+      @functools.cached_property
+      def summary(self):
+          return f"{self.user_id}: {len(self.payload)} bytes"
+      ```
+
+      The result is written into the instance `__dict__`, so it dies with the instance. Choose this
+      when the value is per-instance and computed at most once. It costs you compatibility with
+      `__slots__`, and there is no invalidation short of `del instance.summary`.
+
+      **Fix two — move the cache off the instance entirely:**
+
+      ```python
+      @functools.lru_cache(maxsize=4096)
+      def _summary(user_id, size):
+          return f"{user_id}: {size} bytes"
+      ```
+
+      Choose this when the value depends only on a few hashable fields and the cache genuinely should
+      be shared across instances. The bounded `maxsize` turns an unbounded leak into a stated ceiling.
+
+      There is a correctness point hiding here too: with the original code, two `Session` objects
+      that compare equal would share a cache entry, so one could return the other's summary.
+
+  - id: dc-code-reading-triple
+    tier: intermediate
+    kind: code-reading
+    title: Read a three-layer decorator and describe each layer
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["closures", "decorator layers", "shared mutable state", "code reading"]
+    prompt: |
+      Without running it: name each of the three nested functions' role, say which variables each one
+      closes over, state how many `_State` objects exist after decorating two functions with
+      `@throttle(2)`, and identify one thing that would break if two threads called a decorated
+      function at once.
+    code: |
+      import time
+      from dataclasses import dataclass, field
+
+      @dataclass
+      class _State:
+          last: float = 0.0
+          skipped: int = field(default=0)
+
+      def throttle(min_interval):
+          def decorator(function):
+              state = _State()
+
+              def wrapper(*args, **kwargs):
+                  now = time.monotonic()
+                  if now - state.last < min_interval:
+                      state.skipped += 1
+                      return None
+                  state.last = now
+                  return function(*args, **kwargs)
+
+              wrapper.state = state
+              return wrapper
+          return decorator
+    hints:
+      - Count how many times each `def` body executes when you write one `@throttle(2)` line.
+      - "`state.skipped += 1` is a read, an add and a write — three separate bytecodes."
+    solution: |
+      **`throttle`** is the argument-capturing layer: it runs once per decoration site, closes over
+      nothing, and returns `decorator`. **`decorator`** is the layer that actually receives the
+      function: it closes over `min_interval`, creates the per-function `_State`, and returns
+      `wrapper`. **`wrapper`** is the runtime layer: it closes over `function`, `state` and
+      `min_interval`, and runs on every call.
+
+      Decorating two functions with `@throttle(2)` creates **two** `_State` objects — `decorator`
+      runs once per decorated function, and `state = _State()` is inside it. Note that they share one
+      `min_interval` cell only if both came from the same `throttle(2)` call; two separate
+      `@throttle(2)` lines create two of everything above `wrapper` as well.
+
+      Under threads, `state.skipped += 1` is not atomic: two threads can read the same value and both
+      write back the same increment, losing a count. The window check has a worse version of the same
+      race — two threads can both observe an old `state.last` and both proceed, letting through twice
+      the intended rate. A `threading.Lock` around the read-decide-write block is the fix.
+
+      Also worth noticing on a read-through: there is no `functools.wraps`, so every function
+      decorated with this reports itself as `wrapper`.
+
+  - id: dc-signature-preservation
+    tier: intermediate
+    kind: write-code
+    title: Keep the signature, statically and at runtime
+    minutes: 12
+    concepts: ["ParamSpec", "TypeVar", "inspect.signature", "__wrapped__"]
+    prompt: |
+      Write a `retry` decorator that a type checker can see through: calling a decorated
+      `def fetch(url: str, *, timeout: float = 1.0) -> bytes` with a wrong argument type must be a
+      type error, and `inspect.signature` must report the original signature at runtime.
+
+      Then explain what `functools.wraps` alone would have left broken.
+    hints:
+      - "`ParamSpec` captures a whole parameter list; a plain `TypeVar` cannot."
+      - Runtime signature recovery and static signature preservation are two separate mechanisms.
+    solution: |
+      ```python
+      import functools, inspect
+      from collections.abc import Callable
+      from typing import ParamSpec, TypeVar
+
+      P = ParamSpec("P")
+      R = TypeVar("R")
+
+      def retry(times: int) -> Callable[[Callable[P, R]], Callable[P, R]]:
+          def decorator(function: Callable[P, R]) -> Callable[P, R]:
+              @functools.wraps(function)
+              def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+                  for attempt in range(1, times + 1):
+                      try:
+                          return function(*args, **kwargs)
+                      except Exception:
+                          if attempt == times:
+                              raise
+                  raise AssertionError("unreachable")
+              return wrapper
+          return decorator
+
+      print(inspect.signature(fetch))   # (url: str, *, timeout: float = 1.0) -> bytes
+      ```
+
+      `functools.wraps` alone fixes only the runtime half. It sets `__wrapped__`, which
+      `inspect.signature` follows, so introspection is correct — but statically the wrapper is still
+      `(*args: Any, **kwargs: Any) -> Any`, so mypy silently accepts `fetch(42, timeout="soon")` and
+      every downstream inference collapses to `Any`.
+
+      `ParamSpec` is what ties the wrapper's parameters to the wrapped function's. `P.args` and
+      `P.kwargs` must be used together and only in that position — they are not ordinary types.
+
+  - id: dc-contextdecorator
+    tier: intermediate
+    kind: design
+    title: One object that is both a decorator and a context manager
+    minutes: 12
+    concepts: ["ContextDecorator", "context managers", "reuse", "torch.no_grad"]
+    prompt: |
+      `torch.no_grad()` works both as `with torch.no_grad():` and as `@torch.no_grad()`. Design the
+      same for a `timed` utility, using the standard library, and explain the one restriction this
+      creates that a plain decorator does not have.
+    hints:
+      - "`contextlib` has a base class whose whole job is to add `__call__` to a context manager."
+      - Ask what has to be true for the same object to be entered twice.
+    solution: |
+      ```python
+      import contextlib, time
+
+      class timed(contextlib.ContextDecorator):
+          def __init__(self, label):
+              self.label = label
+
+          def __enter__(self):
+              self.start = time.perf_counter()
+              return self
+
+          def __exit__(self, *exc):
+              print(f"{self.label}: {time.perf_counter() - self.start:.4f}s")
+              return False
+      ```
+
+      `ContextDecorator` supplies `__call__`, which returns a wrapper that runs the function inside
+      `with self:`. That is the whole trick — one `__enter__`/`__exit__` pair serves both spellings.
+
+      The restriction: the object must be **reusable**, because a decorated function may be called
+      many times and each call re-enters the same instance. A context manager holding single-use
+      state — an open file, a `@contextmanager` generator — breaks the second time. That is exactly
+      why `contextlib.contextmanager`-produced objects are single-use, and why `ContextDecorator`
+      re-invokes the generator function per call rather than reusing the generator.
+
+      `__exit__` returning `False` matters too: returning `True` would swallow every exception raised
+      inside every decorated function, which is almost never what you want and is very hard to spot.
+
+  - id: dc-refactor-isinstance-ladder
+    tier: intermediate
+    kind: refactor
+    title: Replace an isinstance ladder with singledispatch
+    minutes: 12
+    concepts: ["singledispatch", "open-closed principle", "type dispatch"]
+    prompt: |
+      Refactor this so a new supported type can be added from another module without editing this
+      function. Then say what `singledispatch` dispatches on, and one case where it is the wrong tool.
+    code: |
+      from datetime import date, datetime
+      from decimal import Decimal
+
+      def encode(value):
+          if isinstance(value, (datetime, date)):
+              return value.isoformat()
+          if isinstance(value, Decimal):
+              return str(value)
+          if isinstance(value, set):
+              return sorted(value)
+          raise TypeError(f"unsupported: {type(value).__name__}")
+    hints:
+      - The base implementation should be the error case, and each type gets its own registration.
+      - Registration reads the annotation on the first parameter.
+    solution: |
+      ```python
+      import functools
+      from datetime import date, datetime
+      from decimal import Decimal
+
+      @functools.singledispatch
+      def encode(value):
+          raise TypeError(f"unsupported: {type(value).__name__}")
+
+      @encode.register
+      def _(value: date):           # datetime is a subclass, so this covers both
+          return value.isoformat()
+
+      @encode.register
+      def _(value: Decimal):
+          return str(value)
+
+      @encode.register
+      def _(value: set):
+          return sorted(value)
+      ```
+
+      Any module can now call `encode.register` for its own type, so the function is open for
+      extension and closed for modification. `encode.registry` lets you inspect what is registered,
+      which the ladder never allowed.
+
+      It dispatches on the runtime type of the **first positional argument only**, using the MRO —
+      so `datetime`, being a subclass of `date`, resolves to the `date` implementation unless you
+      register it separately. That MRO behaviour is a real difference from the original ladder, which
+      checked `datetime` first.
+
+      Wrong tool when: dispatch depends on more than the first argument, on a value rather than a
+      type, or on a `Protocol`/structural check — `singledispatch` matches nominal types. Use
+      `singledispatchmethod` for methods, since the first argument of a method is `self`.
+
+  - id: dc-decorator-order-observable
+    tier: intermediate
+    kind: predict-output
+    title: Two decorators, two orders, four lines of output
+    minutes: 10
+    concepts: ["stacking", "import-time vs call-time", "decorator ordering"]
+    prompt: Predict the complete output, in order, and mark which lines are printed at import time.
+    code: |
+      def outer(function):
+          print("decorating outer")
+          def wrapper(*args, **kwargs):
+              print("enter outer")
+              try:
+                  return function(*args, **kwargs)
+              finally:
+                  print("exit outer")
+          return wrapper
+
+      def inner(function):
+          print("decorating inner")
+          def wrapper(*args, **kwargs):
+              print("enter inner")
+              try:
+                  return function(*args, **kwargs)
+              finally:
+                  print("exit inner")
+          return wrapper
+
+      @outer
+      @inner
+      def work():
+          print("working")
+
+      print("--- defined ---")
+      work()
+    hints:
+      - The decorator bodies run as the class or module body executes, before anything is called.
+      - Bottom-up for application, top-down for execution.
+    solution: |
+      ```text
+      decorating inner        <- import time
+      decorating outer        <- import time
+      --- defined ---
+      enter outer
+      enter inner
+      working
+      exit inner
+      exit outer
+      ```
+
+      The two `decorating` lines print before `--- defined ---` because decoration is part of
+      executing the module, and `inner` prints first because application is bottom-up:
+      `work = outer(inner(work))`.
+
+      At call time the nesting reverses: `outer`'s wrapper is the outermost object, so it enters
+      first and exits last. This symmetry — first in, last out — is the same shape as nested context
+      managers, and it is why tracing decorators belong on the outside and transforming decorators on
+      the inside.
+
+  - id: dc-cache-mutable-return
+    tier: intermediate
+    kind: debug
+    title: The cache that hands out the same list to everyone
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["lru_cache", "mutable return values", "aliasing", "cache poisoning"]
+    prompt: |
+      The second call to `report` returns the wrong thing, and no exception is ever raised. Explain
+      the mechanism and give two fixes, saying which you would ship.
+    code: |
+      import functools
+
+      @functools.cache
+      def active_users(team: str) -> list[str]:
+          return [f"{team}-alice", f"{team}-bob"]
+
+      def report(team, *, redact=False):
+          users = active_users(team)
+          if redact:
+              users[0] = "REDACTED"
+          return users
+
+      print(report("core", redact=True))
+      print(report("core"))
+    hints:
+      - A cache stores a reference, not a copy. What does the caller receive?
+      - The mutation is not in the cached function, but it lands in the cached object anyway.
+    solution: |
+      Output is `['REDACTED', 'core-bob']` twice. The cache stores the *list object* returned by the
+      first call, and every subsequent hit hands back a reference to that same object. `report`
+      mutates it in place, so the cache's stored value is now permanently corrupted — for every
+      caller, for the lifetime of the process.
+
+      This is the quiet failure mode of memoisation: caching is only sound when the return value is
+      treated as immutable by every caller, and nothing in the language enforces that.
+
+      **Fix one — return an immutable value from the cached function:**
+
+      ```python
+      @functools.cache
+      def active_users(team: str) -> tuple[str, ...]:
+          return (f"{team}-alice", f"{team}-bob")
+      ```
+
+      Then `report` must build its own list, which is what it should have been doing anyway. This is
+      what I would ship: the type now tells the truth about the contract, and the mutation becomes
+      impossible rather than merely discouraged.
+
+      **Fix two — copy at the boundary,** `users = list(active_users(team))`. It works, but it is a
+      discipline every future caller has to remember, so it will eventually be forgotten.
+
+  # ------------------------------------------------------------ tricky
+  - id: dc-late-binding-fix-three-ways
+    tier: tricky
+    kind: write-code
+    title: Fix the loop-closure bug three different ways
+    minutes: 15
+    requiredForMastery: true
+    concepts: ["late binding", "default arguments", "factory functions", "partial"]
+    prompt: |
+      `handlers = [lambda: print(name) for name in ("a", "b", "c")]` prints `c` three times.
+
+      Produce three genuinely different fixes — default argument, factory function, and
+      `functools.partial` — then rank them and say which you would reject in a code review.
+    hints:
+      - Each fix has to evaluate `name` at *creation* time, but they do it in three different places.
+      - One of the three changes the callable's signature in a way a caller can abuse.
+    solution: |
+      ```python
+      # 1 — default argument: evaluated once, when the lambda object is created
+      handlers = [lambda name=name: print(name) for name in ("a", "b", "c")]
+
+      # 2 — factory: a fresh enclosing frame per iteration, so a fresh cell
+      def make_handler(name):
+          return lambda: print(name)
+      handlers = [make_handler(name) for name in ("a", "b", "c")]
+
+      # 3 — partial: binds the argument into the partial object eagerly
+      from functools import partial
+      handlers = [partial(print, name) for name in ("a", "b", "c")]
+      ```
+
+      Ranking: **`partial` first** when the body is just a call, because it is the shortest and its
+      binding is visible in `.args` for tests. **Factory second** as the general answer — it works for
+      any body, reads clearly, and the new frame per call is the honest mental model of what you
+      want. **Default argument third**: it is the idiom everyone recognises, but it is a real
+      parameter, so a caller can pass `handlers[0]("surprise")` and override it.
+
+      The one I would push back on in review is the default argument in any callable that escapes the
+      local scope, precisely because it advertises a parameter that is not part of the intended
+      interface. Inside a two-line comprehension consumed immediately, it is fine.
+
+  - id: dc-generator-decorator-trap
+    tier: tricky
+    kind: debug
+    title: The decorator that never sees the exception it is supposed to catch
+    minutes: 15
+    requiredForMastery: true
+    concepts: ["generators", "decorators", "lazy evaluation", "exception handling"]
+    prompt: |
+      This decorator is supposed to log and re-raise any failure. It logs nothing when `stream`
+      raises. Explain why, then fix it so failures are logged — and say what the fix costs.
+    code: |
+      import functools
+
+      def log_failures(function):
+          @functools.wraps(function)
+          def wrapper(*args, **kwargs):
+              try:
+                  return function(*args, **kwargs)
+              except Exception as error:
+                  print("failed:", error)
+                  raise
+          return wrapper
+
+      @log_failures
+      def stream(path):
+          with open(path) as handle:
+              for line in handle:
+                  yield int(line)
+
+      for value in stream("data.txt"):
+          print(value)
+    hints:
+      - Calling a generator function runs none of its body. What has the `try` actually guarded?
+      - The failure happens inside a `for` loop that is nowhere near the wrapper's stack frame.
+    solution: |
+      `stream` is a generator function, so calling it only constructs the generator object and
+      returns immediately. The `try` block guards the construction, which cannot fail. Every real
+      error — a missing file, a bad `int()` — happens later, inside the caller's `for` loop, on a
+      stack that no longer contains `wrapper` at all.
+
+      The fix is to make the wrapper iterate, so it is on the stack while the body runs:
+
+      ```python
+      def log_failures(function):
+          @functools.wraps(function)
+          def wrapper(*args, **kwargs):
+              try:
+                  yield from function(*args, **kwargs)
+              except Exception as error:
+                  print("failed:", error)
+                  raise
+          return wrapper
+      ```
+
+      What it costs: `wrapper` is now itself a generator function, so this decorator **only** works on
+      generator functions — apply it to a plain function and callers get a generator instead of a
+      value, silently. A general-purpose decorator has to branch on
+      `inspect.isgeneratorfunction(function)` and return one of two wrappers.
+
+      The same trap applies to `async def`, to `@contextmanager`, and to any decorator doing timing:
+      a naive `timed` on a generator function measures how long it takes to *create* the generator,
+      which is always near zero, and reports a beautifully fast pipeline.
+
+  - id: dc-cache-unhashable-key
+    tier: tricky
+    kind: design
+    title: Cache a function whose real argument is a dict
+    minutes: 15
+    concepts: ["hashability", "cache keys", "normalisation", "lru_cache"]
+    prompt: |
+      `def render(template: str, context: dict) -> str` is hot and pure, but `@lru_cache` raises
+      `TypeError: unhashable type: 'dict'`.
+
+      Design a caching approach. State the key you would use, what makes two calls "the same", and at
+      least two ways your key can be wrong.
+    hints:
+      - Split the function into a cached core taking hashable arguments and a thin uncached shim.
+      - "Any key you build from a dict has to answer: is ordering significant, and how deep does it go?"
+    solution: |
+      Split it, so the cache decorates a function whose arguments are already hashable:
+
+      ```python
+      import functools, json
+
+      @functools.lru_cache(maxsize=2048)
+      def _render_cached(template: str, key: str) -> str:
+          return _render(template, json.loads(key))
+
+      def render(template: str, context: dict) -> str:
+          return _render_cached(template, json.dumps(context, sort_keys=True, default=str))
+      ```
+
+      "The same call" means: same template string, and a context that serialises identically with
+      sorted keys. `sort_keys=True` is what makes `{"a":1,"b":2}` and `{"b":2,"a":1}` one entry
+      rather than two.
+
+      Ways the key can be wrong:
+
+      1. **Lossy serialisation.** `default=str` turns unknown objects into their `repr`, so two
+         genuinely different objects with the same `repr` collide, and a `datetime` and its string
+         form become indistinguishable. Silent wrong answers.
+      2. **Ordering that does matter.** If a list inside the context is semantically a set, two
+         equivalent contexts produce two entries — a miss, not a bug, but it halves your hit rate.
+      3. **Non-determinism.** Anything whose `repr` includes an address (`<object at 0x...>`) makes
+         every call a miss and turns the cache into a pure memory leak.
+      4. **Mutation after the call.** The caller can mutate `context` afterwards; the key was taken
+         at call time, so that is safe here — but if you had keyed on `id(context)` it would not be.
+
+      The alternative worth naming: a `frozenset(context.items())` key, which is cheaper than JSON
+      but requires every value to be hashable and does not recurse into nested dicts. And the
+      honest question to ask before any of this — is `render` really pure? If the template can be
+      edited on disk, the correct answer is a cache keyed on template mtime, or no cache at all.
+
+  - id: dc-cached-property-slots
+    tier: tricky
+    kind: predict-output
+    title: Two caching descriptors meet __slots__
+    minutes: 12
+    concepts: ["cached_property", "__slots__", "descriptors", "instance __dict__"]
+    prompt: Predict the output of each block, including the exact exception type where one is raised.
+    code: |
+      import functools
+
+      class WithDict:
+          def __init__(self, n): self.n = n
+          @functools.cached_property
+          def doubled(self):
+              print("computing WithDict")
+              return self.n * 2
+
+      class WithSlots:
+          __slots__ = ("n",)
+          def __init__(self, n): self.n = n
+          @functools.cached_property
+          def doubled(self):
+              print("computing WithSlots")
+              return self.n * 2
+
+      a = WithDict(5)
+      print(a.doubled, a.doubled)
+      print("doubled" in a.__dict__)
+
+      b = WithSlots(5)
+      print(b.doubled)
+    hints:
+      - "`cached_property` writes its result somewhere on the instance. Where exactly?"
+      - "`__slots__` removes the very thing it writes to."
+    solution: |
+      ```text
+      computing WithDict
+      10 10
+      True
+      TypeError: No '__dict__' attribute on 'WithSlots' instance to cache 'doubled' property.
+      ```
+
+      `cached_property` is a **non-data descriptor** — it defines `__get__` but not `__set__`. On
+      first access the descriptor runs the function and writes the result straight into
+      `instance.__dict__["doubled"]`. On every later access, the instance dictionary is consulted
+      before non-data descriptors, so the stored value wins and the function never runs again. That
+      precedence rule from the data model topic is the entire implementation.
+
+      `WithSlots` has no `__dict__`, so there is nowhere to write, and `cached_property` raises a
+      `TypeError` with an unusually helpful message. Note it raises on *access*, not at class
+      creation — the incompatibility is invisible until the attribute is first touched, which may be
+      well into production.
+
+      The workaround, if you need both: keep `__slots__`, add a private slot, and write the property
+      by hand with a sentinel for "not yet computed". You lose the one-line elegance and gain about
+      50 bytes per instance back.
+
+  - id: dc-performance-decorator-cost
+    tier: tricky
+    kind: performance
+    title: Measure what a decorator actually costs
+    minutes: 15
+    concepts: ["overhead", "timeit", "lru_cache", "hot paths"]
+    prompt: |
+      Measure, with `timeit`, the per-call overhead of (a) an undecorated trivial function, (b) the
+      same function behind a bare `*args, **kwargs` wrapper, and (c) the same behind
+      `@functools.cache` on a hot key.
+
+      Then answer: when is `lru_cache` slower than just recomputing, and how would you decide?
+    hints:
+      - Keep the function body trivial so you are measuring the wrapper, not the work.
+      - The cache does a hash, a lookup and bookkeeping before it can return anything.
+    solution: |
+      ```python
+      import functools, timeit
+
+      def add(a, b): return a + b
+
+      def wrap(function):
+          @functools.wraps(function)
+          def wrapper(*args, **kwargs):
+              return function(*args, **kwargs)
+          return wrapper
+
+      wrapped = wrap(add)
+      cached = functools.cache(add)
+      cached(1, 2)   # warm
+
+      for label, call in [("plain", lambda: add(1, 2)),
+                          ("wrapped", lambda: wrapped(1, 2)),
+                          ("cached", lambda: cached(1, 2))]:
+          print(label, timeit.timeit(call, number=1_000_000))
+      ```
+
+      Typical shape on CPython 3.12: the plain call is the baseline, the Python-level wrapper roughly
+      doubles it — a second frame push, plus tuple and dict packing for `*args`/`**kwargs` — and the
+      C-implemented `cache` sits between them, cheaper than a Python wrapper but not free.
+
+      `lru_cache` is slower than recomputing whenever **hashing the arguments plus the dict lookup
+      costs more than the function body**. That happens with trivially cheap bodies (arithmetic,
+      attribute access) and with large or expensive-to-hash arguments — a long tuple or a big string
+      must be hashed on every single call, hit or miss.
+
+      How to decide: measure with a realistic argument distribution, and look at `cache_info()`. A
+      low hit rate means you are paying the hashing cost on almost every call and getting nothing
+      back; the cache is then pure overhead plus a memory leak. Below roughly a microsecond of body
+      work, assume the cache loses until a measurement says otherwise.
+
+  - id: dc-decorator-shared-state
+    tier: tricky
+    kind: debug
+    title: Two functions, one counter
+    minutes: 12
+    requiredForMastery: true
+    concepts: ["closure scope", "decorator layers", "shared mutable default", "state placement"]
+    prompt: |
+      Both decorated functions report the same call count, and it keeps rising even when only one of
+      them is called. Find the mistake, fix it, and state the rule for where per-function state
+      belongs.
+    code: |
+      import functools
+
+      def counted(counter={"calls": 0}):
+          def decorator(function):
+              @functools.wraps(function)
+              def wrapper(*args, **kwargs):
+                  counter["calls"] += 1
+                  wrapper.calls = counter["calls"]
+                  return function(*args, **kwargs)
+              return wrapper
+          return decorator
+
+      @counted()
+      def alpha(): ...
+
+      @counted()
+      def beta(): ...
+
+      alpha(); alpha(); beta()
+      print(alpha.calls, beta.calls)
+    hints:
+      - A default argument is evaluated once, when the `def` line runs — not per call.
+      - Ask which layer of the three should own the state so that each decorated function gets its own.
+    solution: |
+      Prints `3 3`. The mutable default `counter={"calls": 0}` is created **once**, when `counted`
+      itself is defined, and every `@counted()` call receives that same dictionary. So both wrappers
+      increment one shared counter, and `wrapper.calls` just records the shared total at the time of
+      that call.
+
+      This is the classic mutable-default-argument bug wearing a decorator costume — and it is worse
+      here, because the sharing is across decoration sites rather than across calls, which makes it
+      look like a scoping problem rather than a default-argument one.
+
+      The fix is to create the state in the layer that runs once **per decorated function**, which is
+      `decorator`:
+
+      ```python
+      def counted():
+          def decorator(function):
+              calls = 0                     # one per decorated function
+
+              @functools.wraps(function)
+              def wrapper(*args, **kwargs):
+                  nonlocal calls
+                  calls += 1
+                  wrapper.calls = calls
+                  return function(*args, **kwargs)
+
+              wrapper.calls = 0
+              return wrapper
+          return decorator
+      ```
+
+      The rule: **state belongs in the innermost layer that runs exactly as often as the state should
+      exist.** Per-decoration-site configuration goes in the outer layer, per-decorated-function
+      state goes in `decorator`, and per-call state goes in `wrapper`. Getting this wrong is the
+      single most common structural bug in hand-written decorators.
+
+  - id: dc-code-reading-wraps-chain
+    tier: tricky
+    kind: code-reading
+    title: Follow a wrapper chain three deep
+    minutes: 12
+    concepts: ["__wrapped__", "inspect.unwrap", "decorator chains", "code reading"]
+    prompt: |
+      Given three stacked decorators where only the middle one uses `functools.wraps`, answer without
+      running it: what does `f.__name__` report, what does `inspect.signature(f)` report, and how far
+      does `inspect.unwrap(f)` get? Then say what a framework relying on signature introspection sees.
+    code: |
+      import functools, inspect
+
+      def bare(function):
+          def wrapper(*args, **kwargs):
+              return function(*args, **kwargs)
+          return wrapper
+
+      def wrapped(function):
+          @functools.wraps(function)
+          def wrapper(*args, **kwargs):
+              return function(*args, **kwargs)
+          return wrapper
+
+      @bare
+      @wrapped
+      @bare
+      def handler(request, *, user=None):
+          """Handle it."""
+
+      print(handler.__name__)
+      print(inspect.signature(handler))
+      print(inspect.unwrap(handler).__name__)
+    hints:
+      - Only the layer that called `wraps` set a `__wrapped__` pointer; the others left a gap.
+      - "`unwrap` follows `__wrapped__` until there is none — it cannot jump over a link that is missing."
+    solution: |
+      ```text
+      wrapper
+      (*args, **kwargs)
+      wrapper
+      ```
+
+      Applied bottom-up, the chain is `bare(wrapped(bare(handler)))`. The innermost `bare` produced an
+      anonymous wrapper with no `__wrapped__`. `wrapped` then copied *that* wrapper's metadata — so it
+      faithfully propagated the name `wrapper` and set `__wrapped__` to the inner bare wrapper. The
+      outermost `bare` discarded everything again.
+
+      So `__name__` is `wrapper`. `inspect.signature` follows `__wrapped__` where it exists, but the
+      outermost layer has none, so it reports the outermost wrapper's own signature:
+      `(*args, **kwargs)`. `inspect.unwrap` finds no `__wrapped__` on the outermost object at all and
+      returns it unchanged — one `wrapper`, zero hops.
+
+      What a framework sees: a callable that accepts anything and declares nothing. FastAPI would
+      inject no dependencies, pytest would pass no fixtures, and a CLI generator would produce a
+      command with no options — all without an error message, because `(*args, **kwargs)` is a
+      perfectly valid signature that simply says nothing.
+
+      The lesson is that `wraps` is only as good as the *weakest* layer in the chain. One
+      undecorated wrapper anywhere in the stack erases the introspection for everything above it.
+
+  # ------------------------------------------------------------ challenge
+  - id: dc-challenge-method-decorator-class
+    tier: challenge
+    kind: write-code
+    title: A class-based decorator that works on methods
+    minutes: 30
+    concepts: ["descriptors", "__get__", "bound methods", "class-based decorators", "per-instance state"]
+    prompt: |
+      Write a class-based decorator `CountCalls` that works correctly in all three positions: on a
+      plain function, on an instance method, and on a `staticmethod`.
+
+      It must expose `.calls`, and for methods the count must be **per instance**, not shared across
+      the class. Preserve the wrapped function's metadata. Standard library only.
+    hints:
+      - Instances of your class are not descriptors unless you make them one.
+      - "`__get__(self, instance, owner)` is called on attribute access — return something bound to `instance`."
+      - Per-instance state cannot live on the decorator object, because there is one of those per class attribute.
+    solution: |
+      The two problems are separate and both must be solved. First, a plain object stored as a class
+      attribute is not a descriptor, so `service.fetch` returns the decorator object itself and
+      `self` is never passed. Adding `__get__` fixes the binding. Second, the decorator object is a
+      *class* attribute — one per method, shared by every instance — so any counter stored on it is
+      inherently shared. Per-instance state has to live on the instance.
+
+      The idiom that solves both: `__get__` builds a per-instance bound copy, caches it in the
+      instance's `__dict__` under the same name, and from then on the instance dictionary shadows the
+      class attribute entirely, so `__get__` never runs again for that instance.
+    solutionCode: |
+      import functools
+
+
+      class CountCalls:
+          def __init__(self, function):
+              functools.update_wrapper(self, function)
+              self.function = function
+              self.calls = 0
+
+          def __call__(self, *args, **kwargs):
+              self.calls += 1
+              return self.function(*args, **kwargs)
+
+          def __get__(self, instance, owner=None):
+              if instance is None:                     # accessed on the class
+                  return self
+              bound = CountCalls(self.function.__get__(instance, owner))
+              instance.__dict__[self.function.__name__] = bound   # shadow from now on
+              return bound
+
+
+      @CountCalls
+      def ping():
+          """A plain function."""
+
+
+      class Service:
+          @CountCalls
+          def fetch(self, url):
+              return url
+
+          @staticmethod
+          @CountCalls
+          def parse(text):
+              return text.strip()
+
+
+      ping(); ping()
+      print(ping.calls, ping.__name__, ping.__doc__)   # 2 ping A plain function.
+
+      first, second = Service(), Service()
+      first.fetch("a"); first.fetch("b"); second.fetch("c")
+      print(first.fetch.calls, second.fetch.calls)     # 2 1
+      print(Service.parse("  x  "), Service.parse.calls)   # x 1
+    explanation: |
+      Three details worth extracting.
+
+      `self.function.__get__(instance, owner)` is how you bind manually — functions are descriptors,
+      so this is exactly what normal attribute access would have done, and it gives you a bound
+      method with `instance` already attached.
+
+      Writing into `instance.__dict__` works because `CountCalls` is a **non-data** descriptor: it
+      has `__get__` but no `__set__`, and the instance dictionary takes precedence over non-data
+      descriptors. Add a `__set__` and this optimisation silently stops working — the data descriptor
+      would win and `__get__` would run on every access, creating a fresh counter each time.
+
+      The `staticmethod` case works only in that order: `@staticmethod` outermost, `@CountCalls`
+      below it. Reversed, `CountCalls` receives a `staticmethod` descriptor object rather than a
+      function, and `update_wrapper` has nothing useful to copy.
+
+      Two limits to state honestly: the per-instance counters require the instance to have a
+      `__dict__`, so this does not work with `__slots__`; and the count is not thread-safe, since
+      `self.calls += 1` is three bytecodes.
+
+  - id: dc-challenge-cache-policy
+    tier: challenge
+    kind: design
+    title: Design a cache decorator with a TTL, a key function and metrics
+    minutes: 35
+    concepts: ["cache design", "TTL", "key functions", "thread safety", "observability", "eviction"]
+    prompt: |
+      `lru_cache` cannot express: entries that expire, a custom key derived from a subset of
+      arguments, unhashable arguments, per-entry invalidation, or metrics exported to a monitoring
+      system.
+
+      Design `@cached(ttl=..., key=..., maxsize=...)` covering all five. Write the interface and the
+      core data structure, name every trade-off you are making, and state precisely what your design
+      does **not** guarantee.
+    hints:
+      - Expiry needs a timestamp stored beside every value, and a decision about lazy versus active eviction.
+      - The two hard questions are what happens on a concurrent miss, and whether a stale entry is ever better than none.
+    solution: |
+      **Interface**
+
+      ```python
+      @cached(ttl=60, key=lambda user, *, verbose=False: user.id, maxsize=1024)
+      def profile(user, *, verbose=False): ...
+
+      profile.cache_info()        # hits, misses, evictions, expirations, currsize
+      profile.invalidate(user)    # drop one entry, using the same key function
+      profile.cache_clear()
+      ```
+
+      **Core structure**: an `OrderedDict` mapping key to `(value, expires_at)`, plus a
+      `threading.RLock`. `OrderedDict.move_to_end` on a hit gives LRU ordering in O(1);
+      `popitem(last=False)` evicts the oldest when `maxsize` is exceeded. Expiry is checked lazily on
+      read — an entry past `expires_at` counts as a miss and is deleted then. Timestamps come from
+      `time.monotonic`, never `time.time`, so a clock adjustment cannot resurrect or prematurely kill
+      an entry.
+
+      **The key function** solves the unhashable-argument problem by construction: the caller decides
+      what identity means, so a `User` object can key on `user.id` and a dict can key on a sorted
+      tuple of its items. Default it to the `lru_cache` behaviour — the full call shape — so it stays
+      a drop-in.
+
+      **Trade-offs I am accepting**
+
+      - *Lazy expiry* means an expired entry occupies memory until someone asks for that key again.
+        Active expiry needs a background thread or a heap of expiry times, and neither is worth it
+        below very large cache sizes. Stated, not hidden.
+      - *One lock for the whole cache* serialises every lookup. Fine at thousands of calls per
+        second, wrong at millions — that would need sharding by key hash.
+      - *No stampede protection.* On a cold or expired key, N concurrent callers all miss and all
+        compute. Fixing it means holding a per-key lock or future across the computation, which
+        introduces deadlock risk if the cached function can itself call into the cache. I would ship
+        without it and add it only when a measurement demands it.
+      - *A user-supplied key function can be wrong* — if it ignores an argument that actually affects
+        the result, the cache returns confidently incorrect values with no symptom. That is the most
+        dangerous property of this whole design, and it belongs in the docstring in bold.
+
+      **What it does not guarantee**
+
+      It is not coherent across processes: each worker has its own cache, so a TTL of 60 seconds
+      means "up to 60 seconds of divergence between workers", not "fresh within 60 seconds". It does
+      not bound memory in bytes, only in entries, so one huge value can dwarf a thousand small ones.
+      It does not survive a restart. And it makes no promise about the value being immutable — if a
+      caller mutates a cached list, every later hit sees the mutation, which is the failure from the
+      `dc-cache-mutable-return` exercise.
+
+      **Metrics**: increment counters under the same lock and expose them as a `NamedTuple` from
+      `cache_info()`, plus an optional callback invoked on eviction so a Prometheus gauge can be
+      updated without this module importing a metrics library.
+
+quizzes:
+  - id: dc-checkpoint
+    title: Checkpoint — closures and desugaring
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: dc-cp-capture
+        kind: mcq
+        prompt: A closure captures…
+        options:
+          - id: value
+            text: a copy of the variable's value at the time the inner function was defined
+          - id: variable
+            text: the variable itself, in a shared cell, read at call time
+          - id: frame
+            text: a full copy of the enclosing function's frame
+          - id: name
+            text: only the name, resolved against the module globals at call time
+        answer: ["variable"]
+        concepts: ["closures", "cells"]
+        explanation: |
+          The cell is shared between the enclosing frame and every closure over it. Reading the name
+          later reads whatever the cell holds at that moment, which is why the loop-lambda bug exists
+          and why `nonlocal` can write through it.
+
+      - id: dc-cp-desugar
+        kind: mcq
+        prompt: "`@a` above `@b` above `def f()` is equivalent to which assignment?"
+        options:
+          - id: ab
+            text: "f = a(b(f))"
+          - id: ba
+            text: "f = b(a(f))"
+          - id: seq
+            text: "f = a(f); f = b(f)"
+          - id: tuple
+            text: "f = (a, b)(f)"
+        answer: ["ab"]
+        concepts: ["decorator syntax", "stacking"]
+        explanation: |
+          Decoration is bottom-up, so `b` is applied first and `a` wraps the result. At call time the
+          order reverses: `a`'s wrapper body runs first because it is outermost.
+
+      - id: dc-cp-when
+        kind: true-false
+        prompt: The decorator function body runs the first time the decorated function is called.
+        options:
+          - id: t
+            text: "True"
+          - id: f
+            text: "False"
+        answer: ["f"]
+        concepts: ["import-time evaluation"]
+        explanation: |
+          It runs once, at definition time, as the module is executed. Only the wrapper it returned
+          runs per call. This is why a decorator that reads configuration captures whatever the
+          configuration was at import.
+
+      - id: dc-cp-wraps
+        kind: multi
+        prompt: Which of these does `functools.wraps` do? Select all that apply.
+        options:
+          - id: name
+            text: "Copies `__name__`, `__qualname__` and `__doc__` onto the wrapper"
+          - id: wrapped
+            text: "Sets `__wrapped__` on the wrapper, pointing at the original"
+          - id: sig
+            text: "Makes the wrapper accept exactly the original's parameters at runtime"
+          - id: types
+            text: "Makes a type checker see the original's signature through the decorator"
+        answer: ["name", "wrapped"]
+        concepts: ["functools.wraps", "__wrapped__", "ParamSpec"]
+        explanation: |
+          `wraps` copies runtime metadata and leaves the `__wrapped__` pointer that
+          `inspect.signature` follows. It does not change what the wrapper actually accepts — that is
+          still `*args, **kwargs` — and it does nothing for static typing, which needs `ParamSpec`.
+
+  - id: dc-assessment
+    title: Assessment — decorators, closures and functools
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: dc-as-latebinding
+        kind: predict-output
+        prompt: "What does this print, and why?"
+        code: |
+          fs = []
+          for i in range(3):
+              fs.append(lambda: i)
+          print([f() for f in fs])
+        options:
+          - id: a
+            text: "[0, 1, 2]"
+          - id: b
+            text: "[2, 2, 2]"
+          - id: c
+            text: "[3, 3, 3]"
+          - id: d
+            text: "UnboundLocalError"
+        answer: ["b"]
+        concepts: ["late binding", "closures"]
+        explanation: |
+          All three lambdas share one cell for `i`. The loop leaves `i` at `2` — `range(3)` stops
+          after yielding `2`, it never assigns `3` — so every call returns `2`.
+
+      - id: dc-as-nonlocal
+        kind: find-bug
+        prompt: "This raises. Which line is the cause?"
+        code: |
+          def make():
+              total = 0
+              def add(n):
+                  total = total + n
+                  return total
+              return add
+          make()(5)
+        options:
+          - id: l1
+            text: "`total = 0` — it should be declared `global`"
+          - id: l2
+            text: "`total = total + n` — the assignment makes `total` local, so the read is unbound"
+          - id: l3
+            text: "`return add` — the closure is created too late"
+          - id: l4
+            text: "`make()(5)` — a closure cannot be called immediately"
+        answer: ["l2"]
+        concepts: ["nonlocal", "UnboundLocalError", "scope"]
+        explanation: |
+          Any assignment to a name inside a function makes that name local for the whole function
+          body, so the read on the right-hand side finds an unbound local. `nonlocal total` fixes it.
+
+      - id: dc-as-order
+        kind: mcq
+        prompt: "With `@timed` above `@cache` above `def query()`, which statement is true?"
+        options:
+          - id: a
+            text: "`timed` measures only cache misses, because `cache` short-circuits it"
+          - id: b
+            text: "`timed` measures every call, including cache hits, because it is outermost"
+          - id: c
+            text: "The two are equivalent in either order"
+          - id: d
+            text: "`cache` is applied last, so it wraps `timed`"
+        answer: ["b"]
+        concepts: ["stacking", "decorator ordering"]
+        explanation: |
+          `query = timed(cache(query))`, so `timed` is outermost and sees every call. Swapping them
+          makes `timed` measure only the misses — which is usually the more useful measurement, and
+          exactly why the order is a design decision.
+
+      - id: dc-as-lru-key
+        kind: true-false
+        prompt: "With `@lru_cache` on `def f(a, b=1)`, the calls `f(2)`, `f(2, 1)` and `f(2, b=1)` all hit the same cache entry."
+        options:
+          - id: t
+            text: "True"
+          - id: f
+            text: "False"
+        answer: ["f"]
+        concepts: ["lru_cache", "cache keys"]
+        explanation: |
+          The cache keys on the call shape as written, not on the bound parameters after defaults are
+          applied. All three are distinct keys, so the first three calls are three misses computing
+          the identical value.
+
+      - id: dc-as-cached-property
+        kind: mcq
+        prompt: "Why is `functools.cached_property` incompatible with `__slots__`?"
+        options:
+          - id: a
+            text: "It needs a metaclass, and `__slots__` forbids metaclasses"
+          - id: b
+            text: "It stores the computed value in the instance `__dict__`, which `__slots__` removes"
+          - id: c
+            text: "It is a data descriptor, and `__slots__` entries are also data descriptors"
+          - id: d
+            text: "It requires the class to be hashable, and slotted classes are not"
+        answer: ["b"]
+        concepts: ["cached_property", "__slots__", "descriptors"]
+        explanation: |
+          It is a *non-data* descriptor that writes its result into `instance.__dict__` on first
+          access, relying on instance-dictionary precedence to short-circuit every later access. No
+          `__dict__` means nowhere to write, and it raises `TypeError` on first access.
+
+      - id: dc-as-generator-decorator
+        kind: explain
+        prompt: |
+          A `@log_failures` decorator wraps its call in `try/except`, but logs nothing when the
+          decorated **generator** function raises. Explain the mechanism and give the fix.
+        modelAnswer: |
+          Calling a generator function runs none of its body — it constructs and returns a generator
+          object. So the `try` guards only that construction, which cannot fail. The real exception
+          happens later, when the caller iterates, on a stack that no longer contains the wrapper.
+
+          The fix is for the wrapper to iterate the result itself, `yield from function(...)` inside
+          the `try`, which puts the wrapper on the stack during the body's execution. The cost is
+          that the wrapper is now a generator function too, so it only works on generator functions —
+          a general decorator must branch on `inspect.isgeneratorfunction`.
+        concepts: ["generators", "decorators", "lazy evaluation"]
+        explanation: |
+          The same trap ruins naive timing decorators on generators: they measure generator creation,
+          which is always near zero.
+
+      - id: dc-as-write-once
+        kind: write-function
+        prompt: |
+          Write `@once` — a decorator that runs the wrapped function at most once, caching and
+          returning the same result for every later call regardless of arguments. Preserve metadata,
+          and make it correct under threads.
+        modelAnswer: |
+          ```python
+          import functools, threading
+
+          def once(function):
+              lock = threading.Lock()
+              sentinel = object()
+              result = sentinel
+
+              @functools.wraps(function)
+              def wrapper(*args, **kwargs):
+                  nonlocal result
+                  if result is sentinel:            # fast path, no lock
+                      with lock:
+                          if result is sentinel:    # re-check, another thread may have won
+                              result = function(*args, **kwargs)
+                  return result
+
+              return wrapper
+          ```
+
+          A sentinel object rather than `None`, because `None` is a legitimate return value. The
+          double-checked pattern keeps the common case lock-free while ensuring the function body
+          runs exactly once. Arguments after the first call are ignored by design — that should be
+          documented, because silently discarding them surprises people.
+        concepts: ["closures", "nonlocal", "thread safety", "sentinels"]
+        explanation: |
+          `functools.cache` does not solve this: it would run the function once *per distinct
+          argument tuple*, not once overall.
+
+      - id: dc-as-refactor-partial
+        kind: refactor
+        prompt: |
+          Refactor `workers = [lambda: handle(i) for i in range(4)]` so each callable handles its own
+          index, using `functools.partial`. Then say what `partial` gives you here beyond fixing the
+          bug.
+        modelAnswer: |
+          ```python
+          from functools import partial
+          workers = [partial(handle, index) for index in range(4)]
+          ```
+
+          `partial` binds `index` eagerly into the partial object at creation, so there is no shared
+          cell and no late binding.
+
+          Beyond the fix: the objects are picklable, so they can be submitted to a
+          `ProcessPoolExecutor` where lambdas fail; `.func` and `.args` are introspectable, so a test
+          can assert what each worker was bound to without calling it; and the intent — "this is
+          `handle` with its first argument fixed" — is visible in the value's `repr`.
+        concepts: ["partial", "late binding", "pickling", "multiprocessing"]
+        explanation: |
+          The pickling point is the practical one: "why can't I send my lambda to a process pool" is
+          a question every Python developer eventually asks.
+
+      - id: dc-as-lru-method
+        kind: scenario
+        prompt: |
+          A colleague's PR adds `@functools.cache` to a method on a request-scoped object. What is
+          your review comment, and what do you suggest instead?
+        modelAnswer: |
+          The comment: the cache lives on the function, which is a class attribute shared by every
+          instance, and the key includes `self`. With request-scoped objects that means every request
+          object ever handled is retained for the process lifetime — an unbounded leak that will show
+          as a slow memory climb, not a spike. There is also a correctness risk: two instances that
+          compare equal share entries, so one request can be served another's cached value.
+
+          What I would suggest: `functools.cached_property` if the value depends only on the instance,
+          since it stores into the instance `__dict__` and dies with the request; or a module-level
+          `lru_cache`d function taking only the hashable inputs that actually matter, with a bounded
+          `maxsize`. If neither fits, a plain dict on the instance is better than a shared cache.
+        concepts: ["lru_cache", "memory leaks", "cached_property", "code review"]
+        explanation: |
+          The giveaway in review is always the same: caching on a method means caching on `self`.
+
+      - id: dc-as-wraps-chain
+        kind: performance
+        prompt: |
+          A hot inner function is wrapped by four decorators. Profiling shows meaningful time in the
+          wrappers themselves. What do you measure, and what are your options ordered by cost?
+        modelAnswer: |
+          What I measure first: the per-call overhead of the stack versus the bare function with
+          `timeit` on a representative argument, and `cProfile` with `-s tottime` to see which
+          wrappers dominate. Four Python-level wrappers means four extra frame pushes plus tuple and
+          dict packing per call, which is easily comparable to a cheap body.
+
+          Options, cheapest first. Remove decorators that are not earning their place on this
+          particular function — tracing and metrics wrappers are often the bulk and are frequently
+          only needed at the boundary, not on the inner call. Merge several wrappers into one, since
+          the frame cost is per wrapper, not per concern. Move the decoration outward, so the stack
+          wraps the loop rather than the body called inside it. Replace a Python cache wrapper with
+          `functools.lru_cache`, which is C. Only then consider hand-inlining, and only with a
+          measurement showing it matters.
+
+          The honest first question, though, is whether this function should be called this often at
+          all — a decorator's overhead becoming visible usually means the call is in a tight loop that
+          could be batched.
+        concepts: ["overhead", "profiling", "decorator cost"]
+        explanation: |
+          The reason `lru_cache` is written in C is precisely this: at the frequency where caching is
+          worth it, a Python-level wrapper is a measurable tax.
+
+interview:
+  - id: dc-iv-closure
+    level: basic
+    requiredForMastery: true
+    concepts: ["closures", "cells", "nonlocal"]
+    question: What is a closure, and what exactly does it capture?
+    shortAnswer: |
+      A function that references a name from an enclosing function's scope. It captures the
+      *variable*, not the value — Python stores it in a shared cell, and the closure reads whatever
+      the cell holds at call time. `nonlocal` is what lets the inner function write through it.
+    fullAnswer: |
+      Mechanically: when the compiler sees an inner function referencing an enclosing local, it marks
+      that local as a cell variable in the enclosing frame and a free variable in the inner one. The
+      cell is a small object holding one reference. `function.__code__.co_freevars` names them and
+      `function.__closure__` holds the cells, so the capture is fully inspectable at runtime.
+
+      The "variable not value" part is the whole interview question. It explains why every lambda
+      created in a loop returns the loop's final value, why `nonlocal` exists at all, and why a
+      decorator's `wrapper` can still reach the function it wrapped after the decorator's frame is
+      long gone — the cell keeps it alive.
+
+      Worth adding: this is where Python and JavaScript diverge slightly. JS `let` creates a fresh
+      binding per loop iteration, so the equivalent JS code does what people expect. Python does not,
+      which is why the default-argument idiom exists.
+    commonWrongAnswer: |
+      "A closure is a function that remembers the values of the variables around it." Close enough to
+      sound right, wrong in the one way that matters — it predicts `[0, 1, 2]` from the loop example.
+    followUps:
+      - What is in `__closure__`, and how do you read it?
+      - Why does `nonlocal` exist when `global` already did?
+      - How does JavaScript's `let` differ here?
+
+  - id: dc-iv-desugar
+    level: intermediate
+    requiredForMastery: true
+    concepts: ["decorator syntax", "stacking", "import-time"]
+    question: Desugar a stack of two decorators, one of which takes arguments. When does each part run?
+    shortAnswer: |
+      `@a` over `@b(x)` over `def f` is `f = a(b(x)(f))`. `b(x)` is called first to produce the
+      decorator, then applied, then `a` is applied. All of that happens once, at import time. At call
+      time the order reverses: `a`'s wrapper runs first because it is outermost.
+    fullAnswer: |
+      Three timings to keep separate. **Decorator construction**: `b(x)` runs when the module is
+      imported, before `f` is even passed anywhere. **Decoration**: the returned decorator is called
+      with the function object, still at import time, once. **Invocation**: only the returned
+      wrappers run per call.
+
+      Getting this right explains a family of production surprises. A decorator that reads an
+      environment variable captures whatever was set at import, not at call. A decorator that opens a
+      connection opens it during import, so it happens before your test fixtures configure anything
+      and it happens even if the function is never called. And a registration decorator only
+      registers if the module is imported at all, which is why every framework grows an autodiscover
+      step.
+
+      For stacking, the rule I actually say out loud is: **application is bottom-up, execution is
+      top-down.** Tracing and metrics belong outside so they see every call; caching and
+      transformation belong inside.
+    commonWrongAnswer: |
+      "The decorator runs when you call the function." It conflates the decorator with the wrapper,
+      and it predicts the wrong answer for every import-time side effect question.
+    followUps:
+      - Where would you put a cache relative to a retry, and why?
+      - What breaks if a decorator reads config at import time?
+      - Why must `staticmethod` be the outermost decorator?
+
+  - id: dc-iv-wraps
+    level: intermediate
+    requiredForMastery: true
+    concepts: ["functools.wraps", "__wrapped__", "introspection"]
+    question: What does `functools.wraps` do, and what does it fail to fix?
+    shortAnswer: |
+      It copies `__name__`, `__qualname__`, `__doc__`, `__module__`, `__dict__` and `__annotations__`
+      from the wrapped function onto the wrapper, and sets `__wrapped__` to the original so
+      `inspect.signature` can follow it. It does **not** change what the wrapper actually accepts, and
+      it does nothing for static type checking.
+    fullAnswer: |
+      The runtime half matters because frameworks introspect. pytest resolves fixtures from parameter
+      names; FastAPI builds dependency injection and the OpenAPI schema from the signature; Click and
+      Typer generate CLI options from it. Without `__wrapped__`, all of them see `(*args, **kwargs)`
+      and quietly do nothing — no error, just a route with no parameters or a test with no fixtures.
+
+      What is still broken: the wrapper genuinely accepts anything, so an argument error is detected
+      one frame deeper than it should be, and a decorator that manipulates `kwargs` can swallow it
+      entirely. Statically, mypy sees `Callable[..., Any]` and every inference downstream collapses to
+      `Any`. The fix for that is `ParamSpec`: type the decorator as
+      `Callable[[Callable[P, R]], Callable[P, R]]` and annotate the wrapper `*args: P.args,
+      **kwargs: P.kwargs`.
+
+      One subtlety worth raising: `wraps` is only as good as the weakest link in a stack. One layer
+      that forgets it breaks `__wrapped__` for everything above it, so the chain silently degrades.
+    commonWrongAnswer: |
+      "It makes the decorated function behave exactly like the original." It preserves the *metadata*,
+      not the interface — a `*args, **kwargs` wrapper still accepts calls the original would reject.
+    followUps:
+      - What is `__wrapped__` and who reads it?
+      - How do you make a decorator type-check correctly?
+      - What does `inspect.unwrap` do with a mixed chain?
+
+  - id: dc-iv-lru-tradeoffs
+    level: advanced
+    requiredForMastery: true
+    concepts: ["lru_cache", "purity", "memory", "cache invalidation"]
+    question: When is `functools.lru_cache` the wrong tool?
+    shortAnswer: |
+      When the function is not a pure function of its arguments, when the arguments are unhashable or
+      expensive to hash, when the body is cheaper than a hash plus a dict lookup, when the arguments
+      include `self` in a long-lived process, and whenever you need invalidation, a TTL, or coherence
+      across processes.
+    fullAnswer: |
+      I sort these into correctness and cost.
+
+      **Correctness.** Caching a function that reads a file, a clock, a database or a random number
+      makes it return stale answers with no symptom — the worst kind of bug, because the cache is not
+      where anyone looks. Caching a function that returns a mutable object is equally dangerous: the
+      cache stores a reference, so one caller mutating the list corrupts it for everyone forever.
+      Return immutables from cached functions.
+
+      **Memory.** The cache lives on the function object for the process lifetime, and `functools.cache`
+      is unbounded. On a method it keys on `self` and retains every instance ever passed. It also
+      has no TTL and no per-entry invalidation — `cache_clear()` is all-or-nothing.
+
+      **Cost.** Every call hashes its arguments, hit or miss. With a long string or a large tuple that
+      hash can dominate a cheap body, so a low hit rate makes the cache pure overhead. `cache_info()`
+      is how you find out; if hits are a small fraction of misses, remove it.
+
+      What I would reach for instead, in order: `cached_property` for per-instance values, a
+      module-level cache over primitives, and a real cache with a TTL and a key function once
+      expiry or invalidation enters the requirements — at which point Redis is usually the honest
+      answer, because a per-process cache is not coherent across workers anyway.
+    commonWrongAnswer: |
+      "It's fine, just add `maxsize`." Bounding it addresses only the memory symptom and none of the
+      purity, mutability or invalidation problems.
+    followUps:
+      - How would you cache a function whose argument is a dict?
+      - What does `cache_info()` tell you, and what would make you remove the cache?
+      - Why is caching a mutable return value dangerous?
+
+  - id: dc-iv-partial
+    level: comparison
+    concepts: ["partial", "lambda", "pickling", "introspection"]
+    question: "`functools.partial` versus a lambda — when does the difference actually matter?"
+    shortAnswer: |
+      Three cases: `partial` objects are picklable so they cross a `multiprocessing` boundary where
+      lambdas fail; they expose `.func`, `.args` and `.keywords` for introspection and testing; and
+      they bind eagerly, so they never suffer the late-binding trap that a lambda closing over a loop
+      variable does.
+    fullAnswer: |
+      The pickling one is the most practical. `ProcessPoolExecutor` pickles the callable to send it to
+      a worker, and a lambda has no importable qualified name, so it fails with a `PicklingError`
+      that confuses everyone the first time. `partial(module_level_function, arg)` pickles fine
+      because both the function and the bound arguments are picklable.
+
+      Introspection matters in library code and in tests: given a `partial`, you can assert on what
+      was bound without calling it, and its `repr` names the underlying function. A lambda is opaque —
+      its `repr` is `<lambda>` and its closure is not part of any public contract.
+
+      Eager binding is the subtle one. `partial(f, i)` stores the current value of `i`; `lambda: f(i)`
+      stores a reference to the cell holding `i`. In a loop that difference is the whole bug.
+
+      Where a lambda wins: anything that is not simply "call this function with some arguments
+      pre-filled". `lambda x: x.score * 2` has no `partial` equivalent, and forcing one through
+      `operator` chains is worse than the lambda. And `partial` binds positionally left to right, so
+      fixing a later positional argument requires a keyword — if the function does not have one, you
+      need a lambda or a small named function.
+    commonWrongAnswer: |
+      "They're the same, `partial` is just older." They differ in picklability, introspectability and
+      binding time, and each of the three shows up in real code.
+    followUps:
+      - Why does a lambda fail to pickle?
+      - How do you pre-bind a *later* positional argument?
+      - What is `partialmethod` for?
+
+  - id: dc-iv-method-decorator
+    level: internals
+    requiredForMastery: true
+    concepts: ["descriptors", "__get__", "class-based decorators", "bound methods"]
+    question: Why does a function-based decorator work on a method, while a class-based one usually does not?
+    shortAnswer: |
+      Because binding is the descriptor protocol. A function-based decorator returns a plain function,
+      and plain functions implement `__get__`, so accessing it through an instance produces a bound
+      method with `self` supplied. An instance of a decorator class is not a descriptor, so no binding
+      happens and `self` is never passed.
+    fullAnswer: |
+      Walk through what `service.fetch` does. Attribute lookup finds `fetch` on the class, and if the
+      object found there defines `__get__`, Python calls it with the instance — that is what turns a
+      function into a bound method. There is no special "method" type doing this; it is the same
+      descriptor machinery that powers `property`, `staticmethod` and `classmethod`.
+
+      A function-based decorator returns `wrapper`, which is a function, which is a descriptor, so
+      everything keeps working and `self` simply arrives as the first element of `*args`. A class
+      instance stored as a class attribute has no `__get__`, so the lookup returns the instance
+      itself, and calling it passes only the explicit arguments.
+
+      To fix it you implement `__get__(self, instance, owner)` on the decorator class and return
+      something bound — typically `functools.partial(self.__call__, instance)`, or a fresh per-instance
+      copy of the decorator wrapping `self.function.__get__(instance, owner)`. The second form is what
+      you need if the decorator holds per-call state, because the decorator object itself is a class
+      attribute shared by every instance, so any counter on it is shared too.
+
+      The idiom worth knowing: cache the bound copy in `instance.__dict__` under the same name. Since
+      the decorator is a non-data descriptor, the instance dictionary then takes precedence and
+      `__get__` never runs again for that instance. Add a `__set__` and that optimisation silently
+      stops working.
+    commonWrongAnswer: |
+      "You just need to add `self` as the first parameter of `__call__`." That changes nothing —
+      without `__get__`, the instance is never passed in the first place.
+    followUps:
+      - What exactly does `instance.__dict__` caching buy you here?
+      - Why does adding `__set__` break that optimisation?
+      - How does `functools.cached_property` use the same mechanism?
+
+  - id: dc-iv-generator-decorator
+    level: tricky
+    concepts: ["generators", "decorators", "lazy evaluation", "async"]
+    question: |
+      You add a timing decorator to a function and it reports 0.00002 seconds for something that
+      obviously takes ten seconds. What happened?
+    shortAnswer: |
+      The function is a generator function — or a coroutine function. Calling it returns an object
+      without running the body, so the decorator timed the construction. The real work happens when
+      the caller iterates or awaits, long after the wrapper has returned.
+    fullAnswer: |
+      Same mechanism, three flavours. A generator function returns a generator; an `async def`
+      returns a coroutine; a function returning a lazy object — a `map`, a `filter`, a Django
+      queryset, a PyTorch `DataLoader` iterator — returns something whose work is deferred.
+
+      The fix depends on the flavour. For generators, the wrapper must iterate: `yield from
+      function(*args, **kwargs)` inside the timed block, which makes the wrapper a generator function
+      too. For coroutines, `async def wrapper` and `await function(...)`. A decorator meant to be
+      general must inspect what it is wrapping — `inspect.isgeneratorfunction`,
+      `inspect.iscoroutinefunction`, `inspect.isasyncgenfunction` — and return the matching wrapper.
+
+      This generalises to a rule I would state in review: **a decorator that measures, logs or catches
+      must be on the stack while the work happens.** If the wrapped callable defers its work, the
+      wrapper has to defer with it, or it is measuring nothing.
+    commonWrongAnswer: |
+      "The timer is wrong, use `perf_counter`." The timer is fine; the wrapper simply is not on the
+      stack when the work happens.
+    followUps:
+      - How would you write one decorator that handles sync, async and generator functions?
+      - What does the same bug do to a `try/except` in a decorator?
+      - Why does `@contextmanager` not suffer from this?
+
+  - id: dc-iv-design-review
+    level: scenario
+    concepts: ["decorator design", "observability", "code review", "state placement"]
+    question: |
+      A team's codebase has grown fifteen home-made decorators — retry, cache, trace, auth, rate
+      limit, feature flag, and so on — stacked five deep on some handlers. What is your assessment?
+    shortAnswer: |
+      I would look at three things: whether each decorator's state lives at the right layer, whether
+      the stack order encodes deliberate decisions or accidents, and whether the debugging experience
+      has collapsed. Five wrappers deep, a traceback is mostly wrapper frames and no one can tell what
+      order things happen in.
+    fullAnswer: |
+      **State placement.** The commonest structural bug is state created in the wrong layer — a
+      counter or cache in the outer configuration layer becomes shared across every decorated
+      function, and the sharing is invisible until two functions interfere. The rule is that state
+      belongs in the layer that runs exactly as often as the state should exist.
+
+      **Order as design.** Cache above retry caches the retried result; retry above cache retries the
+      lookup. Auth below rate-limit means unauthenticated requests consume quota. These are real
+      product decisions, and in most codebases they were decided by whoever typed the lines. I would
+      want the intended order documented and, ideally, a single `@handler(...)` composite that applies
+      the stack in one blessed order so it cannot drift per file.
+
+      **Debuggability.** Every wrapper adds a frame, so tracebacks fill with `wrapper` lines,
+      especially if `wraps` was forgotten anywhere. Profiling gets harder for the same reason, and the
+      overhead is real once the stack is deep and the handler is hot.
+
+      **What I would actually propose.** Keep decorators for cross-cutting concerns that genuinely
+      apply uniformly — tracing, metrics, auth. Move anything with meaningful policy — retry
+      strategy, caching, rate limits — into explicit objects passed to the function or configured in
+      middleware, where the configuration is data you can test and change without redeploying a
+      decorator line. Decorators are excellent at "do this around every call" and poor at "here is
+      this call's policy", and most fifteen-decorator codebases are using them for the second thing.
+    commonWrongAnswer: |
+      "Decorators are a code smell, remove them." Fifteen inconsistent hand-rolled ones is the smell;
+      the mechanism is fine and is how every Python framework works.
+    followUps:
+      - How would you enforce a single stack order across a codebase?
+      - Which of those concerns belongs in middleware instead?
+      - What does a five-deep stack do to a traceback?
+
+projects:
+  - id: dc-project-decorator-toolkit
+    kind: major
+    title: A production decorator toolkit, with the tests that prove it
+    minutes: 180
+    summary: Six composable decorators built to library standard — signature-preserving, method-safe, thread-safe, introspectable — plus the test suite that proves each property.
+    problem: |
+      Every service you have worked on grows the same six decorators, badly. Build them once,
+      properly, as a small library other code can depend on.
+
+      The point is not that the decorators are hard — each is twenty lines. The point is the
+      properties they must hold *simultaneously*: they must preserve signatures for both
+      introspection and type checking, work on functions and methods and generator functions, be safe
+      under threads, keep their state at the right layer, and be observable enough to debug.
+
+      Standard library only. No `wrapt`, no `decorator` package — building it by hand is the exercise.
+    requirements:
+      - "`@retry(times, *, exceptions, backoff, on_retry)` with exponential backoff and a callback hook, re-raising the last exception when attempts run out."
+      - "`@timed(*, logger, threshold)` that logs only calls exceeding a threshold, and that works correctly on generator functions — measuring the whole iteration, not the construction."
+      - "`@cached(ttl=None, key=None, maxsize=128)` supporting a custom key function, lazy TTL expiry, LRU eviction, `cache_info()`, and per-entry `invalidate(*args)`."
+      - "`@rate_limited(calls, per_seconds)` using a sliding window, thread-safe, blocking until a call is permitted."
+      - "`@deprecated(since, *, use_instead)` emitting a `DeprecationWarning` with the correct `stacklevel` so it points at the caller, not at your wrapper."
+      - "`@validated` that checks arguments against the function's own type annotations at call time, using `inspect.signature` and `typing.get_type_hints`."
+      - "Every decorator usable with and without parentheses where that is meaningful, via the `function=None` plus `partial` pattern."
+      - "Every decorator typed with `ParamSpec` so a type checker sees through it; `mypy --strict` must pass on the package."
+    constraints:
+      - Standard library only — no third-party decorator helpers.
+      - Python 3.11 or newer.
+      - "Every decorator must work on a plain function, an instance method, a `classmethod` and a `staticmethod`, and each combination must have a test."
+      - "No decorator may store per-function state anywhere it would be shared between two decorated functions."
+      - "`mypy --strict` and `ruff` clean, with no `# type: ignore` that is not justified in a comment."
+    expectedBehaviour:
+      - "`inspect.signature` on any decorated function reports the original signature, including keyword-only parameters and defaults."
+      - "A decorated method called on two instances keeps whatever state the decorator holds separate per instance where the decorator documents that it does."
+      - "`@timed` on a generator function reports the time spent iterating, not a number near zero."
+      - "`@cached` with a TTL returns a fresh value after expiry and reports the expiration in `cache_info()`."
+      - "`@deprecated` produces a warning whose reported line number is the caller's line, not a line inside the toolkit."
+      - "`@validated` rejects a wrong argument type with a clear message naming the parameter, and accepts anything the annotation allows including `None` for `X | None`."
+    structure: |
+      decorators/
+        __init__.py
+        _support.py      # the function=None/partial helper, ParamSpec aliases, wrapper selection
+        retry.py
+        timing.py
+        caching.py
+        limiting.py
+        deprecation.py
+        validation.py
+      tests/
+        test_signatures.py    # introspection and typing properties, parametrised over all six
+        test_methods.py       # every decorator x function/method/classmethod/staticmethod
+        test_retry.py
+        test_caching.py       # ttl, eviction, key function, invalidation, metrics
+        test_limiting.py      # sliding window under threads
+        test_generators.py    # timing and retry on generator functions
+      README.md               # what each decorator does NOT guarantee
+    milestones:
+      - title: "1 — The support layer first"
+        detail: |
+          Write `_support.py` before any decorator: the `function=None`/`partial` dual-form helper, the
+          `ParamSpec` type aliases, and a `select_wrapper` that returns a sync, async or generator
+          wrapper based on `inspect`. Every decorator will use all three, and writing them once is
+          the difference between a toolkit and six copies of the same mistakes.
+      - title: "2 — retry and deprecated"
+        detail: |
+          The two simplest, to shake out the support layer. Get `stacklevel` right on `deprecated` —
+          it is a small detail that reveals whether you understand where your wrapper sits on the
+          stack.
+      - title: "3 — The signature test suite"
+        detail: |
+          Write `test_signatures.py` now, parametrised over the decorators you have, and run
+          `mypy --strict`. Do this before writing the remaining four, so they are built against the
+          bar rather than retrofitted to it.
+      - title: "4 — caching"
+        detail: |
+          The big one: `OrderedDict`, monotonic timestamps, lazy expiry, a key function, and metrics.
+          Write the README paragraph on what it does not guarantee — cross-process coherence, memory
+          in bytes, immutability of returned values — before you consider it finished.
+      - title: "5 — rate_limited and validated"
+        detail: |
+          The sliding window with a lock held only around the decision, and annotation-based
+          validation with `get_type_hints` so string annotations resolve.
+      - title: "6 — Methods, generators, and the honesty pass"
+        detail: |
+          Run every decorator against every callable shape. Fix what breaks. Then write the README
+          section listing, per decorator, what it does not do — that section is the deliverable that
+          separates this from a snippet collection.
+    testing:
+      - "A parametrised test asserting, for every decorator, that `inspect.signature` of a decorated function equals the signature of the undecorated one."
+      - "A parametrised test running every decorator on a function, a method, a `classmethod` and a `staticmethod` — 24 combinations minimum."
+      - "A `@timed` test on a generator function asserting the reported duration covers the iteration, using a generator that sleeps between yields."
+      - "A `@cached` TTL test using an injected clock, not `time.sleep` — the clock must be a parameter so the test is instant and deterministic."
+      - "A `@cached` test proving LRU eviction order and that `invalidate` removes exactly one entry."
+      - "A threaded `@rate_limited` test with 20 threads asserting the observed rate never exceeds the configured one over any window."
+      - "A `@deprecated` test using `pytest.warns` and asserting the warning's filename is the test file, which is what proves `stacklevel` is right."
+      - "A `@retry` test asserting the callback fires once per retry and that the *last* exception propagates, not the first."
+      - "`mypy --strict` run as part of the test suite, with a deliberately wrong call in a `# type: ignore`-free file expected to fail."
+    failureCases:
+      - "State created in the outer configuration layer, so two functions decorated with the same options share a cache or a counter."
+      - "Forgetting `functools.wraps` on one wrapper, which erases introspection for every decorator stacked above it."
+      - "`@timed` on a generator function measuring generator construction and reporting near-zero."
+      - "Holding the rate limiter's lock across `time.sleep`, which serialises every thread instead of just the ones that must wait."
+      - "`deprecated` with the default `stacklevel=1`, so every warning points at the toolkit and users cannot find their own call site."
+      - "A cache keyed on `self` for methods, reintroducing the exact leak this topic warns about."
+      - "Type-checking the decorators with `Callable[..., Any]`, which passes `mypy --strict` while providing no safety at all."
+      - "`@validated` using `__annotations__` directly instead of `get_type_hints`, so `from __future__ import annotations` turns every annotation into an unusable string."
+    bonus:
+      - "Add `@singleflight`, collapsing concurrent identical calls into one execution shared by all waiters — then write down the deadlock risk it introduces."
+      - "Make `@cached` support async functions, and explain why the lock must become an `asyncio.Lock`."
+      - "Add a `compose(*decorators)` helper that applies a stack in a documented order, and a test proving the order."
+      - "Publish coverage of the `__wrapped__` chain: a test asserting `inspect.unwrap` reaches the original through all six stacked."
+    architectureHints:
+      - "Write `_support.dual_form(decorator)` once: it takes a decorator whose first parameter is `function=None` and returns one usable both with and without parentheses. Six copies of that `if function is None` block is six chances to get it wrong."
+      - "`inspect.isgeneratorfunction` and `inspect.iscoroutinefunction` must be checked on the *original* function, before wrapping — after wrapping, the wrapper's own nature answers instead."
+      - "For the TTL clock, take `clock=time.monotonic` as a keyword parameter on `cached`. Injecting it is what makes the expiry tests instant; it also documents that wall-clock time is deliberately not used."
+      - "`warnings.warn(..., stacklevel=2)` from inside the wrapper points at the wrapper's caller. Count the frames deliberately — if you add a helper, the number changes."
+      - "`typing.get_type_hints(function)` resolves string annotations against the function's own module globals; `function.__annotations__` does not. This matters the moment anyone adds `from __future__ import annotations`."
+      - "For methods, remember you do not need a descriptor at all as long as every wrapper is a plain function. Only reach for `__get__` if you deliberately want per-instance state."
+      - "`OrderedDict.move_to_end(key)` on a hit and `popitem(last=False)` to evict gives LRU in O(1). A plain dict plus a list is O(n) and will show up in the benchmarks."
+    referenceOutline: |
+      A good solution is roughly 400 lines plus a similar amount of tests. Its seams:
+
+      - `_support.dual_form` — the parentheses-optional wrapper, implemented with
+        `functools.partial`, applied to all six decorators as a decorator itself.
+      - `_support.wrapper_for(function)` — returns the sync, async or generator wrapper factory, so
+        every decorator handles all three shapes without repeating the `inspect` checks.
+      - `_support.P`/`R` — the `ParamSpec` and `TypeVar` that make
+        `Callable[[Callable[P, R]], Callable[P, R]]` the shared signature of every decorator here.
+      - `caching.Cache` — a small class holding the `OrderedDict`, the lock, the clock and the
+        counters, with `get`/`set`/`invalidate`/`info`. Keeping it a class rather than closure
+        variables is what makes it testable directly, and testable directly is what lets the TTL and
+        eviction tests avoid going through a decorated function at all.
+      - `validation.check(signature, hints, args, kwargs)` — a pure function, so the annotation logic
+        is tested without decorating anything.
+
+      The paragraph the README must contain, and the reason this project exists: **for each
+      decorator, what does it not guarantee?** `cached` is not coherent across processes and does not
+      bound memory in bytes. `rate_limited` is per-process, so N workers means N times the rate.
+      `retry` cannot know whether an operation was idempotent, so it can duplicate side effects.
+      `validated` checks only what annotations express, so `list[int]` is checked as `list`. Writing
+      that section is harder than writing the code, and it is what the exercise is actually for.
+
+  - id: dc-final-challenge
+    kind: final-challenge
+    title: "Final challenge: repair a decorator layer"
+    minutes: 60
+    summary: One decorators module, nine defects, each one a closure or decorator mistake from this topic — including two that produce wrong results with no error.
+    problem: |
+      The module below is a real-shaped internal decorators helper from a service. It imports, it
+      runs, and it is wrong in nine distinct ways covered by this topic. At least two produce
+      plausible but incorrect behaviour with no exception anywhere.
+
+      Find all nine before changing anything. Write them down with the symptom each produces and the
+      condition that triggers it. Then rewrite the module.
+    requirements:
+      - "A written defect list before any code changes, one heading per defect, each with its symptom and its trigger condition."
+      - "A rewritten module where every decorator preserves introspection, places its state at the correct layer, and works on methods."
+      - "Each fix carried by a comment naming the rule behind it."
+      - "A regression test for at least seven of the nine, each verified to fail against the original."
+    constraints:
+      - Standard library only.
+      - "Keep every public decorator's name and call signature unchanged."
+      - "No decorator may hold state that is shared between two separately decorated functions unless it documents that it does."
+    expectedBehaviour:
+      - "Two functions decorated with the same decorator have independent state."
+      - "`inspect.signature` on any decorated function reports the original signature."
+      - "A decorated generator function is timed and retried over its whole iteration."
+      - "A decorated method called on two instances does not leak instances after they go out of scope."
+      - "Decorating with and without parentheses either both work or the wrong form fails immediately with a clear error."
+    structure: |
+      decorators.py     # the rewrite
+      DEFECTS.md        # nine headings, symptom and trigger for each
+      test_decorators.py
+    milestones:
+      - title: "1 — Read and list"
+        detail: Work through the module against this topic's own section order and write DEFECTS.md first. Do not open the reference outline.
+      - title: "2 — The silent ones"
+        detail: Fix the defects that produce wrong behaviour with no exception before the ones that crash. They are the ones that would survive a code review.
+      - title: "3 — State and layers"
+        detail: For every piece of state, ask which layer should own it, and move it.
+      - title: "4 — Prove it"
+        detail: A regression test per defect; run each against the original module and confirm it fails there.
+    testing:
+      - "Each regression test must fail on the original module — run it and check, do not assume."
+      - "A test that two functions decorated with the same decorator do not share state."
+      - "A test that `inspect.signature` survives every decorator, and a `gc`-based test that decorated instances are collectable."
+      - "A test that the decorators work on an instance method, a classmethod and a staticmethod."
+    failureCases:
+      - "Finding the missing `functools.wraps` and stopping. That one is the easiest of the nine."
+      - "Fixing the shared-state bug by adding a global registry keyed on function name, which breaks the moment two modules define functions with the same name."
+      - "Rewriting the cache with `functools.cache` on the method, which trades one leak for the canonical one."
+    bonus:
+      - "Add `ParamSpec` typing throughout and make `mypy --strict` pass."
+      - "Add a test that the whole stack of decorators applied together still preserves `inspect.unwrap` all the way to the original."
+    architectureHints:
+      - "Walk the topic's sections in order: closures and cells, late binding, desugaring, wraps, parameterised decorators, stacking, lru_cache, cached_property, class-based decorators. Each section has at least one defect in it."
+      - "Two of the nine are about state living in the wrong layer. Two are about a decorator not being on the stack when the work happens. One is a mutable default."
+      - "The two silent defects produce wrong numbers and wrong cached values rather than exceptions — those are the ones to find first and the ones most often missed."
+    referenceOutline: |
+      The nine, grouped:
+
+      **State placement** — a counter created in the outer configuration layer, so every function
+      decorated with the same options shares it; a mutable default argument on the decorator factory,
+      which is the same bug by a different route and is shared even more widely.
+
+      **Introspection** — one wrapper without `functools.wraps`, which erases `__name__` and
+      `__wrapped__` for every decorator stacked above it in the same chain.
+
+      **Laziness** — a timing decorator applied to a generator function, measuring construction and
+      reporting near-zero; a `try/except` decorator around the same generator function, which
+      therefore never sees the exception it exists to catch. Both silent.
+
+      **Caching** — `lru_cache` on a method, retaining every instance for the process lifetime; a
+      cached function returning a list that a caller mutates in place, permanently corrupting the
+      cached value for everyone. The second is the quiet one.
+
+      **Binding** — a class-based decorator applied to a method, which never receives `self` because
+      the decorator instance is not a descriptor.
+
+      **Form** — a parameterised decorator used without parentheses, so the function object arrives
+      where the first configuration argument was expected and the failure surfaces somewhere else
+      entirely.
+
+      If your list has fewer than nine, the two most often missed are the mutated cached list and the
+      timing decorator on the generator — because neither produces an error message, and both look
+      exactly like working code.
+
+resources:
+  - name: "PEP 318 — Decorators for Functions and Methods"
+    type: docs
+    difficulty: core
+    url: "https://peps.python.org/pep-0318/"
+    usefulness: 4
+    why: The original design document, which states outright that the syntax is sugar for a function call and shows the desugaring in the first example — worth reading once because it settles every "but what does the @ actually do" question permanently.
+    covers: "The desugaring rule, the ordering of stacked decorators, and the reasoning behind the syntax."
+
+  - name: "functools — the standard library reference"
+    type: docs
+    difficulty: core
+    url: "https://docs.python.org/3/library/functools.html"
+    usefulness: 5
+    why: The primary source for every tool in this topic, and unusually candid — it states in the text itself that lru_cache on a method keeps instances alive, and that cached_property requires a mutable __dict__.
+    covers: "`wraps`, `update_wrapper`, `lru_cache`, `cache`, `cached_property`, `partial`, `partialmethod`, `singledispatch`, `total_ordering`, `reduce`."
+
+  - name: "Python Reference — Function definitions and the execution model"
+    type: docs
+    difficulty: deep
+    url: "https://docs.python.org/3/reference/executionmodel.html"
+    usefulness: 4
+    why: The authoritative statement of the scoping rules that make closures work — specifically that a name assigned anywhere in a block is local to that whole block, which is the rule behind UnboundLocalError and behind nonlocal existing at all.
+    covers: "Binding of names, local/enclosing/global/builtin resolution, free variables, and the rules `nonlocal` and `global` modify."
+
+  - name: "PEP 612 — Parameter Specification Variables"
+    type: docs
+    difficulty: deep
+    url: "https://peps.python.org/pep-0612/"
+    usefulness: 4
+    why: The PEP is written almost entirely around the decorator problem, so it doubles as the definitive guide to typing a decorator that preserves its wrapped function's signature — which functools.wraps cannot do.
+    covers: "`ParamSpec`, `P.args` and `P.kwargs`, `Concatenate`, and how to type decorators that add or remove parameters."
+
+  - name: "inspect — introspecting live objects"
+    type: docs
+    difficulty: core
+    url: "https://docs.python.org/3/library/inspect.html"
+    usefulness: 4
+    why: Documents the other half of the wraps contract — signature, unwrap and follow_wrapped are what frameworks actually call, so this is where you learn what your decorator has to preserve and how to verify it did.
+    covers: "`signature` and `follow_wrapped`, `unwrap`, `isgeneratorfunction`, `iscoroutinefunction`, and reading closures via code objects."
