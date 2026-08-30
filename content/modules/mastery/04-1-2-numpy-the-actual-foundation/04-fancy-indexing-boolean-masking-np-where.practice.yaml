@@ -1,0 +1,782 @@
+lessonId: "roadmap:phase-1-1.2:3"
+module: 1-2-numpy-the-actual-foundation
+lesson: 04-fancy-indexing-boolean-masking-np-where
+title: "Fancy indexing, boolean masking, np.where"
+summary: Derive gather, mask, conditional-selection, and scatter behavior from coordinates and shapes.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: nfi-classify-indexing
+    tier: normal
+    kind: code-reading
+    title: Classify four indexing expressions
+    minutes: 10
+    requiredForMastery: true
+    concepts: [basic-indexing, advanced-indexing, copy, view]
+    prompt: |
+      For `x = np.arange(20).reshape(4, 5)`, classify each read as basic or advanced indexing,
+      predict its shape, and state whether the result can share memory with `x`:
+
+      1. `x[1:3, :]`
+      2. `x[[1, 2], :]`
+      3. `x[2, 1:4]`
+      4. `x[np.array(2), 1:4]`
+    hints:
+      - Slices and scalar integers are basic; an integer array triggers advanced indexing.
+      - A zero-dimensional integer array still triggers advanced indexing even though it names one position.
+    solution: |
+      The first and third expressions are basic and produce shapes `(2, 5)` and `(3,)`; they can
+      share memory. The list and zero-dimensional integer array trigger advanced indexing, so the
+      second and fourth results, shaped `(2, 5)` and `(3,)`, are copies. Equal shapes do not imply
+      equal ownership.
+  - id: nfi-paired-coordinates
+    tier: normal
+    kind: predict-output
+    title: Read paired coordinates
+    minutes: 10
+    requiredForMastery: true
+    concepts: [integer-array-indexing, paired-coordinates, result-shape]
+    prompt: |
+      For `x = np.arange(12).reshape(3, 4)`, derive the value and shape of
+      `x[np.array([0, 2, 1]), np.array([3, 0, 2])]` without running it.
+    hints:
+      - Pair index values at the same broadcast position.
+      - The three coordinate pairs are `(0, 3)`, `(2, 0)`, and `(1, 2)`.
+    solution: |
+      The selected values are `[3, 8, 6]`. Both index arrays have shape `(3,)`, so their broadcast
+      shape and the output shape are `(3,)`; NumPy does not form a three-by-three grid.
+  - id: nfi-build-cartesian-product
+    tier: normal
+    kind: write-code
+    title: Select a rectangular submatrix
+    minutes: 12
+    requiredForMastery: true
+    concepts: [cartesian-product, ix, singleton-axis]
+    prompt: |
+      Select rows `[4, 1]` crossed with columns `[3, 0, 2]` from a matrix. Implement the selection
+      once with reshaped indices and once with `np.ix_`.
+    hints:
+      - Give rows shape `(2, 1)` and columns shape `(1, 3)`.
+      - "`np.ix_` constructs mutually broadcastable one-dimensional index grids."
+    solution: |
+      Use `x[rows[:, None], cols[None, :]]` or `x[np.ix_(rows, cols)]`. Both coordinate programs
+      broadcast to `(2, 3)`, so the output is the requested two-by-three submatrix in the specified
+      row and column order.
+    solutionCode: |
+      rows = np.array([4, 1])
+      cols = np.array([3, 0, 2])
+      by_axes = x[rows[:, None], cols[None, :]]
+      by_ix = x[np.ix_(rows, cols)]
+      np.testing.assert_array_equal(by_axes, by_ix)
+  - id: nfi-read-full-mask
+    tier: normal
+    kind: code-reading
+    title: Derive full-mask output order
+    minutes: 11
+    requiredForMastery: true
+    concepts: [boolean-mask, traversal-order, data-dependent-shape]
+    prompt: |
+      `x = np.arange(12).reshape(3, 4)` and `mask = (x % 4 == 1) | (x > 9)`. Derive the selected
+      values, result rank, and ownership.
+    hints:
+      - A full-shape mask visits values in row-major traversal order.
+      - Count true positions to obtain the only output dimension.
+    solution: |
+      The selected values are `[1, 5, 9, 10, 11]`. A full-shape mask selects scalars and returns a
+      one-dimensional result of shape `(5,)`. Boolean indexing is advanced indexing, so this read
+      returns a copy.
+  - id: nfi-mask-leading-dimensions
+    tier: intermediate
+    kind: predict-output
+    title: Preserve trailing channels
+    minutes: 13
+    requiredForMastery: true
+    concepts: [partial-mask, trailing-dimensions, image-batch]
+    prompt: |
+      `pixels` has shape `(2, 3, 4, 8)`. A boolean mask of shape `(2, 3, 4)` contains seven true
+      entries. Predict `pixels[mask].shape` and explain which dimensions the mask consumes.
+    hints:
+      - The mask matches the first three source dimensions exactly.
+      - True positions collapse into one selection dimension; unmatched trailing dimensions remain.
+    solution: |
+      The result shape is `(7, 8)`. The mask consumes the batch and two spatial dimensions, and
+      each true coordinate selects the full trailing eight-channel vector. The number seven is
+      data-dependent.
+  - id: nfi-gather-topk
+    tier: intermediate
+    kind: write-code
+    title: Gather per-row top-k values
+    minutes: 16
+    requiredForMastery: true
+    concepts: [take-along-axis, argsort, semantic-axis]
+    prompt: |
+      Given scores shaped `(batch, classes)` and class IDs shaped `(batch, k)`, validate the
+      contract and gather the matching scores without manually constructing row indices.
+    hints:
+      - The index array must match the source rank for `take_along_axis`.
+      - Gather along the class axis after validating batch length and index range.
+    solution: |
+      Require rank-two arrays, equal batch lengths, integer IDs, and values in `[0, classes)`.
+      `np.take_along_axis(scores, class_ids, axis=1)` then returns `(batch, k)` and makes the class
+      axis explicit.
+    solutionCode: |
+      def gather_scores(scores: np.ndarray, class_ids: np.ndarray) -> np.ndarray:
+          if scores.ndim != 2 or class_ids.ndim != 2:
+              raise ValueError("scores and class_ids must be rank two")
+          if class_ids.shape[0] != scores.shape[0] or not np.issubdtype(class_ids.dtype, np.integer):
+              raise ValueError("class_ids must be integer IDs for every batch row")
+          if np.any(class_ids < 0) or np.any(class_ids >= scores.shape[1]):
+              raise IndexError("class ID out of range")
+          return np.take_along_axis(scores, class_ids, axis=1)
+  - id: nfi-guarded-division
+    tier: intermediate
+    kind: write-code
+    title: Avoid evaluating an invalid branch
+    minutes: 14
+    requiredForMastery: true
+    concepts: [ufunc-where, initialized-output, guarded-computation]
+    prompt: |
+      Compute `numerator / denominator` where denominators are nonzero, returning zero elsewhere,
+      without performing division at invalid positions.
+    hints:
+      - Three-argument `np.where` receives already-evaluated array arguments.
+      - Initialize the result, then use `np.divide` with both `out=` and `where=`.
+    solution: |
+      Create a zero-filled output with the intended floating dtype, derive the nonzero mask, and
+      pass both to `np.divide`. The ufunc skips masked positions and the initialized output defines
+      their values.
+    solutionCode: |
+      def safe_ratio(numerator: np.ndarray, denominator: np.ndarray) -> np.ndarray:
+          numerator, denominator = np.broadcast_arrays(numerator, denominator)
+          out = np.zeros_like(numerator, dtype=np.result_type(numerator, denominator, np.float64))
+          np.divide(numerator, denominator, out=out, where=denominator != 0)
+          return out
+  - id: nfi-choose-selection-tool
+    tier: intermediate
+    kind: design
+    title: Choose an indexing contract
+    minutes: 16
+    requiredForMastery: true
+    concepts: [tool-selection, nonzero, take, where]
+    prompt: |
+      Choose the clearest tool for each job and justify it: fixed rows from every matrix, one class
+      per batch row, coordinates of invalid pixels, replacement values that preserve tensor shape,
+      and a compact list of valid scalar values.
+    hints:
+      - Separate fixed-axis gather, per-slice gather, coordinate extraction, selection, and filtering.
+      - Consider `take`, `take_along_axis`, `nonzero`, three-argument `where`, and boolean indexing.
+    solution: |
+      Use `take(axis=...)` for one fixed row set, `take_along_axis` for per-row class IDs,
+      `nonzero` for coordinates, three-argument `where` for shape-preserving replacement, and
+      boolean indexing for a compact value list. Naming the job prevents a syntactically valid but
+      semantically wrong index.
+  - id: nfi-debug-square-axis
+    tier: tricky
+    kind: debug
+    title: Expose a square-shape gather bug
+    minutes: 18
+    requiredForMastery: true
+    concepts: [semantic-axis, coincidental-equality, regression-test]
+    prompt: |
+      Diagnose and repair a function intended to choose one class score per batch row. Add a test
+      that fails against the original implementation.
+    code: |
+      def chosen_scores(scores, class_ids):
+          # scores=(4, 4), class_ids=(4,)
+          return scores[:, class_ids]
+    hints:
+      - The current expression selects every requested column for every row.
+      - Use a per-row gather and make the test batch size differ from class count.
+    solution: |
+      The original returns `(batch, batch)` when one scalar per row was required. Reshape IDs to
+      `(batch, 1)`, gather along axis one, and remove the singleton result axis. Test a `(3, 5)`
+      matrix with three distinct IDs.
+    solutionCode: |
+      def chosen_scores(scores: np.ndarray, class_ids: np.ndarray) -> np.ndarray:
+          if scores.ndim != 2 or class_ids.shape != (scores.shape[0],):
+              raise ValueError("need one class ID per row")
+          return np.take_along_axis(scores, class_ids[:, None], axis=1)[:, 0]
+  - id: nfi-debug-mask-broadcast
+    tier: tricky
+    kind: debug
+    title: Repair a channel threshold mask
+    minutes: 18
+    requiredForMastery: true
+    concepts: [mask-shape, broadcasting, nchw]
+    prompt: |
+      The code should zero NCHW activations below one threshold per channel. Diagnose its mask and
+      repair the operation with explicit semantic shape.
+    code: |
+      def threshold_channels(x, thresholds):
+          # x=(N, C, H, W), thresholds=(C,)
+          x[x < thresholds] = 0
+          return x
+    hints:
+      - A bare `(C,)` vector aligns with width during arithmetic comparison.
+      - Reshape thresholds to `(1, C, 1, 1)` after validating C.
+    solution: |
+      Validate NCHW rank and exactly one finite threshold per channel. Compare against
+      `thresholds.reshape(1, C, 1, 1)`, whose singleton axes broadcast intentionally, then assign
+      through the resulting full-shape mask. Decide whether mutating the caller-owned input is part
+      of the API.
+    solutionCode: |
+      def threshold_channels(x: np.ndarray, thresholds: np.ndarray) -> np.ndarray:
+          if x.ndim != 4 or thresholds.shape != (x.shape[1],):
+              raise ValueError("expected NCHW data and one threshold per channel")
+          out = x.copy()
+          out[out < thresholds.reshape(1, x.shape[1], 1, 1)] = 0
+          return out
+  - id: nfi-debug-where-division
+    tier: tricky
+    kind: debug
+    title: Remove eager invalid arithmetic
+    minutes: 17
+    requiredForMastery: true
+    concepts: [where, eager-evaluation, divide]
+    prompt: |
+      Explain why this emits warnings and may create invalid temporaries, then repair it.
+    code: |
+      ratios = np.where(denominator != 0, numerator / denominator, 0.0)
+    hints:
+      - Python evaluates function arguments before `np.where` selects values.
+      - Use `np.divide` with a preinitialized output and a `where` mask.
+    solution: |
+      The division happens for every broadcast position before `np.where` is called. Allocate or
+      reuse a correctly shaped floating output initialized to zero, then call `np.divide` with
+      `where=denominator != 0`. This avoids computing the invalid branch.
+    solutionCode: |
+      numerator, denominator = np.broadcast_arrays(numerator, denominator)
+      ratios = np.zeros_like(numerator, dtype=np.float64)
+      np.divide(numerator, denominator, out=ratios, where=denominator != 0)
+  - id: nfi-debug-duplicate-counts
+    tier: tricky
+    kind: debug
+    title: Preserve duplicate histogram updates
+    minutes: 18
+    requiredForMastery: true
+    concepts: [repeated-indices, scatter, add-at]
+    prompt: |
+      The histogram undercounts repeated labels. Diagnose the gather-update-scatter behavior and
+      implement a correct update.
+    code: |
+      counts = np.zeros(num_classes, dtype=np.int64)
+      counts[labels] += 1
+    hints:
+      - Repeated advanced indices read the same original value into a temporary.
+      - Use an unbuffered indexed accumulation operation.
+    solution: |
+      Augmented advanced-index assignment does not promise one accumulation per duplicate target.
+      Validate integer labels and their range, then call `np.add.at(counts, labels, 1)`. Every
+      occurrence is applied, so repeated labels contribute repeatedly.
+    solutionCode: |
+      if not np.issubdtype(labels.dtype, np.integer):
+          raise TypeError("labels must be integers")
+      if np.any(labels < 0) or np.any(labels >= num_classes):
+          raise IndexError("label out of range")
+      counts = np.zeros(num_classes, dtype=np.int64)
+      np.add.at(counts, labels, 1)
+  - id: nfi-implement-gather-2d
+    tier: challenge
+    kind: write-code
+    title: Implement a validated coordinate gather
+    minutes: 28
+    requiredForMastery: false
+    concepts: [gather, coordinate-validation, copy-contract]
+    prompt: |
+      Implement `gather_2d(matrix, coordinates)` where `matrix` is rank two and `coordinates` is
+      shaped `(..., 2)`. Return values shaped `coordinates.shape[:-1]`. Reject non-integer,
+      negative, or out-of-range coordinates rather than using NumPy's negative wrapping.
+    hints:
+      - Split the last coordinate axis into row and column arrays with the same shape.
+      - Validate every coordinate before executing paired advanced indexing.
+    solution: |
+      The leading coordinate shape is the desired output shape. Validate the source rank, final
+      coordinate width, integer dtype, and both bounds. Paired row and column arrays already share
+      the leading shape, so one advanced-index expression performs the gather and returns a copy.
+    solutionCode: |
+      def gather_2d(matrix: np.ndarray, coordinates: np.ndarray) -> np.ndarray:
+          if matrix.ndim != 2 or coordinates.ndim < 1 or coordinates.shape[-1] != 2:
+              raise ValueError("expected a matrix and (..., 2) coordinates")
+          if not np.issubdtype(coordinates.dtype, np.integer):
+              raise TypeError("coordinates must be integers")
+          rows, cols = coordinates[..., 0], coordinates[..., 1]
+          if np.any(rows < 0) or np.any(rows >= matrix.shape[0]):
+              raise IndexError("row coordinate out of range")
+          if np.any(cols < 0) or np.any(cols >= matrix.shape[1]):
+              raise IndexError("column coordinate out of range")
+          return matrix[rows, cols]
+  - id: nfi-design-selection-budget
+    tier: challenge
+    kind: performance
+    title: Budget a production selection pipeline
+    minutes: 26
+    requiredForMastery: false
+    concepts: [memory-budget, locality, benchmark]
+    prompt: |
+      Design a benchmark comparing a full boolean mask, coordinate extraction followed by gather,
+      and chunked selection for a large embedding table. Include correctness, peak-memory, and
+      access-locality evidence.
+    hints:
+      - Account separately for the mask, integer coordinates, gathered values, and device transfers.
+      - Keep selected coordinates, dtype, ordering, warm-up, and downstream work identical.
+    solution: |
+      Derive bytes for every live array and measure peak allocator or resident memory around the
+      complete pipeline. Verify identical coordinates, ordering, values, and ownership. Benchmark
+      sorted and random indices because locality changes cache behavior. Include transfers and
+      synchronization, report distributions, and choose chunk size from a declared memory ceiling.
+quizzes:
+  - id: nfi-checkpoint
+    title: Checkpoint — gather and mask mechanics
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: nfi-cp-copy
+        kind: mcq
+        prompt: Which read is guaranteed to use advanced indexing?
+        options:
+          - {id: slice, text: "x[1:4]"}
+          - {id: integer, text: "x[2]"}
+          - {id: array, text: "x[np.array([2])]"}
+        answer: [array]
+        explanation: An integer array triggers advanced indexing and returns a gathered copy.
+        concepts: [advanced-indexing]
+        points: 1
+      - id: nfi-cp-paired
+        kind: mcq
+        prompt: What does `x[[0, 2], [3, 1]]` select from a matrix?
+        options:
+          - {id: pairs, text: Two paired coordinates}
+          - {id: grid, text: A two-by-two Cartesian product}
+          - {id: rows, text: Two complete rows}
+        answer: [pairs]
+        explanation: Equal-shaped integer arrays are broadcast together and paired position by position.
+        concepts: [paired-coordinates]
+        points: 1
+      - id: nfi-cp-mask
+        kind: mcq
+        prompt: A full-shape mask has six true entries. What is the filtered result shape?
+        options:
+          - {id: six, text: "(6,)"}
+          - {id: source, text: The source shape}
+          - {id: mask, text: The mask shape plus one axis}
+        answer: [six]
+        explanation: Full-shape boolean indexing collects matching scalar values into one dimension.
+        concepts: [boolean-mask]
+        points: 1
+      - id: nfi-cp-safe
+        kind: multi
+        prompt: Which pieces are required to skip invalid division and define masked output values?
+        options:
+          - {id: ufunc, text: Call np.divide directly}
+          - {id: where, text: Pass a where mask}
+          - {id: out, text: Pass an initialized output}
+          - {id: ternary, text: Wrap the division in three-argument np.where}
+        answer: [ufunc, where, out]
+        explanation: The ufunc applies the mask during computation, while initialized out defines skipped positions.
+        concepts: [ufunc-where]
+        points: 1
+  - id: nfi-assessment
+    title: Assessment — reliable array selection
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: nfi-as-view-copy
+        kind: mcq
+        prompt: Which statement about `picked = x[[1, 3]]` is correct?
+        options:
+          - {id: view, text: It is a view because rows are contiguous}
+          - {id: copy, text: It is an advanced-indexing copy}
+          - {id: depends, text: It is a view only for C-contiguous x}
+        answer: [copy]
+        explanation: Integer-array indexing gathers into new storage regardless of source contiguity.
+        concepts: [copy]
+        points: 1
+      - id: nfi-as-shape
+        kind: predict-output
+        prompt: Predict the shape of `x[rows]` when x is `(7, 5)` and rows is `(2, 3)`.
+        code: |
+          x = np.empty((7, 5))
+          rows = np.array([[0, 1, 2], [6, 4, 3]])
+        modelAnswer: |
+          The shape is `(2, 3, 5)`. The index-array shape replaces the indexed row axis, and the
+          untouched column axis follows it.
+        explanation: One advanced index contributes its own shape before remaining source dimensions.
+        concepts: [result-shape]
+        points: 1
+      - id: nfi-as-cartesian
+        kind: write-function
+        prompt: Write an expression that selects a Cartesian product of one-dimensional rows and columns.
+        modelAnswer: |
+          Use `x[np.ix_(rows, cols)]` or `x[rows[:, None], cols[None, :]]`. Both construct a
+          two-dimensional coordinate grid rather than paired coordinates.
+        explanation: Orthogonal singleton axes make the desired outer selection explicit.
+        concepts: [cartesian-product]
+        points: 1
+      - id: nfi-as-partial-mask
+        kind: predict-output
+        prompt: Images are `(10, 32, 32, 3)` and a `(10, 32, 32)` mask has 120 true values. Predict `images[mask].shape`.
+        modelAnswer: |
+          The shape is `(120, 3)`. The mask consumes its three matching leading dimensions and the
+          trailing channel dimension remains.
+        explanation: A partial boolean mask collapses true positions while preserving unmatched trailing dimensions.
+        concepts: [partial-mask]
+        points: 1
+      - id: nfi-as-where
+        kind: find-bug
+        prompt: Find the numerical-safety defect in `np.where(b != 0, a / b, 0)`.
+        modelAnswer: |
+          `a / b` is evaluated before `np.where`, so invalid division still occurs. Initialize an
+          output and use `np.divide(a, b, out=out, where=b != 0)`.
+        explanation: Three-argument where selects results but does not lazily evaluate Python arguments.
+        concepts: [eager-evaluation]
+        points: 1
+      - id: nfi-as-duplicates
+        kind: find-bug
+        prompt: Explain why `counts[labels] += 1` can undercount duplicate labels.
+        modelAnswer: |
+          Advanced indexing gathers old values into a temporary and scatters updated values back,
+          so repeated destinations can receive only one effective increment. Use `np.add.at` when
+          every occurrence must accumulate.
+        explanation: Duplicate scatter semantics must be made explicit.
+        concepts: [repeated-indices]
+        points: 1
+      - id: nfi-as-tool
+        kind: multi
+        prompt: Which tools naturally express one different index per row?
+        options:
+          - {id: taa, text: np.take_along_axis}
+          - {id: paired, text: Paired row and column index arrays}
+          - {id: slice, text: One basic slice}
+          - {id: ix, text: np.ix_ Cartesian selection}
+        answer: [taa, paired]
+        explanation: Both choices encode paired per-row coordinates; slices and ix_ express different selections.
+        concepts: [per-row-gather]
+        points: 1
+      - id: nfi-as-validation
+        kind: scenario
+        prompt: An inference endpoint accepts externally supplied class IDs. State the minimum gather validation.
+        modelAnswer: |
+          Validate source and index ranks, integer index dtype, exact batch alignment, explicit
+          negative-index policy, upper bounds, expected output shape, and the semantic class axis.
+          Also budget output and transfer size before gathering.
+        explanation: Mechanical index validity is weaker than a safe API contract.
+        concepts: [validation]
+        points: 1
+      - id: nfi-as-performance
+        kind: performance
+        prompt: Why can a small random gather be slower than a larger slice?
+        modelAnswer: |
+          A slice can be a cheap strided view with predictable access. A random gather allocates a
+          result and reads scattered source addresses, losing cache locality and possibly adding
+          index conversion or device-transfer costs.
+        explanation: Element count alone does not describe indexing cost.
+        concepts: [locality, allocation]
+        points: 1
+      - id: nfi-as-refactor
+        kind: refactor
+        prompt: Refactor `scores[np.arange(scores.shape[0]), ids]` to state the semantic axis explicitly.
+        modelAnswer: |
+          Use `np.take_along_axis(scores, ids[:, None], axis=1)[:, 0]` after validating one integer
+          ID per batch row. The axis argument documents the class dimension.
+        explanation: Axis-named gather reduces coordinate boilerplate and makes review easier.
+        concepts: [take-along-axis]
+        points: 1
+interview:
+  - id: nfi-iv-basic
+    level: basic
+    requiredForMastery: true
+    concepts: [basic-indexing, advanced-indexing]
+    question: What separates basic indexing from advanced indexing in NumPy?
+    shortAnswer: |
+      Basic indices are scalar integers, slices, ellipsis, and new axes; they navigate an existing
+      strided view. Integer or boolean arrays trigger advanced indexing and gather a copy. Assignment
+      through an advanced index is a scatter into the source, which is a separate contract.
+    fullAnswer: |
+      Basic indexing can describe the result with offsets, shape, and strides over the same buffer.
+      Advanced indexing describes arbitrary coordinates, so NumPy assembles selected values into a
+      new result.
+
+      This distinction predicts aliasing and cost. It also explains why replacing `1:3` with
+      `[1, 2]` can preserve values and shape while changing ownership completely.
+    commonWrongAnswer: |
+      "Advanced indexing just means indexing more than one axis." A multi-axis tuple of scalar
+      integers and slices is still basic; the integer or boolean array is the trigger.
+    followUps:
+      - How would you prove whether a result shares memory?
+      - Why does assignment through an advanced index still mutate the source?
+  - id: nfi-iv-paired
+    level: intermediate
+    requiredForMastery: true
+    concepts: [paired-coordinates, cartesian-product]
+    question: Why does x[rows, cols] usually not return a rectangular submatrix?
+    shortAnswer: |
+      NumPy broadcasts the integer index arrays together and treats corresponding values as
+      coordinates. Equal-shaped row and column arrays therefore select paired cells. A rectangle
+      requires orthogonal grids, usually through `np.ix_` or inserted singleton axes.
+    fullAnswer: |
+      The broadcast shape of all advanced integer indices becomes the coordinate-selection shape.
+      Each broadcast position supplies one index for each indexed source axis.
+
+      A Cartesian product is a different coordinate program. Rows shaped `(R, 1)` and columns
+      shaped `(1, C)` broadcast to `(R, C)`, producing every row-column combination.
+    commonWrongAnswer: |
+      "Two arrays always mean rows and columns." They name coordinate components, and their own
+      broadcasting determines whether those components are paired or crossed.
+    followUps:
+      - What happens when the two one-dimensional index arrays have different lengths?
+      - When would np.ix_ be clearer than manual reshaping?
+  - id: nfi-iv-mask
+    level: advanced
+    requiredForMastery: true
+    concepts: [boolean-mask, result-shape]
+    question: Derive the output shape of boolean indexing for full and partial masks.
+    shortAnswer: |
+      A full-shape mask selects scalar values into `(N_true,)`. A mask matching the first k source
+      dimensions produces `(N_true,)` followed by all unconsumed trailing dimensions. Both are
+      data-dependent copies.
+    fullAnswer: |
+      Boolean masking conceptually visits matching coordinates in row-major order. True positions
+      collapse the dimensions covered by the mask into one selection dimension.
+
+      If trailing source dimensions are not covered, each true position selects an entire trailing
+      subarray. Exact mask-shape validation matters because indexing masks do not simply inherit all
+      arithmetic broadcasting behavior.
+    commonWrongAnswer: |
+      "The result always has the same shape as the mask." That confuses filtering with
+      shape-preserving conditional selection.
+    followUps:
+      - How would you retrieve coordinates instead of values?
+      - When is three-argument np.where a better contract?
+  - id: nfi-iv-where
+    level: tricky
+    requiredForMastery: true
+    concepts: [where, ufunc-where]
+    question: Why is np.where not a lazy array-level ternary?
+    shortAnswer: |
+      Python evaluates `x` and `y` before calling `np.where`, so expensive or invalid branch
+      computations already happened. `np.where` only selects from their values. A ufunc with
+      `where=` and initialized `out=` can skip masked computation.
+    fullAnswer: |
+      Three-argument `where` broadcasts its condition and choices, allocates a result, and selects
+      elementwise. It is excellent for shape-preserving choice among safe values.
+
+      It cannot undo warnings, exceptions, memory, or time spent constructing either argument. For
+      guarded division or logarithms, put the mask inside the ufunc execution contract.
+    commonWrongAnswer: |
+      "NumPy sees the mask and only evaluates the chosen branch." That would require delayed
+      expressions, but normal NumPy arrays are eager Python arguments.
+    followUps:
+      - What must be true about the out buffer?
+      - What does one-argument np.where return?
+  - id: nfi-iv-duplicates
+    level: debugging
+    requiredForMastery: true
+    concepts: [scatter, repeated-indices]
+    question: Diagnose lost updates in x[indices] += values when indices repeat.
+    shortAnswer: |
+      Augmented advanced indexing reads selected values into a temporary, updates it, and scatters
+      results back. Duplicate destinations can overwrite one another rather than accumulate. Use
+      an indexed reduction such as `np.add.at` when every occurrence must count.
+    fullAnswer: |
+      The apparent in-place syntax hides a gather-update-scatter pipeline. Multiple temporary
+      positions can originate from one source element, so their writes are not a sequential series
+      of increments on that source location.
+
+      The fix depends on policy. Use `add.at` for unbuffered accumulation, or pre-aggregate IDs and
+      values when performance matters and ordering permits it.
+    commonWrongAnswer: |
+      "The GIL makes every increment atomic." This is an array semantic issue inside one operation,
+      not a Python-thread race.
+    followUps:
+      - How would you speed up a very large repeated scatter?
+      - What duplicate policy should overwrite assignment document?
+  - id: nfi-iv-production
+    level: scenario
+    requiredForMastery: true
+    concepts: [api-boundary, memory, semantic-axis]
+    question: Review an inference API that accepts masks and token indices from clients.
+    shortAnswer: |
+      I would validate dtype, rank, exact semantic shape, bounds, negative-index policy, and maximum
+      selected size before allocation. I would make ordering and copy ownership explicit, choose an
+      axis-named gather where possible, and test coincidentally equal dimensions plus duplicates.
+    fullAnswer: |
+      Client-provided indices are allocation and correctness inputs. Valid NumPy syntax does not
+      prove that batch, token, or vocabulary axes were intended, and a mask can request a large
+      result or coordinate list.
+
+      The boundary should normalize indices once, reject ambiguous shapes, budget host and device
+      bytes, and state ordering and duplicate behavior. Regression tests need non-square shapes,
+      empty and all-true masks, bounds failures, and repeated indices.
+    commonWrongAnswer: |
+      "NumPy will raise if the index is wrong." It catches some mechanical errors, not semantic-axis
+      mistakes, permitted negative indices, excessive output, or unintended duplicates.
+    followUps:
+      - Which metrics would reveal an indexing abuse pattern?
+      - When would chunking preserve the exact answer?
+projects:
+  - id: nfi-project-batched-selector
+    kind: major
+    title: Build a validated batched selection engine
+    minutes: 210
+    summary: Implement production-grade gather, mask, conditional transform, and scatter boundaries for model outputs.
+    problem: |
+      A model-serving pipeline receives class scores, per-request candidate IDs, optional validity
+      masks, and repeated event labels. Build a small NumPy library that returns selected scores,
+      guarded normalized values, compact invalid coordinates, and correct class counts without
+      ambiguous axes or unbounded allocations.
+    requirements:
+      - Accept scores only as finite rank-two floating arrays with a documented NaN rejection policy.
+      - Gather `(batch, k)` candidate scores with explicit class-axis semantics and stable output shape.
+      - Support shape-preserving replacement and compact boolean filtering as separate named operations.
+      - Perform guarded normalization without evaluating invalid division positions.
+      - Accumulate repeated labels correctly and reject negative or out-of-range IDs.
+      - Return fresh arrays unless a method name and documentation explicitly promise mutation.
+      - Enforce configurable limits for index bytes and output bytes before large allocation.
+    constraints:
+      - Use NumPy only for the implementation.
+      - Do not use Python loops over individual array elements.
+      - Every public function must validate semantic shapes before indexing.
+      - Tests must use unequal batch, class, and k sizes.
+    expectedBehaviour:
+      - Paired gathers return exactly one score for each supplied candidate coordinate.
+      - Empty selections preserve documented rank and dtype.
+      - Duplicate class labels contribute once per occurrence.
+      - Masked divisions produce no divide-by-zero warnings.
+      - Errors identify the failed axis or bound.
+    structure: |
+      batched_selector/
+        __init__.py
+        contracts.py
+        gather.py
+        masks.py
+        scatter.py
+        budget.py
+      tests/
+        test_gather.py
+        test_masks.py
+        test_scatter.py
+        test_budget.py
+    milestones:
+      - title: "1 — Write contracts and adversarial tests"
+        detail: Define semantic shapes, ownership, ordering, duplicate policy, limits, and failures before implementation.
+      - title: "2 — Implement gathers and mask operations"
+        detail: Use axis-named operations and separate filtering from shape-preserving selection.
+      - title: "3 — Add guarded arithmetic and scatter reductions"
+        detail: Prove invalid branches are skipped and duplicates accumulate correctly.
+      - title: "4 — Measure allocation and locality"
+        detail: Benchmark full, random, sorted, empty, and chunked selections with peak-memory evidence.
+    testing:
+      - Compare every gather against a tiny explicit reference implementation.
+      - Include non-square, empty, all-selected, negative, out-of-range, and repeated-index cases.
+      - Assert warning-free guarded arithmetic with NumPy error handling set to raise.
+      - Verify copy ownership with mutation and memory-sharing checks.
+      - Test budget rejection before the gather executes.
+    failureCases:
+      - A square fixture hides selection along the wrong axis.
+      - A bare channel or batch vector broadcasts against the trailing dimension.
+      - Three-argument where computes the invalid branch first.
+      - Augmented advanced-index assignment loses duplicate updates.
+      - Coordinate arrays cost more memory than the filtered values.
+    bonus:
+      - Add an opt-in chunked gather preserving exact order.
+      - Compare sorted and random index locality.
+      - Add property tests against explicit coordinate loops for small arrays.
+    architectureHints:
+      - Normalize and validate index arrays at one public boundary.
+      - Use take_along_axis for per-row candidates and add.at for repeated accumulation.
+      - Represent memory limits in bytes and check index plus output estimates.
+    referenceOutline: |
+      Define small validation helpers for rank, dtype, bounds, and byte estimates. Implement candidate
+      gather with `take_along_axis`, filtering with boolean indexing, replacement with `where`, safe
+      division with `np.divide(..., out=..., where=...)`, and counts with `np.add.at`. Keep each
+      operation independent so ownership and shape promises remain testable.
+  - id: nfi-final-selection-audit
+    kind: final-challenge
+    title: Find nine defects in an inference post-processor
+    minutes: 75
+    summary: Audit one compact NumPy module containing nine indexing defects, including silent axis and duplicate-update failures.
+    problem: |
+      You receive an inference post-processor that uses integer indexing, masks, `np.where`, and
+      scatter updates. Before changing code, identify exactly nine defects. At least three are
+      silent on the provided square fixture. Write a regression test that fails against the
+      original for every defect, then repair all nine without changing the public output contract.
+    requirements:
+      - Submit a numbered nine-defect report before the patch.
+      - Include wrong-axis gather, accidental Cartesian selection, mask-shape, eager-where, and duplicate-scatter defects.
+      - Include at least one ownership defect and one unbounded-allocation defect.
+      - Prove every regression test fails against the original implementation.
+      - Preserve ordering, dtype, and empty-selection behavior intentionally.
+    constraints:
+      - Do not replace vectorized code with per-element Python loops.
+      - Do not silence warnings globally.
+      - Do not fix a defect by changing the test fixture alone.
+    expectedBehaviour:
+      - Exactly nine independent root causes are documented and repaired.
+      - Non-square and repeated-index tests expose the silent failures.
+      - Guarded arithmetic produces no invalid operations.
+      - Peak allocation remains below the supplied ceiling.
+    milestones:
+      - title: "1 — Derive every shape and coordinate program"
+        detail: Annotate source, index, mask, broadcast, and result shapes without executing the module.
+      - title: "2 — Prove the failures"
+        detail: Write nine focused tests and run them against the original.
+      - title: "3 — Repair and measure"
+        detail: Apply the smallest fixes, rerun tests, and record allocation evidence.
+    testing:
+      - Run the original implementation and retain evidence for nine failing regressions.
+      - Use unequal dimensions and duplicated labels.
+      - Assert values, shapes, ordering, dtype, ownership, warnings, and memory ceiling.
+    failureCases:
+      - Listing symptoms rather than independent root causes.
+      - Relying on visual array output without shape assertions.
+      - Replacing np.where while still computing the unsafe branch beforehand.
+    bonus:
+      - Provide a property-based coordinate reference for small shapes.
+    architectureHints:
+      - Classify every bracket expression as basic, paired gather, Cartesian gather, mask, or scatter.
+      - Make semantic axes visible with reshape or an axis-named operation.
+    referenceOutline: |
+      A complete answer identifies view-versus-copy confusion, paired-versus-Cartesian selection,
+      a square-axis bug, an invalid mask shape, eager branch computation, lost duplicate updates,
+      negative-index acceptance, data-dependent unbounded output, and an unnecessary coordinate
+      materialization. Each fix receives one adversarial regression.
+resources:
+  - name: NumPy indexing on ndarrays
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/user/basics.indexing.html"
+    usefulness: 5
+    why: It is the authoritative specification for basic, integer-array, boolean, and mixed indexing semantics.
+    covers: View versus copy behavior, index broadcasting, result shapes, masks, assignment, and detailed edge cases.
+  - name: NumPy how to index ndarrays
+    type: tutorial
+    difficulty: intro
+    url: "https://numpy.org/doc/stable/user/how-to-index.html"
+    usefulness: 4
+    why: It maps common selection intentions to clear indexing operations and axis-aware helpers.
+    covers: Rows, columns, arbitrary elements, dimensional preservation, take, and practical selection recipes.
+  - name: numpy.where reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.where.html"
+    usefulness: 5
+    why: It defines both coordinate-return and broadcasted three-operand selection contracts precisely.
+    covers: Parameters, broadcasting, return values, one-argument behavior, and representative conditional selections.
+  - name: numpy.take_along_axis reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.take_along_axis.html"
+    usefulness: 5
+    why: It formalizes the safest axis-explicit pattern for per-slice indices from ranking operations.
+    covers: Source and index shapes, slice semantics, axis behavior, argsort, argmin, and argmax integration.
+  - name: numpy.ufunc.at reference
+    type: docs
+    difficulty: deep
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.ufunc.at.html"
+    usefulness: 5
+    why: It documents the unbuffered indexed update required when repeated destinations must all accumulate.
+    covers: Difference from augmented advanced indexing, repeated-index accumulation, and indexed ufunc updates.

@@ -1,0 +1,797 @@
+lessonId: "roadmap:phase-2-2.1:12"
+module: 2-1-linear-algebra
+lesson: 13-tensors-what-they-actually-are-vs-what-pytorch
+title: "Tensors: what they actually are vs. what PyTorch calls them"
+summary: Separate the mathematical tensor (multilinear map with a change-of-basis law) from the framework tensor (typed strided array), write neural-network ops as einsum contractions, reason about contraction order and strides, and place CP/Tucker/Kronecker as multi-axis generalisations of the SVD.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lten-read-einsum
+    tier: normal
+    kind: code-reading
+    title: Read an einsum string
+    minutes: 10
+    requiredForMastery: true
+    concepts: [einsum, contraction, free-index]
+    prompt: |
+      For `np.einsum('bhqd,bhkd->bhqk', Q, K)`, name the free indices, the contracted index, the
+      output shape symbolically, and what operation this is.
+    hints:
+      - Indices in the output are free; a repeated index absent from the output is summed.
+      - "`b` and `h` appear in both inputs and the output."
+    solution: |
+      Free indices: `b`, `h`, `q`, `k` (all appear in the output). Contracted index: `d`, which is
+      repeated in the two inputs and missing from the output, so it is summed. Output shape:
+      `(b, h, q, k)` — batch, heads, query positions, key positions. This is multi-head attention
+      scores: a batched matmul over the last two dims with `b` and `h` as leading batch axes,
+      equivalent to `Q @ K.transpose(..., -1, -2)` after the head axis is folded in. Cost is
+      `O(b * h * q * k * d)`.
+  - id: lten-write-bilinear-einsum
+    tier: normal
+    kind: write-code
+    title: Bilinear layer as einsum
+    minutes: 12
+    requiredForMastery: true
+    concepts: [einsum, bilinear, contraction-order]
+    prompt: |
+      Write `bilinear(x, W, y)` computing `out[b, r] = sum_{i,j} x[b, i] * W[i, j, r] * y[b, j]` as
+      an einsum, and give a two-step order that avoids a large intermediate.
+    hints:
+      - The one-liner is `np.einsum('bi,ijr,bj->br', x, W, y)`.
+      - Contract `x` with `W` first to get a `(b, j, r)` tensor.
+    solution: |
+      One line: `return np.einsum('bi,ijr,bj->br', x, W, y, optimize=True)`. Explicit two-step:
+      `t = np.einsum('bi,ijr->bjr', x, W)` (cost `O(B * d * d * R)`, intermediate `(B, d, R)`), then
+      `out = np.einsum('bjr,bj->br', t, y)` (cost `O(B * d * R)`). The dominant term `B * d**2 * R`
+      is intrinsic to `W`'s size, but this order never builds anything larger than the necessary
+      `(B, d, R)`. `optimize=True` picks such an order automatically for three-operand contractions.
+  - id: lten-predict-view-or-copy
+    tier: normal
+    kind: predict-output
+    title: View or copy
+    minutes: 10
+    requiredForMastery: true
+    concepts: [strides, view, reshape, contiguity]
+    prompt: |
+      For `x = np.arange(24).reshape(2, 3, 4)` (C-contiguous), say whether each is a view or a copy:
+      `x.transpose(1, 0, 2)`, `x.reshape(6, 4)`, `x.transpose(1, 0, 2).reshape(6, 4)`.
+    hints:
+      - Transpose only permutes shape and strides.
+      - Reshape is a view only when compatible with the current strides.
+    solution: |
+      `x.transpose(1, 0, 2)`: a view — only the shape and strides are permuted, no data moves.
+      `x.reshape(6, 4)`: a view — `x` is contiguous and `(6, 4)` is a valid re-grouping of the same
+      row-major buffer. `x.transpose(1, 0, 2).reshape(6, 4)`: a copy — after the transpose the array
+      is non-contiguous, and merging the first two axes cannot be expressed as a single stride over
+      the existing buffer, so NumPy materialises a contiguous copy.
+  - id: lten-explain-transformation-law
+    tier: normal
+    kind: explain
+    title: The property an ndarray lacks
+    minutes: 10
+    requiredForMastery: true
+    concepts: [mathematical-tensor, transformation-law, covariance]
+    prompt: |
+      Explain the transformation-law property that makes something a mathematical tensor, and why a
+      generic `np.ndarray` does not have it.
+    hints:
+      - Components change under a change of basis by a covariant/contravariant rule.
+      - An ndarray has no basis attached to its axes.
+    solution: |
+      A mathematical tensor of order `k` is a multilinear map; in a chosen basis its components form
+      a `k`-index array, and under a change of basis `P` those components transform by a fixed rule
+      — each contravariant (upper) index by `inv(P)`, each covariant (lower) index by `P` (or its
+      transpose) — so that the geometric quantity it represents (a length, a stress) is unchanged. A
+      generic `np.ndarray` has no basis associated with its axes and no such rule: its numbers are
+      just data and do not respond to a "change of coordinates". It supports tensor-algebra
+      operations but is not itself a tensor in the multilinear-map sense.
+  - id: lten-kron-identity
+    tier: intermediate
+    kind: predict-output
+    title: The Kronecker vec identity
+    minutes: 12
+    requiredForMastery: true
+    concepts: [kronecker-product, vectorisation, kfac]
+    prompt: |
+      Using `(A kron B) @ vec(X) == vec(B @ X @ A.T)` (with `vec` stacking columns, or rows with the
+      transposed convention), give the shape of `A kron B` for `A` shape `(3, 3)` and `B` shape
+      `(4, 4)`, and why K-FAC never forms it.
+    hints:
+      - "`A kron B` has shape `(rows_A * rows_B, cols_A * cols_B)`."
+      - The identity lets a big matvec become two small matmuls.
+    solution: |
+      `A kron B` has shape `(3*4, 3*4) = (12, 12)` in this small case; in K-FAC `A` and `B` are the
+      per-layer input and output covariance factors and can each be thousands on a side, so
+      `A kron B` would be millions squared. The vec identity `(A kron B) @ vec(X) == vec(B @ X @
+      A.T)` means any operation with the Kronecker matrix — a matvec, and with the analogous inverse
+      identity a solve — can be done as two small matmuls with `A` and `B` directly. K-FAC keeps the
+      curvature as the pair `(A, B)` and applies preconditioning through this identity, never
+      materialising the Kronecker product.
+  - id: lten-optimize-path
+    tier: intermediate
+    kind: performance
+    title: Contraction path matters
+    minutes: 14
+    requiredForMastery: true
+    concepts: [einsum, contraction-path, matrix-chain, cost]
+    prompt: |
+      For `np.einsum('ij,jk,kl->il', A, B, C)` with all matrices `n x n`, give the cost of the two
+      pairwise orders and explain why `optimize=True` matters more as the number of operands grows.
+    hints:
+      - Each pairwise `(n, n) @ (n, n)` is `O(n**3)`.
+      - The number of orderings grows combinatorially with operands.
+    solution: |
+      Both orders here — `(A @ B) @ C` and `A @ (B @ C)` — cost `2 * n**3`, so for three equal-size
+      square matrices the order barely matters. The point is that with unequal shapes, or four or
+      more operands, the number of contraction orders grows combinatorially and the cost gap between
+      the best and worst path can be `min(dim)` times or more (the same phenomenon as matrix-chain
+      multiplication). `np.einsum(..., optimize=True)` runs a path search (greedy or exhaustive for
+      few operands) that finds a near-optimal order in time negligible against the contraction, so
+      it is a free win for any contraction with three or more tensors.
+  - id: lten-decomp-generalise-svd
+    tier: intermediate
+    kind: explain
+    title: CP and Tucker versus the SVD
+    minutes: 12
+    requiredForMastery: true
+    concepts: [cp-decomposition, tucker-decomposition, low-rank-tensor]
+    prompt: |
+      Explain what the CP and Tucker decompositions generalise from the matrix SVD, and one ML use
+      of each.
+    hints:
+      - SVD writes a matrix as a sum of rank-1 outer products, or as a diagonal core between two orthogonal factors.
+      - CP is the sum-of-rank-1 view; Tucker is the core-plus-factors view.
+    solution: |
+      The SVD has two readings: a sum of rank-1 terms `sum_r s_r u_r v_r.T`, and a factorisation
+      `U S V.T` with `S` a diagonal core between orthonormal factor matrices. CP generalises the
+      first: an order-`k` tensor as `sum_r a_r (x) b_r (x) c_r (x) ...`, a sum of rank-1 tensors;
+      used to compress convolution kernels and interaction weights. Tucker generalises the second: a
+      small dense core tensor multiplied by a factor matrix along each mode; used to compress
+      embedding tables and as multilinear PCA. Tensor-train chains small 3-index cores and scales to
+      many axes. All three trade exact representation for far fewer parameters, exactly as truncated
+      SVD does for matrices.
+  - id: lten-broadcast-vs-contract
+    tier: intermediate
+    kind: predict-output
+    title: Broadcast index versus contracted index
+    minutes: 12
+    requiredForMastery: true
+    concepts: [einsum, batching, broadcasting]
+    prompt: |
+      In `np.einsum('bij,bjk->bik', X, Y)`, classify `b`, `j`, `i`, `k` as batch, contracted, or
+      free-output, and give the cost.
+    hints:
+      - "`b` is in every operand and the output."
+      - "`j` is repeated across inputs but not in the output."
+    solution: |
+      `b` is a batch index: it appears in both inputs and the output and is not summed — the
+      contraction is done independently per `b`. `j` is the contracted index: repeated in the inputs,
+      absent from the output, summed over. `i` and `k` are free output indices, each from one input.
+      Output shape `(b, i, k)`; cost `O(b * i * j * k)`. This is exactly batched matrix
+      multiplication, and it shows the difference between a batch axis (parallel, not summed) and a
+      contracted axis (summed).
+  - id: lten-mode-n-product
+    tier: intermediate
+    kind: write-code
+    title: Mode-n product for a Tucker step
+    minutes: 14
+    requiredForMastery: true
+    concepts: [mode-n-product, tucker-decomposition, einsum]
+    prompt: |
+      Write `mode_product(T, M, n)` that multiplies an order-3 tensor `T` by a matrix `M` along mode
+      `n` (contract `T`'s axis `n` with `M`'s second axis), using einsum, and give the output shape
+      for `T` shape `(4, 5, 6)`, `M` shape `(3, 5)`, `n = 1`.
+    hints:
+      - Mode-`n` product contracts `T`'s `n`-th axis against `M`'s columns.
+      - For `n = 1` the einsum is `'ijk,rj->irk'`.
+    solution: |
+      For order 3, dispatch on `n`: `n == 0` -> `np.einsum('ijk,ri->rjk', T, M)`; `n == 1` ->
+      `np.einsum('ijk,rj->irk', T, M)`; `n == 2` -> `np.einsum('ijk,rk->ijr', T, M)`. Each replaces
+      axis `n` of `T` (size equal to `M.shape[1]`) with a new axis of size `M.shape[0]`. For `T`
+      shape `(4, 5, 6)`, `M` shape `(3, 5)`, `n = 1`: the mode-1 axis of size 5 is contracted
+      against `M`'s columns, giving output shape `(4, 3, 6)`. Applying a mode product with a factor
+      matrix along every mode is exactly how a Tucker core is expanded back to the full tensor, and
+      truncated-SVD factors per mode give the higher-order SVD.
+  - id: lten-debug-noncontiguous-slow
+    tier: tricky
+    kind: debug
+    title: A layer slow because of a transposed view
+    minutes: 14
+    requiredForMastery: true
+    concepts: [strides, contiguity, performance]
+    prompt: |
+      This attention helper is far slower than expected though it does the right arithmetic. Explain
+      and fix.
+    code: |
+      def head_split(x, n_heads):
+          # x: (batch, seq, d_model)
+          b, s, d = x.shape
+          x = x.reshape(b, s, n_heads, d // n_heads)
+          x = x.transpose(0, 2, 1, 3)          # (b, n_heads, s, d_head)
+          return np.einsum('bhqd,bhkd->bhqk', x, x)
+    solution: |
+      After `transpose(0, 2, 1, 3)` the array is non-contiguous: its last-axis stride is fine but
+      the `s` and `n_heads` axes are swapped in memory. The einsum then reads `x` with a
+      cache-unfriendly stride pattern, so it is memory-bound and slow even though the FLOP count is
+      unchanged. Fix: force a contiguous copy once, right after the transpose —
+      `x = np.ascontiguousarray(x)` (or `x.contiguous()` in PyTorch) — so the einsum streams memory
+      linearly. The one-time copy is cheap relative to the repeated bad-stride reads. Regression:
+      time the function with and without the `ascontiguousarray` on a realistic shape and assert the
+      contiguous version is faster.
+    hints:
+      - Transpose is free but leaves the array non-contiguous.
+      - A single `contiguous()` before the hot op fixes the stride pattern.
+  - id: lten-debug-einsum-no-optimize
+    tier: tricky
+    kind: debug
+    title: Multi-operand einsum without a path
+    minutes: 14
+    requiredForMastery: true
+    concepts: [einsum, contraction-path, cost]
+    prompt: |
+      This contraction of four tensors is correct but orders of magnitude slower than it should be.
+      Fix it without changing the result.
+    code: |
+      def interact(A, B, C, D):
+          return np.einsum('ij,jk,kl,lm->im', A, B, C, D)
+    solution: |
+      With `optimize` left at its default (`False` in older NumPy), `np.einsum` contracts the
+      operands left to right in the order written, which for four matrices can build a large
+      intermediate and is far from the optimal path. Pass `optimize=True` (or `optimize='optimal'`
+      for a few operands, or use `opt_einsum.contract`), which runs a contraction-path search and
+      picks an order that minimises the largest intermediate and the FLOP count — here effectively
+      the matrix-chain optimum. The result is identical up to floating-point reordering. Regression:
+      time both on `n x n` inputs for growing `n` and assert the optimised version scales like the
+      matrix-chain optimum.
+    hints:
+      - Default `einsum` uses the written order, not a searched path.
+      - Pass `optimize=True` or use `opt_einsum`.
+  - id: lten-debug-fp16-accumulation
+    tier: tricky
+    kind: debug
+    title: fp16 contraction loses accuracy
+    minutes: 14
+    requiredForMastery: true
+    concepts: [mixed-precision, accumulation, contraction]
+    prompt: |
+      A contraction over a large dimension gives noticeably wrong results in fp16 but is fine in
+      fp32. Explain and give the standard fix.
+    code: |
+      def contract(x, y):
+          # x: (m, K) fp16, y: (K, n) fp16, K large
+          return np.einsum('mk,kn->mn', x, y)
+    solution: |
+      Contraction accumulates a sum of `K` products. In fp16 the running sum has only about 3 to 4
+      significant decimal digits, so once it grows large relative to individual terms, small
+      contributions are swallowed (swamping) and the error grows with `K`. The standard fix is
+      mixed precision: accumulate in fp32 even when the inputs are fp16/bf16 —
+      `np.einsum('mk,kn->mn', x.astype(np.float32), y.astype(np.float32)).astype(np.float16)`, or use
+      a matmul/attention kernel that does fp32 accumulation internally (as cuBLAS and Tensor Cores
+      do). Regression: compare the fp16-accumulated result to an fp64 reference for growing `K` and
+      assert the fp32-accumulated version stays within tolerance while the pure fp16 one drifts.
+    hints:
+      - fp16 has very few significant digits; summing many terms swamps the small ones.
+      - Accumulate the contraction in fp32.
+  - id: lten-design-einsum-layer-api
+    tier: challenge
+    kind: design
+    title: Design an einsum-based layer library
+    minutes: 28
+    requiredForMastery: false
+    concepts: [einsum, contraction-path, contiguity, api-design]
+    prompt: |
+      Design a small library where each layer (attention, bilinear, batched linear) is specified by
+      an einsum string plus parameter shapes, and the library handles path optimisation, contiguity,
+      and mixed-precision accumulation. State the interface and what it must not do silently.
+    hints:
+      - Precompute the contraction path once per layer from the shapes.
+      - Insert contiguity and dtype casts where profiling or rules say they help.
+    solution: |
+      Interface: `Layer(equation, param_shapes, accumulate_dtype=None)` where `equation` is an
+      einsum string with named operands (inputs plus parameters). At build time, resolve the
+      contraction path with `opt_einsum.contract_path` from the concrete shapes and cache it. At
+      call time: cast inputs to `accumulate_dtype` (default fp32) if lower precision, run the cached
+      path, cast the result back; and ensure operands are contiguous in the layout the path expects,
+      inserting `ascontiguousarray` only where it is a net win (decided by a stride-cost heuristic or
+      a one-time benchmark). Expose the resolved path, its FLOP estimate, and the largest
+      intermediate. It must not silently pick a path per call (re-search cost), must not force
+      contiguity unconditionally (wasteful when already contiguous), must not accumulate in the
+      input dtype for fp16/bf16 without opt-out, and must fail loudly on an equation whose named
+      operands do not match the provided shapes. Golden cases: attention, a bilinear layer, and a
+      four-operand contraction where the path matters.
+  - id: lten-refactor-attention-einsum
+    tier: challenge
+    kind: refactor
+    title: Refactor a transpose-heavy attention into einsum
+    minutes: 26
+    requiredForMastery: false
+    concepts: [einsum, attention, contiguity, refactor]
+    prompt: |
+      An attention block reshapes and transposes Q, K, V several times, calls `np.matmul`, then
+      transposes back, and inserts `ascontiguousarray` in three places "to be safe". Refactor it to
+      a small number of einsum calls with one deliberate contiguity decision, keeping outputs equal.
+    hints:
+      - Batched matmul with leading batch/head axes is one einsum; the softmax is elementwise between them.
+      - Only one contiguity call is usually needed, right before the value contraction.
+    solution: |
+      Express the score as `scores = np.einsum('bhqd,bhkd->bhqk', Q, K) * scale`, apply the
+      elementwise softmax over the last axis, and the value mix as
+      `out = np.einsum('bhqk,bhkd->bhqd', probs, V)`. This removes the manual
+      reshape/transpose/matmul/transpose-back dance — einsum handles the leading batch and head axes
+      directly. Keep the head split as one reshape plus one transpose, then a single
+      `ascontiguousarray` right before the first einsum if profiling shows the transposed view is
+      memory-bound; drop the other two "to be safe" copies. Verify: `np.allclose(refactored,
+      original, rtol=1e-5)` on random inputs across several shapes, and a fail-before-fix benchmark
+      capturing the original wall-clock time and output, asserting the refactor is at least as fast
+      and numerically equal.
+quizzes:
+  - id: lten-checkpoint
+    title: Checkpoint — tensors and einsum
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lten-cp-difference
+        kind: mcq
+        prompt: What does a mathematical tensor have that a `np.ndarray` does not?
+        options:
+          - {id: law, text: A change-of-basis transformation law for its components}
+          - {id: dtype, text: A dtype and a device}
+          - {id: strides, text: A shape and strides}
+        answer: [law]
+        explanation: The framework array is a typed strided container with no transformation law.
+        concepts: [mathematical-tensor]
+        points: 1
+      - id: lten-cp-einsum
+        kind: mcq
+        prompt: In `np.einsum('bij,bjk->bik', X, Y)`, the index `j` is what?
+        options:
+          - {id: contracted, text: Contracted (summed over)}
+          - {id: batch, text: A batch index kept per-slice}
+          - {id: free, text: A free output index}
+        answer: [contracted]
+        explanation: "`j` is repeated in the inputs and absent from the output, so it is summed."
+        concepts: [einsum, contraction]
+        points: 1
+      - id: lten-cp-reshape
+        kind: mcq
+        prompt: "`x.transpose(1, 0, 2).reshape(6, 4)` on a contiguous `x` of shape `(2, 3, 4)` does what?"
+        options:
+          - {id: copy, text: Returns a copy, because the transposed array is non-contiguous}
+          - {id: view, text: Returns a view, always}
+          - {id: error, text: Raises an error}
+        answer: [copy]
+        explanation: The merged axes cannot be expressed as one stride over the transposed buffer.
+        concepts: [strides, reshape]
+        points: 1
+      - id: lten-cp-decomp
+        kind: multi
+        prompt: Which statements about tensor decompositions are true?
+        options:
+          - {id: cp, text: CP writes a tensor as a sum of rank-1 outer products}
+          - {id: tucker, text: Tucker uses a small core tensor with a factor matrix per mode}
+          - {id: svd-gen, text: They generalise low-rank matrix approximation to more than two axes}
+          - {id: exact, text: They always represent the tensor exactly with fewer numbers}
+        answer: [cp, tucker, svd-gen]
+        explanation: Like truncated SVD, they trade exactness for compression.
+        concepts: [cp-decomposition, tucker-decomposition]
+        points: 1
+  - id: lten-assessment
+    title: Assessment — tensors, einsum, and layout
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lten-as-two-meanings
+        kind: explain
+        prompt: Contrast the mathematical tensor and the framework tensor in one paragraph.
+        modelAnswer: |
+          The mathematical tensor is a multilinear map whose components, in a basis, transform by a
+          fixed covariant/contravariant rule under a change of basis, so it represents a
+          basis-independent object. The framework tensor is an n-dimensional array: a flat typed
+          buffer plus shape, strides, and device, with no transformation law — its axes are labelled
+          slots. The multilinear-algebra content is in operations like einsum, not the data type.
+        explanation: One is a geometric object with a law; the other is a strided container.
+        concepts: [mathematical-tensor, framework-tensor]
+        points: 1
+      - id: lten-as-einsum-attention
+        kind: write-function
+        prompt: Write attention scores as an einsum for `Q, K` of shape `(b, h, s, d)`, and give the output shape.
+        modelAnswer: |
+          `scores = np.einsum('bhqd,bhkd->bhqk', Q, K)`. Free indices `b, h, q, k`; contracted `d`.
+          Output shape `(b, h, s_q, s_k)`.
+        explanation: Batched matmul over the last two axes with `b, h` as batch.
+        concepts: [einsum, attention]
+        points: 1
+      - id: lten-as-path
+        kind: scenario
+        prompt: Why does `np.einsum` with three or more operands need `optimize=True`?
+        modelAnswer: |
+          The default contracts operands in the written order, which can build a huge intermediate
+          and be far from optimal. With three-plus operands the number of contraction orders grows
+          combinatorially and the cost gap between paths can be `min(dim)` times or more.
+          `optimize=True` runs a path search that picks a near-optimal order for negligible extra
+          time.
+        explanation: Multi-operand contraction is a matrix-chain-style optimisation problem.
+        concepts: [einsum, contraction-path]
+        points: 1
+      - id: lten-as-view-copy
+        kind: scenario
+        prompt: When does `reshape` return a view and when a copy? Give an example that copies.
+        modelAnswer: |
+          A view when the target shape is expressible with strides over the existing buffer
+          (typically a contiguous array being re-grouped); a copy otherwise.
+          `x.transpose(1, 0, 2).reshape(-1)` copies, because the transposed array is non-contiguous
+          and flattening needs equally spaced elements the buffer does not provide.
+        explanation: Reshape follows contiguity; transpose then reshape usually copies.
+        concepts: [strides, reshape]
+        points: 1
+      - id: lten-as-contiguous-perf
+        kind: find-bug
+        prompt: A layer is slow right after a `transpose`, though FLOPs are unchanged. What is happening and what fixes it?
+        modelAnswer: |
+          Transpose left the array non-contiguous, so the next op reads memory with a
+          cache-unfriendly stride pattern and becomes memory-bound. A single `ascontiguousarray`
+          (or `.contiguous()`) after the transpose, before the hot op, restores linear memory access
+          and speeds it up.
+        explanation: Non-contiguous views make downstream ops memory-bound.
+        concepts: [strides, contiguity]
+        points: 1
+      - id: lten-as-kron
+        kind: scenario
+        prompt: How does K-FAC use the Kronecker product without forming it?
+        modelAnswer: |
+          It stores the curvature as a pair `(A, B)` of small per-layer covariance factors and uses
+          the identity `(A kron B) @ vec(X) == vec(B @ X @ A.T)` (and its inverse analogue) to apply
+          preconditioning as two small matmuls, never materialising the `(rows_A rows_B) x
+          (cols_A cols_B)` Kronecker matrix.
+        explanation: The vec identity turns a huge matvec into two small matmuls.
+        concepts: [kronecker-product, kfac]
+        points: 1
+      - id: lten-as-decomp
+        kind: scenario
+        prompt: You have a 4-axis weight tensor that is a training bottleneck and suspect it is low multilinear rank. What do you try?
+        modelAnswer: |
+          Factor it with a Tucker or CP decomposition: replace the dense tensor with a small core
+          and per-mode factor matrices (Tucker) or a sum of rank-1 outer products (CP). This cuts
+          the parameter count and the contraction cost, analogous to truncated SVD for a matrix.
+          Validate on end-task metrics and optionally fine-tune the factors.
+        explanation: Tensor decompositions are the multi-axis version of low-rank approximation.
+        concepts: [tucker-decomposition, cp-decomposition]
+        points: 1
+      - id: lten-as-fp16
+        kind: find-bug
+        prompt: An fp16 contraction over a large dimension is inaccurate. Why, and what is the standard fix?
+        modelAnswer: |
+          The running sum accumulates in fp16, which has only ~3-4 significant digits, so as it
+          grows relative to individual terms the small contributions are swamped and error grows
+          with the contracted dimension. Fix: accumulate in fp32 (cast inputs, or use a kernel with
+          fp32 accumulation), then cast back.
+        explanation: Low-precision accumulation swamps small terms over a long sum.
+        concepts: [mixed-precision, accumulation]
+        points: 1
+      - id: lten-as-batch-vs-contract
+        kind: mcq
+        prompt: In `np.einsum('bij,bjk->bik', X, Y)`, the `b` index is what?
+        options:
+          - {id: batch, text: A batch index — the contraction runs independently per `b`}
+          - {id: contracted, text: Contracted (summed)}
+          - {id: broadcast-new, text: A new broadcast axis added to the output}
+        answer: [batch]
+        explanation: "`b` appears in every operand and the output and is not summed."
+        concepts: [einsum, batching]
+        points: 1
+      - id: lten-as-when-physics
+        kind: scenario
+        prompt: When does the mathematical (transformation-law) meaning of "tensor" actually matter in ML?
+        modelAnswer: |
+          In geometric and equivariant deep learning: when a feature is a physical vector, a
+          molecular coordinate, or a spherical-harmonic coefficient that must rotate with the input,
+          it genuinely is a tensor and the layer must respect the transformation law to be
+          equivariant. In mainstream deep learning, where axes are fixed labelled slots, it does not.
+        explanation: Equivariant models need features that transform correctly under symmetry.
+        concepts: [equivariance, geometric-deep-learning]
+        points: 1
+interview:
+  - id: lten-iv-is-it-a-tensor
+    level: basic
+    requiredForMastery: true
+    concepts: [mathematical-tensor, framework-tensor]
+    question: Is a PyTorch tensor a tensor in the mathematical sense?
+    shortAnswer: |
+      Not strictly. It is an n-dimensional array: a typed strided buffer with a shape, device, and
+      autograd link. A mathematical tensor is a multilinear map whose components obey a change-of-basis
+      transformation law. The framework object has no such law.
+    fullAnswer: |
+      The mathematical tensor of order `k` is a multilinear map that takes `k` vectors or covectors
+      to a scalar; its components in a basis transform covariantly or contravariantly under a change
+      of basis so the underlying quantity is invariant. A `torch.Tensor` or `np.ndarray` is a data
+      container — a flat buffer plus shape, strides, dtype, device — with no basis and no
+      transformation rule. It supports tensor-algebra operations (contraction, outer product), which
+      is why the name stuck, but it is not itself a multilinear map. The distinction rarely matters
+      in mainstream ML and matters a lot in equivariant/geometric deep learning.
+    commonWrongAnswer: Yes, they are exactly the same thing.
+    followUps:
+      - Where does the mathematical meaning matter in ML?
+      - What operations on framework tensors are genuine tensor algebra?
+  - id: lten-iv-einsum
+    level: internals
+    requiredForMastery: true
+    concepts: [einsum, contraction, free-index]
+    question: How do you read and reason about an einsum string?
+    shortAnswer: |
+      Repeated indices are summed (contracted); indices in the output are free and kept. An index in
+      every operand and the output is a batch index. The cost is the product of the sizes of all
+      distinct indices in a pairwise contraction.
+    fullAnswer: |
+      Take `'bij,bjk->bik'`. `b` is in both inputs and the output, so it is a batch axis: the
+      contraction runs independently for each `b`. `j` is repeated in the inputs and missing from
+      the output, so it is summed. `i` and `k` are free output indices. The result is `(b, i, k)`
+      and the cost is `O(b i j k)`. Reading einsum this way makes batched matmul, attention scores,
+      and bilinear layers immediately legible, and it exposes the contracted dimension whose size
+      drives both cost and floating-point error.
+    commonWrongAnswer: The letters are arbitrary labels with no rule.
+    followUps:
+      - Which index in `'bqd,bkd->bqk'` is contracted?
+      - How does a batch index differ from a contracted index in cost?
+  - id: lten-iv-contraction-order
+    level: scenario
+    requiredForMastery: true
+    concepts: [einsum, contraction-path, matrix-chain]
+    question: You have a five-operand einsum in a hot path. What do you do?
+    shortAnswer: |
+      Turn on path optimisation (`optimize=True` or `opt_einsum`). The number of contraction orders
+      is combinatorial and the cost gap between the best and worst can be large; the search is
+      cheap relative to the contraction.
+    fullAnswer: |
+      A multi-operand contraction is a generalised matrix-chain problem: each pairwise step costs
+      the product of the sizes of its distinct indices, and the order determines the sizes of the
+      intermediates. With five operands there are many orders and a bad one can build a huge
+      intermediate. `np.einsum(..., optimize=True)` (greedy for many operands, exhaustive for few)
+      or `opt_einsum.contract` finds a near-optimal path in negligible time and caches it if you
+      reuse the shapes. Also check operand contiguity and, for fp16, fp32 accumulation.
+    commonWrongAnswer: The FLOP count is fixed by the equation, so nothing can be done.
+    followUps:
+      - How is this like matrix-chain multiplication?
+      - Why cache the path when shapes are fixed?
+  - id: lten-iv-strides
+    level: internals
+    requiredForMastery: true
+    concepts: [strides, view, reshape, contiguity]
+    question: Explain the memory model of an n-d array and when permute and reshape copy.
+    shortAnswer: |
+      An n-d array is a flat buffer plus a shape and strides mapping indices to offsets. `permute` /
+      `transpose` only reorder strides, so they never copy. `reshape` returns a view when the target
+      shape fits the current strides and copies otherwise.
+    fullAnswer: |
+      Indexing `x[i, j, k]` reads `buffer[base + i*sx + j*sy + k*sz]` where `sx, sy, sz` are strides
+      (in bytes or elements). Row-major (C-contiguous) means the last axis has the smallest stride.
+      Transpose produces a new shape/stride pair over the same buffer — free, but often
+      non-contiguous. Reshape needs the requested shape to be expressible with some strides over the
+      existing buffer; for a contiguous array a compatible re-grouping is a view, but after a
+      transpose the elements a flattened axis needs are not equally spaced, so NumPy copies.
+      Non-contiguous views also slow the next op because it reads memory with poor locality;
+      `ascontiguousarray` / `.contiguous()` pays a one-time copy to fix that.
+    commonWrongAnswer: Every operation on an array copies its data.
+    followUps:
+      - Why can a non-contiguous view make a later op slow?
+      - How do you force a contiguous layout and when is it worth it?
+  - id: lten-iv-decompositions
+    level: comparison
+    requiredForMastery: true
+    concepts: [cp-decomposition, tucker-decomposition, tensor-train, svd]
+    question: What are CP, Tucker, and tensor-train, and how do they relate to the SVD?
+    shortAnswer: |
+      They are low-rank decompositions for arrays with more than two axes. CP is a sum of rank-1
+      outer products; Tucker is a small core tensor with a factor matrix per mode; tensor-train
+      chains small 3-index cores. All generalise truncated SVD compression to higher order.
+    fullAnswer: |
+      The matrix SVD is both a sum of rank-1 terms and a "factors around a diagonal core"
+      factorisation. CP generalises the first: `T = sum_r a_r (x) b_r (x) c_r ...`, minimal
+      parameters but a hard fitting problem and no orthogonality. Tucker generalises the second: a
+      dense core `G` times an orthonormal factor matrix along each mode, which is multilinear PCA
+      and gives a clean truncation (higher-order SVD). Tensor-train / matrix-product-state
+      represents an order-`k` tensor as a chain of `k` small cores, with cost linear in `k`, which
+      is what makes very high-order tensors tractable. In ML these compress embedding tables,
+      convolution kernels, and interaction weights, exactly as truncated SVD compresses a weight
+      matrix.
+    commonWrongAnswer: They are all just the SVD applied axis by axis.
+    followUps:
+      - Why is CP fitting harder than Tucker?
+      - Where would you use tensor-train specifically?
+  - id: lten-iv-equivariance
+    level: advanced
+    requiredForMastery: true
+    concepts: [equivariance, geometric-deep-learning, transformation-law]
+    question: When does the transformation-law meaning of "tensor" become essential in a model?
+    shortAnswer: |
+      When features must transform with the input under a symmetry — rotations of a molecule, of a
+      point cloud, of a physical field. Then the features really are tensors and the layers must be
+      equivariant: transforming the input transforms the output by the same rule.
+    fullAnswer: |
+      In equivariant and geometric deep learning, a hidden feature might be a vector (order-1
+      tensor), a rank-2 tensor, or a set of spherical-harmonic coefficients, and physical
+      correctness requires that rotating the input rotates these features by the appropriate
+      representation of the rotation group. Layers are then constrained to commute with the group
+      action (e.g. tensor-product layers in e3nn, steerable CNNs), which both bakes in a symmetry
+      prior and reduces sample complexity. Outside this setting — images with fixed orientation,
+      text, tabular data — the axes are labelled slots and the container view is correct; assuming a
+      transformation law where there is none just adds confusion.
+    commonWrongAnswer: The transformation law is always irrelevant to neural networks.
+    followUps:
+      - What does it mean for a layer to be equivariant rather than invariant?
+      - Why does an equivariance constraint reduce sample complexity?
+projects:
+  - id: lten-project-einsum-tensor-kit
+    kind: major
+    title: Build an einsum and tensor-layout toolkit
+    minutes: 240
+    summary: Implement an einsum path planner, a strided-array model with view/copy prediction, batched-matmul and attention as einsum, a Kronecker vec-identity helper, and a small Tucker/CP compressor, all validated.
+    problem: |
+      Build a toolkit that makes the lesson concrete: `plan(equation, shapes)` returning an
+      optimised contraction path with a FLOP estimate and the largest intermediate;
+      `will_copy(shape, strides, new_shape)` predicting whether a reshape copies; einsum-based
+      `batched_matmul`, `attention`, and `bilinear`; `kron_matvec(A, B, X)` using the vec identity;
+      and `tucker_compress(T, ranks)` / `cp_compress(T, rank)` with reconstruction error. Every
+      result carries evidence.
+    requirements:
+      - "`plan` matches `opt_einsum.contract_path`'s FLOP count within a small factor and reports the largest intermediate shape."
+      - "`will_copy` correctly predicts view versus copy for contiguous reshapes and transpose-then-reshape cases."
+      - The einsum layers match reference `np.matmul`-based implementations within tolerance.
+      - "`kron_matvec` matches `np.kron(A, B) @ X.reshape(-1)` without forming the Kronecker product."
+      - "`tucker_compress` and `cp_compress` return the factors, the reconstruction, and the relative Frobenius error."
+      - Contractions accumulate in fp32 when inputs are fp16/bf16, with an opt-out.
+    constraints:
+      - NumPy and the standard library for the core; `opt_einsum` allowed for the path search reference in tests.
+      - Never form a Kronecker product in `kron_matvec`.
+      - Never run a path search per call for a fixed-shape layer; cache it.
+      - Never accumulate an fp16 contraction in fp16 by default.
+    expectedBehaviour:
+      - "`plan` picks the matrix-chain-optimal order for chained matrix contractions."
+      - "`will_copy` agrees with NumPy's actual behaviour (`arr.base is None`) on a battery of cases."
+      - Attention and bilinear layers match references across shapes and dtypes.
+      - "`kron_matvec` matches the explicit Kronecker matvec exactly (up to rounding)."
+      - Tucker/CP reconstruction error decreases as the ranks grow toward full.
+    structure: |
+      tensor_kit/
+        __init__.py
+        path.py
+        layout.py
+        layers.py
+        kron.py
+        decomp.py
+      tests/
+        test_path.py
+        test_layout.py
+        test_layers.py
+        test_kron.py
+        test_decomp.py
+    milestones:
+      - title: "1 — Path planner"
+        detail: Contraction-path search with FLOP and largest-intermediate reporting.
+      - title: "2 — Layout model"
+        detail: Stride bookkeeping and a view/copy predictor for reshape.
+      - title: "3 — Einsum layers"
+        detail: Batched matmul, attention, bilinear, with fp32 accumulation.
+      - title: "4 — Kronecker and decompositions"
+        detail: vec-identity matvec and Tucker/CP compression with error reporting.
+    testing:
+      - Planner FLOP count versus `opt_einsum` on chained and star contractions.
+      - "`will_copy` versus NumPy on contiguous, transposed, and sliced inputs."
+      - Einsum layers versus `np.matmul` references across dtypes and shapes.
+      - "`kron_matvec` versus explicit `np.kron` matvec."
+      - Tucker/CP relative error decreasing with rank on a synthetic low-multilinear-rank tensor.
+    failureCases:
+      - The planner uses the written operand order and reports a huge intermediate.
+      - "`will_copy` says view for a transpose-then-reshape that actually copies."
+      - An fp16 attention contraction accumulates in fp16 and drifts from the reference.
+      - "`kron_matvec` builds `np.kron(A, B)` and runs out of memory."
+    bonus:
+      - Add a tensor-train decomposition and compare compression with Tucker.
+      - Add a contiguity-cost heuristic that decides when to insert `ascontiguousarray`.
+      - Emit a contraction plan as Markdown.
+    architectureHints:
+      - Cache the resolved path per (equation, shapes) key.
+      - Model an array as `(buffer, shape, strides)` and derive contiguity from it.
+      - Keep the fp32-accumulation cast in one wrapper around every contraction.
+    referenceOutline: |
+      `path.plan` wraps a greedy/exhaustive search over pairwise contraction costs.
+      `layout.will_copy` checks whether `new_shape` is expressible over the given strides.
+      `layers.attention` is two einsums with a softmax between. `kron.kron_matvec` returns
+      `(B @ X @ A.T).reshape(-1)`. `decomp.tucker_compress` runs higher-order SVD (mode-`n`
+      unfoldings and truncated SVD per mode).
+  - id: lten-final-attention-tensor-audit
+    kind: final-challenge
+    title: Audit an attention block's tensor handling
+    minutes: 90
+    summary: Given an attention implementation with a bad einsum path, redundant contiguity calls, fp16 accumulation, and a materialised bilinear weight, fix each and prove it with equivalence and benchmark tests.
+    problem: |
+      An attention-plus-interaction block has four issues: the relative-position bias is folded in
+      with a four-operand `np.einsum` at `optimize=False`; there are three `ascontiguousarray` calls
+      where one suffices; the score contraction runs in fp16 with fp16 accumulation; and an
+      interaction term materialises a `(d, d, R)` weight times a `(d, d)` outer product per token.
+      Produce an audit that: turns on path optimisation and reports the FLOP change; removes the
+      redundant contiguity calls, keeping the one that matters; switches the score contraction to
+      fp32 accumulation and shows the accuracy recovery; refactors the interaction to a staged
+      einsum (or a Tucker factorisation) that avoids the large intermediate; and backs each change
+      with an equivalence test and a fail-before-fix benchmark.
+    requirements:
+      - Replace the four-operand einsum's default path with `optimize=True` and report FLOPs before and after.
+      - Reduce the contiguity calls to the minimum, justified by a stride-cost check, and show no slowdown.
+      - Switch the score contraction to fp32 accumulation and show the error versus an fp64 reference drops.
+      - Refactor the interaction term to a staged contraction (or Tucker) that never builds the full per-token intermediate; keep outputs within tolerance.
+      - Provide one fail-before-fix test per issue and a passing end-to-end run.
+    constraints:
+      - Do not change the block's mathematical output beyond floating-point reordering.
+      - Do not leave any multi-operand einsum at `optimize=False`.
+      - Do not accumulate the fp16 score contraction in fp16.
+    expectedBehaviour:
+      - The optimised einsum path has a strictly lower FLOP estimate and equal output within tolerance.
+      - Removing the redundant contiguity calls does not slow the block; the remaining one is where profiling says it helps.
+      - The fp32-accumulated scores match the fp64 reference far better than the fp16 ones.
+      - The refactored interaction matches the original within `rtol=1e-4` and avoids the large intermediate.
+      - Each issue has a regression that failed before its fix.
+    milestones:
+      - title: "1 — Path and contiguity"
+        detail: Optimise the einsum path; prune contiguity calls to the one that matters.
+      - title: "2 — Precision"
+        detail: fp32 accumulation for the score contraction, with an accuracy check.
+      - title: "3 — Interaction refactor"
+        detail: Stage the bilinear contraction or Tucker-factor the weight; verify equivalence and intermediate size.
+    testing:
+      - Fail-before-fix benchmark and FLOP check for the unoptimised einsum path.
+      - A test that only one contiguity call remains and the block is no slower.
+      - fp32-vs-fp16 accumulation error against an fp64 reference.
+      - Equivalence and largest-intermediate check for the refactored interaction.
+    failureCases:
+      - The path is optimised but the equation was rewritten in a way that changes broadcasting.
+      - A contiguity call is removed that was actually load-bearing, and the block slows down.
+      - fp32 accumulation is added but the result is cast back too early, losing the benefit.
+    bonus:
+      - Replace the interaction weight with a fitted CP decomposition and compare parameter count and quality.
+    architectureHints:
+      - Freeze the fp64 reference outputs and the pre-fix FLOP count and timing as fixtures first.
+      - Fix one issue per commit and re-run the equivalence and benchmark tests.
+    referenceOutline: |
+      Use `np.einsum(eq, *ops, optimize=True)` and read `np.einsum_path` for the FLOP estimate.
+      Keep `ascontiguousarray` only right before the score einsum on the transposed Q/K/V. Cast
+      score inputs to fp32 for the contraction, cast the softmax output back. Stage the interaction
+      as `t = einsum('bi,ijr->bjr', x, W)` then `einsum('bjr,bj->br', t, y)`.
+resources:
+  - name: "numpy.einsum reference and the Einstein summation guide"
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.einsum.html"
+    usefulness: 5
+    why: It defines the summation convention precisely, documents the `optimize` path search, and gives the exact rules for repeated versus free indices that this lesson's contraction reasoning depends on.
+    covers: The einsum string grammar, implicit versus explicit mode, repeated-index summation, broadcasting with ellipsis, and the `optimize` contraction-path option.
+  - name: "opt_einsum documentation"
+    type: docs
+    difficulty: core
+    url: "https://optimized-einsum.readthedocs.io/en/stable/"
+    usefulness: 4
+    why: It explains why contraction order is a matrix-chain-style optimisation, how the greedy and optimal path finders work, and how to reuse a computed path — directly the "contraction order matters" point here.
+    covers: Contraction-path optimisation, greedy and dynamic-programming path finders, path reuse, and backend dispatch.
+  - name: "NumPy internals — ndarray, strides, and memory layout"
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/arrays.ndarray.html"
+    usefulness: 4
+    why: It documents the buffer-plus-shape-plus-strides model, C versus Fortran contiguity, and which operations return views, which is the layout half of this lesson.
+    covers: The n-d array data model, strides, contiguity flags, views versus copies, and reshape and transpose semantics.
+  - name: "Kolda and Bader — Tensor Decompositions and Applications"
+    type: article
+    difficulty: deep
+    url: "https://epubs.siam.org/doi/10.1137/07070111X"
+    usefulness: 5
+    why: The standard survey of CP and Tucker decompositions — definitions, the higher-order SVD, fitting algorithms, and applications — which is the multi-axis generalisation of low-rank matrix approximation used here.
+    covers: CP and Tucker decompositions, higher-order SVD, alternating least squares fitting, uniqueness, and applications to compression and analysis.
+  - name: "Bronstein, Bruna, Cohen, Velickovic — Geometric Deep Learning"
+    type: book
+    difficulty: deep
+    url: "https://geometricdeeplearning.com/"
+    usefulness: 4
+    why: It is the reference for when features genuinely are tensors with a transformation law and layers must be equivariant, the case this lesson flags where the mathematical meaning is not optional.
+    covers: Symmetry and equivariance, group actions on feature spaces, steerable and tensor-product layers, and why symmetry priors reduce sample complexity.

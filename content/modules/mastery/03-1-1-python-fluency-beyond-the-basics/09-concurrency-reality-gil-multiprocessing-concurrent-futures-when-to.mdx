@@ -1,0 +1,332 @@
+---
+id: "roadmap:phase-1-1.1:8"
+title: "Concurrency reality: GIL, multiprocessing, concurrent.futures, when to use which"
+description: "Choose Python concurrency from measured workload shape: understand what the GIL protects, when threads overlap useful work, and when process isolation costs less than it saves."
+module: 1-1-python-fluency-beyond-the-basics
+order: 9
+estimatedMinutes: 120
+prerequisites: ["roadmap:phase-1-1.1:1", "roadmap:phase-1-1.1:6", "roadmap:phase-1-1.1:7"]
+learningObjectives:
+  - Distinguish concurrency from parallelism and predict when the default CPython GIL limits throughput
+  - Choose threads, processes, or asyncio from waiting time, Python CPU time, native code, and data-transfer costs
+  - Use Executor and Future APIs with explicit ownership, failure, cancellation, and shutdown policies
+  - Design process-safe workloads around picklable boundaries, start methods, batching, and measurement
+---
+
+Concurrency is about work making progress during other work's delay. Parallelism is about work executing at the same instant. Python can do both, but the mechanism determines the cost and the guarantee.
+
+In the normal GIL-enabled CPython build, one thread at a time executes Python bytecode within an interpreter. That does not make threads useless, processes automatically faster, or shared data safe.
+
+Choose from the workload, not the label. Measure time spent waiting, time spent in Python, time spent in native libraries, payload size, startup cost, memory, and the failure boundary you actually need.
+
+<TypeScriptComparison>
+
+- Node normally runs JavaScript on one event-loop thread; CPython may run many OS threads, but its usual GIL allows only one to execute Python bytecode at a time.
+- A Python `ThreadPoolExecutor` resembles a pool around blocking Node workers, while `ProcessPoolExecutor` is closer to `worker_threads` with a stronger memory-isolation boundary.
+- JavaScript promises start from invoked async work; a Python `Future` represents an executor submission that may already be queued or running.
+- Both ecosystems pay to move data across isolation boundaries. Python process arguments and results are normally serialized with `pickle`.
+- Neither a GIL nor an event loop makes a compound update to shared application state logically atomic.
+
+</TypeScriptComparison>
+
+## Concurrency and parallelism answer different questions
+
+Suppose a service downloads 100 documents and then parses each one. Downloads mostly wait on sockets. Parsing may spend sustained time executing Python instructions.
+
+Concurrency overlaps the waits so one stalled download does not leave the machine idle. Parallelism may put several parsers on separate cores. A real pipeline can use both, but adding both before measuring creates two scheduling systems and two sets of failure modes.
+
+```python
+from concurrent.futures import ThreadPoolExecutor
+
+
+def download(url: str) -> bytes:
+    return blocking_http_client.get(url).content
+
+
+with ThreadPoolExecutor(max_workers=16) as pool:
+    documents = list(pool.map(download, urls))
+```
+
+This pool is useful because each worker releases the GIL while blocked in socket operations. It is not evidence that sixteen threads can execute sixteen pure-Python parsers in parallel.
+
+Latency and throughput are separate. A pool may increase total throughput while one item becomes slower because it waits in a queue, competes for memory bandwidth, or pays serialization overhead.
+
+## What the GIL does—and does not—guarantee
+
+CPython manages objects with interpreter-wide structures such as reference counts. In a normal build, a thread must hold the global interpreter lock before it manipulates Python objects or uses the Python C API.
+
+The interpreter periodically gives another runnable thread an opportunity. It also releases the GIL around blocking I/O. Native extensions can release it while doing long computations that do not touch Python objects; compression, hashing, and many numerical kernels can therefore overlap or run in parallel.
+
+The GIL is not an application lock. An operation such as “read a balance, check it, then decrement it” spans multiple steps and can interleave with another thread.
+
+```python
+from threading import Lock
+
+
+class Capacity:
+    def __init__(self, available: int) -> None:
+        self._available = available
+        self._lock = Lock()
+
+    def reserve(self) -> bool:
+        with self._lock:
+            if self._available == 0:
+                return False
+            self._available -= 1
+            return True
+```
+
+Locks express the invariant and remain correct if interpreter scheduling changes. Depending on one bytecode sequence looking atomic is an implementation accident, not a design.
+
+<CommonMistake>
+
+“The GIL prevents races” confuses interpreter integrity with business-state integrity. Shared mutable state still needs a lock, queue, immutable handoff, transaction, or single owner.
+
+</CommonMistake>
+
+## Free-threaded CPython changes capacity, not correctness
+
+CPython 3.13 introduced an optional free-threaded build that can run Python threads in parallel with the GIL disabled. It is a separate build mode, not the default runtime assumption for deployed Python.
+
+Some extension modules may re-enable the GIL when imported. Free-threaded execution also has compatibility, memory, and single-thread overhead trade-offs. Detect and benchmark the actual interpreter and dependency set instead of branching on the Python version alone.
+
+Free threading makes synchronization more important, not less. Code that relied on the GIL's incidental scheduling may expose races. Built-in containers use internal protection in current free-threaded CPython, but that does not make multi-step application invariants atomic.
+
+<ProductionNote>
+
+Record interpreter build, GIL state, dependency versions, worker count, payload size, and dataset with every benchmark. “Threads are faster” without that context is not a reusable result.
+
+</ProductionNote>
+
+## Threads are for overlapping waits and selected native work
+
+Threads share one address space. Passing an object to another thread passes a reference, so handoff is cheap. The cost is shared-state coordination: races, deadlocks, thread-affine clients, and shutdown ordering.
+
+Use threads for synchronous network SDKs, file operations that actually block, and native code documented to release the GIL. Do not add a thread pool around an already-async client merely to make the architecture look concurrent.
+
+```python
+from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+
+
+def fetch_one(key: str) -> tuple[str, bytes]:
+    return key, object_store.download(key)
+
+
+with ThreadPoolExecutor(max_workers=12, thread_name_prefix="download") as pool:
+    pending: dict[Future[tuple[str, bytes]], str] = {
+        pool.submit(fetch_one, key): key for key in keys
+    }
+    for future in as_completed(pending):
+        key = pending[future]
+        try:
+            _, payload = future.result()
+        except Exception as exc:
+            raise DownloadFailed(key) from exc
+        persist(payload)
+```
+
+The main thread observes every result and translates failures with item context. `as_completed` permits incremental persistence instead of retaining all successful payloads until the slowest task finishes.
+
+Pools need backpressure. Submitting ten million callables can create a huge queue even when `max_workers` is small. Feed bounded batches, use a bounded producer/consumer layer, or use the bounded buffering option available in the runtime you deploy.
+
+## Processes buy parallel Python execution with isolation costs
+
+Each worker process has its own interpreter, GIL, memory space, and failure boundary. Sustained pure-Python CPU work can therefore use multiple cores.
+
+Arguments and results normally cross the boundary through serialization. A callable must be importable, and submitted values must be picklable. Lambdas, nested functions, live sockets, database connections, locks, and many framework objects are poor process-pool inputs.
+
+```python
+from concurrent.futures import ProcessPoolExecutor
+from multiprocessing import get_context
+
+
+def score_batch(rows: list[tuple[float, ...]]) -> list[float]:
+    return [pure_python_score(row) for row in rows]
+
+
+def main() -> None:
+    context = get_context("spawn")
+    with ProcessPoolExecutor(max_workers=4, mp_context=context) as pool:
+        for scores in pool.map(score_batch, batches, chunksize=1):
+            write_scores(scores)
+
+
+if __name__ == "__main__":
+    main()
+```
+
+The main guard makes the module safe for a fresh child interpreter to import. The top-level worker function gives serialization an importable name. Explicit context makes the process-creation contract visible rather than inheriting a platform default.
+
+Batching amortizes scheduling and serialization. Batches that are too small drown in overhead; batches that are too large hurt load balancing, memory, cancellation responsiveness, and tail latency. Benchmark realistic distributions.
+
+Large NumPy arrays or tensors deserve special care. Copying gigabytes into processes may cost more than the parallel computation saves. Prefer library-native parallelism, memory mapping, shared memory with explicit ownership, or workers that load stable model state once through an initializer.
+
+## Start methods are architectural choices
+
+`spawn` starts a fresh interpreter and imports the main module. It is predictable but has startup and import cost. `fork` copies the current process image using operating-system copy-on-write, but forking a multithreaded runtime can inherit locks in impossible states.
+
+`forkserver` asks a dedicated server process to create workers. Defaults differ by operating system and Python release, so code that depends on one method must request and document it.
+
+Libraries should avoid globally forcing a start method. Accept a multiprocessing context from the application when process behavior is part of a public API. Context-created locks and queues may not be compatible with workers created under another context.
+
+Process isolation is not automatic durability. A killed worker can leave external writes half complete. Design idempotency, transaction boundaries, retries, and poison-input handling just as you would for a separate service.
+
+## Executors unify submission, not semantics
+
+`ThreadPoolExecutor` and `ProcessPoolExecutor` share `submit`, `map`, `shutdown`, and `Future`. That interface makes policy code reusable, but the underlying memory, startup, cancellation, and failure behavior remains different.
+
+A future moves from pending to running to finished. `cancel()` succeeds only before execution starts. Cancelling the future returned to the caller does not kill a running thread, and ordinary executor APIs do not safely interrupt arbitrary Python code.
+
+```python
+from concurrent.futures import Executor, Future
+
+
+def submit_batches(
+    executor: Executor,
+    batches: list[Batch],
+) -> list[Future[Result]]:
+    return [executor.submit(run_batch, batch) for batch in batches]
+```
+
+This abstraction is sound only if `run_batch` and `Batch` satisfy both executor choices. A closure over an open SQLAlchemy session may work in a thread pool and fail immediately in a process pool.
+
+Calling `future.result()` in submission order can create head-of-line blocking. Calling it inside a worker while waiting for another future from the same saturated pool can deadlock. Keep orchestration outside workers, avoid cyclic dependencies, and size from independent work rather than nested submissions.
+
+## Choose with a measured decision process
+
+Start with a sequential baseline. If work mostly waits on APIs or storage and the library is synchronous, try a bounded thread pool. If it already exposes async I/O and concurrency is large, keep one asyncio ownership model instead of wrapping it in threads.
+
+If work spends sustained time in Python code, try processes with coarse, serializable batches. If the hot path is NumPy, PyTorch, tokenization, compression, or another native extension, first learn whether that library releases the GIL and manages its own threads.
+
+Avoid multiplying schedulers. Four web processes, each with eight process workers, while a numerical library starts sixteen native threads can oversubscribe the machine disastrously. Count the full deployment topology, CPU quotas, memory per worker, database connections, and native thread pools.
+
+Benchmark throughput, p50 and p99 latency, CPU utilization, memory, queue depth, serialization bytes, startup/warm-up, error rate, and shutdown time. Pick the smallest mechanism that meets the service objective.
+
+<WhyItMatters>
+
+An ML service often combines async HTTP, native numerical kernels, and process-level model replicas. Knowing which layer already provides parallelism prevents extra pools from increasing latency, memory, and operational risk.
+
+</WhyItMatters>
+
+## Exercises
+
+<Exercise id="concurrency-workload-easy" difficulty="easy">
+
+A blocking HTTP SDK spends 95% of its time waiting on sockets. Would a thread pool help on normal CPython, and why?
+
+<Solution>
+
+Yes, if the SDK releases the GIL while waiting, as normal socket I/O does. Other threads can run requests during that wait. Bound the pool by downstream capacity and connection limits rather than assuming more threads always improve throughput.
+
+</Solution>
+</Exercise>
+
+<Exercise id="concurrency-gil-medium" difficulty="medium">
+
+Two threads both run a long pure-Python token-counting loop. Explain why CPU utilization may not scale across two cores, then name one case where the same threaded shape could scale.
+
+<Solution>
+
+On a normal GIL-enabled CPython build, only one thread executes Python bytecode at a time, so the loops contend for the GIL. The shape may scale on a verified free-threaded build, or if the expensive work moves into native code that releases the GIL.
+
+</Solution>
+</Exercise>
+
+<Exercise id="concurrency-process-boundary-hard" difficulty="hard">
+
+A process-pool submission captures a database session and sends one row per task. Identify both design defects and propose the boundary.
+
+<Solution>
+
+The live session is not a safe serializable process input, and one-row tasks make scheduling and serialization dominate. Extract plain immutable data in the owner process, submit measured batches to a top-level pure function, and persist returned results from an explicit owner.
+
+</Solution>
+</Exercise>
+
+<Exercise id="concurrency-choice-interview" difficulty="interview">
+
+In an interview, compare asyncio, threads, and processes without using “I/O versus CPU” as your entire answer.
+
+<Solution>
+
+Asyncio gives cooperative concurrency and low per-task cost when the complete call path is non-blocking. Threads cheaply share memory and integrate blocking I/O, but require synchronization and normally do not parallelize Python bytecode. Processes parallelize Python CPU work and isolate failures, but pay startup, memory, serialization, and operational costs. I would benchmark the real workload and include native-library behavior, data movement, capacity, cancellation, and deployment topology.
+
+</Solution>
+</Exercise>
+
+<Exercise id="concurrency-inference-real-world" difficulty="real-world">
+
+Design the execution boundary for an API that asynchronously receives requests, downloads inputs through a blocking SDK, and runs a native inference library that already uses CPU threads.
+
+<Solution>
+
+Keep request ownership and admission in asyncio, move the blocking downloads through a bounded thread pool, and benchmark inference directly before adding another pool. Cap the native library's threads and account for every web-process replica. Use separate model processes only when isolation or measured parallel capacity justifies the model duplication and transfer cost.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+Explain the difference between concurrency and parallelism, what the normal CPython GIL protects, and why it is not a lock for business invariants.
+
+Then choose a mechanism for blocking I/O, sustained pure-Python CPU work, and GIL-releasing native computation. For each, state the dominant cost that could reverse your choice.
+
+Finally, explain why a process worker must be importable, why batching matters, and why cancelling a running future is not the same as stopping its callable.
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Does the GIL make my dictionary workflow thread-safe?">
+
+No. Individual interpreter operations may have implementation-level protection, but a read-check-write invariant spans steps. Protect the invariant with an explicit synchronization or ownership design.
+
+</Gotcha>
+
+<Gotcha question="Are processes always faster for CPU-bound work?">
+
+No. Startup, imports, serialization, copies, memory pressure, and task size can cost more than the saved CPU time. Measure a sequential baseline and realistic batch sizes.
+
+</Gotcha>
+
+<Gotcha question="Can I submit a lambda or nested function to ProcessPoolExecutor?">
+
+Do not rely on it. Process workers need importable, picklable callables and values under portable start methods. Put worker functions at module scope and keep their boundary data-only.
+
+</Gotcha>
+
+<Gotcha question="Does Future.cancel() stop code that is already running?">
+
+No. It normally succeeds only while the future is pending. Running work needs cooperative cancellation designed into the callable or a stronger process-level failure policy.
+
+</Gotcha>
+
+<Gotcha question="Should a library call set_start_method() for its users?">
+
+Usually no. It is global and can conflict with the host application. Accept a context or executor, and document any required start-method behavior.
+
+</Gotcha>
+
+<Gotcha question="Will a free-threaded build remove every concurrency problem?">
+
+No. It enables parallel threads but exposes more true interleavings, keeps synchronization necessary, and may encounter extension compatibility or runtime overhead. Verify the actual build and benchmark it.
+
+</Gotcha>
+
+<Gotcha question="Why did adding workers make my ML service slower?">
+
+You may have oversubscribed native threads, copied large tensors, duplicated models, saturated memory bandwidth, or increased queueing. Measure the whole process-and-thread topology, not one pool in isolation.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Concurrency overlaps delays; parallelism executes simultaneously. The normal CPython GIL permits one thread at a time to execute Python bytecode, while blocking I/O and cooperating native extensions can release it.
+
+Threads offer cheap shared-memory handoff for blocking I/O and selected native work. Processes provide separate interpreters for parallel Python computation but demand importable functions, serializable boundaries, explicit start behavior, and coarse enough batches.
+
+Executors share an interface, not semantics. Own every future, observe every failure, bound submissions, avoid dependency deadlocks, and treat shutdown and cancellation as designed policies.
+
+Use the Practice and Debug tabs to make the choice under pressure, the Interview tab to explain it precisely, and the Project tab to benchmark a production-shaped execution planner before claiming mastery.

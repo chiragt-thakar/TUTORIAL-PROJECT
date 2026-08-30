@@ -1,0 +1,393 @@
+---
+id: "roadmap:phase-2-2.2:6"
+title: "Convexity, convex sets, convex functions, why convexity is nice and why DL isn't convex"
+description: A convex set contains every chord; a convex function's graph lies below every chord and above every tangent. Convexity makes local optima global and optimisation tractable — which is exactly what deep networks give up by composing linear and nonlinear layers.
+module: 2-2-calculus-optimisation
+order: 7
+estimatedMinutes: 110
+prerequisites: []
+learningObjectives:
+  - Define convex sets and convex functions three ways (chord, first-order, second-order) and check each
+  - Explain why convexity makes every local minimum global and rules out saddles
+  - List the operations that preserve convexity and identify the convex losses and regularisers in ML
+  - Explain precisely why a deep network's loss is non-convex in its weights, and what convex structure survives
+---
+
+Convexity is the property that makes an optimisation problem *solvable* — with global guarantees,
+efficient algorithms, and a duality theory. A convex function has no bad local minima and no
+saddles: find a stationary point and you have found the global optimum.
+
+Deep networks deliberately give this up. Stacking linear maps and nonlinearities makes the loss
+non-convex in the weights even when the output loss is convex. Understanding what breaks — and what
+convex structure survives locally — is the point of this lesson.
+
+<TypeScriptComparison>
+
+- Checking the definition numerically is the same loop in both languages: sample points `x`, `y` and `λ ∈ [0, 1]`, verify `f(λx + (1−λ)y) ≤ λf(x) + (1−λ)f(y)`. It is a spot check, never a proof.
+- The projection onto a convex set (a clamp for a box, a normalise-and-scale for a ball) is a few lines; projected gradient descent uses it every step.
+- Neither language has a "convex" type; `cvxpy` in Python (and its ports) enforce convexity by construction through a grammar of allowed operations (disciplined convex programming).
+- `Math.max` of convex functions is convex; a `min` generally is not — the same rule holds for `np.maximum` vs `np.minimum` on convex pieces.
+
+</TypeScriptComparison>
+
+## Convex sets
+
+A set `C` is convex if for every `x, y ∈ C` and `λ ∈ [0, 1]`, the point `λx + (1−λ)y` is also in
+`C` — the whole segment between any two members stays inside. Halfspaces, balls, ellipsoids, the
+probability simplex, the cone of PSD matrices, and any intersection of convex sets are convex.
+
+Convexity is preserved by intersection, affine maps (image and preimage), and Cartesian products —
+which is how you build the feasible region of a real problem out of simple pieces.
+
+```python
+import numpy as np
+
+def in_segment_stays_in(is_member, x, y, samples=50):
+    return all(is_member((1 - t) * x + t * y) for t in np.linspace(0, 1, samples))
+
+# the L2 ball is convex
+is_ball = lambda z: np.linalg.norm(z) <= 1.0
+assert in_segment_stays_in(is_ball, np.array([0.9, 0.0]), np.array([0.0, 0.9]))
+```
+
+## Convex functions, three equivalent ways
+
+For `f` with a convex domain:
+
+- **Chord (definition).** `f(λx + (1−λ)y) ≤ λf(x) + (1−λ)f(y)` for all `x, y` and `λ ∈ [0, 1]` —
+  the graph lies below every chord.
+- **First-order (differentiable).** `f(y) ≥ f(x) + ∇f(x)·(y − x)` — every tangent plane lies below
+  the graph (the first-order model *under*estimates).
+- **Second-order (twice differentiable).** `∇²f(x) ⪰ 0` everywhere — the Hessian is positive
+  semidefinite at every point.
+
+`f` is **strictly convex** if the chord inequality is strict for `x ≠ y`, and **`μ`-strongly
+convex** if `∇²f ⪰ μI` (a lower bound on curvature in every direction).
+
+```python
+def f(x): return x[0]**2 + 2 * x[1]**2          # convex: Hessian diag(2, 4) >= 0
+def g(x): return x[0]**2 - x[1]**2              # not convex: Hessian diag(2, -2) indefinite
+
+x, y = np.array([1.0, -1.0]), np.array([-2.0, 3.0])
+t = 0.3
+assert f(t*x + (1-t)*y) <= t*f(x) + (1-t)*f(y) + 1e-12
+```
+
+## Why convexity is nice
+
+The payoffs all follow from the first-order condition:
+
+- **Every local minimum is global.** If `∇f(x*) = 0`, then `f(y) ≥ f(x*) + 0 = f(x*)` for all `y` —
+  `x*` beats everything.
+- **No saddles.** A stationary point of a convex function is a global minimum, never a saddle.
+- **The minimiser set is convex** (possibly a single point, possibly a flat region), never a
+  scattering of disconnected wells.
+- **Algorithms have guarantees.** Gradient descent, Newton, interior-point methods converge to the
+  global optimum at known rates, and a rich duality theory gives certificates of optimality.
+
+```python
+# a convex function's stationary point is its global min
+def f(x): return (x - 3.0)**2
+x = 10.0
+for _ in range(200): x -= 0.1 * 2 * (x - 3.0)
+assert abs(x - 3.0) < 1e-6                      # gradient descent reaches the global min
+```
+
+## What preserves convexity of functions
+
+You rarely check the Hessian from scratch; you build convex functions from a small vocabulary:
+
+- Non-negative weighted sums of convex functions.
+- Pointwise **max** (or sup) of convex functions.
+- Composition `h(g(x))` when `h` is convex and non-decreasing and `g` is convex (and similar rules).
+- Affine precomposition: `f(Ax + b)` is convex if `f` is.
+- Partial minimisation over a convex set, and the perspective transform.
+
+```python
+# hinge loss max(0, 1 - y*score) is convex in score (max of two affine functions)
+hinge = lambda s, y: np.maximum(0.0, 1.0 - y * s)
+# L1 + L2 is convex (sum of convex norms); logistic loss log(1+exp(-y*s)) is convex in s
+```
+
+<Concept>
+
+The ML losses that are convex *in the parameters* are the ones with a linear model:
+least squares, ridge, LASSO, logistic regression, linear SVM. The loss is a convex function
+(squared error, log-loss, hinge) composed with an affine map `Xβ`, and affine precomposition keeps
+convexity. Add a nonlinear layer and that chain breaks.
+
+</Concept>
+
+## Why deep learning is not convex
+
+Compose a nonlinear layer: the network output is `f(x; θ) = W₂ σ(W₁ x)`, and the loss `L(θ)` is a
+convex function of the output composed with this *nonlinear-in-θ* map. Composition of a convex
+function with a non-affine map is generally not convex, and here it definitely is not:
+
+- **Piecewise structure.** A ReLU network is piecewise linear in `x` and piecewise polynomial in
+  `θ`; the loss surface is a patchwork of smooth pieces with non-convex joins.
+- **Multiple isolated global minima.** Permuting hidden units gives distinct parameter vectors with
+  identical loss. A convex function's minimiser set is *connected*; a scattering of separated global
+  minima is incompatible with convexity.
+- **Saddles exist** (previous lesson) — impossible for a convex function.
+
+```python
+def net_loss(theta, X, y):
+    W1 = theta[:6].reshape(2, 3); W2 = theta[6:8].reshape(1, 2)
+    pred = W2 @ np.maximum(W1 @ X.T, 0.0)
+    return np.mean((pred.ravel() - y)**2)
+# net_loss is not convex in theta: e.g. swapping the two hidden units gives the same value
+```
+
+## What convex structure survives
+
+- **The last layer is convex.** With features frozen, fitting the final linear layer (a linear
+  probe) is a convex problem — least squares or logistic regression.
+- **Local convexity near a minimum.** At a local minimum the Hessian is PSD, so `L` is convex in a
+  neighbourhood; local convergence analysis of optimisers uses this.
+- **Convex subproblems.** Proximal steps for L1, projections for constraints, and the trust-region
+  subproblem are convex even though the outer problem is not.
+- **Convex analysis tools still apply locally.** Subgradients, proximal operators, and Jensen's
+  inequality (used for the ELBO and for bounding `E[loss]`) do not require global convexity.
+
+<WhyItMatters>
+
+Knowing a subproblem is convex tells you it has a unique, computable answer — proximal-gradient for
+LASSO, the SVM dual, the linear-probe evaluation of a frozen backbone. Knowing the full problem is
+*not* convex tells you why there is no "correct" optimiser, why initialisation and schedule matter,
+and why you cannot certify a global optimum.
+
+</WhyItMatters>
+
+## Doing this in floating point
+
+You cannot verify convexity numerically — it is a global property. Sampling the chord inequality or
+checking `∇²f ⪰ 0` on a grid can only *disprove* convexity (find a violation) or give weak evidence
+for it. A single point with an indefinite Hessian settles the question: not convex.
+
+Strong convexity is what most convergence rates actually need, and it is fragile: adding an L2
+term `+ (μ/2)||θ||²` makes any smooth loss `μ`-strongly convex *near* a minimum, which is why ridge
+regularisation both prevents overfitting and speeds optimisation.
+
+<ProductionNote>
+
+If you are solving a subproblem that is supposed to be convex (a probe, a proximal step, a
+projection) and it has multiple answers or the solver stalls, you have a bug — genuine convex
+subproblems have unique or connected optima. For the full training problem, do not expect or claim a
+global optimum; report the best validation metric, not "converged".
+
+</ProductionNote>
+
+## Cost
+
+Checking `∇²f(x) ⪰ 0` at one point is a symmetric eigenvalue computation (or a Cholesky attempt),
+`O(n³)` dense or a few Lanczos HVPs for large `n`. Verifying the chord inequality at `k` sampled
+triples is `k` function evaluations. Neither proves convexity; a proof comes from the construction
+(the DCP rules) or a closed-form Hessian argument.
+
+## Exercises
+
+<Exercise id="lcx-check-convexity" difficulty="easy">
+
+For each function on `R`, state whether it is convex, using the second-order test: (a) `e^x`;
+(b) `|x|`; (c) `x³`; (d) `−log(x)` on `x > 0`.
+
+<Solution>
+
+(a) `e^x`: `f''(x) = e^x > 0` for all `x` → convex (strictly).
+
+(b) `|x|`: not twice differentiable at `0`, but the chord definition holds
+(`|λx + (1−λ)y| ≤ λ|x| + (1−λ)|y|` by the triangle inequality) → convex, not strictly.
+
+(c) `x³`: `f''(x) = 6x`, which is negative for `x < 0` → not convex (it is convex only on `x ≥ 0`).
+
+(d) `−log(x)` on `x > 0`: `f''(x) = 1/x² > 0` → convex (strictly). This is why the negative
+log-likelihood of many exponential-family models is convex.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lcx-logistic-convex" difficulty="medium">
+
+Show that the logistic loss `ℓ(s) = log(1 + e^{−s})` is convex in the score `s`, and hence that
+logistic regression is convex in its weights.
+
+<Solution>
+
+`ℓ'(s) = −e^{−s} / (1 + e^{−s}) = −(1 − σ(s))` where `σ(s) = 1/(1 + e^{−s})` is the sigmoid.
+
+`ℓ''(s) = σ'(s) = σ(s)(1 − σ(s))`. Since `σ(s) ∈ (0, 1)`, this is strictly positive for all `s`, so
+`ℓ` is strictly convex in `s`.
+
+For logistic regression, the per-example loss is `ℓ(y_i · (w·x_i))` (with `y_i ∈ {−1, +1}`). The
+score `w·x_i` is affine in `w`, and `ℓ` composed with an affine map stays convex (affine
+precomposition). Multiplying by the constant `y_i` and summing over `i` (a non-negative sum) keeps
+convexity, and adding `(λ/2)||w||²` makes it strongly convex. So the training objective is convex in
+`w`, with a unique minimiser when regularised.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lcx-why-not-convex" difficulty="hard">
+
+Give two independent reasons a two-layer ReLU network's training loss is not a convex function of
+its weights, even with a convex output loss.
+
+<Solution>
+
+**Reason 1 — non-affine parameter map.** The loss is `L(θ) = C(f(x; θ))` with `C` convex, but
+`f(x; θ) = W₂ · ReLU(W₁ x)` is not affine in `θ` — it is bilinear in `(W₁, W₂)` and passes through a
+nonlinearity.
+
+A convex function composed with a non-affine map is generally non-convex, and there is a segment in
+`θ`-space along which `L` lies *above* its chord. Even the bilinear term `W₂ W₁` alone is non-convex:
+`ab` as a function of `(a, b)` has the indefinite Hessian `[[0, 1], [1, 0]]`.
+
+**Reason 2 — disconnected global minima from symmetry.** Swapping hidden unit 1 with hidden unit 2
+(and the corresponding rows of `W₁` and columns of `W₂`) produces a different parameter vector `θ'`
+with `L(θ') = L(θ)`. If both are global minimisers and they are isolated (generically true), the
+minimiser set is disconnected. But the minimiser set of a convex function is always convex, hence
+connected. So `L` cannot be convex.
+
+Either reason alone is decisive; the piecewise-linear structure of ReLU (a patchwork of linear
+regions in `x`, polynomial pieces in `θ`) is a third.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lcx-interview-convex-value" difficulty="interview">
+
+In an interview: "Deep learning is non-convex, so what is the point of learning convex optimisation?"
+
+<Solution>
+
+Three concrete reasons.
+
+**Convex subproblems are everywhere inside non-convex training.** The proximal step for an L1 or
+group-lasso penalty (soft-thresholding), projection onto a constraint set (weight norm balls, the
+simplex for attention or mixtures), the trust-region and line-search subproblems, and the SVM /
+logistic dual are all convex, with unique computable answers. You need convex analysis to implement
+and reason about them.
+
+**The last layer and many diagnostics are convex.** Fitting a linear probe on frozen features,
+calibrating with temperature scaling, and fitting a logistic head are convex problems you can solve
+exactly and treat as ground truth. Local convergence analysis of optimisers uses local convexity
+near a minimum (PSD Hessian there).
+
+**It is the language of guarantees.** Concepts like `L`-smoothness, strong convexity, the condition
+number, duality gaps, and the PL condition come from convex analysis and are how you reason about
+learning rates, convergence rates, and whether regularisation helps. Even when the global problem is
+non-convex, these tools describe its behaviour near solutions and bound its subproblems.
+
+And knowing precisely *why* the full problem is non-convex — non-affine parameter map, symmetry,
+piecewise structure, saddles — tells you why there is no universally best optimiser and why
+initialisation, schedule, and normalisation matter.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lcx-projected-gd-real-world" difficulty="real-world">
+
+You need to train with a hard constraint: each attention head's key/query projection must have
+spectral norm at most 1 (a Lipschitz constraint). Design the optimisation.
+
+<Solution>
+
+The constraint set `C = {W : σ_max(W) ≤ 1}` is convex (a spectral-norm ball; the spectral norm is a
+norm, so its sublevel set is convex). Use **projected gradient descent**: after each unconstrained
+gradient (or Adam) step, project `W` back onto `C`.
+
+The projection onto the spectral-norm ball has a closed form: take the SVD `W = U Σ V.T`, clip the
+singular values to `min(σ_i, 1)`, and reconstruct `W = U Σ_clipped V.T`.
+
+For efficiency, estimate `σ_max` with a few power-iteration steps and, if it exceeds 1, either do
+the small SVD or divide `W` by `σ_max` — a cheaper approximate projection that is exact when only
+one singular value is above 1.
+
+Alternatives: **spectral normalisation** parametrises `W = W_raw / σ_max(W_raw)` and lets autodiff
+flow through the (stop-gradient-on-the-estimate) normaliser — no explicit projection, constraint
+satisfied by construction. Or a **penalty** `+ λ · max(0, σ_max(W) − 1)²`, which is soft and convex
+in `σ_max` but only approximately enforces the constraint.
+
+The outer training problem is still non-convex (it is a deep net), but the projection subproblem is
+convex with a unique answer, and projected GD inherits the standard convergence behaviour of the
+unconstrained method up to the projection. Validate that `σ_max(W) ≤ 1 + ε` after every epoch and
+that the Lipschitz-dependent metric (e.g. adversarial robustness) actually improved.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Define a convex set and give three examples.
+2. State the chord, first-order, and second-order characterisations of a convex function.
+3. Why does `∇f(x*) = 0` imply `x*` is a global minimum when `f` is convex?
+4. Name four operations that preserve convexity of functions, and one ML loss that is convex in the
+   parameters.
+5. Give two independent reasons a deep network's loss is non-convex in its weights.
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="I checked the chord inequality at 10000 random triples, so `f` is convex.">
+
+That only fails to disprove convexity. A single triple that violates it (or one point with an
+indefinite Hessian) proves non-convexity; passing samples is weak evidence, not a proof. Convexity
+is global.
+
+</Gotcha>
+
+<Gotcha question="The `min` of convex functions is convex.">
+
+The pointwise **max** of convex functions is convex; the **min** generally is not. `min(x², (x−2)²)`
+has a bump in the middle and is not convex.
+
+</Gotcha>
+
+<Gotcha question="Cross-entropy is convex, so my classifier's training loss is convex.">
+
+Cross-entropy is convex in the *predicted probabilities* (or logits, for the softmax case). Composed
+with a nonlinear network mapping weights to logits, the loss is not convex in the *weights*. Only a
+linear model keeps convexity in the parameters.
+
+</Gotcha>
+
+<Gotcha question="My convex subproblem returned two different solutions on two runs.">
+
+Then it is not actually convex, or there is a bug. A convex problem has a connected (often unique)
+minimiser set. Disconnected answers mean a non-convex objective, a non-convex constraint, or a
+solver error.
+
+</Gotcha>
+
+<Gotcha question="Adding L2 regularisation makes my deep net's loss convex.">
+
+It makes it strongly convex only in a neighbourhood of a minimum, and it removes exactly-flat
+directions. Globally the loss is still non-convex — the symmetries and the nonlinearity are
+untouched.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+A convex set contains every segment between its points; a convex function's graph lies below every
+chord (chord definition), above every tangent (first-order), and has a PSD Hessian everywhere
+(second-order). Strong convexity adds a curvature lower bound `μI`.
+
+Convexity is what makes optimisation tractable: every stationary point is a global minimum, there
+are no saddles, the minimiser set is convex, and algorithms come with global convergence guarantees
+and duality. You build convex functions from non-negative sums, pointwise max, monotone-convex
+composition, and affine precomposition — which is why linear-model losses (least squares, logistic,
+hinge, LASSO) are convex in the parameters.
+
+A deep network is non-convex in its weights because the parameter-to-output map is non-affine
+(bilinear plus a nonlinearity), because symmetry produces disconnected global minima, and because
+ReLU makes the surface piecewise.
+
+What survives is local: a convex last layer, local convexity near a minimum, convex subproblems
+(proximal, projection, trust region), and the convex-analysis toolkit. The Practice, Debug,
+Interview, Test, Project, and Review tabs build the checks, the preserving operations, and projected
+gradient descent.

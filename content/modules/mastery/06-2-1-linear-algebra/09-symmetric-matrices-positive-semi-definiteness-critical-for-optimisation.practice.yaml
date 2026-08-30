@@ -1,0 +1,796 @@
+lessonId: "roadmap:phase-2-2.1:8"
+module: 2-1-linear-algebra
+lesson: 09-symmetric-matrices-positive-semi-definiteness-critical-for-optimisation
+title: "Symmetric matrices, positive (semi-)definiteness — critical for optimisation"
+summary: Use the spectral theorem, read the quadratic form as a bowl or saddle, test positive definiteness the cheap decisive way, connect PSD Hessians to convexity, and repair matrices that should be PSD but are not.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lspd-read-pd-test
+    tier: normal
+    kind: code-reading
+    title: Read a positive-definiteness test
+    minutes: 10
+    requiredForMastery: true
+    concepts: [positive-definite, cholesky, definiteness-test]
+    prompt: |
+      Read this function, say what it decides, and why it is preferred over computing all
+      eigenvalues.
+      ```python
+      def check(A):
+          try:
+              np.linalg.cholesky(A)
+              return True
+          except np.linalg.LinAlgError:
+              return False
+      ```
+    hints:
+      - Cholesky needs every pivot (a Schur-complement diagonal) to be strictly positive.
+      - Compare the flop count of Cholesky with a full eigendecomposition.
+    solution: |
+      It returns whether `A` is symmetric positive definite. Cholesky factors `A = L L.T` by taking
+      a square root of each pivot; for a PD matrix every pivot is strictly positive so it completes,
+      and for a non-PD matrix it hits a non-positive value under a square root and raises
+      `LinAlgError`. This is the definitive PD test and it costs about `n**3 / 6`, roughly three
+      times cheaper than the `O(n**3)` (larger constant) full eigendecomposition, and it also yields
+      the factor for a solve, a determinant, and a square root in the same pass.
+  - id: lspd-write-nearest-pd
+    tier: normal
+    kind: write-code
+    title: Nearest positive definite matrix
+    minutes: 14
+    requiredForMastery: true
+    concepts: [psd-repair, eigenvalue-clipping, spectral-theorem]
+    prompt: |
+      Write `nearest_pd(A, floor=1e-10)` that symmetrises `A`, clips its eigenvalues at `floor`, and
+      reconstructs, returning a positive definite matrix close to `A`.
+    hints:
+      - Symmetrise with `(A + A.T) / 2` before the eigendecomposition.
+      - Use `np.linalg.eigh`, clip `w`, rebuild as `Q @ diag(w) @ Q.T`.
+    solution: |
+      `As = (A + A.T) / 2`; `w, Q = np.linalg.eigh(As)`; `w = np.clip(w, floor, None)`;
+      `return Q @ np.diag(w) @ Q.T`. Clipping the eigenvalues at a small positive `floor` and
+      rebuilding gives the closest matrix in Frobenius norm whose eigenvalues are all at least
+      `floor`, hence positive definite. Clipping at exactly 0 would leave it only PSD (possibly
+      singular), so a small positive floor is used when a Cholesky or a unique solve must follow.
+      Symmetrising first is required because `eigh` assumes symmetry and the input may be off by
+      rounding.
+  - id: lspd-predict-definiteness
+    tier: normal
+    kind: predict-output
+    title: Classify by eigenvalues
+    minutes: 10
+    requiredForMastery: true
+    concepts: [definiteness, eigenvalues, quadratic-form]
+    prompt: |
+      Three symmetric matrices have eigenvalue sets `{3, 1, 0.5}`, `{2, 0, 4}`, and `{1, -2, 5}`.
+      Classify each as PD, PSD (not PD), indefinite, or negative definite.
+    hints:
+      - PD needs all eigenvalues strictly positive; PSD allows zeros.
+      - A mix of signs is indefinite.
+    solution: |
+      `{3, 1, 0.5}`: all strictly positive, so positive definite. `{2, 0, 4}`: all non-negative
+      with a zero present, so positive semidefinite but not positive definite (the matrix is
+      singular, and `x.T A x = 0` along the eigenvector for the zero eigenvalue). `{1, -2, 5}`:
+      both signs present, so indefinite — the quadratic form is a saddle. None is negative definite,
+      which would need all eigenvalues strictly negative.
+  - id: lspd-explain-btb-psd
+    tier: normal
+    kind: explain
+    title: Why B-transpose-B is always PSD
+    minutes: 10
+    requiredForMastery: true
+    concepts: [gram-matrix, psd, quadratic-form]
+    prompt: |
+      Explain why `B.T @ B` is positive semidefinite for any real `B`, and when it is positive
+      definite.
+    hints:
+      - Evaluate `x.T @ (B.T @ B) @ x`.
+      - Relate it to the norm of `B @ x`.
+    solution: |
+      For any `x`, `x.T (B.T B) x = (B x).T (B x) = ||B x||^2 >= 0`, so `B.T @ B` is positive
+      semidefinite. It is positive definite exactly when `||B x||^2 > 0` for every nonzero `x`,
+      i.e. when `B x = 0` only for `x = 0`, i.e. when `B` has linearly independent columns (full
+      column rank). This is why the regression Gram matrix `X.T @ X`, kernel matrices, and Fisher
+      information are automatically PSD, and PD only when the underlying data has no exact
+      collinearity.
+  - id: lspd-rayleigh-bounds
+    tier: intermediate
+    kind: predict-output
+    title: Rayleigh quotient bounds
+    minutes: 12
+    requiredForMastery: true
+    concepts: [rayleigh-quotient, eigenvalues, extremes]
+    prompt: |
+      A symmetric matrix has eigenvalues between `0.5` and `12`. What is the range of
+      `x.T A x / (x.T x)` over all nonzero `x`, and which `x` attain the endpoints?
+    hints:
+      - The Rayleigh quotient is a convex combination of the eigenvalues.
+      - Endpoints are attained at the corresponding eigenvectors.
+    solution: |
+      In the eigenbasis, `x.T A x / (x.T x) = sum w_i y_i^2 / sum y_i^2`, a weighted average of the
+      eigenvalues with non-negative weights summing to 1. So it lies in `[w_min, w_max] = [0.5,
+      12]`. The minimum `0.5` is attained when `x` is the eigenvector for the smallest eigenvalue
+      (all weight on that term), and the maximum `12` when `x` is the eigenvector for the largest.
+      This is the variational characterisation power iteration and PCA exploit.
+  - id: lspd-safe-newton-step
+    tier: intermediate
+    kind: write-code
+    title: A Newton step that survives indefiniteness
+    minutes: 16
+    requiredForMastery: true
+    concepts: [newton-method, indefinite-hessian, levenberg-marquardt]
+    prompt: |
+      Write `damped_newton_step(H, g, base=1e-8)` that returns a descent direction by adding
+      `tau * I` to `H`, increasing `tau` until the Cholesky succeeds. Explain why the result is
+      always a descent direction.
+    hints:
+      - "Each pass tries `cho_factor(H + tau * I)` and grows `tau` on failure."
+      - "`H + tau * I` PD makes `p = -(H + tau I)^{-1} g` satisfy `g.T p < 0`."
+    solution: |
+      Start `tau = 0`. Loop: try `c, low = scipy.linalg.cho_factor(H + tau * np.eye(len(g)))`; on
+      `LinAlgError` set `tau = max(2 * tau, base)` and retry; on success return
+      `scipy.linalg.cho_solve((c, low), -g), tau`. Once `H + tau*I` is PD, `p = -(H + tau I)^{-1} g`
+      gives `g.T p = -g.T (H + tau I)^{-1} g < 0` because the inverse of a PD matrix is PD, so `p`
+      is a descent direction. Small `tau` keeps near-Newton scaling in the well-conditioned
+      directions; large `tau` makes `p` approach `-g / tau`, a scaled gradient step. This is the
+      Levenberg-Marquardt / damped-Newton idea.
+  - id: lspd-cond-and-cg
+    tier: intermediate
+    kind: explain
+    title: Condition number and conjugate gradient
+    minutes: 12
+    requiredForMastery: true
+    concepts: [condition-number, conjugate-gradient, preconditioning]
+    prompt: |
+      For a PD system `A x = b`, explain how the condition number `w_max / w_min` affects conjugate
+      gradient, and what preconditioning does.
+    hints:
+      - CG's error contracts by a factor tied to `sqrt(cond)`.
+      - A preconditioner `M` approximates `A` so that `M^{-1} A` is better conditioned.
+    solution: |
+      Conjugate gradient on a PD matrix reduces the `A`-norm of the error by roughly
+      `((sqrt(kappa) - 1) / (sqrt(kappa) + 1))` per iteration, where `kappa = w_max / w_min`, so the
+      number of iterations to a fixed accuracy scales like `sqrt(kappa)`. A well-conditioned system
+      converges in a handful of iterations; `kappa = 1e6` needs about a thousand. Preconditioning
+      replaces the system with `M^{-1} A x = M^{-1} b` for an easily invertible `M` that
+      approximates `A` (Jacobi, incomplete Cholesky, multigrid), making `M^{-1} A` close to the
+      identity so `kappa` drops and CG converges far faster. It trades a solve with `M` per
+      iteration for many fewer iterations.
+  - id: lspd-matrix-sqrt-uses
+    tier: intermediate
+    kind: write-code
+    title: PSD square root for whitening
+    minutes: 14
+    requiredForMastery: true
+    concepts: [matrix-square-root, whitening, spectral-theorem]
+    prompt: |
+      Write `inv_sqrt(S, floor=1e-10)` returning `S^{-1/2}` for a PSD `S`, and describe how it
+      whitens data.
+    hints:
+      - "`S^{-1/2} = Q @ diag(1 / sqrt(clip(w, floor, None))) @ Q.T`."
+      - Whitening applies `x -> S^{-1/2} (x - mean)`.
+    solution: |
+      `w, Q = np.linalg.eigh((S + S.T) / 2)`; `w = np.clip(w, floor, None)`;
+      `return Q @ np.diag(1.0 / np.sqrt(w)) @ Q.T`. Applying `x -> S^{-1/2} (x - mean)` to centred
+      data produces vectors with identity covariance: `Q.T` rotates to the eigenbasis,
+      `diag(1/sqrt(w))` rescales each axis to unit variance, and `Q` rotates back. The `floor`
+      guards against tiny or negative eigenvalues whose inverse square roots would blow up noise;
+      flooring caps the condition number of the whitening map. A Cholesky factor gives a cheaper
+      non-symmetric alternative for sampling but not for the symmetric inverse square root.
+  - id: lspd-debug-random-x-screen
+    tier: tricky
+    kind: debug
+    title: A random-vector screen mistaken for a proof
+    minutes: 14
+    requiredForMastery: true
+    concepts: [positive-definite, sampling-screen, false-positive]
+    prompt: |
+      This function claims a matrix is PD after a random-vector check, but a matrix it passed makes
+      Cholesky fail. Fix it.
+    code: |
+      def is_pd(A, trials=2000):
+          for _ in range(trials):
+              x = np.random.standard_normal(A.shape[0])
+              if x @ A @ x <= 0:
+                  return False
+          return True
+    solution: |
+      Random sampling of `x.T A x` is a probabilistic screen, not a proof: if the negative-curvature
+      subspace is low-dimensional or nearly aligned with a corner of the distribution, thousands of
+      Gaussian draws can all give positive values while a specific direction (the smallest
+      eigenvector) gives a negative one. Replace the sampling with a definitive test: attempt
+      `np.linalg.cholesky(A)` and return whether it succeeds, or compute
+      `np.linalg.eigvalsh((A + A.T) / 2).min() > 0`. Keep the sampling only as a fast pre-filter.
+      Regression: construct `A` with eigenvalues `[1, 1, -1e-3]` whose negative eigenvector is a
+      specific unit vector; the old code passes, the new code fails.
+    hints:
+      - A finite random sample can miss a narrow negative direction.
+      - Use Cholesky or the smallest eigenvalue for a definitive answer.
+  - id: lspd-debug-nonsymmetric-form
+    tier: tricky
+    kind: debug
+    title: Quadratic form with a non-symmetric matrix
+    minutes: 14
+    requiredForMastery: true
+    concepts: [quadratic-form, symmetric-part, definiteness]
+    prompt: |
+      A curvature check builds `A` (not symmetric) and decides definiteness from
+      `np.linalg.eigvals(A)`. It disagrees with the behaviour of `x @ A @ x`. Explain and fix.
+    code: |
+      def curvature_class(A):
+          w = np.linalg.eigvals(A)
+          return "pd" if np.all(w.real > 0) else "not pd"
+    solution: |
+      The quadratic form `x.T A x` depends only on the symmetric part `As = (A + A.T) / 2`, because
+      `x.T A x = x.T As x` for all `x`. The eigenvalues of a non-symmetric `A` are not the same as
+      those of `As`, can be complex, and do not describe the form's shape. Fix: symmetrise first and
+      use `np.linalg.eigvalsh`: `As = (A + A.T) / 2; w = np.linalg.eigvalsh(As); return "pd" if
+      w.min() > 0 else "not pd"`. Regression: `A = [[1, 4], [0, 1]]` has eigenvalues `1, 1` (looks
+      PD) but `As = [[1, 2], [2, 1]]` has eigenvalue `-1`, and `x = (1, -1)` gives `x @ A @ x = -2`.
+    hints:
+      - Only the symmetric part of `A` affects `x.T A x`.
+      - Symmetrise, then use `eigvalsh`.
+  - id: lspd-debug-clip-to-zero
+    tier: tricky
+    kind: debug
+    title: Clipping eigenvalues to zero and then Cholesky
+    minutes: 14
+    requiredForMastery: true
+    concepts: [psd-repair, positive-definite, singular]
+    prompt: |
+      This "PSD repair" clips negative eigenvalues to zero, but the subsequent `np.linalg.cholesky`
+      still raises. Fix it.
+    code: |
+      def repair(A):
+          w, Q = np.linalg.eigh((A + A.T) / 2)
+          w = np.clip(w, 0.0, None)
+          return Q @ np.diag(w) @ Q.T
+    solution: |
+      Clipping at exactly `0` produces a positive *semi*definite matrix, which may still have zero
+      eigenvalues and therefore be singular. `np.linalg.cholesky` requires positive *definiteness*
+      (strictly positive pivots), so it fails on the first zero pivot. Fix: clip at a small positive
+      floor, `w = np.clip(w, floor, None)` with `floor` sized to the data's noise level (or
+      relative to `w.max()`), or equivalently add `floor * np.eye(n)` after the clip. Regression:
+      feed a rank-deficient `A` (e.g. `B @ B.T` with `B` having fewer columns than rows), assert the
+      old repair still fails Cholesky and the floored repair succeeds.
+    hints:
+      - Zero eigenvalues leave the matrix singular; Cholesky needs strict positivity.
+      - Clip to a small positive floor, not to zero.
+  - id: lspd-perf-cholesky-vs-eigh
+    tier: tricky
+    kind: performance
+    title: Cholesky versus eigh for a PD check in a loop
+    minutes: 14
+    requiredForMastery: true
+    concepts: [cholesky, eigh, cost, optimisation-loop]
+    prompt: |
+      An optimiser checks Hessian definiteness every iteration with `np.all(np.linalg.eigvalsh(H) >
+      0)`. Profiling shows this dominates. Give a faster equivalent and what extra it provides.
+    hints:
+      - The eigendecomposition computes far more than the sign of the smallest eigenvalue.
+      - A failed Cholesky already localises where definiteness breaks.
+    solution: |
+      Replace the full symmetric eigendecomposition (about `O(n**3)` with a large constant, and it
+      computes all `n` eigenvalues and the eigenvectors) with an attempted Cholesky
+      (`np.linalg.cholesky`, about `n**3 / 6`, no eigenvectors). It returns the same yes/no answer
+      about three to five times faster, and on success it hands you the factor `L` needed for the
+      Newton solve, the log-determinant (`2 * sum(log(diag(L)))`), and a square root — all reused
+      from the one factorisation. On failure you learn the leading submatrix index where positivity
+      broke. If you also need the smallest eigenvalue (for damping), estimate it with a few
+      iterations of inverse power iteration rather than a full `eigvalsh`.
+  - id: lspd-design-definiteness-service
+    tier: challenge
+    kind: design
+    title: Design a definiteness-and-repair service
+    minutes: 30
+    requiredForMastery: false
+    concepts: [definiteness, psd-repair, shrinkage, api-design]
+    prompt: |
+      Design `spd_service` used by an optimiser and a covariance estimator: classify a symmetric
+      matrix, repair it to PD when asked, and report evidence. State the methods, the numeric
+      choices, and what it must not do silently.
+    hints:
+      - Classification should be a fast Cholesky attempt plus an optional smallest-eigenvalue estimate.
+      - "Repair via jitter, eigenvalue clipping, or Ledoit-Wolf shrinkage, each with a recorded intensity."
+    solution: |
+      Methods: `classify(A)` returning one of pd, psd, indefinite, negative-(semi)definite plus the
+      smallest and largest eigenvalue (smallest via inverse iteration or a bounded `eigsh`);
+      `repair(A, mode, target=None)` for `mode` in jitter, clip, shrink, returning the repaired
+      matrix and the intensity applied; `factor(A)` returning a Cholesky factor after an automatic
+      minimal repair; `condition(A)` returning `w_max / w_min`. Numeric choices: symmetrise every
+      input; use a relative tolerance for the "is an eigenvalue effectively zero" decision; size
+      jitter relative to `trace(A) / n` or `w_max`; use Ledoit-Wolf to pick the shrinkage intensity
+      rather than a fixed constant. It must not report pd from a random-vector screen, must not clip
+      to exactly zero when a Cholesky will follow, must always return the repair intensity (a large
+      value is a data-quality warning), and must not silently swallow an indefinite Hessian without
+      flagging that the objective is non-convex there. Golden cases: a clean PD matrix, a singular
+      sample covariance, an indefinite Hessian at a saddle, and a rounding-negative PSD kernel.
+  - id: lspd-refactor-gp-cholesky
+    tier: challenge
+    kind: refactor
+    title: Refactor a Gaussian-process solve for robustness
+    minutes: 28
+    requiredForMastery: false
+    concepts: [gaussian-process, cholesky, jitter, log-determinant]
+    prompt: |
+      A GP implementation computes `K_inv = np.linalg.inv(K)` for the kernel matrix, uses it for the
+      mean and variance, and computes `np.log(np.linalg.det(K))` for the marginal likelihood. It
+      fails intermittently on larger datasets. Refactor it around a jittered Cholesky.
+    hints:
+      - "`K` is symmetric PSD; add `jitter * I` and factor once with Cholesky."
+      - Mean, variance, and log-determinant all come from the one factor without an inverse.
+    solution: |
+      Add jitter and factor once: `L = np.linalg.cholesky(K + jitter * np.eye(n))`, growing
+      `jitter` on `LinAlgError` up to a cap. Predictive mean: `alpha = cho_solve((L, True), y)`,
+      then `k_star.T @ alpha`. Predictive variance: `v = solve_triangular(L, k_star, lower=True)`,
+      then `k_star_star - np.sum(v * v, axis=0)`. Log marginal likelihood:
+      `-0.5 * y @ alpha - np.sum(np.log(np.diag(L))) - 0.5 * n * log(2 * pi)`. This removes the
+      explicit inverse (slower and less stable), removes `log(det(K))` (which underflows for large
+      `n`), halves the factorisation cost versus LU, and the jitter both fixes the rounding-negative
+      eigenvalues and improves conditioning. Add a fail-before-fix test: a moderately large dataset
+      where `np.linalg.cholesky(K)` without jitter raises and the jittered path succeeds, and where
+      the old `log(det(K))` returns `-inf` while the new log-determinant is finite.
+quizzes:
+  - id: lspd-checkpoint
+    title: Checkpoint — symmetric matrices and definiteness
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lspd-cp-spectral
+        kind: mcq
+        prompt: The spectral theorem says a real symmetric matrix can always be written as what?
+        options:
+          - {id: qlqt, text: "`Q @ Lambda @ Q.T` with `Q` orthogonal and `Lambda` real diagonal"}
+          - {id: lu, text: "`L @ U` with `L` unit lower triangular"}
+          - {id: vlv, text: "`V @ Lambda @ inv(V)` with `V` generally non-orthogonal"}
+        answer: [qlqt]
+        explanation: Symmetric matrices have real eigenvalues and an orthonormal eigenbasis.
+        concepts: [spectral-theorem]
+        points: 1
+      - id: lspd-cp-pd-test
+        kind: mcq
+        prompt: The cheapest decisive test that a symmetric matrix is positive definite is what?
+        options:
+          - {id: chol, text: Attempt a Cholesky factorisation and see if it succeeds}
+          - {id: eig, text: Compute all eigenvalues and check they are positive}
+          - {id: random, text: Check `x.T A x > 0` on many random `x`}
+        answer: [chol]
+        explanation: Cholesky succeeds iff PD, at about a third of the cost of a full eigendecomposition.
+        concepts: [positive-definite, cholesky]
+        points: 1
+      - id: lspd-cp-convex
+        kind: mcq
+        prompt: A twice-differentiable function is convex on a region exactly when its Hessian is what there?
+        options:
+          - {id: psd, text: Positive semidefinite everywhere on the region}
+          - {id: pd, text: Positive definite at the minimum only}
+          - {id: diagonal, text: Diagonal}
+        answer: [psd]
+        explanation: PSD Hessian everywhere is the second-order condition for convexity; PD gives strict convexity.
+        concepts: [convexity, hessian]
+        points: 1
+      - id: lspd-cp-btb
+        kind: multi
+        prompt: Which statements about `B.T @ B` are true for real `B`?
+        options:
+          - {id: psd, text: It is always positive semidefinite}
+          - {id: pd-fullrank, text: It is positive definite iff `B` has independent columns}
+          - {id: sym, text: It is symmetric}
+          - {id: pd-always, text: It is always positive definite}
+        answer: [psd, pd-fullrank, sym]
+        explanation: "`x.T B.T B x = ||B x||^2 >= 0`, zero only when `B x = 0`."
+        concepts: [gram-matrix, psd]
+        points: 1
+  - id: lspd-assessment
+    title: Assessment — symmetric matrices and positive definiteness
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lspd-as-spectral
+        kind: explain
+        prompt: State the spectral theorem and two consequences that make the symmetric case easy.
+        modelAnswer: |
+          A real symmetric matrix has real eigenvalues and an orthonormal eigenbasis, so
+          `A = Q Lambda Q.T` with `Q` orthogonal. Consequences: no inverse is needed (`Q.T` replaces
+          it), the decomposition always exists (never defective), and it is numerically stable, so
+          `np.linalg.eigh` is reliable.
+        explanation: Orthogonal diagonalisation removes the pathologies of the general case.
+        concepts: [spectral-theorem]
+        points: 1
+      - id: lspd-as-quadratic-form
+        kind: explain
+        prompt: Why does only the symmetric part of `A` matter for `x.T A x`, and what shape does the form take?
+        modelAnswer: |
+          `x.T A x = x.T ((A + A.T)/2) x` for all `x`, since the skew part contributes zero. In the
+          eigenbasis of the symmetric part, `x.T A x = sum w_i y_i^2`, so all `w_i > 0` gives an
+          elliptic bowl, mixed signs a saddle, all `w_i < 0` a dome.
+        explanation: The form is a signed sum of squares weighted by eigenvalues.
+        concepts: [quadratic-form, definiteness]
+        points: 1
+      - id: lspd-as-pd-tests
+        kind: write-function
+        prompt: Give two ways to test that a symmetric `A` is positive definite in code, and which is preferred.
+        modelAnswer: |
+          Preferred: `try: np.linalg.cholesky(A); return True; except np.linalg.LinAlgError: return
+          False`. Alternative: `np.linalg.eigvalsh(A).min() > 0`. Cholesky is about three times
+          cheaper and also gives the factor for later use.
+        explanation: A Cholesky attempt is the definitive and cheapest test.
+        concepts: [positive-definite, cholesky]
+        points: 1
+      - id: lspd-as-newton
+        kind: scenario
+        prompt: The Newton step `H p = -g` gives an ascent direction far from the optimum. Why, and how do you fix it?
+        modelAnswer: |
+          `H` is indefinite there, so `g.T p = -sum gtilde_i^2 / w_i` has positive terms from
+          negative `w_i` and can be positive. Fixes: add `tau * I` until `H + tau I` is PD
+          (Levenberg-Marquardt), or replace each `w_i` by `max(|w_i|, delta)` (flip negatives), or
+          use a trust region.
+        explanation: Negative curvature makes Newton step toward a saddle's stationary point.
+        concepts: [newton-method, indefinite-hessian]
+        points: 1
+      - id: lspd-as-btb
+        kind: scenario
+        prompt: A regression Gram matrix `X.T @ X` is only PSD, not PD. What does that tell you about `X`?
+        modelAnswer: |
+          `X` does not have full column rank — some column is a linear combination of the others
+          (exact collinearity). Then `X x = 0` for some nonzero `x`, so `x.T X.T X x = 0` and the
+          Gram matrix is singular. The least-squares solution is not unique; regularisation or
+          dropping a column restores PD.
+        explanation: PSD-but-not-PD Gram matrix means rank-deficient `X`.
+        concepts: [gram-matrix, rank]
+        points: 1
+      - id: lspd-as-condition
+        kind: scenario
+        prompt: A PD system has condition number `1e4`. Roughly how many conjugate-gradient iterations to a fixed accuracy, and how does preconditioning help?
+        modelAnswer: |
+          CG's iteration count scales like `sqrt(kappa)`, so about `100` iterations for `kappa =
+          1e4`. Preconditioning with `M` approximating `A` solves `M^{-1} A x = M^{-1} b`, making
+          `M^{-1} A` close to the identity so the effective `kappa` drops and CG converges in far
+          fewer iterations, at the cost of a solve with `M` per iteration.
+        explanation: CG convergence depends on the square root of the condition number.
+        concepts: [condition-number, conjugate-gradient]
+        points: 1
+      - id: lspd-as-repair
+        kind: find-bug
+        prompt: A "PSD repair" clips eigenvalues to zero and then the next Cholesky fails. What is wrong?
+        modelAnswer: |
+          Clipping to zero gives a positive semidefinite matrix that can still be singular, and
+          Cholesky needs strict positive definiteness. Clip to a small positive floor instead, or
+          add `floor * I`, so all eigenvalues are strictly positive.
+        explanation: PSD is not PD; Cholesky needs the strict version.
+        concepts: [psd-repair, positive-definite]
+        points: 1
+      - id: lspd-as-nonsym
+        kind: find-bug
+        prompt: Curvature code decides definiteness from `np.linalg.eigvals(A)` for a non-symmetric `A`. What is the error?
+        modelAnswer: |
+          Only the symmetric part `(A + A.T)/2` determines `x.T A x`. The eigenvalues of a
+          non-symmetric `A` differ from those of its symmetric part, can be complex, and do not
+          describe the quadratic form. Symmetrise first and use `np.linalg.eigvalsh`.
+        explanation: Definiteness is a property of the symmetric part.
+        concepts: [quadratic-form, symmetric-part]
+        points: 1
+      - id: lspd-as-covariance
+        kind: scenario
+        prompt: A `500 x 500` sample covariance from 300 samples fails Cholesky. Why, and what is a principled fix?
+        modelAnswer: |
+          With `n = 300 < 500`, the sample covariance has rank at most 299 and is singular, with
+          near-zero and slightly negative eigenvalues. Fix with shrinkage:
+          `(1 - a) S + a * F` for a well-conditioned target `F` and a Ledoit-Wolf intensity `a`,
+          which is guaranteed PD and also lowers estimation error, not just the numerical symptom.
+        explanation: Data-starved covariance is rank-deficient; shrinkage restores PD and reduces error.
+        concepts: [covariance, shrinkage]
+        points: 1
+      - id: lspd-as-sqrt
+        kind: scenario
+        prompt: How do you whiten data with a covariance `S`, and what guard is needed?
+        modelAnswer: |
+          Apply `x -> S^{-1/2} (x - mean)` where `S^{-1/2} = Q diag(1/sqrt(w)) Q.T` from `eigh(S)`.
+          Guard: floor the eigenvalues `w` at a small positive value before the inverse square root,
+          because tiny or negative eigenvalues would blow up noise; the floor caps the condition
+          number of the whitening map.
+        explanation: Whitening is rotate-then-rescale; small eigenvalues must be floored.
+        concepts: [whitening, matrix-square-root]
+        points: 1
+interview:
+  - id: lspd-iv-spectral-theorem
+    level: basic
+    requiredForMastery: true
+    concepts: [spectral-theorem, symmetric-matrix]
+    question: What is special about symmetric matrices?
+    shortAnswer: |
+      They always have real eigenvalues and an orthonormal eigenbasis, so `A = Q Lambda Q.T` with
+      `Q` orthogonal. The decomposition always exists, needs no inverse, and is numerically stable.
+    fullAnswer: |
+      The spectral theorem guarantees a real symmetric matrix is orthogonally diagonalisable:
+      `A = Q Lambda Q.T`. There are no complex eigenvalues, no defective (missing-eigenvector)
+      cases, and `Q.T` replaces the inverse exactly. This is why the symmetric case is the one to
+      know well — and it covers almost everything in ML: covariance and Gram matrices, kernels,
+      Hessians, Laplacians, Fisher information. In code you use `np.linalg.eigh`, which returns real
+      sorted eigenvalues and orthonormal eigenvectors.
+    commonWrongAnswer: Symmetric just means it looks the same across the diagonal, nothing deeper.
+    followUps:
+      - Why can a general matrix fail to be diagonalisable but a symmetric one cannot?
+      - What extra property do you need for the eigenvalues to all be positive?
+  - id: lspd-iv-definiteness
+    level: comparison
+    requiredForMastery: true
+    concepts: [positive-definite, psd, indefinite]
+    question: What do positive definite, positive semidefinite, and indefinite mean, and how do you test?
+    shortAnswer: |
+      PD: `x.T A x > 0` for all nonzero `x` (all eigenvalues positive). PSD: `>= 0` (eigenvalues
+      `>= 0`, zeros allowed). Indefinite: both signs. Test PD by attempting a Cholesky
+      factorisation.
+    fullAnswer: |
+      The class is set by the signs of the eigenvalues of the symmetric part. PD is a bowl with a
+      unique minimum and a strictly convex quadratic; PSD is a bowl that may have flat directions
+      (singular, convex but not strictly); indefinite is a saddle. Tests: Cholesky succeeds iff PD
+      and is the cheapest decisive check; `eigvalsh(A).min()` gives the definitive smallest
+      eigenvalue; Sylvester's leading-principal-minor test is a by-hand tool; random `x.T A x`
+      sampling is only a screen. Any `B.T B` is PSD, and PD iff `B` has full column rank.
+    commonWrongAnswer: You can tell from the sign of the determinant.
+    followUps:
+      - Why is a random-vector check not a proof?
+      - What makes `B.T B` automatically PSD?
+  - id: lspd-iv-convexity
+    level: scenario
+    requiredForMastery: true
+    concepts: [convexity, hessian, optimisation]
+    question: How does positive semidefiniteness relate to convex optimisation?
+    shortAnswer: |
+      A twice-differentiable function is convex exactly when its Hessian is PSD everywhere, and
+      strictly convex when it is PD. A convex problem has no bad local minima, so any stationary
+      point is global.
+    fullAnswer: |
+      Convexity is the statement that the second-order Taylor term `0.5 d.T H d` is non-negative in
+      every direction `d`, which is precisely `H` being PSD. If `H` is PD everywhere the function is
+      strictly convex with at most one minimiser. This is why so much effort goes into checking or
+      enforcing PSD-ness: kernel matrices, SDP constraints, and the Gauss-Newton or Fisher matrices
+      in natural-gradient methods are all kept PSD so the surrogate objective is convex. Where the
+      Hessian is indefinite (saddles, regions far from the optimum) second-order methods must modify
+      it to keep steps sensible.
+    commonWrongAnswer: Convexity just means the function looks like a parabola.
+    followUps:
+      - What is the difference in guarantees between a PSD and a PD Hessian?
+      - How does a solver handle a region where the Hessian is indefinite?
+  - id: lspd-iv-newton-modification
+    level: debugging
+    requiredForMastery: true
+    concepts: [newton-method, indefinite-hessian, trust-region]
+    question: What goes wrong when Newton's method meets an indefinite Hessian, and how is it handled?
+    shortAnswer: |
+      The raw Newton step can point uphill along negative-curvature directions, because it targets
+      the stationary point of the local quadratic, which for a saddle is not a minimum. Fix by
+      adding `tau*I`, flipping negative eigenvalues, or using a trust region.
+    fullAnswer: |
+      In the Hessian eigenbasis the Newton step scales the gradient component along `w_i` by
+      `-1/w_i`; a negative `w_i` flips the sign so that component moves toward higher loss. Damped
+      Newton / Levenberg-Marquardt adds `tau*I` until the modified Hessian is PD, interpolating
+      toward a scaled gradient step. Eigenvalue modification replaces `w_i` by `max(|w_i|, delta)`,
+      keeping true Newton scaling where curvature is healthy and turning bad directions into
+      gradient descent. Trust-region methods bound `||p||` and solve a constrained subproblem, which
+      implicitly does the same damping with an adaptive `tau`.
+    commonWrongAnswer: Indefinite Hessians never happen if the loss is smooth.
+    followUps:
+      - How does the trust-region approach relate to adding `tau*I`?
+      - Why is a negative eigenvalue actually useful information near a saddle?
+  - id: lspd-iv-covariance-kernel
+    level: scenario
+    requiredForMastery: true
+    concepts: [covariance, kernel, psd, shrinkage]
+    question: Why must covariance and kernel matrices be PSD, and what do you do when a computed one is not?
+    shortAnswer: |
+      A covariance defines variances (`d.T Sigma d = Var(d.T x) >= 0`) and a kernel is a Gram matrix
+      in feature space, so both are PSD by definition. Repair a non-PSD one with jitter, eigenvalue
+      clipping, or shrinkage.
+    fullAnswer: |
+      If a covariance were not PSD it would assign a negative variance to some linear combination,
+      which is impossible; a kernel that is not PSD is not a valid inner product and breaks the
+      convexity and representer guarantees of kernel methods. Computed versions fail PSD-ness from
+      rounding (tiny negative eigenvalues) or from being data-starved (a sample covariance with
+      fewer samples than dimensions is singular). Fixes, smallest first: add `jitter*I`; project to
+      the nearest PSD matrix by clipping eigenvalues to a positive floor; use Ledoit-Wolf shrinkage
+      toward a structured target, which also reduces estimation error. A large required correction
+      is a data-quality warning, not just a numerical nuisance.
+    commonWrongAnswer: Just take the absolute value of the whole matrix.
+    followUps:
+      - How does shrinkage differ from adding a fixed jitter?
+      - How would you tell rounding noise from a real modelling error in the spectrum?
+  - id: lspd-iv-sqrt
+    level: internals
+    requiredForMastery: true
+    concepts: [matrix-square-root, cholesky, whitening, sampling]
+    question: What is a matrix square root of a PSD matrix and where is it used?
+    shortAnswer: |
+      Any `M` with `M M.T = A` (or `M^2 = A`). The symmetric PSD root is `Q Lambda^{1/2} Q.T`; the
+      Cholesky factor `L` with `L L.T = A` is a cheaper triangular one. Used for whitening and for
+      sampling `x = mu + L z`.
+    fullAnswer: |
+      For PSD `A`, the principal square root `A^{1/2} = Q diag(sqrt(w)) Q.T` is the unique symmetric
+      PSD `M` with `M^2 = A`. The Cholesky factor `L` is a non-symmetric square root, `L L.T = A`,
+      obtained in half the cost. Whitening applies `A^{-1/2}` to make a covariance the identity;
+      Gaussian sampling uses `x = mu + L z` with `z` standard normal; natural-gradient and some
+      preconditioners use `A^{-1/2}` or `A^{1/2}` of a Fisher or curvature matrix. When `A` is only
+      PSD you floor the eigenvalues before the inverse square root to cap the map's condition
+      number.
+    commonWrongAnswer: The matrix square root is just the elementwise square root of the entries.
+    followUps:
+      - When would you use the symmetric root over the Cholesky factor?
+      - Why floor the eigenvalues before an inverse square root?
+projects:
+  - id: lspd-project-spd-toolkit
+    kind: major
+    title: Build a symmetric-matrix and definiteness toolkit
+    minutes: 240
+    summary: Implement the spectral decomposition, four definiteness tests, quadratic-form analysis, PSD repair by jitter and clipping and shrinkage, a damped Newton step, and PSD square roots, all validated and each returning evidence.
+    problem: |
+      Build a toolkit that turns this lesson into audited functions: `spectral(S)` via `eigh` with a
+      symmetrise-first guard; `classify(A)` returning the definiteness class plus the smallest and
+      largest eigenvalue; `is_pd(A)` via a Cholesky attempt; `quad_form_shape(A)` describing the
+      level sets; `repair(A, mode)` for jitter, clip, and Ledoit-Wolf shrinkage with a recorded
+      intensity; `damped_newton_step(H, g)`; and `psd_sqrt(A)` and `psd_inv_sqrt(A)` with a floor.
+      Every function returns the evidence used.
+    requirements:
+      - "`is_pd` uses a Cholesky attempt and never a random-vector screen for its verdict."
+      - "`classify` symmetrises the input, uses `eigvalsh`, and returns the extreme eigenvalues and the class."
+      - "`repair` supports jitter, eigenvalue clipping to a positive floor, and Ledoit-Wolf shrinkage, returning the intensity and the smallest eigenvalue before and after."
+      - "`damped_newton_step` returns a guaranteed descent direction and the `tau` it needed."
+      - "`psd_sqrt` and `psd_inv_sqrt` floor the eigenvalues and satisfy `M @ M == A` (or its inverse) within tolerance."
+      - Every result carries evidence (eigenvalue extremes, Cholesky success, repair intensity, `tau`).
+    constraints:
+      - NumPy and the standard library for the core; SciPy allowed for `cho_factor` / `cho_solve`.
+      - Never decide PD from sampled `x.T A x` values.
+      - Never clip eigenvalues to exactly zero when a Cholesky or unique solve will follow.
+      - Never return a repaired matrix without its repair intensity.
+    expectedBehaviour:
+      - "`spectral` reconstruction error is at machine-epsilon level for symmetric input."
+      - "`is_pd` agrees with `eigvalsh(A).min() > 0` on random and constructed matrices."
+      - "`repair` in every mode produces a matrix that passes `is_pd`, and shrinkage lowers estimation error on a data-starved covariance fixture."
+      - "`damped_newton_step` returns `g.T p < 0` even for an indefinite `H`."
+      - "`psd_inv_sqrt(S)` whitens a sample so its covariance is the identity within tolerance."
+    structure: |
+      spd_kit/
+        __init__.py
+        spectral.py
+        definiteness.py
+        repair.py
+        newton.py
+        roots.py
+      tests/
+        test_spectral.py
+        test_definiteness.py
+        test_repair.py
+        test_newton.py
+        test_roots.py
+    milestones:
+      - title: "1 — Spectral and classification"
+        detail: Symmetrise-first `eigh`, definiteness class, extreme eigenvalues, quadratic-form shape.
+      - title: "2 — PD test and repair"
+        detail: Cholesky-based `is_pd`; jitter, clip, and shrinkage repair with recorded intensity.
+      - title: "3 — Damped Newton"
+        detail: A step that adds `tau*I` until PD and returns a descent direction.
+      - title: "4 — Square roots"
+        detail: Floored PSD square root and inverse square root, validated by whitening.
+    testing:
+      - Spectral reconstruction error versus `eig`-based reconstruction.
+      - "`is_pd` versus `eigvalsh().min() > 0` across many matrices, including a near-boundary case."
+      - Each repair mode yields a PD matrix; shrinkage reduces covariance estimation error on held-out data.
+      - Damped Newton returns a descent direction for a hand-built indefinite `H`.
+      - Whitening with `psd_inv_sqrt` produces identity covariance within tolerance.
+    failureCases:
+      - "`is_pd` relies on random-vector sampling and passes a matrix with a narrow negative direction."
+      - "`repair` clips to zero and the following Cholesky fails."
+      - Definiteness is decided from the eigenvalues of a non-symmetrised, non-symmetric input.
+      - The Newton step is returned without checking or reporting the descent condition.
+    bonus:
+      - Add the exact nearest-PD projection (Higham's algorithm) and compare with simple clipping.
+      - Add an LDL factorisation for indefinite symmetric solves.
+      - Emit a definiteness report as Markdown.
+    architectureHints:
+      - Symmetrise every input at the boundary and note whether it changed the matrix.
+      - Represent a classification result as an object with `class`, `w_min`, `w_max`, `cholesky_ok`.
+      - Keep the eigenvalue floor in one place and thread it through the square-root and repair paths.
+    referenceOutline: |
+      `spectral.decompose` symmetrises and calls `eigh`. `definiteness.classify` reads
+      `eigvalsh` extremes; `is_pd` wraps `np.linalg.cholesky` in a try/except. `repair.jitter`,
+      `repair.clip`, and `repair.shrink` each return `(matrix, intensity)`. `newton.step` loops
+      `cho_factor(H + tau I)` growing `tau`. `roots.sqrt` and `roots.inv_sqrt` apply `sqrt` or
+      `1/sqrt` to floored eigenvalues.
+  - id: lspd-final-optimiser-hessian-audit
+    kind: final-challenge
+    title: Make a second-order optimiser robust to indefinite curvature
+    minutes: 90
+    summary: Given a Newton-type optimiser that assumes a PD Hessian and a covariance step that assumes a PD estimate, add definiteness handling and repair with fail-before-fix tests, and show convergence on a nonconvex test problem.
+    problem: |
+      An optimiser computes `p = np.linalg.solve(H, -g)` and accepts the step unconditionally, and a
+      companion routine Cholesky-factors a running covariance estimate for a preconditioner. On a
+      nonconvex problem the optimiser diverges near saddles, and on small-batch runs the covariance
+      Cholesky fails. Produce an audit that: replaces the raw solve with a damped or
+      eigenvalue-modified Newton step that guarantees descent; adds a repair (jitter or shrinkage)
+      to the covariance before factorisation, with a recorded intensity; reports the Hessian's
+      extreme eigenvalues and flags saddles; and proves each change with a regression that fails
+      before the fix, plus a convergence run on a nonconvex benchmark (e.g. a Rosenbrock or a
+      two-well function).
+    requirements:
+      - Replace the unconditional Newton step with one that adds `tau*I` (or flips negative eigenvalues) until the direction satisfies `g.T p < 0`, recording `tau`.
+      - Report `w_min` and `w_max` of the Hessian each iteration via a bounded estimate, and flag `w_min < 0` as a saddle.
+      - Repair the covariance estimate with jitter or Ledoit-Wolf shrinkage before Cholesky, recording the intensity.
+      - Show the optimiser converges on a nonconvex benchmark from multiple starts, including ones that pass near a saddle.
+      - Provide one fail-before-fix test per change and a clean end-to-end run.
+    constraints:
+      - Do not accept a Newton step without verifying it is a descent direction.
+      - Do not clip covariance eigenvalues to exactly zero before a Cholesky.
+      - Do not claim saddle handling without reporting the negative eigenvalue that triggered it.
+    expectedBehaviour:
+      - The damped step has `g.T p < 0` on every iteration, including at indefinite Hessians.
+      - The optimiser converges to the global minimum on the benchmark from starts that previously diverged.
+      - The covariance Cholesky succeeds on small-batch runs after repair, with a logged intensity.
+      - Scaling the problem does not change which iterations are flagged as saddles.
+      - Each fix has a regression that failed before it landed.
+    milestones:
+      - title: "1 — Curvature report"
+        detail: Bounded estimates of `w_min`, `w_max`, condition number, and a saddle flag each iteration.
+      - title: "2 — Robust step"
+        detail: Damped or modified Newton step guaranteeing descent, with `tau` recorded.
+      - title: "3 — Covariance repair and convergence"
+        detail: Jitter or shrinkage before Cholesky; convergence on the nonconvex benchmark with failing-first tests.
+    testing:
+      - Fail-before-fix regression for the divergent nonconvex run and the failed covariance Cholesky.
+      - A test asserting `g.T p < 0` at a hand-built indefinite Hessian.
+      - Scale-invariance of the saddle flag.
+    failureCases:
+      - The damped step loop never terminates because `tau` growth is too slow or capped too low.
+      - The covariance repair intensity is not recorded, hiding that the estimate was data-starved.
+      - Saddle handling triggers but the negative eigenvalue is not reported, so the cause is opaque.
+    bonus:
+      - Add a trust-region variant and compare its trajectory near saddles with the damped-Newton one.
+    architectureHints:
+      - Freeze the pre-fix divergent trajectory and the failing covariance as fixtures first.
+      - Keep curvature reporting, step modification, and covariance repair in separate commits.
+    referenceOutline: |
+      Each iteration, estimate `w_min` and `w_max` with a few steps of Lanczos or inverse iteration
+      on Hessian-vector products. Build the step by looping `cho_factor(H + tau I)` with growing
+      `tau`, or by `Q @ (modified 1/|w|) @ Q.T @ (-g)`. Repair the covariance with
+      `S + jitter * I` or Ledoit-Wolf shrinkage before `cho_factor`. Run the optimiser on Rosenbrock
+      from a grid of starts.
+resources:
+  - name: MIT 18.06 — Symmetric matrices and positive definiteness (OCW)
+    type: university
+    difficulty: core
+    url: "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-25-symmetric-matrices-and-positive-definiteness/"
+    usefulness: 5
+    why: Strang proves the spectral theorem, connects positive definiteness to positive pivots, positive eigenvalues, and positive leading minors, and ties it to minimising a quadratic — exactly this lesson's spine.
+    covers: The spectral theorem, quadratic forms, the equivalent tests for positive definiteness, and the link to minima of quadratics.
+  - name: "Boyd and Vandenberghe — Convex Optimization (Appendix A, chapters 2 to 4)"
+    type: book
+    difficulty: deep
+    url: "https://web.stanford.edu/~boyd/cvxbook/"
+    usefulness: 5
+    why: It develops PSD matrices, the PSD cone, the second-order condition for convexity, and how Newton's method and its damping handle curvature — the optimisation half of this lesson, with a free PDF.
+    covers: The positive semidefinite cone, quadratic forms, convexity via the Hessian, Newton's method, and self-concordance.
+  - name: "numpy.linalg.cholesky reference"
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.linalg.cholesky.html"
+    usefulness: 4
+    why: It documents that the factorisation exists and succeeds exactly for positive definite input and raises `LinAlgError` otherwise, which is the definitive PD test this lesson recommends.
+    covers: The Cholesky factorisation, its positive-definiteness requirement, the raised error on failure, and the lower-triangular result.
+  - name: "Ledoit and Wolf — A well-conditioned estimator for large-dimensional covariance matrices"
+    type: article
+    difficulty: deep
+    url: "https://www.sciencedirect.com/science/article/pii/S0047259X03000964"
+    usefulness: 4
+    why: It is the reference for shrinkage covariance estimation, which turns a singular or near-singular sample covariance into a guaranteed positive definite, better-conditioned estimate, as used in the repair examples here.
+    covers: Shrinkage toward a structured target, the optimal shrinkage intensity, why it beats the sample covariance in high dimensions, and the resulting conditioning.
+  - name: "Higham — Computing a nearest symmetric positive semidefinite matrix"
+    type: article
+    difficulty: deep
+    url: "https://www.sciencedirect.com/science/article/pii/0024379588902236"
+    usefulness: 4
+    why: It gives the exact Frobenius-nearest PSD matrix via eigenvalue clipping and a polar factor, the principled version of the "repair a broken covariance or kernel" step in this lesson.
+    covers: The nearest PSD matrix problem, the eigenvalue-truncation solution, the symmetric polar factor, and an iterative refinement for the PD case.

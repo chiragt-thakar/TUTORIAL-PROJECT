@@ -1,0 +1,310 @@
+---
+id: "roadmap:phase-1-1.1:10"
+title: "Testing: pytest fixtures, parametrize, mocking, property-based testing with hypothesis"
+description: "Design tests around observable contracts using pytest fixtures and parametrization, narrow boundary mocks, and Hypothesis properties that search and shrink the input space."
+module: 1-1-python-fluency-beyond-the-basics
+order: 11
+estimatedMinutes: 125
+prerequisites: ["roadmap:phase-1-1.1:6"]
+learningObjectives:
+  - Structure pytest tests as clear arrange-act-assert specifications with fixture ownership and deterministic cleanup
+  - Use parametrization to expose meaningful cases without hiding behavior or multiplying duplicate tests
+  - Patch names at their lookup boundary and use autospecced mocks only where a real collaborator must be controlled
+  - Design Hypothesis strategies and invariants that reveal, reproduce, and shrink edge cases ordinary examples miss
+---
+
+A test is executable evidence about a public guarantee. Its value comes from the failure it can explain, not from how many implementation lines it touches.
+
+`pytest` makes setup, case expansion, and failure reporting concise. Hypothesis searches a much larger input space and shrinks a failure to a small counterexample. Mocks can isolate a boundary, but they can also make a test pass against an implementation that no real collaborator supports.
+
+Start with observable behavior. Then choose the smallest test double and the widest useful input space that keep the test deterministic, fast, and diagnostic.
+
+<TypeScriptComparison>
+
+- Pytest fixtures are dependency-injected setup values, closer to composable test providers than Jest's nested hooks.
+- `@pytest.mark.parametrize` expands one behavior over explicit cases; `test.each` is similar, including the risk of hiding distinct behaviors in one table.
+- Patch where Python looks up a name, just as a Jest mock must replace the reference the module under test actually uses.
+- Hypothesis generates and shrinks values from strategies; it is closer to fast-check than to a random-data faker.
+- Python mocks freely invent attributes unless constrained by `spec`, `spec_set`, or `autospec`, so a green test can otherwise call an impossible API.
+
+</TypeScriptComparison>
+
+## Test contracts, not the path your code happened to take
+
+A good test names one behavior, arranges only relevant state, performs one meaningful action, and asserts the externally visible result. It may inspect a boundary interaction when that interaction is the contract, such as publishing one idempotent event.
+
+```python title="tests/test_batching.py"
+def test_batches_preserve_every_item_once() -> None:
+    items = ["a", "b", "c", "d", "e"]
+
+    batches = list(chunked(items, size=2))
+
+    assert batches == [["a", "b"], ["c", "d"], ["e"]]
+```
+
+Avoid asserting private method calls, incidental SQL order, or the exact sequence of internal helper functions. Those tests freeze refactoring while failing to prove the user-visible invariant.
+
+Unit, integration, contract, and end-to-end tests answer different questions. A unit test isolates deterministic logic. An integration test proves real components cooperate. A contract test checks an external boundary's shape. A small end-to-end path confirms that the deployed wiring exists. One category cannot replace all the others.
+
+## Fixtures are a dependency graph with ownership
+
+A fixture is not merely reusable setup. It declares who creates a resource, who receives it, how long it lives, and how cleanup runs.
+
+```python title="tests/conftest.py"
+import pytest
+
+
+@pytest.fixture
+def model_store(tmp_path):
+    store = FileModelStore(tmp_path / "models")
+    store.initialize()
+    yield store
+    store.close()
+```
+
+Code before `yield` is setup; code after it is teardown. Pytest unwinds successfully created yield fixtures in reverse order even when the test fails. If setup fails before `yield`, that fixture's teardown portion cannot run, so acquire one resource per fixture and register cleanup immediately when partial setup is possible.
+
+Fixture scope controls reuse: function, class, module, package, or session. Wider scope can improve speed but increases shared-state risk. A session-scoped mutable database seeded once may make failures order-dependent. Prefer the narrowest scope compatible with the resource cost, then reset state explicitly.
+
+Fixtures can depend on fixtures, forming a graph. Keep that graph visible. An `autouse` fixture applies without appearing in the test signature and is appropriate for universal isolation, such as blocking network calls, but harmful when it quietly establishes scenario data.
+
+<CommonMistake>
+
+A giant `app` fixture that creates the database, cache, HTTP client, user, and model hides every dependency. Split ownership so a failing setup points at the resource that failed and tests request only what they use.
+
+</CommonMistake>
+
+## Parametrization expresses a behavior matrix
+
+Parametrize when inputs vary but the guarantee and assertion remain the same. Give cases readable IDs so the failed node tells you what broke.
+
+```python
+import pytest
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        pytest.param("  Ada ", "ada", id="trim-and-lower"),
+        pytest.param("Σ", "σ", id="unicode-case"),
+        pytest.param("", "", id="empty"),
+    ],
+)
+def test_normalize_label(raw: str, expected: str) -> None:
+    assert normalize_label(raw) == expected
+```
+
+Do not put unrelated assertions behind conditional branches inside one parametrized test. Separate behaviors deserve separate test names. A table of fifty examples is often a signal that an invariant belongs in a property-based test.
+
+Fixtures and parametrization can combine through indirect parameters, but use that only when a value configures fixture construction rather than being the subject of the assertion. Excess indirection turns the node ID into a puzzle.
+
+Marks belong on individual parameters when one case is expected to fail or requires a platform. An unconditional `xfail` can document a known defect; a broad `skip` can also quietly erase coverage. Make reasons and expiry conditions explicit.
+
+## Mock the boundary where the name is used
+
+Python imports bind names. If `service.py` executes `from gateway import send`, then the code calls `service.send`. Patching `gateway.send` later does not replace the already-bound name.
+
+```python title="tests/test_service.py"
+from unittest.mock import create_autospec, patch
+
+
+def test_submit_publishes_once() -> None:
+    with patch("inference.service.send", autospec=True) as send:
+        submit(Job(id="j-1"))
+
+    send.assert_called_once_with({"job_id": "j-1"})
+```
+
+Patch where the system under test looks up the object. Use the patch as a context manager or fixture so restoration is guaranteed. `pytest`'s `monkeypatch` fixture is excellent for replacing attributes, environment variables, mappings, paths, and working directories with automatic undo.
+
+`spec` restricts attributes to a reference API. `spec_set` also prevents assigning unknown attributes. `autospec` creates callable mocks with compatible signatures, catching calls the real object would reject. None of them proves the collaborator's semantics, serialization, or network protocol; integration and contract tests do that.
+
+Prefer a small handwritten fake when behavior and state matter. A fake repository that enforces uniqueness can reveal an invalid service assumption; a permissive `MagicMock` returns more mocks and may let nonsense flow through the test.
+
+Use `side_effect` for an intentional exception or sequence, not as a miniature replacement implementation. For async callables, use `AsyncMock` and assert awaits, not only calls. Never mock the function whose algorithm you claim to test.
+
+## Hypothesis searches properties, then shrinks failures
+
+Example tests prove behavior for selected examples. Property-based tests state an invariant and ask a generator to search many structured examples.
+
+```python title="tests/test_chunking_properties.py"
+from hypothesis import given, strategies as st
+
+
+@given(
+    items=st.lists(st.integers(), max_size=200),
+    size=st.integers(min_value=1, max_value=30),
+)
+def test_chunking_preserves_order_and_membership(
+    items: list[int], size: int
+) -> None:
+    batches = list(chunked(items, size))
+
+    assert [item for batch in batches for item in batch] == items
+    assert all(1 <= len(batch) <= size for batch in batches)
+```
+
+Hypothesis records enough information to reproduce failures and shrinks a failing example toward a simpler counterexample. A failure involving 10,000 values may become `items=[0]` and `size=1`, revealing the actual boundary.
+
+Good properties include round trips, idempotence, invariants, conservation, equivalence to a slow oracle, and metamorphic relations. “The result is not `None`” is usually too weak. “Decode(encode(x)) equals x under the documented normalization” says something falsifiable.
+
+## Strategies should model the domain
+
+Build values rather than generating strings and parsing them. `st.builds`, `@st.composite`, `one_of`, recursive strategies, and mapped strategies can express valid domain objects. Generate invalid values deliberately in separate tests when rejection is the contract.
+
+Use `assume` only for conditions that are difficult to encode. Filtering away most examples produces slow health checks and poor exploration. For ordered pairs, generate two values and sort them; do not generate arbitrary pairs and reject nearly all of them.
+
+Control nondeterminism at the boundary. Hypothesis manages its own randomness, but code under test that reads time, environment, network, or global random state should receive deterministic collaborators. Do not seed Hypothesis to make a failure disappear; preserve the reported reproducer and fix the invariant.
+
+Stateful testing models sequences of operations and checks invariants after each transition. It fits caches, queues, registries, and state machines where bugs appear only after an order such as create, evict, retry, delete.
+
+<ProductionNote>
+
+Keep Hypothesis's example database in local and CI workflows where practical. A newly found counterexample should become a fast regression, either through the database or as a named example when it represents a stable business boundary.
+
+</ProductionNote>
+
+## Failure messages and suite architecture are product features
+
+A test suite is an operator for future code changes. Failures should say which contract broke, with the smallest useful values. Assertion rewriting gives pytest rich comparisons, so prefer direct assertions over manually formatted generic errors.
+
+Keep tests deterministic and independently runnable. Freeze time through an injected clock, use temporary directories, own database transactions, and block accidental network access. Random order, parallel execution, or repeating a test should not change correctness.
+
+Measure the suite too. Track slow tests, quarantine only with ownership and expiry, and separate fast change feedback from slower integration gates. Parallel workers can expose hidden shared state; they do not make an unsafe suite correct.
+
+For an ML pipeline, test preprocessing invariants independently from model quality. A deterministic unit test can prove tensor shape, dtype, ordering, padding, and batching. Statistical or golden-set evaluations belong in a separate, explicitly tolerant evaluation layer.
+
+<WhyItMatters>
+
+Most AI-system incidents occur at boundaries: malformed payloads, reordered batches, stale model state, partial retries, or incompatible preprocessing. Tests should concentrate evidence at those boundaries instead of maximizing a coverage percentage.
+
+</WhyItMatters>
+
+## Exercises
+
+<Exercise id="testing-fixture-owner-easy" difficulty="easy">
+
+Why should a fixture that opens a resource usually `yield` it instead of returning it?
+
+<Solution>
+
+The code after `yield` defines teardown owned by the fixture, so cleanup runs when the consumer test fails as well as when it passes. Returning alone provides no teardown phase. The fixture should acquire narrowly enough that every successful acquisition has a registered cleanup path.
+
+</Solution>
+</Exercise>
+
+<Exercise id="testing-parametrize-boundary-medium" difficulty="medium">
+
+Turn three separate tests for empty, one-item, and exact-size batches into parametrization. State when you would keep them separate.
+
+<Solution>
+
+Use `@pytest.mark.parametrize` with named `pytest.param` cases when each invokes the same action and asserts the same invariant. Keep tests separate when setup, expected behavior, or failure meaning differs; a conditional body inside a parameter table hides rather than clarifies the contract.
+
+</Solution>
+</Exercise>
+
+<Exercise id="testing-patch-lookup-hard" difficulty="hard">
+
+`worker.py` uses `from clock import now`, but a test patches `clock.now` and real time is still read. Diagnose and repair it.
+
+<Solution>
+
+Importing bound `now` into `worker` created the reference used by the system under test. Patch `worker.now`, preferably through a scoped context or `monkeypatch`, or redesign the worker to receive a clock dependency. Patching the definition module does not replace an already-bound consumer name.
+
+</Solution>
+</Exercise>
+
+<Exercise id="testing-property-interview" difficulty="interview">
+
+In an interview, explain what property-based testing adds beyond random inputs.
+
+<Solution>
+
+Property-based testing generates structured values from an explicit domain, checks a general invariant, preserves reproducibility, and shrinks failures to minimal counterexamples. The difficult work is designing meaningful properties and strategies. It complements named examples and integration tests; it does not infer the specification or prove all possible inputs.
+
+</Solution>
+</Exercise>
+
+<Exercise id="testing-inference-contract-real-world" difficulty="real-world">
+
+Design the test layers for an inference batcher that groups requests, calls a remote model, and restores input order.
+
+<Solution>
+
+Use unit and Hypothesis tests for conservation, bounds, and order restoration; fixture-owned integration tests for the real serializer and persistence adapter; a strict fake or narrow boundary mock for remote failures; contract tests against a representative server; and a small end-to-end path. Inject clocks and IDs, test partial failure and retry, and keep model-quality evaluation separate.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+Explain fixture dependency and teardown order, then name the risk introduced by each wider fixture scope. State when `autouse` clarifies a universal rule and when it hides scenario setup.
+
+Describe where to patch an imported name, what autospec guarantees, and what it cannot prove. Then give one case where a fake is more trustworthy than a mock.
+
+Finally, define a useful property, strategy, shrink, rejection, and stateful test. Explain how you would turn a production boundary bug into both a minimal regression and a broader invariant.
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why did my patched function still call the real implementation?">
+
+You probably patched where the function was defined rather than where the system under test looks it up. Replace the consumer module's bound name.
+
+</Gotcha>
+
+<Gotcha question="Does autospec make a mock behave like the real service?">
+
+No. It constrains attributes and call signatures. It does not reproduce protocol semantics, latency, serialization, state, or failure behavior.
+
+</Gotcha>
+
+<Gotcha question="Why did fixture teardown not run after setup failed?">
+
+The fixture never reached `yield`, so its teardown block was not registered. Acquire resources separately or register cleanup immediately after each successful acquisition.
+
+</Gotcha>
+
+<Gotcha question="Are session-scoped fixtures always faster?">
+
+They reduce setup work but share state across more tests. Leakage and order dependence can cost far more than the saved setup time.
+
+</Gotcha>
+
+<Gotcha question="Why is Hypothesis rejecting too many examples?">
+
+The strategy generates a broad domain and `assume` filters most of it. Encode the valid structure directly so the search and shrinking processes can explore useful values.
+
+</Gotcha>
+
+<Gotcha question="Should I assert the exact mock call sequence for every unit test?">
+
+Only when ordering is part of the external contract. Otherwise you freeze implementation structure and make safe refactors look like failures.
+
+</Gotcha>
+
+<Gotcha question="Does 100 percent coverage mean the behavior is tested?">
+
+No. Coverage shows executed structure, not meaningful assertions, boundary cases, race exploration, or correspondence with requirements.
+
+</Gotcha>
+
+<Gotcha question="Can I make a flaky test reliable by adding sleep?">
+
+Usually not. Replace time guesses with events, barriers, injected clocks, or observable state transitions so the test controls the condition it awaits.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Pytest fixtures form an ownership graph for setup and teardown. Parametrization expands one honest behavior across named cases. Both should make dependencies and failures more visible, not compress tests until intent disappears.
+
+Mocks are boundary tools. Patch the reference the consumer uses, constrain mocks with specs, assert interactions only when they are contractual, and prefer behavior-rich fakes or real integrations when semantics matter.
+
+Hypothesis searches a strategy-defined domain, verifies invariants, and shrinks failures into explanations. Strong properties preserve, round-trip, compare, or relate behavior; weak assertions merely generate noise.
+
+Use the Practice and Debug tabs to expose false-positive tests, the Interview tab to explain trade-offs, and the Project tab to build a layered verification suite for a production-shaped inference pipeline.

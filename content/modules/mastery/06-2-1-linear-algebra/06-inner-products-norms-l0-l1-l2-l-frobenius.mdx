@@ -1,0 +1,360 @@
+---
+id: "roadmap:phase-2-2.1:5"
+title: "Inner products, norms (L0/L1/L2/L∞/Frobenius), orthogonality, projections"
+description: The inner product defines length and angle; the p-norms measure size in different ways with different unit balls; orthogonality and projection turn "closest point in a subspace" into least squares.
+module: 2-1-linear-algebra
+order: 6
+estimatedMinutes: 120
+prerequisites: []
+learningObjectives:
+  - State the inner product axioms and derive length, angle, and Cauchy-Schwarz from them
+  - Compare the L1, L2, L-infinity, L0, Frobenius, and spectral norms by their unit balls and their uses
+  - Compute projections onto a vector and onto a subspace, and show the residual is orthogonal
+  - Connect norms and projection to weight decay, sparsity, cosine similarity, and least squares
+---
+
+An inner product is the structure that gives a vector space length and angle. From its three axioms
+you get the Euclidean norm, the notion of perpendicular, Cauchy-Schwarz, and the whole machinery of
+projection and least squares.
+
+Norms are the more general idea of size. The dot-product norm is one of many, and the differences
+between L1, L2, and L-infinity are exactly why lasso is sparse, why weight decay is smooth, and why
+gradient clipping behaves the way it does.
+
+<TypeScriptComparison>
+
+- `Math.hypot(x, y)` computes a 2-norm without overflow; `np.linalg.norm` generalises that to any axis and any `ord`.
+- TypeScript has no vector type, so every norm is a manual `reduce`, and the naive `Math.sqrt(sum of squares)` overflows for large entries where `hypot` does not.
+- Cosine similarity in a JS embedding search is `dot(a, b) / (norm(a) * norm(b))`; the same formula and the same divide-by-near-zero hazard as in NumPy.
+- `np.linalg.norm(A)` on a 2-D array defaults to the Frobenius norm, not the spectral norm — a common surprise with no TypeScript analogue to compare against.
+
+</TypeScriptComparison>
+
+## The inner product axioms
+
+A real inner product `<x, y>` is symmetric (`<x, y> == <y, x>`), linear in each argument, and
+positive definite (`<x, x> >= 0`, with equality only for `x == 0`). The dot product
+`sum x_i * y_i` satisfies all three, but so does any `x.T @ M @ y` with `M` symmetric positive
+definite.
+
+The complex version replaces symmetry with conjugate symmetry, `<x, y> == conj(<y, x>)`, which is
+why complex code uses the conjugate transpose. Function spaces use `<f, g> = integral of f * g`, and
+the same theory applies unchanged.
+
+```python
+import numpy as np
+
+x = np.array([1.0, 2.0, -1.0])
+y = np.array([0.0, 1.0, 3.0])
+assert np.isclose(np.dot(x, y), x @ y)
+
+M = np.array([[2.0, 0.5], [0.5, 1.0]])          # SPD, so a valid weighted inner product
+u, v = np.array([1.0, 0.0]), np.array([0.0, 1.0])
+assert np.isclose(u @ M @ v, 0.5)               # u and v are not orthogonal in this geometry
+```
+
+## Length and angle come from the inner product
+
+The induced norm is `||x|| = sqrt(<x, x>)`. Cauchy-Schwarz, `|<x, y>| <= ||x|| * ||y||`, then lets
+you define the angle by `cos(theta) = <x, y> / (||x|| * ||y||)`, always in `[-1, 1]`. The triangle
+inequality `||x + y|| <= ||x|| + ||y||` follows.
+
+Not every norm comes from an inner product. A norm is induced by one exactly when it obeys the
+parallelogram law `||x + y||^2 + ||x - y||^2 == 2||x||^2 + 2||y||^2`. The L2 norm does; L1 and
+L-infinity do not.
+
+```python
+def cosine(x, y):
+    return (x @ y) / (np.linalg.norm(x) * np.linalg.norm(y))
+
+a = np.array([1.0, 0.0])
+b = np.array([1.0, 1.0])
+assert np.isclose(cosine(a, b), 1 / np.sqrt(2))   # 45 degrees
+```
+
+## The family of norms
+
+Each p-norm measures size differently. L1 is `sum |x_i|`, the "taxicab" distance. L2 is
+`sqrt(sum x_i^2)`, the Euclidean length. L-infinity is `max |x_i|`, the largest coordinate. L0 is
+the count of nonzeros — not a true norm, since it is not homogeneous, but the target lasso
+approximates. For matrices, the Frobenius norm is the L2 norm of the flattened matrix, and the
+spectral (operator 2-) norm is the largest singular value.
+
+```python
+x = np.array([3.0, -4.0, 0.0, 1.0])
+assert np.isclose(np.linalg.norm(x, 1), 8.0)
+assert np.isclose(np.linalg.norm(x, 2), np.sqrt(26))
+assert np.isclose(np.linalg.norm(x, np.inf), 4.0)
+assert np.count_nonzero(x) == 3                       # "L0"
+
+A = np.array([[1.0, 2.0], [3.0, 4.0]])
+assert np.isclose(np.linalg.norm(A, 'fro'), np.sqrt(30))
+assert np.isclose(np.linalg.norm(A, 2), np.linalg.svd(A, compute_uv=False)[0])
+```
+
+<Concept>
+
+The unit ball of a norm is the set `||x|| <= 1`. In 2-D, L1 is a diamond with corners on the axes,
+L2 is a circle, L-infinity is a square. The diamond's corners sit exactly where coordinates are
+zero, which is the geometric reason an L1 penalty drives solutions to be sparse.
+
+</Concept>
+
+## Orthogonality and the Pythagorean theorem
+
+Two vectors are orthogonal when `<x, y> == 0`. A set is orthonormal when every pair is orthogonal
+and every vector has unit norm. For orthogonal `x` and `y`, `||x + y||^2 == ||x||^2 + ||y||^2` —
+the Pythagorean theorem, and the reason orthonormal bases make coordinates trivial to compute.
+
+```python
+q1 = np.array([1.0, 1.0, 0.0]) / np.sqrt(2)
+q2 = np.array([1.0, -1.0, 0.0]) / np.sqrt(2)
+assert np.isclose(q1 @ q2, 0.0)
+assert np.isclose(np.linalg.norm(q1), 1.0)
+# coordinates of a vector in an orthonormal set are just inner products
+v = np.array([3.0, 1.0, 0.0])
+assert np.allclose((v @ q1) * q1 + (v @ q2) * q2, v)
+```
+
+## Projection is the closest point in a subspace
+
+The projection of `x` onto the line through `u` is `(<x, u> / <u, u>) * u`. Onto a subspace with
+orthonormal basis `Q` (columns), it is `Q @ (Q.T @ x)`, and the projection matrix `P = Q @ Q.T`
+satisfies `P == P.T` and `P @ P == P`.
+
+The defining property is that the residual `x - P @ x` is orthogonal to the subspace. That is
+exactly the normal equations, so least squares is projection: `X @ beta` is the projection of `y`
+onto the column space of `X`.
+
+```python
+Q, _ = np.linalg.qr(np.random.default_rng(0).standard_normal((5, 2)))   # orthonormal columns
+P = Q @ Q.T
+x = np.random.default_rng(1).standard_normal(5)
+r = x - P @ x
+assert np.allclose(Q.T @ r, 0.0)                 # residual orthogonal to the subspace
+assert np.allclose(P @ P, P) and np.allclose(P, P.T)
+```
+
+<WhyItMatters>
+
+L2 weight decay shrinks `||w||_2` and keeps every weight moderate; L1 shrinks `||w||_1` and sets
+many weights exactly to zero. Gradient clipping rescales the update when `||g||_2` exceeds a
+threshold. Cosine similarity is the inner product after L2 normalisation. RMSNorm divides by an L2
+norm of the activations. All of these are one line once you see the norm.
+
+</WhyItMatters>
+
+## Doing this in floating point
+
+`sqrt(sum of squares)` overflows when entries are large and underflows when they are tiny, even
+though the true norm is representable. `np.linalg.norm` and `math.hypot` scale by the max entry
+first to avoid this; write your own only with the same trick.
+
+Cosine similarity divides by norms, so a near-zero vector gives a meaningless or `nan` result. Guard
+with a floor on the norm, and prefer comparing `x @ y` against `eps * ||x|| * ||y||` rather than
+against an absolute constant when testing orthogonality.
+
+```python
+big = np.array([1e200, 1e200])
+assert np.isfinite(np.linalg.norm(big))          # scaled internally
+assert not np.isfinite(np.sqrt(np.sum(big**2)))  # naive version overflows
+```
+
+<ProductionNote>
+
+Log the norm of gradients and weights during training, not just the loss. A spike in `||g||_2`
+precedes divergence; a collapse in `||w||` of a layer flags a dead unit. For embedding retrieval,
+store L2-normalised vectors so cosine similarity is a plain dot product and the divide is done once.
+
+</ProductionNote>
+
+## Cost
+
+All p-norms are `O(n)`: one pass over the data. The Frobenius norm of an `m*n` matrix is `O(m*n)`.
+The spectral norm needs the largest singular value, which is `O(m*n*min(m, n))` for a full SVD or
+much less with a few iterations of the power method.
+
+Projection onto a `k`-dimensional subspace via an orthonormal `Q` is two matmuls at `O(n*k)`.
+Forming `P = Q @ Q.T` explicitly is `O(n^2)` in memory and only worth it if you project many
+vectors; otherwise keep `Q` and apply `Q @ (Q.T @ x)`.
+
+## Exercises
+
+<Exercise id="la-inner-norm-unit-balls" difficulty="easy">
+
+For `x = (2, -3)`, compute the L1, L2, and L-infinity norms, and say which unit ball each norm's
+"circle of radius `||x||`" would be.
+
+<Solution>
+
+L1: `|2| + |-3| = 5`. L2: `sqrt(4 + 9) = sqrt(13) approx 3.606`. L-infinity: `max(2, 3) = 3`.
+
+The unit ball of L1 is a diamond (square rotated 45 degrees) with vertices on the axes; of L2 a
+circle; of L-infinity an axis-aligned square. Scaling each to the corresponding `||x||` gives a
+diamond of "radius" 5, a circle of radius `sqrt(13)`, and a square of half-width 3, and the point
+`x` lies on each of those boundaries in its own metric.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-inner-cauchy-schwarz" difficulty="medium">
+
+Prove Cauchy-Schwarz `|<x, y>| <= ||x|| * ||y||` from the fact that `<x - t*y, x - t*y> >= 0` for
+all real `t`, and state when equality holds.
+
+<Solution>
+
+Expand `f(t) = <x - t*y, x - t*y> = <x, x> - 2t<x, y> + t^2<y, y> >= 0`. This is a quadratic in `t`
+that is never negative, so its discriminant is at most zero:
+`(2<x, y>)^2 - 4<y, y><x, x> <= 0`, i.e. `<x, y>^2 <= <x, x><y, y> = ||x||^2 ||y||^2`. Taking square
+roots gives `|<x, y>| <= ||x|| ||y||`.
+
+Equality holds exactly when the discriminant is zero, meaning `f(t) = 0` for some `t`, which by
+positive-definiteness means `x - t*y == 0`. So equality holds if and only if `x` and `y` are
+linearly dependent (one is a scalar multiple of the other, including the zero case).
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-inner-projection-least-squares" difficulty="hard">
+
+Show that the least-squares solution to `X beta approx y` makes `X @ beta` the orthogonal
+projection of `y` onto the column space of `X`, and derive the normal equations from orthogonality.
+
+<Solution>
+
+Least squares minimises `||y - X beta||_2^2`. Write `r = y - X beta` for the residual. At the
+minimum, `r` must be orthogonal to every direction we can move `X beta`, i.e. to every column of
+`X`, so `X.T @ r == 0`.
+
+Substituting `r`: `X.T @ (y - X beta) == 0`, which rearranges to `X.T @ X beta == X.T @ y` — the
+normal equations. Their solution `beta` gives `X @ beta` as the point in the column space of `X`
+closest to `y`, and `r` is the component of `y` orthogonal to that space.
+
+Geometrically, decompose `y` as (projection onto `col(X)`) plus (orthogonal residual). The
+projection is `X @ beta`; the Pythagorean theorem then says `||y||^2 == ||X beta||^2 + ||r||^2`, so
+no other point in `col(X)` can be closer.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-inner-l1-vs-l2-interview" difficulty="interview">
+
+In an interview: "Why does an L1 penalty produce sparse weights while an L2 penalty does not?"
+
+<Solution>
+
+Geometrically, the constrained view minimises the loss subject to `||w||_1 <= c` (L1) or
+`||w||_2 <= c` (L2). The L1 ball is a diamond with sharp corners on the coordinate axes; the L2 ball
+is a smooth sphere. The loss contours are ellipsoids, and they first touch the constraint ball at
+its boundary. A diamond is very likely to be touched at a corner, where some coordinates are exactly
+zero; a sphere is touched at a generic point with all coordinates nonzero.
+
+Analytically, the L1 subgradient near zero is a constant `+/- lambda`, so there is a threshold below
+which the optimal coefficient is pinned exactly at zero (soft-thresholding). The L2 gradient is
+`2 lambda w`, which vanishes as `w -> 0`, so it only shrinks coefficients toward zero without ever
+setting them there.
+
+I would add that this is why lasso is used for feature selection and ridge for stabilising
+collinear features without dropping any.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-inner-cosine-retrieval-real-world" difficulty="real-world">
+
+An embedding search ranks documents by cosine similarity to a query. Some very short documents keep
+ranking first regardless of the query. Diagnose likely causes and fix the pipeline.
+
+<Solution>
+
+Cosine similarity is `dot(q, d) / (||q|| ||d||)`. Short documents can have tiny `||d||`, so any
+small alignment with `q` is divided by a small number and inflated. If the embedding of an
+almost-empty document is dominated by a bias direction shared with many queries, that direction
+aligns with everything.
+
+Fixes: enforce a minimum token count or a floor on `||d||` before indexing, and L2-normalise all
+stored embeddings once so ranking is a plain dot product and no norm is pathologically small — drop
+zero vectors rather than normalise them.
+
+Then subtract the mean embedding, or project out the top principal component, to remove the shared
+bias direction, and add a length prior or a BM25-style term so extremely short documents are not
+over-rewarded.
+
+Validate with a held-out set of judged query-document pairs and check that ranking quality improves,
+not just that the symptom disappears.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. State the three inner product axioms and the formula for the induced norm.
+2. Which norm's unit ball is a diamond, which a circle, which a square, and why does the diamond
+   imply sparsity?
+3. Write the projection of `x` onto the line through `u`, and onto a subspace with orthonormal
+   columns `Q`.
+4. What property of the least-squares residual gives the normal equations?
+5. Why does `sqrt(np.sum(x**2))` fail where `np.linalg.norm(x)` succeeds?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="`np.linalg.norm(A)` for a matrix — is that the largest singular value?">
+
+No. For a 2-D array the default `ord` is the Frobenius norm, the square root of the sum of squares
+of all entries. For the spectral norm (largest singular value) pass `ord=2`; they can differ by a
+factor of `sqrt(rank)`.
+
+</Gotcha>
+
+<Gotcha question="L0 is a norm that counts nonzeros.">
+
+It is called the "L0 norm" but it is not a norm: `||2x||_0 != 2 ||x||_0`, so it is not homogeneous.
+It is a useful sparsity count, and L1 is its convex relaxation, which is what optimisers actually
+minimise.
+
+</Gotcha>
+
+<Gotcha question="I tested orthogonality with `x @ y == 0`.">
+
+Floating point almost never gives an exact zero. Test `abs(x @ y) <= tol * norm(x) * norm(y)` with a
+small relative `tol`. An absolute threshold breaks when the vectors are large or small in
+magnitude.
+
+</Gotcha>
+
+<Gotcha question="My cosine similarity returns `nan` sometimes.">
+
+One of the vectors has norm zero or near zero, so you divided by zero. Floor the denominator, or
+drop zero vectors before the comparison. L2-normalising at ingest time and rejecting zero vectors
+removes the hazard.
+
+</Gotcha>
+
+<Gotcha question="A projection matrix should be orthogonal, so `P.T @ P == I`.">
+
+No. An orthogonal *projection* satisfies `P == P.T` and `P @ P == P`, and it is singular unless it
+projects onto the whole space. An orthogonal *matrix* satisfies `Q.T @ Q == I`. Different objects
+with confusingly similar names.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+An inner product is symmetric, bilinear, and positive definite; from it come the norm
+`sqrt(<x, x>)`, Cauchy-Schwarz, angle, and the triangle inequality. Only norms satisfying the
+parallelogram law come from an inner product, which L2 does and L1 and L-infinity do not.
+
+The p-norms differ by their unit balls: L1 a diamond, L2 a circle, L-infinity a square, with L0
+counting nonzeros and Frobenius and spectral covering matrices. The diamond's axis corners are why
+L1 gives sparsity.
+
+Orthogonality is a zero inner product; projection onto a subspace is `Q @ Q.T` with an orthonormal
+`Q`, and its residual is orthogonal to the subspace, which is least squares. In floating point, use
+`np.linalg.norm` for overflow safety, floor denominators in cosine similarity, and test orthogonality
+relatively. The Practice, Debug, Interview, Test, Project, and Review tabs build projection and the
+norm toolkit.

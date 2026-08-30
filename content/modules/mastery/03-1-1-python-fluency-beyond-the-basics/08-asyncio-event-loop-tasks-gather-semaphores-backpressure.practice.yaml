@@ -1,0 +1,764 @@
+lessonId: "roadmap:phase-1-1.1:7"
+module: 1-1-python-fluency-beyond-the-basics
+lesson: 08-asyncio-event-loop-tasks-gather-semaphores-backpressure
+title: "asyncio: event loop, tasks, gather, semaphores, backpressure"
+summary: Build bounded async services with explicit task ownership, cancellation, capacity, and overload policy.
+
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+
+exercises:
+  - id: asyncio-coroutine-start
+    tier: normal
+    kind: predict-output
+    title: Know when a coroutine starts
+    minutes: 8
+    requiredForMastery: true
+    concepts: [coroutines, scheduling]
+    prompt: Predict the output order and explain when `work("a")` begins.
+    code: |
+      import asyncio
+
+      async def work(name: str) -> str:
+          print("start", name)
+          await asyncio.sleep(0)
+          print("end", name)
+          return name
+
+      async def main() -> None:
+          a = work("a")
+          print("made")
+          print(await a)
+
+      asyncio.run(main())
+    hints:
+      - Calling an `async def` function returns an object.
+      - Direct `await` begins driving that coroutine.
+    solution: |
+      The order is `made`, `start a`, `end a`, then `a`. Calling `work("a")` only creates a
+      coroutine object; it does not execute the body. `await a` drives it until completion, and
+      `sleep(0)` gives other ready work an opportunity even though none exists here.
+
+  - id: asyncio-blocking-call
+    tier: normal
+    kind: debug
+    title: Remove a blocking call from the loop
+    minutes: 10
+    requiredForMastery: true
+    concepts: [event-loop, blocking]
+    prompt: |
+      `legacy_sdk.fetch()` is synchronous and can block for two seconds. Fix the coroutine without
+      changing the SDK, and state when a process would be more appropriate.
+    code: |
+      async def load(key: str) -> bytes:
+          return legacy_sdk.fetch(key)
+    hints:
+      - Async syntax does not change a synchronous function's behavior.
+      - The standard library can submit a blocking callable to a thread.
+    solution: |
+      Run the call with `await asyncio.to_thread(legacy_sdk.fetch, key)` so the event-loop thread
+      remains available. A process is more appropriate for sustained CPU-heavy Python work because
+      a thread isolates blocking but usually does not provide multi-core execution for Python code.
+    solutionCode: |
+      async def load(key: str) -> bytes:
+          return await asyncio.to_thread(legacy_sdk.fetch, key)
+
+  - id: asyncio-direct-vs-task
+    tier: normal
+    kind: code-reading
+    title: Find the lost concurrency
+    minutes: 9
+    requiredForMastery: true
+    concepts: [await, tasks]
+    prompt: Explain why these independent calls run sequentially and make them concurrent with structured ownership.
+    code: |
+      profile = await fetch_profile(user_id)
+      policy = await fetch_policy(user_id)
+      return combine(profile, policy)
+    hints:
+      - A direct await does not let this caller move to the next statement.
+      - Put both child lifetimes inside one lexical scope.
+    solution: |
+      The second call is not created until the first finishes. Create both inside a `TaskGroup`,
+      leave the block only after both complete, then read each result. The group also cancels and
+      awaits the sibling if one operation fails, so no task escapes the request scope.
+    solutionCode: |
+      async with asyncio.TaskGroup() as group:
+          profile_task = group.create_task(fetch_profile(user_id))
+          policy_task = group.create_task(fetch_policy(user_id))
+      return combine(profile_task.result(), policy_task.result())
+
+  - id: asyncio-gather-order
+    tier: normal
+    kind: predict-output
+    title: Separate completion order from result order
+    minutes: 8
+    requiredForMastery: true
+    concepts: [gather, ordering]
+    prompt: What list is returned, and in what order do the completion messages print?
+    code: |
+      async def one(value: int, delay: float) -> int:
+          await asyncio.sleep(delay)
+          print(value)
+          return value
+
+      result = await asyncio.gather(one(1, .2), one(2, .1))
+    hints:
+      - Scheduling order and return-value order are different guarantees.
+      - "`gather` preserves the positions of its input awaitables."
+    solution: |
+      The console prints `2` and then `1`, because the shorter sleep completes first. The returned
+      list is `[1, 2]`, because `gather` places results in input order regardless of completion
+      order. Use `as_completed` when completion order should drive downstream processing.
+
+  - id: asyncio-cancel-cleanup
+    tier: intermediate
+    kind: write-code
+    title: Preserve cancellation during cleanup
+    minutes: 14
+    requiredForMastery: true
+    concepts: [cancellation, cleanup]
+    prompt: |
+      Write a worker that acquires a lease, awaits `serve(lease)`, always releases the lease, and
+      never turns cancellation into success.
+    hints:
+      - Cleanup belongs in `finally` or an async context manager.
+      - You do not need to catch cancellation to make `finally` run.
+    solution: |
+      A `finally` block executes during cancellation and automatically allows `CancelledError` to
+      keep propagating afterward. If release itself is asynchronous, its cancellation semantics
+      must be documented; shielding it creates a separately owned lifetime and should be deliberate.
+    solutionCode: |
+      async def worker() -> None:
+          lease = await acquire_lease()
+          try:
+              await serve(lease)
+          finally:
+              await release_lease(lease)
+
+  - id: asyncio-gather-failure-policy
+    tier: intermediate
+    kind: explain
+    title: Choose a failure policy
+    minutes: 12
+    requiredForMastery: true
+    concepts: [gather, TaskGroup, failures]
+    prompt: |
+      Three calls form one request and partial output is invalid. Compare default `gather`,
+      `gather(return_exceptions=True)`, and `TaskGroup`; choose one and justify it.
+    hints:
+      - Ask what should happen to siblings after the first failure.
+      - Decide whether an exception is a valid result value.
+    solution: |
+      Choose `TaskGroup`. A non-cancellation child failure cancels its siblings, waits for their
+      cleanup, and reports remaining failures as a group. Default `gather` propagates the first
+      failure without automatically cancelling siblings. `return_exceptions=True` is wrong because
+      partial results are invalid and exception objects must not enter the success collection.
+
+  - id: asyncio-timeout-translation
+    tier: intermediate
+    kind: write-code
+    title: Translate one operation deadline
+    minutes: 14
+    requiredForMastery: true
+    concepts: [timeout, exception-translation]
+    prompt: |
+      Give `store.search(query)` 750 ms, then translate expiry into `SearchUnavailable` with the
+      original timeout as its explicit cause.
+    hints:
+      - "`asyncio.timeout` is an async context manager."
+      - Catch the translated timeout outside that context.
+    solution: |
+      The timeout context applies a deadline to the current task's work inside the block. Outside
+      it, catch `TimeoutError` and chain a domain failure. This keeps infrastructure detail out of
+      the caller contract while retaining the diagnostic cause.
+    solutionCode: |
+      async def search(query: str) -> Result:
+          try:
+              async with asyncio.timeout(0.75):
+                  return await store.search(query)
+          except TimeoutError as exc:
+              raise SearchUnavailable("search deadline exceeded") from exc
+
+  - id: asyncio-semaphore-scope
+    tier: intermediate
+    kind: refactor
+    title: Stop sleeping while holding capacity
+    minutes: 15
+    requiredForMastery: true
+    concepts: [semaphore, retry]
+    prompt: Refactor this so retry backoff does not hold a provider permit.
+    code: |
+      async with provider_slots:
+          try:
+              return await call_provider(item)
+          except RetryableError:
+              await asyncio.sleep(2)
+              return await call_provider(item)
+    hints:
+      - A permit should represent active use of the scarce resource.
+      - Acquire separately for each actual provider attempt.
+    solution: |
+      Put each provider attempt behind the semaphore but place backoff between acquisitions. Holding
+      a permit while sleeping lowers usable capacity and can amplify overload. A retry loop should
+      also cap attempts, add jitter where appropriate, and obey an overall deadline.
+    solutionCode: |
+      async def attempt(item: Item) -> Result:
+          async with provider_slots:
+              return await call_provider(item)
+
+      try:
+          return await attempt(item)
+      except RetryableError:
+          await asyncio.sleep(2)
+          return await attempt(item)
+
+  - id: asyncio-orphaned-task-debug
+    tier: tricky
+    kind: debug
+    title: Own the background task
+    minutes: 16
+    requiredForMastery: true
+    concepts: [task-lifetime, exceptions]
+    prompt: Find the lifetime and observability defects in this request handler.
+    code: |
+      async def handle(request: Request) -> Response:
+          asyncio.create_task(write_audit(request.body))
+          return Response("accepted")
+    hints:
+      - Ask who retains, awaits, cancels, and inspects the task.
+      - Request data may have a shorter lifetime than the work.
+    solution: |
+      The task has no explicit owner, its exception is not observed by application policy, shutdown
+      behavior is undefined, and it captures possibly sensitive request data. For required audit,
+      await a durable enqueue before returning. For best-effort in-process work, use a supervised
+      application task set with strong references, exception reporting, copied minimal data, and
+      explicit shutdown draining or cancellation.
+
+  - id: asyncio-queue-task-done-debug
+    tier: tricky
+    kind: debug
+    title: Fix a join that hangs forever
+    minutes: 14
+    requiredForMastery: true
+    concepts: [queue, task-done]
+    prompt: Explain why `queue.join()` can hang and repair the worker.
+    code: |
+      async def worker(queue: asyncio.Queue[Job]) -> None:
+          while True:
+              job = await queue.get()
+              await process(job)
+              queue.task_done()
+    hints:
+      - What happens when `process` raises or the task is cancelled?
+      - Each successful `get` needs exactly one counter decrement.
+    solution: |
+      Failure or cancellation after `get()` skips `task_done()`, leaving the unfinished-work counter
+      positive forever. Put processing inside `try` and call `task_done()` in `finally`. Failure
+      reporting and retry policy remain separate; the accounting must still match every dequeue.
+    solutionCode: |
+      async def worker(queue: asyncio.Queue[Job]) -> None:
+          while True:
+              job = await queue.get()
+              try:
+                  await process(job)
+              finally:
+                  queue.task_done()
+
+  - id: asyncio-unbounded-fanout
+    tier: tricky
+    kind: performance
+    title: Bound admitted demand
+    minutes: 18
+    requiredForMastery: true
+    concepts: [backpressure, memory]
+    prompt: |
+      A million inputs are wrapped in tasks that wait on `Semaphore(50)`. Design a bounded shape
+      and name the measurements needed to tune it.
+    hints:
+      - The semaphore controls activity after task creation.
+      - A fixed worker pool needs only a bounded source of jobs.
+    solution: |
+      Stream inputs into `Queue(maxsize=n)` and run 50 or fewer long-lived workers. The producer's
+      `put` suspends when the queue is full, bounding coroutine frames and retained payloads. Tune
+      worker count and queue capacity from active latency, throughput, memory per item, queue age,
+      queue depth, put wait, timeout, rejection, and downstream saturation—not arbitrary multiples.
+
+  - id: asyncio-return-exceptions-debug
+    tier: tricky
+    kind: debug
+    title: Stop exceptions entering the success path
+    minutes: 15
+    requiredForMastery: true
+    concepts: [gather, error-handling]
+    prompt: Find the defect when one embedding call fails.
+    code: |
+      vectors = await asyncio.gather(
+          *(embed(text) for text in texts),
+          return_exceptions=True,
+      )
+      return sum(vector[0] for vector in vectors) / len(vectors)
+    hints:
+      - Inspect the runtime type of every result slot.
+      - Decide whether partial embeddings are valid domain output.
+    solution: |
+      An exception object can occupy a slot, so indexing it fails later and obscures the real error.
+      If all embeddings are required, use structured concurrency and let failure abort the unit. If
+      partial output is valid, partition successes and failures explicitly, preserve input identity,
+      define the minimum-success rule, and report failures before computing a result.
+
+  - id: asyncio-overload-design
+    tier: challenge
+    kind: design
+    title: Design an inference admission boundary
+    minutes: 25
+    requiredForMastery: true
+    concepts: [capacity, overload, observability]
+    prompt: |
+      Design an endpoint around 12 provider slots, 150 ms median service time, a two-second client
+      deadline, and bursty traffic. Specify limits, failure behavior, cancellation, and metrics.
+    hints:
+      - Convert queue capacity into expected waiting time.
+      - Capacity, timeout, and overload response must agree.
+    solution: |
+      Cap active provider calls at 12 and admit only a measured small queue whose oldest job can
+      still finish within the deadline. Reject excess work early with a retryable overload response
+      and guidance; do not retry inside a request beyond its deadline. Propagate disconnect and
+      deadline cancellation, but finish bounded cleanup. Measure active calls, queue depth and age,
+      admission wait, provider latency, cancellations, timeouts, retries, rejection rate, and memory.
+
+  - id: asyncio-pipeline-code-review
+    tier: challenge
+    kind: code-reading
+    title: Review a worker-pool shutdown
+    minutes: 24
+    requiredForMastery: false
+    concepts: [queue, shutdown, cancellation]
+    prompt: Identify at least five defects in this pipeline.
+    code: |
+      async def run(items):
+          queue = asyncio.Queue()
+          workers = [asyncio.create_task(worker(queue)) for _ in range(20)]
+          for item in items:
+              queue.put_nowait(item)
+          await queue.join()
+          return workers
+    hints:
+      - Inspect admission, input iteration, and task ownership separately.
+      - Decide how workers stop on success, producer failure, and cancellation.
+    solution: |
+      The queue is unbounded; synchronous input iteration can monopolize the loop; `put_nowait`
+      provides no backpressure; worker tasks are returned rather than stopped; their failures may
+      leave `join` hanging or go unobserved; and cancellation has no cleanup path. Use a bounded
+      queue, an async or periodically-yielding producer, supervised workers, exact `task_done`
+      accounting, and a `finally` block that cancels and awaits all workers while preserving errors.
+
+quizzes:
+  - id: asyncio-checkpoint
+    title: Asyncio mental-model checkpoint
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: asyncio-checkpoint-coroutine
+        kind: mcq
+        prompt: What happens immediately when an `async def` function is called?
+        options:
+          - id: asyncio-cp-runs
+            text: Its body runs until the first await
+          - id: asyncio-cp-object
+            text: A coroutine object is created
+          - id: asyncio-cp-thread
+            text: A new thread starts
+        answer: [asyncio-cp-object]
+        explanation: Calling creates a coroutine; awaiting or scheduling drives it.
+        concepts: [coroutines]
+      - id: asyncio-checkpoint-semaphore
+        kind: true-false
+        prompt: A semaphore around each HTTP call also bounds how many tasks may wait for HTTP.
+        options:
+          - id: asyncio-cp-true
+            text: "True"
+          - id: asyncio-cp-false
+            text: "False"
+        answer: [asyncio-cp-false]
+        explanation: It limits active entries, not tasks already created and waiting.
+        concepts: [semaphore, backpressure]
+      - id: asyncio-checkpoint-cancel
+        kind: explain
+        prompt: Why is cancellation called cooperative?
+        answer: []
+        modelAnswer: Cancellation is injected at a suspension point, and the task runs cleanup rather than being forcibly killed.
+        explanation: The task participates in its own cancellation protocol.
+        concepts: [cancellation]
+      - id: asyncio-checkpoint-queue
+        kind: mcq
+        prompt: What makes an asyncio queue exert backpressure?
+        options:
+          - id: asyncio-cp-maxsize
+            text: A finite maxsize plus awaited put calls
+          - id: asyncio-cp-join
+            text: Calling join before producing
+          - id: asyncio-cp-nowait
+            text: Using put_nowait on an unlimited queue
+        answer: [asyncio-cp-maxsize]
+        explanation: A producer suspends only when it awaits put on a full bounded queue.
+        concepts: [queue]
+
+  - id: asyncio-assessment
+    title: Asyncio systems assessment
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: asyncio-assess-await
+        kind: mcq
+        prompt: Which statement about `await` is correct?
+        options:
+          - id: asyncio-a-always
+            text: It always gives every ready task one turn
+          - id: asyncio-a-maybe
+            text: It yields only if the awaitable actually suspends
+          - id: asyncio-a-thread
+            text: It moves the operation to another thread
+        answer: [asyncio-a-maybe]
+        explanation: An immediately completed awaitable can continue synchronously.
+        concepts: [event-loop]
+      - id: asyncio-assess-taskgroup
+        kind: multi
+        prompt: Which are TaskGroup guarantees after a child fails with a normal exception?
+        options:
+          - id: asyncio-a-cancel
+            text: Remaining child tasks are cancelled
+          - id: asyncio-a-wait
+            text: Child cleanup is awaited before the block exits
+          - id: asyncio-a-ignore
+            text: Child exceptions are silently discarded
+          - id: asyncio-a-group
+            text: Remaining failures may be raised as an exception group
+        answer: [asyncio-a-cancel, asyncio-a-wait, asyncio-a-group]
+        explanation: Structured concurrency contains child lifetimes and preserves their failures.
+        concepts: [TaskGroup]
+      - id: asyncio-assess-gather-order
+        kind: true-false
+        prompt: Gather returns successful values in completion order.
+        options:
+          - id: asyncio-a-order-true
+            text: "True"
+          - id: asyncio-a-order-false
+            text: "False"
+        answer: [asyncio-a-order-false]
+        explanation: Gather returns positions in input order.
+        concepts: [gather]
+      - id: asyncio-assess-blocking
+        kind: find-bug
+        prompt: Find the event-loop bug.
+        code: |
+          async def pause() -> None:
+              time.sleep(1)
+        answer: []
+        modelAnswer: "`time.sleep` blocks the event-loop thread; use `await asyncio.sleep(1)` for an async delay."
+        explanation: Async syntax alone cannot make a blocking function cooperative.
+        concepts: [blocking]
+      - id: asyncio-assess-cancel
+        kind: scenario
+        prompt: A worker catches `CancelledError`, logs it, and returns. What contract is broken?
+        answer: []
+        modelAnswer: The task reports normal completion, preventing callers, timeouts, and structured concurrency from observing requested cancellation; clean up and re-raise.
+        explanation: Cancellation is control flow that coordination primitives depend on.
+        concepts: [cancellation]
+      - id: asyncio-assess-semaphore
+        kind: explain
+        prompt: Why is a semaphore not a requests-per-second limiter?
+        answer: []
+        modelAnswer: It limits concurrent occupancy; fast completions can recycle permits many times within one second.
+        explanation: Rate and concurrency are different dimensions.
+        concepts: [semaphore]
+      - id: asyncio-assess-task-done
+        kind: complete-code
+        prompt: Where must `queue.task_done()` go in a worker?
+        answer: []
+        modelAnswer: In a `finally` block paired with each successful `get()`, so failure and cancellation still decrement unfinished work exactly once.
+        explanation: Queue join relies on accounting, not worker liveness.
+        concepts: [queue]
+      - id: asyncio-assess-backpressure
+        kind: mcq
+        prompt: Which design bounds both active work and waiting work?
+        options:
+          - id: asyncio-a-million
+            text: One task per item behind a semaphore
+          - id: asyncio-a-workers
+            text: Fixed workers consuming a bounded queue
+          - id: asyncio-a-list
+            text: Gather over a fully materialized list
+        answer: [asyncio-a-workers]
+        explanation: Worker count bounds activity and queue maxsize bounds admitted backlog.
+        concepts: [backpressure]
+      - id: asyncio-assess-shield
+        kind: explain
+        prompt: What new responsibility appears when an inner task is shielded from caller cancellation?
+        answer: []
+        modelAnswer: The inner task may outlive its waiter, so another owner must retain it, observe its result or failure, and handle shutdown.
+        explanation: Shielding separates lifetimes rather than removing cancellation complexity.
+        concepts: [shield, ownership]
+      - id: asyncio-assess-capacity
+        kind: performance
+        prompt: Name four signals needed to tune a bounded async pipeline.
+        answer: []
+        modelAnswer: Examples include active concurrency, queue depth, oldest-item age, producer put wait, service latency, timeouts, rejections, cancellations, throughput, and memory per item.
+        explanation: Limits should come from measured bottlenecks and latency budgets.
+        concepts: [observability, capacity]
+
+interview:
+  - id: asyncio-interview-loop
+    level: basic
+    question: Explain the asyncio event loop without saying it makes code parallel.
+    shortAnswer: One thread cooperatively advances ready tasks until they suspend, usually on I/O.
+    fullAnswer: |
+      The loop tracks ready callbacks and I/O readiness, advances one task at a time, and regains
+      control only when the running task suspends or finishes. It improves waiting-time utilization;
+      it does not preempt CPU work or create parallel Python execution.
+    commonWrongAnswer: Every coroutine runs simultaneously in its own lightweight thread.
+    followUps:
+      - Can an await fail to yield?
+      - How do you handle a blocking SDK?
+    concepts: [event-loop]
+    requiredForMastery: true
+
+  - id: asyncio-interview-task
+    level: internals
+    question: What is the difference between a coroutine object and a Task?
+    shortAnswer: A coroutine describes suspended computation; a Task schedules and owns one coroutine's execution state.
+    fullAnswer: |
+      Calling `async def` creates a coroutine object. A Task registers a coroutine with the loop and
+      records completion, result, exception, and cancellation. Creating a task introduces a lifetime
+      that must be referenced, awaited, supervised, and shut down.
+    commonWrongAnswer: They are synonyms, and both start immediately.
+    followUps:
+      - Why retain strong references to background tasks?
+      - When is direct await preferable?
+    concepts: [coroutines, tasks]
+    requiredForMastery: true
+
+  - id: asyncio-interview-gather
+    level: comparison
+    question: Compare gather with TaskGroup.
+    shortAnswer: Gather aggregates ordered results; TaskGroup scopes child lifetimes and cancels siblings on failure.
+    fullAnswer: |
+      Default gather preserves input order and propagates the first exception without automatically
+      cancelling all other submitted work. TaskGroup waits for every child, cancels siblings after a
+      normal child failure, and raises remaining failures as a group. Choose from required policy.
+    commonWrongAnswer: TaskGroup is only newer syntax for gather.
+    followUps:
+      - When is return_exceptions appropriate?
+      - When would you choose as_completed?
+    concepts: [gather, TaskGroup]
+    requiredForMastery: true
+
+  - id: asyncio-interview-cancellation
+    level: tricky
+    question: Why can wait_for take longer than its timeout?
+    shortAnswer: It cancels the inner awaitable and waits for cancellation cleanup to finish.
+    fullAnswer: |
+      A timeout is not a thread kill. Cancellation is injected cooperatively, and finally blocks or
+      async context-manager exits may perform work before the task completes. The deadline bounds
+      normal waiting, while cancellation-safe cleanup can extend wall-clock completion.
+    commonWrongAnswer: The event loop cannot measure time accurately.
+    followUps:
+      - When is shield justified?
+      - What happens if cancellation is swallowed?
+    concepts: [timeout, cancellation]
+    requiredForMastery: false
+
+  - id: asyncio-interview-semaphore
+    level: advanced
+    question: Why does a semaphore fail to provide backpressure by itself?
+    shortAnswer: It bounds active critical sections, but any number of already-created tasks can wait for permits.
+    fullAnswer: |
+      A semaphore protects a scarce resource after demand has been admitted. Creating one task per
+      input can still retain unbounded task objects, frames, payloads, and results. A bounded queue
+      plus fixed workers limits both admitted backlog and active work.
+    commonWrongAnswer: Semaphore count is the maximum number of tasks in the application.
+    followUps:
+      - Is a semaphore a rate limiter?
+      - How would you size a queue?
+    concepts: [semaphore, backpressure]
+    requiredForMastery: true
+
+  - id: asyncio-interview-overload
+    level: scenario
+    question: An async inference endpoint keeps timing out under bursts while memory rises. Diagnose it.
+    shortAnswer: Demand is admitted faster than capacity; bound concurrency and backlog, then reject before queued work becomes stale.
+    fullAnswer: |
+      Inspect task counts, queue depth and age, pool occupancy, service latency, deadlines, and memory
+      per item. Set concurrency from the smallest bottleneck, use bounded admission, propagate
+      cancellation, and choose an explicit wait, reject, shed, or durable-enqueue overload policy.
+    commonWrongAnswer: Increase the timeout and create more tasks so all requests start quickly.
+    followUps:
+      - Which metrics prove the repair?
+      - When should jobs move to a durable broker?
+    concepts: [overload, observability]
+    requiredForMastery: true
+
+projects:
+  - id: asyncio-bounded-inference-pipeline
+    kind: major
+    title: Build a bounded inference job pipeline
+    summary: Implement a supervised producer-worker pipeline whose limits and shutdown behavior are testable.
+    problem: |
+      A service currently creates one task per inference request, overloads its provider, grows in
+      memory, and loses failures during shutdown. Replace it with an asyncio pipeline that makes
+      capacity, admission, cancellation, and outcomes explicit.
+    requirements:
+      - Stream jobs into a finite-capacity queue instead of materializing all inputs.
+      - Run a configurable fixed worker pool and cap provider calls independently if needed.
+      - Preserve input identity and record success, retryable failure, permanent failure, and cancellation.
+      - Apply per-job deadlines without swallowing cancellation or losing cleanup.
+      - Stop cleanly after production, on producer failure, and when the outer operation is cancelled.
+      - Expose counters or events for queue depth, queue age, active work, rejection, timeout, and completion.
+    constraints:
+      - Use the Python standard library and Python 3.11 or later.
+      - Do not create one task per input and do not use an unbounded queue.
+      - Every successful queue get must pair with exactly one task_done call.
+      - Tests must be deterministic and must not depend on real network delays.
+    expectedBehaviour:
+      - Producer speed is visibly limited when consumers fall behind.
+      - Active provider work never exceeds the configured limit.
+      - A worker failure cannot silently strand queue accounting.
+      - Shutdown leaves no pending tasks and reports unexpected failures.
+    structure: |
+      bounded_pipeline/
+        model.py
+        pipeline.py
+        capacity.py
+        metrics.py
+        tests/
+          test_backpressure.py
+          test_failures.py
+          test_shutdown.py
+    milestones:
+      - title: Model the contract
+        detail: Define job identity, outcome types, deadlines, and overload policy before concurrency code.
+      - title: Prove bounded admission
+        detail: Implement a bounded queue and a test showing the producer suspends at capacity.
+      - title: Supervise workers
+        detail: Own worker lifetimes, exact queue accounting, and cancellation-safe cleanup.
+      - title: Add capacity controls
+        detail: Limit the scarce provider operation without holding permits during backoff.
+      - title: Test shutdown
+        detail: Cover success, processing failure, producer failure, timeout, and outer cancellation.
+    testing:
+      - Instrument a fake provider with active and peak-active counters.
+      - Use asyncio Event objects instead of timing guesses to coordinate tests.
+      - Assert the producer remains blocked while a full queue is not consumed.
+      - After every test, assert all pipeline-owned tasks are done.
+      - Verify failures retain job identity and original exception causes.
+    failureCases:
+      - A worker raises after get but before normal completion.
+      - The producer raises while the queue contains jobs.
+      - Outer cancellation arrives during provider cleanup.
+      - A job expires while waiting and must not consume provider capacity.
+      - Metrics reporting itself fails and must not corrupt job accounting.
+    bonus:
+      - Add priority admission without starving ordinary jobs.
+      - Add adaptive concurrency driven by measured provider throttling.
+      - Provide a durable-broker adapter while retaining the same worker contract.
+    architectureHints:
+      - Separate admission, execution, and outcome recording so each policy can be tested alone.
+      - Treat worker tasks as children of one supervisor, even if manual cancellation is needed around queue.join.
+      - Pass a clock abstraction or explicit timestamps to avoid sleep-based tests.
+    referenceOutline: |
+      Use one supervisor to create a bounded queue and a fixed list of workers. Production awaits
+      queue.put and records admission time. Workers pair get with task_done in finally, reject stale
+      jobs before acquiring provider capacity, and put typed outcomes into a result sink. The
+      supervisor waits for production and join on success, then cancels and awaits workers in a
+      finally block. Tests gate fake operations with Events and inspect peak counts and task state.
+    minutes: 210
+
+  - id: asyncio-final-challenge
+    kind: final-challenge
+    title: Find nine async production defects
+    summary: Audit one compact ingestion service whose happy-path demo hides nine concurrency defects.
+    problem: |
+      Review a supplied service that calls blocking code on the loop, creates ownerless tasks,
+      swallows cancellation, gathers exceptions as values, admits unlimited work, holds semaphore
+      permits during retry sleep, miscounts queue work, leaks workers, and confuses concurrency with
+      rate limiting. Produce a corrected implementation and a one-sentence invariant for each fix.
+    requirements:
+      - Identify all nine defects and connect each to an observable production symptom.
+      - Repair the code without changing its success-path output order.
+      - Add one focused regression test per defect.
+      - Document task ownership and shutdown behavior at every creation site.
+    constraints:
+      - A larger timeout, queue, or semaphore is not a repair.
+      - Do not suppress exceptions merely to make shutdown tests green.
+    expectedBehaviour:
+      - Peak concurrency and queued demand stay within declared limits.
+      - Cancellation completes cleanup and remains visible to the caller.
+      - Every task result or exception is observed by an owner.
+    milestones:
+      - title: Write the failure map
+        detail: Map each code site to symptom, violated invariant, and intended owner.
+      - title: Repair lifetimes
+        detail: Introduce structured or explicitly supervised task ownership.
+      - title: Repair capacity
+        detail: Bound both active work and admitted backlog with a stated overload policy.
+      - title: Prove the invariants
+        detail: Add deterministic tests for failures, cancellation, and shutdown.
+    testing:
+      - No pending task warning may appear after the suite.
+      - Peak provider calls must never exceed the configured capacity.
+      - A failed job must not make queue.join hang.
+    failureCases:
+      - Cancellation during backoff.
+      - Simultaneous sibling failures.
+      - Empty input and producer failure before the first item.
+    bonus:
+      - Explain which behavior changes if gather is replaced with TaskGroup.
+    architectureHints:
+      - Begin with ownership and accounting; performance tuning comes after correctness.
+      - Use Events and fake clocks instead of fragile short sleeps.
+    referenceOutline: |
+      The repair uses to_thread for the blocking boundary, a bounded queue, fixed supervised workers,
+      per-attempt semaphore acquisition, finally-based task_done accounting, preserved cancellation,
+      explicit success/failure outcomes, and a shutdown path that cancels and awaits every child.
+    minutes: 120
+
+resources:
+  - name: Python asyncio task documentation
+    type: docs
+    difficulty: core
+    url: https://docs.python.org/3/library/asyncio-task.html
+    why: The standard-library reference is the authoritative source for tasks, groups, cancellation, timeouts, gather, wait, and shielding semantics.
+    covers: Coroutines, task creation, TaskGroup, cancellation, sleeping, timeouts, gather, shield, wait, and as_completed.
+    usefulness: 5
+  - name: Python asyncio queue documentation
+    type: docs
+    difficulty: core
+    url: https://docs.python.org/3/library/asyncio-queue.html
+    why: It precisely documents maxsize, blocking put behavior, unfinished-task accounting, join, and queue shutdown contracts.
+    covers: FIFO and priority queues, backpressure, task_done, join, maxsize, and shutdown.
+    usefulness: 5
+  - name: Python asyncio synchronization primitives
+    type: docs
+    difficulty: core
+    url: https://docs.python.org/3/library/asyncio-sync.html
+    why: The official reference distinguishes semaphore occupancy from events, conditions, locks, and barriers without hiding their coroutine semantics.
+    covers: Semaphore and BoundedSemaphore behavior, locks, events, conditions, and barriers.
+    usefulness: 4
+  - name: Python developing with asyncio
+    type: docs
+    difficulty: deep
+    url: https://docs.python.org/3/library/asyncio-dev.html
+    why: This official guide connects debug mode, forgotten awaits, blocking code, thread boundaries, logging, and never-retrieved exceptions to real diagnosis.
+    covers: Debug mode, cancellation, blocking-call detection, thread safety, logging, and task exception diagnostics.
+    usefulness: 5
+  - name: Python asyncio event loop documentation
+    type: docs
+    difficulty: deep
+    url: https://docs.python.org/3/library/asyncio-eventloop.html
+    why: The low-level official API explains scheduling, callbacks, executors, exception handling, and shutdown beneath the high-level runner model.
+    covers: Event-loop execution, callbacks, executors, error handling, signals, and loop lifecycle.
+    usefulness: 4

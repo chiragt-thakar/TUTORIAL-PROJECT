@@ -1,0 +1,382 @@
+---
+id: "roadmap:phase-2-2.1:0"
+title: "Vectors, vector spaces, span, basis, dimension, linear independence"
+description: Define a vector by the axioms of the space it lives in, then use span, independence, basis, and dimension as the working vocabulary for feature redundancy, embedding size, and the solution set of a linear system — including how each test changes in floating point.
+module: 2-1-linear-algebra
+order: 1
+estimatedMinutes: 130
+prerequisites: []
+learningObjectives:
+  - State the vector space axioms and recognise polynomials, functions, and parameter tensors as vectors
+  - Test a set of vectors for linear independence through the trivial-combination condition and through a tolerant rank
+  - Build a basis for a span, read a vector's coordinates in it, and explain why dimension is well defined
+  - Connect span, rank, and dimension to feature collinearity, embedding width, and underdetermined systems
+---
+
+A vector is not an arrow and not a list of numbers. It is an element of a vector space: a set with
+addition and scalar multiplication that obey a short list of axioms. The arrow and the tuple are two
+pictures of that structure. Machine learning uses both, plus a third — functions and parameter
+tensors treated as vectors — and rarely announces which one is in play.
+
+Span, independence, basis, and dimension are the vocabulary for questions you already ask. Are two
+features redundant? How many dimensions does an embedding actually use? Why does this linear system
+have infinitely many solutions? Answering them on real data means replacing exact equality with a
+tolerance, and that step is the part textbooks skip.
+
+<TypeScriptComparison>
+
+- A JavaScript `number[]` is an ordered container. A vector is that container plus the promise that addition and scaling stay inside the space, which the type never states.
+- TypeScript has no operator overloading, so `a + b` on arrays is a type error; NumPy defines `+` and `*` to mean the vector space operations elementwise.
+- `Float64Array` is the closest analogue to a NumPy 1-D array: one contiguous block of doubles whose length is the dimension.
+- Neither `number[]` nor an `ndarray` encodes which vector space it belongs to. Validate dimension and meaning at boundaries.
+
+</TypeScriptComparison>
+
+## A vector space is defined by what you can do to its elements
+
+Fix a field of scalars, usually the real numbers. A vector space over that field is a set `V` with
+two operations. Vector addition takes `u, v` in `V` to `u + v` in `V`. Scalar multiplication takes a
+scalar `c` and `v` in `V` to `c*v` in `V`. Both results must land back in `V`; that closure is the
+axiom you actually check in practice.
+
+The remaining axioms are bookkeeping that make algebra behave: addition is commutative and
+associative, there is a zero vector, every `v` has an inverse `-v`, scalar multiplication distributes
+over both kinds of addition, and `1*v = v`. Anything satisfying all of them is a vector space, no
+matter what its elements look like.
+
+```python
+import numpy as np
+
+# R^3 with the usual operations
+u = np.array([1.0, 0.0, -2.0])
+v = np.array([3.0, 1.0, 4.0])
+assert np.allclose(2 * u + v, [5.0, 1.0, 0.0])
+
+# Polynomials of degree <= 2, stored as coefficient vectors [a0, a1, a2]
+p = np.array([3.0, 2.0, -1.0])   # 3 + 2x - x^2
+q = np.array([0.0, 1.0, 1.0])    #     x + x^2
+assert np.allclose(p + q, [3.0, 3.0, 0.0])   # still a degree <= 2 polynomial
+```
+
+<Concept>
+
+The interesting examples are the ones that are not arrows: polynomials, continuous functions,
+`m*n` matrices, and the weight tensors of a network. Each is a vector space because linear
+combinations of its elements stay in the set. That is why one body of theory covers all of them.
+
+</Concept>
+
+## Linear combinations and span
+
+A linear combination of `v1, ..., vk` is any `c1*v1 + ... + ck*vk` with scalar coefficients. The
+span of a set is the collection of every linear combination you can form from it. The span is always
+a subspace: it contains the zero vector and is closed under addition and scaling.
+
+Geometrically, the span of one nonzero vector is a line through the origin. The span of two vectors
+that do not lie on a common line is a plane. Adding a third vector already in that plane changes
+nothing — the span stops growing once the directions are used up.
+
+```python
+def in_span(basis: np.ndarray, target: np.ndarray, tol: float = 1e-9) -> bool:
+    """basis: (d, k) columns spanning a subspace of R^d; is target in that span?"""
+    coeffs, *_ = np.linalg.lstsq(basis, target, rcond=None)
+    residual = np.linalg.norm(basis @ coeffs - target)
+    return residual <= tol * max(1.0, np.linalg.norm(target))
+
+plane = np.array([[1.0, 0.0], [0.0, 1.0], [0.0, 0.0]])  # the xy-plane in R^3
+assert in_span(plane, np.array([2.0, -3.0, 0.0]))
+assert not in_span(plane, np.array([0.0, 0.0, 1.0]))
+```
+
+## Linear independence is a statement about the zero vector
+
+Vectors `v1, ..., vk` are linearly independent when the only way to write
+`c1*v1 + ... + ck*vk = 0` is with every `ci = 0`. Equivalently, no vector in the set is a linear
+combination of the others. If some nontrivial combination gives zero, the set is dependent and one
+vector is redundant.
+
+Put the vectors in the columns of a matrix `A`. Independence of the columns is the same as `Ax = 0`
+having only the solution `x = 0`, which is the same as `rank(A)` equalling the number of columns,
+which is the same as the null space being just `{0}`. These are four phrasings of one fact.
+
+```python
+A = np.array([[1.0, 2.0, 3.0],
+              [0.0, 1.0, 1.0],
+              [2.0, 0.0, 2.0]])
+# column 3 = column 1 + column 2, so the columns are dependent
+assert np.linalg.matrix_rank(A) == 2
+
+B = np.array([[1.0, 0.0, 0.0],
+              [0.0, 1.0, 0.0],
+              [1.0, 1.0, 1.0]])
+assert np.linalg.matrix_rank(B) == 3
+```
+
+<CommonMistake>
+
+Checking that vectors are pairwise non-parallel does not prove independence once you have three or
+more. Three vectors can be mutually non-parallel and still lie in a common plane, so one is a
+combination of the other two. Only the all-coefficients-zero condition, or a rank check, is
+conclusive.
+
+</CommonMistake>
+
+## Basis and coordinates
+
+A basis is a set that is linearly independent and spans the space. Independence removes redundancy;
+spanning guarantees reach. Given a basis, every vector has exactly one list of coefficients that
+builds it. Those coefficients are the vector's coordinates in that basis.
+
+The standard basis of `R^n` is the columns of the identity, and coordinates in it are just the
+entries. Any other basis gives a different coordinate system for the same vectors. Changing basis is
+multiplying coordinates by the matrix whose columns are the new basis vectors, or by its inverse to
+go back.
+
+```python
+# A basis for the xy-plane that is not the standard one
+b1 = np.array([1.0, 1.0, 0.0])
+b2 = np.array([1.0, -1.0, 0.0])
+basis = np.column_stack([b1, b2])          # (3, 2)
+
+target = np.array([4.0, 2.0, 0.0])
+coords, *_ = np.linalg.lstsq(basis, target, rcond=None)
+assert np.allclose(coords, [3.0, 1.0])     # 4,2,0 = 3*b1 + 1*b2
+assert np.allclose(basis @ coords, target)  # and the reconstruction is exact
+```
+
+## Dimension is well defined
+
+Every basis of a given space has the same number of vectors. That count is the dimension. The claim
+needs proof — it follows from the replacement lemma, that any spanning set is at least as large as
+any independent set — but the consequence is what you use: `dim(R^n) = n`, and a subspace has
+dimension no larger than the space around it.
+
+Rank–nullity ties the pieces together. For a matrix with `k` columns,
+`dim(column space) + dim(null space) = k`. The column-space dimension is the rank: the number of
+independent directions the matrix can actually produce. The null-space dimension counts the
+independent ways to combine columns into zero.
+
+<WhyItMatters>
+
+The width `d` of an embedding is the dimension of the space vectors are stored in, but the rows may
+occupy a subspace of dimension well below `d`. A weight matrix of rank `r` maps its input into an
+`r`-dimensional subspace no matter how many output units it has — the observation LoRA exploits.
+
+Perfectly collinear features make a design matrix rank-deficient, so the least-squares solution is
+not unique.
+
+</WhyItMatters>
+
+## Doing this in floating point
+
+Exact independence is not decidable from measured data. Rounding turns a true zero combination into
+something tiny but nonzero, so a naive determinant or exact rank is meaningless. The usable question
+is whether the vectors are independent *by a tolerance*, and the singular values answer it.
+
+`np.linalg.matrix_rank` computes the singular values and counts how many exceed a threshold. Small
+singular values mean directions the data barely explores — near-dependence. The condition number,
+the ratio of largest to smallest singular value, is a continuous version of the same warning.
+
+```python
+# Independent in exact arithmetic, nearly dependent numerically
+X = np.array([[1.0, 1.0],
+              [1.0, 1.0 + 1e-10],
+              [1.0, 1.0 - 1e-10]])
+s = np.linalg.svd(X, compute_uv=False)
+assert s[0] / s[1] > 1e9                      # huge condition number
+assert np.linalg.matrix_rank(X, tol=1e-6) == 1  # dependent at this tolerance
+assert np.linalg.matrix_rank(X) == 2            # "independent" at the default
+```
+
+<ProductionNote>
+
+For any feature matrix, log the singular value spectrum or at least the condition number. A sudden
+jump downward in the spectrum marks the effective dimension. Columns below it are near-duplicates:
+drop them, merge them, or add L2 regularisation, which lifts every singular value away from zero and
+restores a unique solution.
+
+</ProductionNote>
+
+## Cost
+
+A vector in NumPy is one contiguous float64 buffer; its dimension is its length, and a linear
+combination is a fused multiply-add over that buffer. Independence tests are matrix-sized. Rank
+through the SVD of an `m*n` matrix costs on the order of `m*n*min(m, n)`. A column-pivoted QR
+answers "how many independent columns" for less, and is the better tool when you do not need the
+singular values themselves.
+
+Forming the Gram matrix `X.T @ X` to inspect independence is tempting because it is only `n*n`, but
+it squares the condition number and loses precision exactly where near-dependence lives. Work from
+`X` directly with an SVD or QR unless you have measured that the Gram route is accurate enough.
+
+## Exercises
+
+<Exercise id="la-vectors-independence-by-hand" difficulty="easy">
+
+Decide whether `(1, 2, 1)`, `(0, 1, 3)`, and `(2, 5, 5)` are linearly independent. Show the
+coefficient argument, then confirm with a rank computation.
+
+<Solution>
+
+Look for `c1, c2, c3`, not all zero, with `c1*(1,2,1) + c2*(0,1,3) + c3*(2,5,5) = 0`. The first
+component gives `c1 + 2*c3 = 0`, so `c1 = -2*c3`. The second gives `2*c1 + c2 + 5*c3 = 0`, so
+`c2 = -c3`.
+
+Substituting into the third component, `c1 + 3*c2 + 5*c3 = -2*c3 - 3*c3 + 5*c3 = 0`, which holds for
+every `c3`. Taking `c3 = 1` gives the nontrivial combination `(-2, -1, 1)` that equals zero, so the
+vectors are dependent.
+
+`np.linalg.matrix_rank` of the matrix with these vectors as columns returns `2`, not `3`, confirming
+the by-hand result.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-vectors-span-membership" difficulty="medium">
+
+Write `span_contains(basis, v, tol)` where `basis` is a `(d, k)` array of column vectors. Return
+whether `v` lies in their span, using the least-squares residual and a relative tolerance. Explain
+why an absolute tolerance is a poor choice.
+
+<Solution>
+
+Solve `basis @ c ≈ v` with `np.linalg.lstsq`, form `residual = norm(basis @ c - v)`, and return
+`residual <= tol * max(1.0, norm(v))`. If `v` is in the span the residual is zero up to rounding; if
+not, `lstsq` returns the projection and the residual is the perpendicular distance to the subspace.
+
+An absolute tolerance like `1e-9` fails when `v` has large magnitude, because acceptable rounding
+error scales with the size of the numbers involved. Scaling the threshold by `norm(v)` keeps the
+test meaningful across magnitudes.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-vectors-polynomial-basis" difficulty="hard">
+
+Show that `{1, x, x^2}` is a basis for polynomials of degree at most two, give the coordinates of
+`3 + 2x - x^2`, and implement evaluation at a point as a dot product of the coordinate vector with a
+vector of powers.
+
+<Solution>
+
+Spanning: any degree `<= 2` polynomial is `a0*1 + a1*x + a2*x^2` by definition. Independence: if
+`a0 + a1*x + a2*x^2` is the zero function, evaluating at `x = 0` gives `a0 = 0`, differentiating and
+evaluating at `0` gives `a1 = 0`, and the second derivative gives `a2 = 0`.
+
+So the set is independent and spans; it is a basis, and the space has dimension three. The
+coordinates of `3 + 2x - x^2` are `(3, 2, -1)`.
+
+Evaluation at `t` is `np.dot([3, 2, -1], [1, t, t**2])`; for `t = 2` this is `3 + 4 - 4 = 3`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-vectors-collinear-features-interview" difficulty="interview">
+
+In an interview: you fit a linear model and the coefficients are huge with unstable signs across
+retrains. Explain what you would check about the design matrix and what you would do.
+
+<Solution>
+
+The symptom is multicollinearity: two or more feature columns are nearly linearly dependent, so the
+design matrix is close to rank-deficient and the least-squares solution is ill-conditioned.
+
+I would compute the singular values of the standardised design matrix and look at the condition
+number, or compute variance inflation factors. If a small singular value dominates, I would inspect
+which columns load on that direction.
+
+The fix is to drop a redundant feature, combine them, or apply L2 (ridge) regularisation, which
+shifts every singular value away from zero and makes the solution unique and stable. I would also
+check for an accidentally duplicated or constant column.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-vectors-embedding-rank-real-world" difficulty="real-world">
+
+You are handed an embedding matrix `E` with shape `(n_tokens, 256)`. Estimate how many dimensions
+the rows actually use and decide whether width 256 is justified.
+
+<Solution>
+
+Centre the rows, compute the singular values with `np.linalg.svd(E - E.mean(0), compute_uv=False)`,
+and square them to get variance along each principal direction. Form the cumulative fraction of
+total variance.
+
+If, say, 40 directions already reach 99% and the remaining singular values form a flat noise floor,
+the effective dimension is about 40 and width 256 is mostly unused capacity — a smaller embedding or
+a projection would lose little. If variance is spread evenly with no clear elbow, the full width is
+doing work.
+
+Report the spectrum and the elbow rather than a single number, because the cutoff is a judgement
+about where the noise floor begins.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Which single axiom do you check first to decide whether a subset of a vector space is a subspace?
+2. State linear independence of `v1, ..., vk` as a condition on the equation `sum ci*vi = 0`.
+3. Why can three pairwise non-parallel vectors still be linearly dependent?
+4. What does the rank of a matrix measure in terms of dimension, and what does rank–nullity add?
+5. Why is exact rank the wrong tool for measured data, and what replaces it?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Is a list of numbers a vector?">
+
+Only once you also fix the space it lives in. The same triple `(1, 2, 3)` can be a point in `R^3`, a
+polynomial `1 + 2x + 3x^2`, or a row of a matrix. The operations and the meaning come from the space,
+not the storage.
+
+</Gotcha>
+
+<Gotcha question="My three vectors look independent because none is a multiple of another.">
+
+Not a multiple of *one* other vector is not the same as not a combination of *all* the others. Solve
+`sum ci*vi = 0` or take the rank; pairwise checks miss dependence that needs two or more vectors to
+express.
+
+</Gotcha>
+
+<Gotcha question="np.linalg.matrix_rank gave full rank but my model is still unstable.">
+
+The default tolerance is generous. Two columns can differ by `1e-8` and count as independent while
+being useless in practice. Inspect the singular values directly and set `tol` from the noise level
+of your data.
+
+</Gotcha>
+
+<Gotcha question="I used X.T @ X to check independence and it looked fine.">
+
+The Gram matrix squares the condition number. Near-dependence that an SVD of `X` would flag can be
+lost to rounding in `X.T @ X`. Work from `X` with SVD or pivoted QR.
+
+</Gotcha>
+
+<Gotcha question="Does a bigger embedding width mean a higher-dimensional representation?">
+
+No. Width is the dimension of the container. The rows can lie in a much smaller subspace, which the
+singular value spectrum reveals. Rank, not shape, is the effective dimension.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+A vector is an element of a vector space, and the space — not the notation — supplies addition,
+scaling, and the zero element. Polynomials, functions, and parameter tensors are vectors for exactly
+the same reasons tuples are.
+
+Span is every linear combination of a set. Independence means the only combination equal to zero is
+the trivial one. A basis is an independent spanning set; it gives every vector unique coordinates,
+and every basis of a space has the same size, the dimension. Rank is the dimension of what a matrix
+can produce, and rank–nullity accounts for the rest.
+
+On real data, replace exact tests with tolerant ones: read the singular value spectrum, watch the
+condition number, and treat near-dependence as the thing to detect. The Practice, Debug, Interview,
+Test, Project, and Review tabs build that habit on feature matrices and embeddings.

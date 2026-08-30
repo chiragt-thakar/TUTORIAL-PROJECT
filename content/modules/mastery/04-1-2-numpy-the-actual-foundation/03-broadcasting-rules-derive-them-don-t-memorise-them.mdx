@@ -1,0 +1,307 @@
+---
+id: "roadmap:phase-1-1.2:2"
+title: "Broadcasting rules — derive them, don't memorise them"
+description: "Derive NumPy broadcasting from trailing-axis alignment, then use explicit singleton dimensions to make vectorized ML code correct, readable, and memory-aware."
+module: 1-2-numpy-the-actual-foundation
+order: 3
+estimatedMinutes: 120
+prerequisites:
+  - "roadmap:phase-1-1.2:0"
+  - "roadmap:phase-1-1.2:1"
+learningObjectives:
+  - Derive broadcast compatibility and result shape by aligning operand shapes from the trailing axis
+  - Use singleton axes deliberately to express per-feature, per-example, outer, and batched operations
+  - Explain broadcasting as a zero-stride logical view and predict allocation and performance costs
+  - Diagnose accidental broadcasting, in-place failures, and batch-versus-core dimension mistakes
+---
+
+Broadcasting is shape alignment followed by ordinary elementwise work. NumPy does not guess your semantic axes, and it does not tile smaller arrays into large temporary copies before computing.
+
+The rule is mechanical: align shapes on the right, pretend missing leading axes have size one, and compare one axis pair at a time. A pair is compatible when the sizes are equal or either size is one. The result takes the larger size on each axis.
+
+If you can run that procedure on paper, broadcasting stops being magic. More importantly, you can detect code that runs successfully while applying values along the wrong axis.
+
+<TypeScriptComparison>
+
+- JavaScript arrays have no native shape metadata, so `array + array` coerces values instead of performing numerical elementwise work.
+- TensorFlow.js and other tensor libraries use nearly the same trailing-axis broadcasting model as NumPy.
+- TypeScript can describe ranks with conventions, but runtime shapes still need validation. A type like `number[][]` cannot prove that two axes are compatible.
+- `Array.fill` or repeated mapping materializes values. NumPy broadcasting usually presents one stored value at many logical indices through metadata.
+
+</TypeScriptComparison>
+
+## Derive compatibility from the trailing axis
+
+Take shapes `(8, 3, 5)` and `(3, 1)`. Pad the shorter shape on the left, then compare from right to left:
+
+```text
+8  3  5
+1  3  1
+-------
+8  3  5
+```
+
+The last pair `(5, 1)` is compatible and produces `5`. The next pair `(3, 3)` matches. The leading pair `(8, 1)` is compatible and produces `8`.
+
+Now compare `(8, 3, 5)` with `(8, 1)`. Right alignment gives `(3, 5)` against `(8, 1)`. The final axis works, but `3` and `8` conflict. A matching `8` elsewhere is irrelevant because broadcasting never searches for an axis with the same size.
+
+```python
+import numpy as np
+
+print(np.broadcast_shapes((8, 3, 5), (3, 1)))  # (8, 3, 5)
+print(np.broadcast_shapes((4, 1, 7), (3, 7)))  # (4, 3, 7)
+```
+
+The algorithm naturally handles more than two operands. Fold shapes together one axis at a time. Every non-one size at an aligned position must agree; the result size is that shared non-one value, or one when all operands have one there.
+
+<Concept>
+
+Broadcasting knows positions, not meanings. It sees axis `-1`, axis `-2`, and sizes. It does not know whether an axis represents features, channels, tokens, or batches.
+
+</Concept>
+
+## Singleton axes express intent
+
+Suppose `batch` has shape `(B, D)`. A feature bias with shape `(D,)` aligns naturally with the trailing feature axis, producing `(B, D)`.
+
+A per-example scale with shape `(B,)` does not mean “one value per row” to NumPy. It aligns with `D`. When `B != D`, the operation fails. When `B == D`, it succeeds and silently scales columns instead of rows.
+
+```python
+batch = np.arange(12, dtype=np.float32).reshape(3, 4)
+feature_bias = np.array([0.1, 0.2, 0.3, 0.4])
+example_scale = np.array([1.0, 10.0, 100.0])
+
+shifted = batch + feature_bias             # (3, 4) + (4,) -> (3, 4)
+scaled = batch * example_scale[:, None]    # (3, 4) * (3, 1) -> (3, 4)
+```
+
+`None` and `np.newaxis` are the same indexing operation. They insert an axis of length one without copying data. `expand_dims` is useful when the insertion position is computed or deserves a named function call.
+
+Use inserted axes to derive outer operations. If `x` is `(M,)` and `y` is `(N,)`, then `x[:, None]` is `(M, 1)` and `y[None, :]` is `(1, N)`. Their difference has shape `(M, N)` and contains every pairwise difference.
+
+```python
+x = np.array([2.0, 5.0, 9.0])
+y = np.array([1.0, 4.0])
+
+pairwise = x[:, None] - y[None, :]
+# [[ 1., -2.],
+#  [ 4.,  1.],
+#  [ 8.,  5.]]
+```
+
+<CommonMistake>
+
+Do not add singleton axes until an expression happens to run. Write the semantic shape first—such as `(batch, 1)` for one scale per example—then construct that shape deliberately and assert it at the boundary.
+
+</CommonMistake>
+
+## Broadcasting is a logical view, not tiling
+
+A dimension expanded from one to many can be represented with a stride of zero. Moving along that logical axis returns to the same stored value. This connects broadcasting directly to the memory model from topic 1.
+
+```python
+bias = np.array([10, 20, 30], dtype=np.int64)
+view = np.broadcast_to(bias, (4, 3))
+
+print(view.shape)    # (4, 3)
+print(view.strides)  # commonly (0, 8)
+print(view.flags.writeable)  # False
+```
+
+`broadcast_to` returns a read-only view because several logical positions can refer to the same memory. If `view[0, 0]` and `view[3, 0]` are the same stored element, writable assignment would make independent-looking indices alias unexpectedly.
+
+The broadcasted operand is cheap, but the operation's output may not be. Adding shapes `(50_000, 1)` and `(1, 50_000)` describes 2.5 billion results. No input was tiled, yet materializing the result still requires enormous memory.
+
+<ProductionNote>
+
+Log semantic axis names beside shapes at model boundaries. A message such as `expected scores=(batch, classes), bias=(classes,)` is more actionable than a raw “operands could not be broadcast” error.
+
+</ProductionNote>
+
+## Allocation, temporaries, and performance
+
+Broadcasting removes Python loops and lets compiled kernels traverse arrays. That often improves performance, but it is not automatic fusion. A compound expression can allocate one full output per intermediate operation.
+
+```python
+# Each intermediate can be batch-sized.
+normalized = (x - mean) / std
+
+# Reuse an owned output only when mutation is acceptable.
+normalized = x.copy()
+normalized -= mean
+normalized /= std
+```
+
+The second version reduces peak temporary memory but changes the ownership story. It is safe only when `normalized` is a deliberate copy or uniquely owned buffer. Measure both variants; NumPy dispatch, cache behavior, and downstream reuse matter.
+
+Broadcasting does not repair poor memory traversal. A zero-stride operand is cheap to revisit, but a transposed large operand may still force cache-unfriendly access. Inspect shape, strides, dtype, result size, and repeated-use count before optimizing.
+
+## In-place operations cannot expand their destination
+
+Out-of-place operations allocate the broadcast result shape. In-place operations must write back into the left-hand buffer, so the broadcast result must fit that existing shape.
+
+```python
+x = np.zeros((3, 1))
+y = np.ones((3, 4))
+
+z = x + y   # valid: new result has shape (3, 4)
+x += y      # error: (3, 4) cannot be stored in x's (3, 1) buffer
+```
+
+Assignment has a related directionality. The right-hand side may broadcast into the selected left-hand shape, but assignment never grows the destination. `matrix[:, :] = row` can repeat a `(D,)` row over `(B, D)`; it does not change `matrix.shape`.
+
+This is a valuable guardrail. If an in-place expression fails, ask what full result shape the out-of-place operation would produce and whether that shape can be represented by the destination buffer.
+
+## Elementwise rules are not matrix-multiplication rules
+
+For elementwise `*`, every dimension participates in the normal broadcasting algorithm. For `matmul`, the final two dimensions are core matrix dimensions; only leading dimensions broadcast as batch dimensions.
+
+```python
+weights = np.ones((8, 4, 6))
+vectors = np.ones((1, 6, 1))
+
+outputs = weights @ vectors  # batch dims 8 and 1 broadcast; core 6 matches 6
+print(outputs.shape)          # (8, 4, 1)
+```
+
+Do not explain `@` by saying “NumPy broadcasts everything.” First verify the core contraction dimensions, then run broadcasting on the remaining leading shapes. Generalized ufuncs use the same split between core and loop dimensions.
+
+This distinction appears constantly in ML: attention scores, batched projections, and linear layers combine contraction semantics with broadcasted batch or head dimensions.
+
+## Make silent broadcasting impossible at boundaries
+
+Broadcast errors are often preferable to broadcast success. A wrong `(B,)` scale applied to `(B, D)` fails while `B != D`, then becomes a silent semantic defect on a batch where `B == D`.
+
+Validate rank and semantic dimensions before arithmetic. Normalize reusable parameter shapes once—bias `(D,)`, per-example weights `(B, 1)`, image-channel statistics `(1, C, 1, 1)`—instead of reshaping ad hoc at every call site.
+
+```python
+def apply_example_weights(losses: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    if losses.ndim != 2:
+        raise ValueError(f"expected losses=(batch, tasks), got {losses.shape}")
+    if weights.shape != (losses.shape[0],):
+        raise ValueError(f"expected weights=({losses.shape[0]},), got {weights.shape}")
+    return losses * weights[:, None]
+```
+
+Assertions should describe meanings, not merely accept `np.broadcast_shapes`. Compatibility proves that an operation is mechanically possible. It does not prove that the aligned axes represent the same concept.
+
+## Exercises
+
+<Exercise id="numpy-broadcast-derive-easy" difficulty="easy">
+
+Derive the result shape of `(5, 1, 7)` and `(3, 7)` without running NumPy.
+
+<Solution>
+
+Right-align the shapes as `(5, 1, 7)` and `(1, 3, 7)`. The trailing sevens match, one expands against three, and the missing leading axis behaves as one against five. The result is `(5, 3, 7)`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-broadcast-row-scale-medium" difficulty="medium">
+
+`losses` has shape `(B, T)` and `weights` has shape `(B,)`. Write the correct weighted expression and explain why `losses * weights` is wrong even when it happens to run.
+
+<Solution>
+
+Use `losses * weights[:, None]`, which gives weights the semantic shape `(B, 1)`. A bare `(B,)` aligns with the trailing task axis. It fails when `B != T` and silently weights tasks rather than examples when `B == T`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-broadcast-memory-hard" difficulty="hard">
+
+An engineer claims that `(100_000, 1) + (1, 100_000)` is cheap because broadcasting makes no copies. Diagnose the claim and propose safer processing.
+
+<Solution>
+
+The operands can be broadcast as zero-stride logical views, but the result contains ten billion values and must normally be materialized. Estimate output bytes before execution. Process tiles, compute only required neighbors, reduce each block immediately, or reformulate the algorithm so the full pairwise matrix never exists.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-broadcast-interview" difficulty="interview">
+
+In an interview, derive NumPy's broadcasting rule and name one class of silent bug it permits.
+
+<Solution>
+
+I align shapes from the trailing axis, treat missing leading axes as one, and require each aligned pair to match or contain a one. The result takes the non-one size. NumPy knows positions, not meanings, so coincidentally equal batch and feature sizes can make a wrongly shaped per-example vector align with features and pass silently.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-broadcast-normalization-real-world" difficulty="real-world">
+
+Design a normalization boundary accepting NCHW image batches, per-channel mean, and per-channel standard deviation. State validated input shapes, internal parameter shapes, and memory checks.
+
+<Solution>
+
+Require images `(N, C, H, W)` and statistics `(C,)`. Validate positive finite standard deviations and matching `C`, then normalize with parameters reshaped once to `(1, C, 1, 1)`. Estimate the output size, decide ownership explicitly, and benchmark whether chained operations create unacceptable temporaries. Tests should include `N == C` to catch accidental alignment.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Why are shapes aligned from the right rather than by matching equal sizes anywhere?
+2. What output axis is chosen when one aligned input size is one?
+3. Why can a broadcasted view have a zero stride and be read-only?
+4. Why can broadcasting avoid tiling yet still produce an out-of-memory failure?
+5. How do `matmul` core dimensions differ from its broadcasted batch dimensions?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why does my vector align with columns instead of rows?">
+
+A one-dimensional shape aligns with the last axis. Insert a trailing singleton axis for one value per row: `(B,)` becomes `(B, 1)`.
+
+</Gotcha>
+
+<Gotcha question="Why did the wrong expression start working when batch size changed?">
+
+Two semantically unrelated axes became numerically equal. Broadcasting validates sizes and positions, not meanings, so the defect became silent.
+
+</Gotcha>
+
+<Gotcha question="Does broadcasting secretly call tile?">
+
+Usually no. It can expose repeated logical values with a zero stride. The computed result can still be large and newly allocated.
+
+</Gotcha>
+
+<Gotcha question="Why is broadcast_to read-only?">
+
+Many logical positions may refer to one stored element. Read-only access prevents independent-looking assignments from aliasing the same bytes.
+
+</Gotcha>
+
+<Gotcha question="Why does x + y work while x += y fails?">
+
+The first expression can allocate the full broadcast result. The second must store that result inside `x` without changing `x.shape`.
+
+</Gotcha>
+
+<Gotcha question="Why did adding newaxis in several places create a huge tensor?">
+
+Singleton axes can request an outer operation. The inputs remain cheap, but the Cartesian-product result may contain far more elements than either input.
+
+</Gotcha>
+
+<Gotcha question="Does matmul apply ordinary broadcasting to its last two axes?">
+
+No. Its final two axes have matrix core semantics. NumPy broadcasts the leading batch axes after verifying the contraction dimensions.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Broadcasting is a right-aligned shape algorithm. Missing leading axes behave as one, every aligned pair must match or contain one, and each output axis takes the non-one size.
+
+Singleton dimensions make intent executable. Use them to distinguish per-feature from per-example work, express outer operations, and normalize parameter shapes at boundaries.
+
+The mechanism is normally a zero-stride logical view, not input tiling. Results and intermediates still allocate, and in-place destinations cannot expand. The Practice, Debug, Interview, Test, and Project tabs turn those rules into shape derivations, failure diagnosis, and ML-shaped design work.

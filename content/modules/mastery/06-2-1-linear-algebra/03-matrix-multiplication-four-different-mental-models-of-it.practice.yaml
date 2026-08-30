@@ -1,0 +1,769 @@
+lessonId: "roadmap:phase-2-2.1:2"
+module: 2-1-linear-algebra
+lesson: 03-matrix-multiplication-four-different-mental-models-of-it
+title: "Matrix multiplication — four different mental models of it"
+summary: Read the single product AB four ways — entrywise dot products, A on B's columns, A's rows on B, and a sum of rank-1 outer products — and pick the view that turns a problem into one line, with the composition view supplying the algebra and the cost rules.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lmm-read-four-views
+    tier: normal
+    kind: code-reading
+    title: Name the view each line uses
+    minutes: 10
+    requiredForMastery: true
+    concepts: [dot-product-view, column-view, row-view, outer-product-view]
+    prompt: |
+      For each expression, say which mental model of `A @ B` it computes and what shape it returns.
+      ```python
+      a = A[2, :] @ B[:, 3]
+      b = A @ B[:, 3]
+      c = A[2, :] @ B
+      d = np.outer(A[:, 0], B[0, :])
+      ```
+    hints:
+      - One fixes both indices, one fixes a column, one fixes a row, one fixes the shared index.
+      - Only `d` produces a full matrix; the rest are a scalar or a vector.
+    solution: |
+      `a` is the dot-product view: row 2 of `A` with column 3 of `B`, giving the scalar
+      `(A @ B)[2, 3]`. `b` is the column view: `A` applied to column 3 of `B`, giving column 3 of
+      `A @ B` as a length-`m` vector. `c` is the row view: row 2 of `A` mixing the rows of `B`,
+      giving row 2 of `A @ B` as a length-`n` vector. `d` is one term of the outer-product view: a
+      rank-1 `(m, n)` matrix; summing `np.outer(A[:, p], B[p, :])` over all `p` reconstructs the
+      whole product.
+  - id: lmm-write-diag-of-product
+    tier: normal
+    kind: write-code
+    title: Diagonal without the full product
+    minutes: 12
+    requiredForMastery: true
+    concepts: [dot-product-view, efficiency]
+    prompt: |
+      Write `diag_of_product(A, B)` returning `np.diag(A @ B)` without forming `A @ B`. State the
+      cost saving.
+    hints:
+      - "`(A @ B)[i, i]` is the dot product of row `i` of `A` with column `i` of `B`."
+      - Row `i` of `A` lines up with column `i` of `B`, which is row `i` of `B.T`.
+    solution: |
+      Return `np.sum(A * B.T, axis=1)`. Entry `i` of that is `sum_k A[i, k] * B.T[i, k]` which is
+      `sum_k A[i, k] * B[k, i]`, exactly `(A @ B)[i, i]`. The cost is `m*k` multiply-adds versus
+      `m*k*n` for the full product, and no `(m, n)` array is allocated. The `einsum` form
+      `np.einsum('ik,ki->i', A, B)` is equivalent. Only the `i == j` dot products are needed, so
+      the column view collapses to one elementwise multiply and a row sum.
+  - id: lmm-predict-shapes
+    tier: normal
+    kind: predict-output
+    title: Which products are legal
+    minutes: 10
+    requiredForMastery: true
+    concepts: [shape-rule, composition]
+    prompt: |
+      With `A` of shape `(4, 3)`, `B` of shape `(3, 6)`, `C` of shape `(6, 3)`, state the shape or
+      the error for `A @ B`, `B @ A`, `A @ B @ C`, and `C @ A`.
+    hints:
+      - Inner dimensions must match; the outer two survive.
+      - Reading right to left, each matrix must accept the output of the one on its right.
+    solution: |
+      `A @ B` is `(4, 3) @ (3, 6) -> (4, 6)`. `B @ A` is `(3, 6) @ (4, 3)`, inner dims `6` and `4`
+      disagree, so it is an error. `A @ B @ C` is `(4, 6) @ (6, 3) -> (4, 3)`, legal in either
+      association. `C @ A` is `(6, 3) @ (4, 3)`, inner dims `3` and `4` disagree, error. The shape
+      rule is the composition constraint: the output space of one map must be the input space of
+      the next.
+  - id: lmm-explain-noncommutative
+    tier: normal
+    kind: explain
+    title: Why order matters
+    minutes: 10
+    requiredForMastery: true
+    concepts: [non-commutativity, composition]
+    prompt: |
+      Explain from the composition view why `A @ B` is generally not `B @ A`, and give a case where
+      one product is defined and the other is not.
+    hints:
+      - "`A @ B` means do `B`, then `A`; swapping changes which map runs first."
+      - Non-square shapes can make only one order legal.
+    solution: |
+      `A @ B` is the map "apply `B`, then `A`", and `B @ A` is "apply `A`, then `B`". Doing a
+      rotation then a shear is a different function from a shear then a rotation, so the matrices
+      differ. With `A` of shape `(2, 5)` and `B` of shape `(5, 2)`, `A @ B` is `(2, 2)` and
+      `B @ A` is `(5, 5)` — different sizes, so they cannot be equal, and if `A` were `(2, 5)` and
+      `B` were `(2, 5)` only `A @ B.T` style products would even be defined. Commutativity is the
+      special case, not the rule.
+  - id: lmm-columns-and-rows-views
+    tier: intermediate
+    kind: write-code
+    title: Rebuild a product from columns and from rows
+    minutes: 16
+    requiredForMastery: true
+    concepts: [column-view, row-view]
+    prompt: |
+      Write two functions that reconstruct `A @ B` without using `@` on the whole matrices:
+      `by_columns(A, B)` builds it column by column, `by_rows(A, B)` builds it row by row. Assert
+      both match `A @ B`.
+    hints:
+      - Column `j` of the result is `A @ B[:, j]`.
+      - Row `i` of the result is `A[i, :] @ B`.
+    solution: |
+      `by_columns` stacks `A @ B[:, j]` for each `j`:
+      `np.column_stack([A @ B[:, j] for j in range(B.shape[1])])`. `by_rows` stacks `A[i, :] @ B`
+      for each `i`: `np.vstack([A[i, :] @ B for i in range(A.shape[0])])`. Both equal `A @ B`
+      because the column view groups the defining sum by fixing `j` and the row view groups it by
+      fixing `i`; neither changes the arithmetic. The matrix-vector products inside still use `@`,
+      but never on the full pair, which is the point of the exercise.
+  - id: lmm-outer-product-accumulate
+    tier: intermediate
+    kind: write-code
+    title: Product as accumulated rank-1 updates
+    minutes: 16
+    requiredForMastery: true
+    concepts: [outer-product-view, rank-one, accumulation]
+    prompt: |
+      Write `by_outer(A, B)` that returns `A @ B` as a running sum of `np.outer(A[:, p], B[p, :])`
+      over the shared index `p`, and explain what each term contributes to the rank.
+    hints:
+      - Start from a zero `(m, n)` accumulator.
+      - Each `np.outer(...)` term is rank 1; the sum of `k` of them has rank at most `k`.
+    solution: |
+      Initialise `C = np.zeros((A.shape[0], B.shape[1]))` and loop `for p in range(A.shape[1]): C
+      += np.outer(A[:, p], B[p, :])`; return `C`, which equals `A @ B` because entry `(i, j)`
+      accumulates `sum_p A[i, p] * B[p, j]`. Each term is a rank-1 matrix whose column space is the
+      line through `A[:, p]`, so after all `k` terms the column space lies in the span of `A`'s
+      columns and the rank is at most `min(k, rank(A), rank(B))`. If only a few terms have large
+      norm, `C` is close to low rank.
+  - id: lmm-predict-assoc-cost
+    tier: intermediate
+    kind: predict-output
+    title: FLOPs of two parenthesisations
+    minutes: 14
+    requiredForMastery: true
+    concepts: [associativity, cost, matrix-chain]
+    prompt: |
+      For `A: (200, 4)`, `B: (4, 200)`, `D: (200, 10)`, give the approximate multiply-add count for
+      `(A @ B) @ D` and for `A @ (B @ D)`, and say which to use.
+    hints:
+      - A product `(m, k) @ (k, n)` costs about `m*k*n`.
+      - Watch the size of the intermediate matrix each order creates.
+    solution: |
+      `(A @ B) @ D`: `A @ B` costs `200*4*200 = 160000` and makes a `(200, 200)` intermediate; then
+      `(200, 200) @ (200, 10)` costs `200*200*10 = 400000`. Total about `560000`. `A @ (B @ D)`:
+      `B @ D` costs `4*200*10 = 8000` and makes a `(4, 10)` intermediate; then `(200, 4) @ (4, 10)`
+      costs `200*4*10 = 8000`. Total about `16000`. Use `A @ (B @ D)`: about 35 times fewer FLOPs
+      and no large intermediate. Contract against the small shared dimension first.
+  - id: lmm-attention-scores-view
+    tier: intermediate
+    kind: explain
+    title: Read attention as a grid of dot products
+    minutes: 14
+    requiredForMastery: true
+    concepts: [dot-product-view, attention]
+    prompt: |
+      In `scores = Q @ K.T` with `Q` of shape `(n_q, d)` and `K` of shape `(n_k, d)`, explain what
+      `scores[i, j]` is, why the result is `(n_q, n_k)`, and which of the four views this is.
+    hints:
+      - "`K.T` is `(d, n_k)`, so the shared dimension is the feature dimension `d`."
+      - Each output entry pairs one row of `Q` with one row of `K`.
+    solution: |
+      `scores[i, j]` is the dot product of query row `i` with key row `j`, a similarity in the
+      `d`-dimensional feature space. The product is `(n_q, d) @ (d, n_k)`, so `d` is summed away
+      and the result is `(n_q, n_k)`: one score for every query-key pair. This is the dot-product
+      view — both indices fixed — which is why reading the line as "a grid of query-key
+      similarities" is immediate and tells you the softmax that follows runs along the `n_k` axis.
+  - id: lmm-debug-star-vs-at
+    tier: tricky
+    kind: debug
+    title: Hadamard where a matmul was meant
+    minutes: 12
+    requiredForMastery: true
+    concepts: [hadamard, matmul, broadcasting]
+    prompt: |
+      This linear layer sometimes returns the wrong shape and sometimes a silently wrong result.
+      Find the bug and the two failure modes.
+    code: |
+      def linear(x, W):
+          # x: (batch, in), W: (in, out)
+          return x * W
+    solution: |
+      `*` is the elementwise Hadamard product, not matrix multiplication. When `x` is
+      `(batch, in)` and `W` is `(in, out)` with `in != out`, broadcasting fails and it raises a
+      shape error. When `in == out` and `batch == in`, broadcasting *succeeds* and returns an
+      elementwise product of the wrong quantity — a silent bug that passes shape checks. The fix is
+      `return x @ W`, which contracts the `in` dimension and returns `(batch, out)`. Add a
+      regression with `in != out` for the shape case and one with a known `x`, `W` where `x @ W` is
+      hand-computable for the silent case.
+    hints:
+      - "`*` and `@` are different operators; only one contracts a dimension."
+      - Try non-square, unequal `in` and `out` to force the shape error into the open.
+  - id: lmm-debug-transpose-in-row-view
+    tier: tricky
+    kind: debug
+    title: Column indexed where a row was meant
+    minutes: 14
+    requiredForMastery: true
+    concepts: [row-view, indexing, transpose]
+    prompt: |
+      `row_of_product` should return row `i` of `A @ B` using the row view, but it returns nonsense
+      for non-square `A`. Fix it.
+    code: |
+      def row_of_product(A, B, i):
+          return A[:, i] @ B
+    solution: |
+      `A[:, i]` is column `i` of `A`, a length-`m` vector, and `A[:, i] @ B` tries to contract that
+      against the `k` rows of `B` — a shape error unless `m == k`, and meaningless even then. The
+      row view needs row `i` of `A`, which is `A[i, :]`, a length-`k` vector that correctly mixes
+      the `k` rows of `B`: `return A[i, :] @ B`. Regression: take `A` of shape `(2, 3)` and `B` of
+      shape `(3, 4)`; the fixed function returns a length-4 vector equal to `(A @ B)[i, :]`, the
+      old one raises.
+    hints:
+      - "`A[:, i]` is a column; the row view needs `A[i, :]`."
+      - Use a rectangular `A` so the wrong axis raises instead of hiding.
+  - id: lmm-debug-assoc-tolerance
+    tier: tricky
+    kind: debug
+    title: Exact-equality check on a refactored chain
+    minutes: 16
+    requiredForMastery: true
+    concepts: [floating-point, associativity, tolerance]
+    prompt: |
+      A test fails intermittently after a chain was re-associated for speed. The values look right.
+      Diagnose and fix the assertion.
+    code: |
+      def check_refactor(A, B, C):
+          assert np.array_equal((A @ B) @ C, A @ (B @ C))
+    solution: |
+      Floating-point addition is not associative, and the two parenthesisations sum the inner
+      products in different orders, so the results differ in the last few bits. `np.array_equal`
+      demands bit-for-bit equality and will fail. BLAS threading and hardware can widen the gap
+      further. Replace the assertion with a relative-tolerance check:
+      `assert np.allclose((A @ B) @ C, A @ (B @ C), rtol=1e-9, atol=0)`, and scale `rtol` with the
+      shared dimension if it is large. Investigate only if the gap exceeds a few times `k * eps`
+      relative, which would point to an ill-conditioned factor.
+    hints:
+      - Floating-point sums depend on order; re-association changes the order.
+      - Compare with `np.allclose` and a relative tolerance, not `np.array_equal`.
+  - id: lmm-debug-cancellation-not-valid
+    tier: tricky
+    kind: debug
+    title: Cancelling a singular factor
+    minutes: 16
+    requiredForMastery: true
+    concepts: [cancellation, singular-matrix, null-space]
+    prompt: |
+      `solve_from_product` assumes that if `A @ X == A @ B` then `X == B`, and reconstructs `X` as
+      `B`. It sometimes returns a wrong `X`. Explain when and give a correct approach.
+    code: |
+      def solve_from_product(A, B, product):
+          # product is known to equal A @ B; recover B
+          assert np.allclose(A @ B, product)
+          return B
+    solution: |
+      The premise is fine here because `B` is passed in, but the reasoning it encodes — that
+      `A @ X == A @ B` forces `X == B` — is false when `A` is singular. If `A` has a nontrivial
+      null space, then for any `N` whose columns lie in that null space, `A @ (B + N) == A @ B`,
+      so infinitely many `X` produce the same product and `B` is not recoverable from `product`
+      alone. A correct recovery of a minimum-norm `X` is `np.linalg.lstsq(A, product, rcond=None)`
+      per column, or `np.linalg.pinv(A) @ product`. Cancellation of `A` is multiplication by
+      `A` inverse, which does not exist for a singular `A`.
+    hints:
+      - Cancelling `A` is multiplying by its inverse; check whether that inverse exists.
+      - Add any null-space vector of `A` to `B` and the product is unchanged.
+  - id: lmm-design-matmul-view-picker
+    tier: challenge
+    kind: design
+    title: Design a helper that picks the cheap view
+    minutes: 30
+    requiredForMastery: false
+    concepts: [cost, matrix-chain, low-rank, associativity]
+    prompt: |
+      Design `plan_product(shapes, ranks=None)` that takes the shapes of a matrix chain (and
+      optional known ranks) and returns an evaluation plan: the parenthesisation, whether to
+      factor any low-rank factor, and the estimated FLOP count. State inputs, outputs, and what it
+      must not silently assume.
+    hints:
+      - The optimal parenthesisation of a chain is a small dynamic program over split points.
+      - A factor of shape `(k, n)` with known rank `r < min(k, n)` can be split into `(k, r) @ (r, n)`.
+    solution: |
+      Inputs: an ordered list of `(rows, cols)` shapes with matching inner dimensions, and an
+      optional list of known ranks aligned to the factors. Output: a plan object with the chosen
+      association (as a parenthesised index tree), a list of factors to replace with a low-rank
+      pair, the estimated multiply-add count, and the largest intermediate shape. Use the standard
+      matrix-chain dynamic program on `m*k*n` costs to choose the association. Before that, for any
+      factor with a known rank below `min(shape)`, offer the `(k, r) @ (r, n)` split and recompute.
+      It must not assume the inputs are conformable without checking, must not apply a low-rank
+      split without a supplied rank, must return the FLOP estimate and the assumptions used, and
+      must not reorder factors (only re-parenthesise). Include cases: a chain that benefits hugely
+      from re-association, one already optimal, and one with a low-rank middle factor.
+  - id: lmm-refactor-mlp-chain
+    tier: challenge
+    kind: refactor
+    title: Refactor an MLP forward pass for FLOPs
+    minutes: 28
+    requiredForMastery: false
+    concepts: [associativity, low-rank, cost, verification]
+    prompt: |
+      An inference function computes `h = (x @ W1) @ W2 @ W3` for every token with fixed weights,
+      where `W2` is known to be well approximated by rank 32. Refactor for minimum FLOPs per token
+      while keeping outputs within a stated tolerance, and prove the saving.
+    hints:
+      - Weights are fixed across tokens, so any weight-only product can be precomputed once.
+      - "`W2 ≈ U @ V` with inner dimension 32 turns one big matmul into two small ones."
+    solution: |
+      Since `W1, W2, W3` are constant, precompute a single effective weight once outside the token
+      loop and multiply each token by it: `W_eff = W1 @ W2 @ W3`, then `h = x @ W_eff`. If the
+      dimensions make `W_eff` large or if `W2` is the bottleneck, keep it factored: compute
+      `W12 = W1 @ (U @ V)` as `(W1 @ U) @ V` with inner dimension 32, then `W_eff = W12 @ W3`,
+      still once. Per token the cost is one `(1, d_in) @ (d_in, d_out)` product instead of three
+      matmuls. Report the multiply-add count before and after, and validate with
+      `np.allclose(h_new, h_old, rtol=1e-4)` on a batch, tightening or loosening the tolerance
+      against measured end-task metrics. Add a fail-before-fix test capturing the old FLOP count
+      and the reference outputs.
+quizzes:
+  - id: lmm-checkpoint
+    title: Checkpoint — the four views and the algebra
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lmm-cp-views
+        kind: mcq
+        prompt: The four mental models of `A @ B` differ in what way?
+        options:
+          - {id: grouping, text: "They group the one defining sum over the shared index by a different fixed index"}
+          - {id: arithmetic, text: They compute genuinely different arithmetic}
+          - {id: precision, text: They give different numerical precision by design}
+        answer: [grouping]
+        explanation: One definition, four groupings — by (i,j), by j, by i, or by p.
+        concepts: [four-views]
+        points: 1
+      - id: lmm-cp-shape
+        kind: mcq
+        prompt: "`A` is `(6, 2)` and `B` is `(6, 2)`. What is `A @ B`?"
+        options:
+          - {id: err, text: An error — inner dimensions 2 and 6 do not match}
+          - {id: sixsix, text: A `(6, 6)` matrix}
+          - {id: twotwo, text: A `(2, 2)` matrix}
+        answer: [err]
+        explanation: The inner dimensions must agree; here you would need `A @ B.T` or `A.T @ B`.
+        concepts: [shape-rule]
+        points: 1
+      - id: lmm-cp-rank
+        kind: mcq
+        prompt: From the outer-product view, the rank of `A @ B` is at most what?
+        options:
+          - {id: minrank, text: "`min(rank(A), rank(B))`"}
+          - {id: sumrank, text: "`rank(A) + rank(B)`"}
+          - {id: always-k, text: The shared dimension `k`, always exactly}
+        answer: [minrank]
+        explanation: Each rank-1 term lies in both column and row spaces, bounding the product's rank by the smaller.
+        concepts: [rank, outer-product-view]
+        points: 1
+      - id: lmm-cp-assoc
+        kind: multi
+        prompt: Which statements about association order in a matrix chain are true?
+        options:
+          - {id: same-result, text: The mathematical result is the same for any parenthesisation}
+          - {id: diff-flops, text: The FLOP count can differ a lot between parenthesisations}
+          - {id: diff-bits, text: The floating-point result can differ in the last bits}
+          - {id: diff-answer, text: A different order gives a genuinely different answer}
+        answer: [same-result, diff-flops, diff-bits]
+        explanation: Associativity holds exactly in math; cost and rounding both depend on order.
+        concepts: [associativity, cost, floating-point]
+        points: 1
+  - id: lmm-assessment
+    title: Assessment — reading and using matrix multiplication
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lmm-as-list-views
+        kind: explain
+        prompt: List the four views of `A @ B` and, for each, one problem it makes easy.
+        modelAnswer: |
+          Dot-product view: `C[i,j]` is a row-column dot product — best for one score or logit.
+          Column view: `C[:,j] = A @ B[:,j]` — best for running a batch of column vectors through
+          `A`. Row view: `C[i,:] = A[i,:] @ B` — best for several linear readouts of the same
+          features. Outer-product view: `C = sum_p outer(A[:,p], B[p,:])` — best for low-rank
+          structure and the gradient of a linear layer.
+        explanation: Each view fixes a different index of the one defining sum.
+        concepts: [four-views]
+        points: 1
+      - id: lmm-as-shape-composition
+        kind: explain
+        prompt: Argue the inner-dimension rule from composition rather than from the entry formula.
+        modelAnswer: |
+          `B` maps `R^n` to `R^k`, so its outputs live in `R^k`. `A @ B` applies `A` next, so `A`
+          must accept `R^k` inputs, meaning `A` has `k` columns. If `A` has a different number of
+          columns, the output of `B` is not a legal input to `A` and the composition is undefined.
+        explanation: The shape rule is the requirement that one map's codomain equals the next map's domain.
+        concepts: [shape-rule, composition]
+        points: 1
+      - id: lmm-as-noncommute
+        kind: scenario
+        prompt: Give two 2x2 matrices whose products in the two orders differ, and explain geometrically.
+        modelAnswer: |
+          Take `R` a 90-degree rotation and `S` a horizontal shear. `R @ S` shears first then
+          rotates; `S @ R` rotates first then shears. The unit square ends up as different
+          parallelograms, so `R @ S != S @ R`. Rotations and shears do not commute as functions,
+          so their matrices do not either.
+        explanation: Matrix product is composition, and function composition is order-sensitive.
+        concepts: [non-commutativity]
+        points: 1
+      - id: lmm-as-diag-trick
+        kind: write-function
+        prompt: Give an expression for `np.diag(A @ B)` that does not form `A @ B`, and its cost.
+        modelAnswer: |
+          `np.sum(A * B.T, axis=1)` (equivalently `np.einsum('ik,ki->i', A, B)`). It costs `m*k`
+          multiply-adds and allocates no `(m, n)` matrix, versus `m*k*n` for the full product.
+        explanation: Only the matching row-column dot products are needed.
+        concepts: [dot-product-view, efficiency]
+        points: 1
+      - id: lmm-as-outer-rank
+        kind: scenario
+        prompt: "`A` is `(1000, 3)` and `B` is `(3, 1000)`. What is the maximum possible rank of `A @ B`, and which view shows it fastest?"
+        modelAnswer: |
+          At most 3. The outer-product view writes `A @ B` as a sum of 3 rank-1 matrices, so the
+          rank cannot exceed 3 regardless of the outer dimensions. Equivalently the shared
+          dimension caps the rank.
+        explanation: A sum of `k` rank-1 terms has rank at most `k`.
+        concepts: [outer-product-view, rank]
+        points: 1
+      - id: lmm-as-chain-cost
+        kind: scenario
+        prompt: |
+          For `A` of shape `(500, 2)`, `B` of shape `(2, 500)`, `v` of shape `(500, 1)`, which of
+          `(A @ B) @ v` and `A @ (B @ v)` is cheaper and why?
+        modelAnswer: |
+          `A @ (B @ v)`. `B @ v` is `(2, 500) @ (500, 1)` at about 1000 multiply-adds giving a
+          `(2, 1)` vector, then `A @ that` is `(500, 2) @ (2, 1)` at about 1000. The other order
+          forms a `(500, 500)` matrix at 500000 first. Contract the small shared dimension first
+          and never build the big intermediate.
+        explanation: Association order changes cost and intermediate memory, not the result.
+        concepts: [associativity, cost]
+        points: 1
+      - id: lmm-as-hadamard-bug
+        kind: find-bug
+        prompt: A layer computes `return x * W` for `x` of shape `(batch, in)` and `W` of shape `(in, out)`. What is wrong and how does it fail?
+        modelAnswer: |
+          `*` is elementwise, not matrix multiplication. If `in != out` broadcasting raises a shape
+          error. If shapes happen to broadcast, it returns an elementwise product — a silent wrong
+          result. Use `x @ W` to contract the `in` dimension and get `(batch, out)`.
+        explanation: "`*` is Hadamard; `@` is the contraction product."
+        concepts: [hadamard, matmul]
+        points: 1
+      - id: lmm-as-assoc-equality
+        kind: true-false
+        prompt: "`np.array_equal((A @ B) @ C, A @ (B @ C))` should always be True for conformable float matrices."
+        options:
+          - {id: "true", text: "True"}
+          - {id: "false", text: "False"}
+        answer: ["false"]
+        explanation: Floating-point addition is not associative; the two orders differ in the last bits. Use `np.allclose`.
+        concepts: [floating-point, associativity]
+        points: 1
+      - id: lmm-as-lowrank-swap
+        kind: scenario
+        prompt: A layer does `y = x @ W` with `W` of shape `(d, d)` well approximated by rank `r`. How do you rewrite it and what is the cost change?
+        modelAnswer: |
+          Factor `W ≈ U @ V` with `U` of shape `(d, r)` and `V` of shape `(r, d)` from the
+          truncated SVD, then compute `y = (x @ U) @ V`. Per input the cost falls from `d*d` to
+          `d*r + r*d = 2*d*r` multiply-adds, and the stored parameters from `d*d` to `2*d*r`.
+        explanation: Splitting a low-rank factor turns one large matmul into two small ones.
+        concepts: [low-rank, cost]
+        points: 1
+      - id: lmm-as-cancellation
+        kind: find-bug
+        prompt: Code concludes `X == B` from `A @ X == A @ B`. When is this invalid?
+        modelAnswer: |
+          When `A` is singular. Its null space is nontrivial, so `A @ (B + N) == A @ B` for any `N`
+          with columns in the null space, and `X` is not unique. Cancelling `A` requires `A`
+          invertible; otherwise recover a minimum-norm `X` with `lstsq` or `pinv`.
+        explanation: Left-cancellation is multiplication by `A` inverse, which a singular `A` lacks.
+        concepts: [cancellation, singular-matrix]
+        points: 1
+interview:
+  - id: lmm-iv-four-views
+    level: basic
+    requiredForMastery: true
+    concepts: [four-views]
+    question: Describe more than one way to think about matrix multiplication.
+    shortAnswer: |
+      `A @ B` can be read as a grid of row-column dot products, as `A` applied to each column of
+      `B`, as each row of `A` mixing the rows of `B`, or as a sum of rank-1 outer products over the
+      shared index. All four are the same sum grouped differently.
+    fullAnswer: |
+      The defining sum is `C[i,j] = sum_p A[i,p] B[p,j]`. Fix `i` and `j` and it is a dot product.
+      Fix `j` and it is `A @ B[:,j]`, so the output columns are `A` acting on `B`'s columns. Fix `i`
+      and it is `A[i,:] @ B`, the output rows as combinations of `B`'s rows. Fix `p` and sum
+      `outer(A[:,p], B[p,:])`, a rank-1 term per shared index. I reach for the dot-product view for
+      a single score, the column view for batched transforms, and the outer-product view for
+      low-rank structure and layer gradients.
+    commonWrongAnswer: You multiply rows by columns — that is the only way to see it.
+    followUps:
+      - Which view makes it obvious that `rank(A @ B) <= min(rank(A), rank(B))`?
+      - Which view corresponds to the gradient of a linear layer's weights?
+  - id: lmm-iv-why-composition
+    level: intermediate
+    requiredForMastery: true
+    concepts: [composition, algebra]
+    question: Why does matrix multiplication have the rules it does — the shape rule, associativity, non-commutativity?
+    shortAnswer: |
+      Because `A @ B` is the matrix of the composed map "do `B`, then `A`". The shape rule is that
+      one map's output must be the next's input, associativity is associativity of composition, and
+      non-commutativity is that swapping the order of two functions changes the result.
+    fullAnswer: |
+      A matrix is a linear map, and the product is defined precisely so that `(A @ B) @ x` equals
+      `A @ (B @ x)` for all `x`. Composition needs the codomain of `B` to equal the domain of `A`,
+      which is the inner-dimension rule. Composition is associative, so the chain can be
+      parenthesised freely — though the FLOP cost and the floating-point rounding both depend on
+      the order. Composition is not commutative, so neither is the product; often only one order is
+      even conformable.
+    commonWrongAnswer: The rules are arbitrary conventions you memorise.
+    followUps:
+      - How does association order affect the cost of a three-matrix chain?
+      - When can you cancel a common factor from both sides of a matrix equation?
+  - id: lmm-iv-diagonal-trick
+    level: output
+    requiredForMastery: true
+    concepts: [dot-product-view, efficiency]
+    question: You need only the diagonal of `A @ B`. How do you compute it cheaply?
+    shortAnswer: |
+      `np.sum(A * B.T, axis=1)`, or `np.einsum('ik,ki->i', A, B)`. Only the row `i` of `A` with
+      column `i` of `B` dot products are needed, costing `m*k` instead of `m*k*n` and with no
+      `(m, n)` allocation.
+    fullAnswer: |
+      `(A @ B)[i,i]` is the dot product of row `i` of `A` with column `i` of `B`. Column `i` of `B`
+      is row `i` of `B.T`, so the elementwise product `A * B.T` summed along axis 1 gives every
+      diagonal entry at once. This is a factor of `n` cheaper than forming the full product and
+      avoids the large intermediate. If only a handful of diagonal entries are needed, index those
+      rows and columns first and dot them directly.
+    commonWrongAnswer: Compute `A @ B` and then take `np.diag`.
+    followUps:
+      - How would you get the trace of `A @ B` without the product?
+      - What does `np.einsum('ik,ki->', A, B)` compute?
+  - id: lmm-iv-matrix-chain
+    level: scenario
+    requiredForMastery: true
+    concepts: [associativity, cost, matrix-chain]
+    question: A performance profile shows `A @ B @ C` is a hotspot. What do you look at first?
+    shortAnswer: |
+      The two parenthesisations and the intermediate sizes. Compute `m*k*n + m*n*p` versus
+      `k*n*p + m*k*p` and pick the order that never forms a large intermediate — usually contract
+      the small shared dimension first.
+    fullAnswer: |
+      Matrix multiplication is associative, so I can re-parenthesise for free. I estimate the FLOP
+      count of each order from the shapes and choose the smaller, which typically means multiplying
+      the two factors sharing the smallest dimension first so the intermediate matrix stays small.
+      For a longer chain the optimal split is a short dynamic program. I also check whether any
+      factor is fixed across a loop and can be precomputed, and whether any factor is low rank and
+      can be split into a thin pair, which drops the cost further.
+    commonWrongAnswer: Nothing can be done; the FLOPs are fixed by the shapes.
+    followUps:
+      - How does a known low-rank factor change the plan?
+      - Why does moving the matmul to a GPU sometimes change the output slightly?
+  - id: lmm-iv-outer-gradient
+    level: internals
+    requiredForMastery: true
+    concepts: [outer-product-view, backprop]
+    question: How does the outer-product view explain the weight gradient of a linear layer?
+    shortAnswer: |
+      For `y = W x`, the loss gradient with respect to `W` is `outer(delta, x)` where
+      `delta = dL/dy`, a single rank-1 matrix per example, summed over the batch. The batch gradient
+      is `delta_batch.T @ x_batch`, a sum of outer products.
+    fullAnswer: |
+      Each output `y_i = sum_j W[i,j] x_j`, so `dL/dW[i,j] = delta_i * x_j`, which assembled over
+      all `i, j` is the outer product `outer(delta, x)`. Over a batch you sum these rank-1 updates,
+      which is exactly `Delta.T @ X` with `Delta` and `X` the stacked `delta` and input rows. This
+      is the outer-product view of matrix multiplication run in reverse: the forward pass
+      contracts, the backward pass for weights accumulates rank-1 terms. It also shows why a
+      gradient step is a low-rank update to `W` when the batch is small.
+    commonWrongAnswer: The weight gradient is just `W` transposed times something.
+    followUps:
+      - What is the rank of one minibatch's weight gradient?
+      - How does this relate to LoRA's rank-`r` update?
+  - id: lmm-iv-refactor-changes-output
+    level: debugging
+    requiredForMastery: true
+    concepts: [floating-point, associativity, tolerance]
+    question: After re-associating a matrix chain for speed, a downstream test fails on exact equality. Is the refactor wrong?
+    shortAnswer: |
+      Not necessarily. Floating-point addition is not associative, so `(A @ B) @ C` and
+      `A @ (B @ C)` differ in the last bits. Switch the test to a relative tolerance of a few times
+      the shared dimension divided into machine epsilon.
+    fullAnswer: |
+      The two orders sum the inner products in different sequences, and BLAS may further reorder for
+      cache and threads, so bitwise identity is not expected. The right check is
+      `np.allclose(old, new, rtol=k*eps*small_constant)`. If the discrepancy is within that, the
+      refactor is fine and the test was too strict. If it is far larger, one of the factors is
+      likely ill-conditioned and the chain is losing precision regardless of order, which is worth
+      fixing separately.
+    commonWrongAnswer: Any change in output means the refactor introduced a bug.
+    followUps:
+      - How would you set the tolerance as a function of the shared dimension?
+      - What factor property would make the gap genuinely large?
+projects:
+  - id: lmm-project-matmul-engine
+    kind: major
+    title: Build a four-view matrix multiplication engine
+    minutes: 240
+    summary: Implement `A @ B` four independent ways, verify they agree, and add a planner that chooses the cheapest evaluation order and low-rank factoring for a matrix chain.
+    problem: |
+      To really own matrix multiplication, build it yourself from each of the four mental models and
+      prove they coincide, then use the outer-product and composition insights to make a chain
+      evaluator that is FLOP-aware. The engine should expose `matmul_dot`, `matmul_columns`,
+      `matmul_rows`, and `matmul_outer`, a `chain_plan` that returns the best parenthesisation and
+      any low-rank splits with FLOP estimates, and a `chain_eval` that executes a plan. Every
+      result carries the count of multiply-adds actually performed.
+    requirements:
+      - Implement all four multiplication views without calling `np.dot`, `@`, or `np.matmul` on the full pair (matrix-vector products are allowed).
+      - Assert the four agree with `A @ B` within a relative tolerance scaled by the shared dimension.
+      - Implement the matrix-chain dynamic program that returns the minimum-FLOP parenthesisation.
+      - Offer a low-rank split for any factor whose rank is supplied or detected below `min(shape)`.
+      - Report multiply-add counts for every path and the largest intermediate shape.
+      - Provide a `chain_eval` that takes a plan and computes the product, matching a direct `@` chain within tolerance.
+    constraints:
+      - NumPy and the standard library only.
+      - Never compare products with `np.array_equal`; always use a relative tolerance.
+      - Never apply a low-rank split without a rank, detected or supplied, and record which.
+      - Do not reorder chain factors; only re-parenthesise.
+    expectedBehaviour:
+      - The four views produce the same matrix for random rectangular inputs.
+      - The chain planner beats the naive left-to-right order on a chain with a thin middle factor.
+      - A low-rank middle factor triggers a split that lowers the FLOP estimate and keeps outputs within tolerance.
+      - FLOP counts reported match a hand computation on small shapes.
+      - Re-associating never changes a result by more than a few times `k * eps` relative.
+    structure: |
+      matmul_engine/
+        __init__.py
+        views.py
+        chain.py
+        lowrank.py
+        cost.py
+      tests/
+        test_views.py
+        test_chain.py
+        test_lowrank.py
+        test_cost.py
+    milestones:
+      - title: "1 — Four views"
+        detail: dot, columns, rows, and outer-product implementations with an agreement test.
+      - title: "2 — Cost model"
+        detail: multiply-add counting and largest-intermediate tracking for any parenthesisation.
+      - title: "3 — Chain planner"
+        detail: matrix-chain dynamic program returning the optimal split and its FLOP estimate.
+      - title: "4 — Low-rank splits"
+        detail: detect or accept a rank, offer the thin-pair split, and re-estimate.
+    testing:
+      - Agreement of all four views on random `(m, k)` by `(k, n)` inputs across many shapes.
+      - Hand-computed FLOP counts for two- and three-matrix chains.
+      - A chain where re-association gives an order-of-magnitude FLOP reduction.
+      - A low-rank fixture where the split keeps `allclose` at `rtol=1e-6` and cuts FLOPs.
+      - Property test that `chain_eval(plan)` matches the direct `@` chain within tolerance.
+    failureCases:
+      - The row view indexes a column, or vice versa, and only fails on non-square inputs.
+      - Products are compared with exact equality and the test flakes under threading.
+      - A low-rank split is applied with no supplied or detected rank.
+      - The planner reorders factors instead of only re-parenthesising.
+    bonus:
+      - Add a block-multiplication view and show it agrees.
+      - Emit the chosen plan as a parenthesised expression string.
+      - Benchmark the planned order against the naive order and report wall-clock speedup.
+    architectureHints:
+      - Keep the cost model in one module and call it from both the planner and the reports.
+      - Represent a plan as a small tree of split points so `chain_eval` can walk it.
+      - Thread the shared-dimension-scaled tolerance through every comparison.
+    referenceOutline: |
+      `views` implements the four groupings of `sum_p A[i,p] B[p,j]`. `cost.matmul_flops` returns
+      `2*m*k*n` and the intermediate shape. `chain.best_split` runs the O(n^3) dynamic program over
+      cost. `lowrank.split` takes `(factor, rank)` and returns `(U, V)` from a truncated SVD.
+      `chain_eval` walks the plan tree, applying splits and multiplying in the chosen order.
+  - id: lmm-final-attention-matmul-audit
+    kind: final-challenge
+    title: Optimise and verify an attention block's matmuls
+    minutes: 90
+    summary: Given an attention forward pass written as a matrix chain, choose the cheapest correct association, justify each of the four views appearing in it, and prove equivalence with fail-before-fix tests.
+    problem: |
+      You are given `out = softmax(Q @ K.T / sqrt(d)) @ V` implemented as explicit matmuls, with
+      `Q, K, V` of shape `(n, d)` and `n` much larger than `d`. Produce an analysis that: labels
+      which of the four views each matmul in the block is naturally read as; computes the FLOP cost
+      of the given evaluation order and of any better order that preserves the softmax semantics;
+      identifies which re-associations are and are not allowed because of the nonlinearity; and
+      verifies any refactor against the original within a stated tolerance, with a test that fails
+      before the refactor is applied.
+    requirements:
+      - Annotate `Q @ K.T`, the softmax, and `... @ V` with the view that reads each most directly.
+      - Give the multiply-add count of the block as written for general `n` and `d`.
+      - State why `Q @ K.T` and `... @ V` cannot be fused across the softmax, and what can still be reordered.
+      - Propose a cost improvement that is valid (for example association or precompute in the score or output matmul) and estimate its saving.
+      - Verify the refactor with `np.allclose` at a tolerance scaled by `d`, plus a fail-before-fix regression.
+    constraints:
+      - Do not move any matmul across the softmax nonlinearity.
+      - Do not compare outputs with exact equality.
+      - Do not claim a saving without a FLOP count for both versions.
+    expectedBehaviour:
+      - The score matmul is identified as the dot-product view, the value matmul as the column or row view.
+      - The reported FLOP counts match a hand derivation on small `n, d`.
+      - The refactor stays within the stated tolerance on random inputs and across seeds.
+      - The fail-before-fix test captures the original outputs and FLOP count and fails until the refactor lands.
+    milestones:
+      - title: "1 — Annotate the views"
+        detail: Map each matmul in the block to one of the four models with a one-line justification.
+      - title: "2 — Cost the block"
+        detail: FLOP count as written, and for any legal alternative order.
+      - title: "3 — Refactor and verify"
+        detail: Apply the valid improvement, prove equivalence within tolerance, add the failing-first test.
+    testing:
+      - Fail-before-fix regression storing original outputs and FLOP count.
+      - Tolerance check on the refactor across several seeds and shapes.
+      - A test asserting no matmul was fused across the softmax.
+    failureCases:
+      - A re-association silently moves work across the softmax and changes the result.
+      - The saving is claimed from intuition with no FLOP comparison.
+      - Equivalence is asserted with exact equality and flakes.
+    bonus:
+      - Extend the analysis to the causal-mask case and note how the cost changes.
+    architectureHints:
+      - Freeze the reference outputs and FLOP count as fixtures before touching the code.
+      - Keep annotation, costing, and refactoring in separate functions and commits.
+    referenceOutline: |
+      `Q @ K.T` is the dot-product view: a grid of query-key similarities, cost `n*n*d`. The softmax
+      is elementwise along the key axis and blocks fusion. `probs @ V` is the column view: each
+      output row is a convex combination of value rows, cost `n*n*d`. Legal improvements: precompute
+      `K.T` once, scale `Q` by `1/sqrt(d)` before the matmul instead of after, and for very small
+      `d` consider the association in the output matmul. Verify with `allclose` at `rtol ~ d*eps`.
+resources:
+  - name: 3Blue1Brown — Matrix multiplication as composition
+    type: video
+    difficulty: intro
+    url: "https://www.3blue1brown.com/lessons/matrix-multiplication"
+    usefulness: 5
+    why: It builds the product entirely from the composition idea, showing why the columns of the result are `A` applied to the columns of `B` and why order cannot be swapped, which anchors three of the four views.
+    covers: Matrix multiplication as function composition, the column view, non-commutativity, associativity, and the identity and inverse as maps.
+  - name: MIT 18.06 — Multiplication and inverse matrices (OCW)
+    type: university
+    difficulty: core
+    url: "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-3-multiplication-and-inverse-matrices/"
+    usefulness: 5
+    why: Strang explicitly presents five ways to compute a product — entrywise, by columns, by rows, by rank-1 outer products, and by blocks — which is precisely the multi-model framing of this lesson.
+    covers: The four-plus-one views of matrix multiplication, block multiplication, the shape rule, and the transition to matrix inverses and elimination.
+  - name: numpy.matmul reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.matmul.html"
+    usefulness: 4
+    why: It specifies exactly how `@` broadcasts over stacks of matrices, how it differs from `np.dot` and from `*`, and the 1-D promotion rules, which is where batched-matmul bugs come from.
+    covers: The matmul contraction rule, batching and broadcasting of leading dimensions, 1-D vector promotion, and the difference from `np.dot` and elementwise `*`.
+  - name: numpy.einsum reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.einsum.html"
+    usefulness: 4
+    why: einsum makes each of the four views explicit as an index expression — `ij,jk->ik` for the product, `ik,ki->i` for the diagonal — and is the tool for contractions that are awkward to phrase with `@`.
+    covers: Index-notation contractions, summation over repeated indices, the diagonal and trace shortcuts, and the optimize flag for contraction order.
+  - name: "Cormen, Leiserson, Rivest, Stein — Matrix-chain multiplication (CLRS chapter 15)"
+    type: book
+    difficulty: deep
+    url: "https://mitpress.mit.edu/9780262046305/introduction-to-algorithms/"
+    usefulness: 4
+    why: The matrix-chain section is the standard treatment of why association order changes cost and how the optimal parenthesisation is found by dynamic programming, which underlies the FLOP planning in this lesson.
+    covers: The matrix-chain multiplication problem, the cost recurrence, dynamic-programming solution, and reconstructing the optimal parenthesisation.

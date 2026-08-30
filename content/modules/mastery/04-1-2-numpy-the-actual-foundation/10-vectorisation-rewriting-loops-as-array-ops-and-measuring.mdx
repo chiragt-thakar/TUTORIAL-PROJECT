@@ -1,0 +1,270 @@
+---
+id: "roadmap:phase-1-1.2:9"
+title: "Vectorisation: rewriting loops as array ops, and measuring the speedup"
+description: "Vectorise by identifying array-level operations, then prove the rewrite is worthwhile with representative benchmarks that include correctness, temporary memory, dtype, and end-to-end cost."
+module: 1-2-numpy-the-actual-foundation
+order: 10
+estimatedMinutes: 130
+prerequisites: ["roadmap:phase-1-1.2:0", "roadmap:phase-1-1.2:2", "roadmap:phase-1-1.2:5"]
+learningObjectives:
+  - Rewrite element-wise and nested loops as ufunc, broadcasting, reduction, gather, or matrix operations while preserving semantics
+  - Benchmark vectorized alternatives with warm-up, repeated trials, controlled threads, and correctness checks
+  - Identify temporary arrays, memory-bandwidth limits, dtype changes, and cases where chunking or compiled loops beat whole-array vectorization
+  - Report speedup honestly from end-to-end latency, peak memory, and numerical equivalence on representative workloads
+---
+
+Vectorisation moves iteration from Python into array kernels. It removes interpreter dispatch from
+the inner loop, but it does not remove work, memory traffic, allocations, or numerical policy.
+
+A rewrite is successful only if it preserves meaning and improves the measured workload. A compact
+one-liner that allocates three full-size temporaries can lose to a chunked loop under a memory limit.
+
+<TypeScriptComparison>
+
+- Replacing JS `for` loops with `map` changes syntax, not necessarily execution; NumPy ufuncs execute typed native loops.
+- TypedArrays improve storage but do not provide NumPy's broadcasting and reduction engine.
+- In both ecosystems, microbenchmarks lie when warm-up, input construction, and dead work differ.
+- End-to-end latency and peak memory matter more than line count.
+
+</TypeScriptComparison>
+
+## Classify the loop before rewriting it
+
+Elementwise loops map to ufuncs. Accumulating loops map to reductions. Pairwise independent axes map
+to broadcasting or outer operations. Indexed selection maps to gathers. Dot-product loops map to
+`matmul` or `einsum`.
+
+```python
+import numpy as np
+
+def squared_distance_rows(x, center):
+    if x.ndim != 2 or center.shape != (x.shape[1],):
+        raise ValueError("expected x=(N,D), center=(D,)")
+    delta = x - center
+    return np.sum(delta * delta, axis=1)
+```
+
+The semantic derivation is subtract per-feature center from every row, square each element, then
+reduce features. Shapes and dtype must match the loop contract before performance enters the review.
+
+<Concept>
+
+Vectorisation is choosing a larger unit of work for a compiled kernel. Speedup comes from amortized
+dispatch and optimized memory traversal, not from eliminating the underlying operations.
+
+</Concept>
+
+## Broadcasting can trade loops for dangerous intermediates
+
+All-pairs distances between `x:(N,D)` and `y:(M,D)` can use
+`x[:,None,:]-y[None,:,:]`, but that materializes `(N,M,D)`. The algebraic identity
+`||x-y||²=||x||²+||y||²-2x·y` keeps the largest result at `(N,M)`.
+
+```python
+def pairwise_squared(x, y):
+    x2 = np.sum(x * x, axis=1, keepdims=True)
+    y2 = np.sum(y * y, axis=1)[None, :]
+    out = x2 + y2 - 2.0 * (x @ y.T)
+    return np.maximum(out, 0.0)
+```
+
+Clipping tiny negative values handles rounding, not invalid inputs. The formula can have cancellation
+for large nearly equal vectors, so compare accuracy as well as memory and speed.
+
+## Temporaries determine peak memory
+
+`np.abs(x).mean()` may allocate an absolute-value array. Use `out=` where ownership and dtype permit,
+or process chunks when the full temporary violates budget. In-place operations can corrupt aliased
+views, so prove ownership with API contracts rather than assuming it.
+
+```python
+def chunked_abs_mean(x, chunk_size=1_000_000):
+    total = 0.0
+    count = 0
+    for start in range(0, x.size, chunk_size):
+        chunk = np.ravel(x[start:start + chunk_size])
+        total += np.abs(chunk).sum(dtype=np.float64)
+        count += chunk.size
+    if count == 0:
+        raise ValueError("empty input")
+    return total / count
+```
+
+The Python loop runs once per large chunk, not once per element. This hybrid often provides the
+right balance for datasets larger than memory.
+
+<CommonMistake>
+
+Do not benchmark array construction in one version but exclude it from another. Define the system
+boundary first, then time identical inputs and outputs.
+
+</CommonMistake>
+
+## Benchmark distributions, not one stopwatch reading
+
+Warm implementations, control BLAS thread counts, reuse representative inputs, and run repeated
+trials in randomized order. Report median and tail latency, throughput, peak memory, output dtype,
+and error against a trusted reference.
+
+```python
+from time import perf_counter_ns
+
+def measure(fn, *args, repeats=11):
+    fn(*args)
+    samples = []
+    for _ in range(repeats):
+        start = perf_counter_ns()
+        result = fn(*args)
+        samples.append(perf_counter_ns() - start)
+    return result, np.array(samples)
+```
+
+This harness is a starting point, not a complete laboratory. CPU frequency, allocation reuse,
+thread pools, cache state, and noisy neighbors can dominate short measurements.
+
+## Faster code can compute a different answer
+
+Python `sum` may promote types differently from NumPy. Reordered floating reductions change rounding.
+Broadcasting can align the wrong semantic axis. A speed report without output equivalence is invalid.
+
+Use asymmetric shapes and adversarial values. Compare exact integer results where overflow is ruled
+out, tolerance-based floats where order changes, and domain invariants such as nonnegative distances.
+
+## Know when not to vectorise
+
+Data-dependent loops, early exits, recurrence, irregular structures, and state machines may not map
+cleanly to whole-array kernels. Vectorizing them with giant masks can execute work the loop would
+skip. Consider chunking, Numba/Cython, a specialized library routine, or leaving a clear outer loop
+around vectorized inner work.
+
+<ProductionNote>
+
+Record input shape distributions, dtypes, layout, thread settings, hardware, versions, latency
+percentiles, peak memory, and numerical tolerance. “20x faster on my laptop” is not deployable evidence.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="numpy-vectorize-classify-easy" difficulty="easy">
+
+Classify a loop that squares every element and sums each row, then write the array expression.
+
+<Solution>
+
+Squaring is elementwise and row accumulation is a reduction. Use `np.sum(x*x, axis=1)`, with a
+deliberate accumulator dtype when input range or precision requires it.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-vectorize-broadcast-medium" difficulty="medium">
+
+Rewrite row centering and state the shape invariant that prevents accidental column alignment.
+
+<Solution>
+
+Use `x - x.mean(axis=1, keepdims=True)`. The statistic must be `(N,1)` and the result `(N,C)`; assert
+each output row has approximately zero mean, including when `N==C`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-vectorize-memory-hard" difficulty="hard">
+
+Compare broadcast and algebraic all-pairs squared distances under a peak-memory budget.
+
+<Solution>
+
+The broadcast method creates `(N,M,D)`; the norm-plus-matmul form creates `(N,M)` plus vector norms.
+Benchmark latency, peak memory, and error on large nearly equal vectors because the algebraic form
+can suffer cancellation. Choose or chunk from all three constraints.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-vectorize-interview" difficulty="interview">
+
+Explain why vectorized does not automatically mean faster.
+
+<Solution>
+
+Vectorization removes per-element Python dispatch, but may allocate large temporaries, increase
+memory traffic, compute masked-out work, change dtype, or call a poorly matched kernel. I prove the
+rewrite with equivalent outputs and representative latency plus peak-memory measurements.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-vectorize-service-real-world" difficulty="real-world">
+
+Design a benchmark-backed rewrite of a feature-normalization service.
+
+<Solution>
+
+Freeze semantic and numerical contracts, keep the loop as an oracle, and implement vectorized plus
+chunked candidates. Benchmark real shape distributions with controlled threads, including input
+conversion and output ownership. Report percentiles, throughput, peak memory, dtype, and maximum
+error; ship only the candidate meeting every budget.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Which loop families map to ufuncs, reductions, broadcasting, gathers, and matmul?
+2. Why can broadcasting create a memory problem without copying its inputs?
+3. What must be identical across benchmark candidates?
+4. Which evidence belongs beside a speedup number?
+5. When is a chunked or compiled loop preferable?
+
+## Gotchas
+
+<Gotchas>
+<Gotcha question="Why did my one-line rewrite run out of memory?">
+
+It materialized full-size intermediates. Inspect shapes and live temporaries, then fuse or chunk.
+
+</Gotcha>
+<Gotcha question="Why is the first benchmark run much slower?">
+
+Imports, allocation, caches, and thread-pool initialization polluted it. Warm each candidate.
+
+</Gotcha>
+<Gotcha question="Why did the faster reduction differ in low bits?">
+
+Its summation order changed. Use a justified tolerance and measure error against a trusted result.
+
+</Gotcha>
+<Gotcha question="Why did in-place optimization corrupt another array?">
+
+The operand was an aliased view. Establish ownership before mutating.
+
+</Gotcha>
+<Gotcha question="Why did more BLAS threads make latency worse?">
+
+Thread startup, oversubscription, or small matrices outweighed parallel work. Control and measure threads.
+
+</Gotcha>
+<Gotcha question="Why did broadcasting silently use the wrong dimension?">
+
+Equal sizes made an incorrect alignment legal. Keep semantic singleton axes and asymmetric tests.
+
+</Gotcha>
+<Gotcha question="Why did my microbenchmark speedup disappear in production?">
+
+It excluded conversion, allocation, copying, contention, or representative shape distribution.
+
+</Gotcha>
+</Gotchas>
+
+## Summary
+
+Vectorisation replaces per-element Python execution with larger compiled array operations. Derive the
+operation family from the loop, then preserve shape, dtype, order, and edge-case semantics.
+
+Inspect temporaries and memory traffic. Broadcasting can describe work without copying inputs yet
+still produce enormous outputs, and algebraic rewrites can exchange memory for numerical error.
+
+Benchmark the real boundary with correctness checks, repeated timings, controlled threads, and peak
+memory. The other tabs finish the module by turning loop rewrites into an evidence-backed optimization project.

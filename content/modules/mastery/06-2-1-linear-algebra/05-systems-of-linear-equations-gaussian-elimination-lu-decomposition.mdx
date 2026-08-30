@@ -1,0 +1,384 @@
+---
+id: "roadmap:phase-2-2.1:4"
+title: "Systems of linear equations, Gaussian elimination, LU decomposition"
+description: Solve Ax = b by the row and column pictures, run Gaussian elimination as a sequence of left-multiplications, and store the work as an LU factorisation you reuse across many right-hand sides — with partial pivoting for numerical safety.
+module: 2-1-linear-algebra
+order: 5
+estimatedMinutes: 120
+prerequisites: []
+learningObjectives:
+  - Read a system through both the row picture and the column picture and state when it has zero, one, or many solutions
+  - Run Gaussian elimination as elementary row operations and identify pivots, rank, and free variables
+  - Explain why partial pivoting is needed and what the permutation matrix records
+  - Produce and reuse an LU (or PA = LU) factorisation, and know when Cholesky or QR is the better tool
+---
+
+Solving `A x = b` is the most common thing anyone does with a matrix. There are two pictures of what
+a solution is, one algorithm that finds it, and one factorisation that lets you find it again
+cheaply for a new `b`.
+
+Gaussian elimination is that algorithm, and LU is the factorisation that is just elimination with
+its steps written down. Partial pivoting is the small change that makes both survive floating point.
+
+<TypeScriptComparison>
+
+- Elimination in TypeScript is a double loop over `number[][]` mutating rows in place; there is no vectorised row update, so it is slow but instructive to write once.
+- `np.linalg.solve(A, b)` does the whole thing — factor, pivot, back-substitute — in one call; the manual version is for understanding, not production.
+- JavaScript has no `Float64Array` 2-D type, so a matrix is an array of arrays with no contiguity guarantee, which is exactly why BLAS-backed NumPy is orders of magnitude faster.
+- The classic bug in a hand-written solver is forgetting to apply the same row swap to `b` that you applied to `A`; the permutation vector exists to prevent that.
+
+</TypeScriptComparison>
+
+## Two pictures of a solution
+
+The row picture reads each equation as a hyperplane in `R^n`. A solution is a point on all of them
+at once. Two lines in a plane usually meet at one point; parallel lines never meet; identical lines
+meet everywhere. The same three cases scale to `n` dimensions.
+
+The column picture reads `A x = b` as `x1 * (column 1) + ... + xn * (column n) = b`. A solution is a
+recipe of coefficients that builds `b` from the columns of `A`. This picture makes existence
+obvious: a solution exists exactly when `b` lies in the column space of `A`.
+
+```python
+import numpy as np
+
+A = np.array([[2.0, 1.0],
+              [1.0, 3.0]])
+b = np.array([3.0, 5.0])
+x = np.linalg.solve(A, b)
+assert np.allclose(x, [0.8, 1.4])
+assert np.allclose(x[0] * A[:, 0] + x[1] * A[:, 1], b)   # the column picture
+```
+
+## Zero, one, or many
+
+A system is consistent when `b` is in the column space, inconsistent otherwise. When consistent, the
+solution is unique if the columns are independent — full column rank — and otherwise there is a
+whole affine family, one free parameter per missing pivot.
+
+Rank settles all of it. Compare `rank(A)` with `rank([A | b])` and with the number of unknowns. Equal
+ranks mean consistent; rank equal to the unknown count means unique; a shortfall is the dimension of
+the solution set.
+
+```python
+A = np.array([[1.0, 2.0],
+              [2.0, 4.0]])         # rank 1
+b_good = np.array([1.0, 2.0])      # in the column space
+b_bad = np.array([1.0, 0.0])      # not in it
+assert np.linalg.matrix_rank(np.column_stack([A, b_good])) == 1   # consistent, many solutions
+assert np.linalg.matrix_rank(np.column_stack([A, b_bad])) == 2    # inconsistent
+```
+
+## Gaussian elimination is a product of elementary steps
+
+Forward elimination clears the entries below each pivot by subtracting a multiple of the pivot row.
+Each such step is left-multiplication by an elementary matrix. After elimination `A` is upper
+triangular, and back-substitution solves that triangular system from the bottom up.
+
+The pivots are the leading nonzero entries you eliminate with. Their count is the rank. Columns with
+no pivot correspond to free variables, and each free variable is one dimension of the solution set.
+
+```python
+def forward_eliminate(A, b):
+    A, b = A.astype(float).copy(), b.astype(float).copy()
+    n = len(b)
+    for k in range(n):
+        for i in range(k + 1, n):
+            factor = A[i, k] / A[k, k]        # assumes a nonzero pivot — see pivoting
+            A[i, k:] -= factor * A[k, k:]
+            b[i] -= factor * b[k]
+    return A, b
+
+U, c = forward_eliminate(np.array([[2.0, 1.0], [1.0, 3.0]]), np.array([3.0, 5.0]))
+assert np.allclose(np.triu(U), U)            # U is upper triangular
+```
+
+<Concept>
+
+Every row operation is a matrix. Eliminating below the pivots multiplies `A` on the left by a
+sequence of lower-triangular elementary matrices; their combined inverse is the `L` of `A = L U`.
+That is the whole content of LU: elimination, remembered.
+
+</Concept>
+
+## Partial pivoting keeps it stable
+
+If a pivot is zero, the naive step divides by zero. If a pivot is merely tiny, the multipliers are
+huge and rounding error is amplified. Partial pivoting fixes both: before eliminating in column `k`,
+swap in the row whose entry in that column has the largest absolute value.
+
+The swaps are recorded in a permutation matrix `P`, giving `P A = L U`. Solving then means applying
+`P` to `b`, a forward solve with `L`, and a back solve with `U`. Every serious dense solver does
+this by default.
+
+```python
+import scipy.linalg as sla
+
+A = np.array([[1e-16, 1.0],
+              [1.0,    1.0]])
+b = np.array([1.0, 2.0])
+lu, piv = sla.lu_factor(A)                   # partial pivoting inside
+x = sla.lu_solve((lu, piv), b)
+assert np.allclose(A @ x, b, atol=1e-10)     # stable despite the tiny (1,1) entry
+```
+
+<CommonMistake>
+
+Writing your own elimination without pivoting and testing it only on nice integer matrices. It will
+pass those and then produce nonsense on a realistic matrix with a small leading entry. If you must
+hand-roll it, pivot.
+
+</CommonMistake>
+
+## LU pays off across many right-hand sides
+
+Factoring `A` into `P, L, U` costs about `n^3 / 3` operations. Each subsequent solve for a new `b`
+is two triangular solves at `n^2` each. So solving `A x = b_i` for a hundred different `b_i` is one
+factorisation plus a hundred cheap solves, not a hundred full eliminations.
+
+The determinant falls out for free: it is the product of the diagonal of `U` times the sign of the
+permutation. And `slogdet` uses exactly this route.
+
+```python
+lu, piv = sla.lu_factor(np.array([[2.0, 1.0], [1.0, 3.0]]))
+B = np.random.default_rng(0).standard_normal((2, 50))       # 50 right-hand sides
+X = sla.lu_solve((lu, piv), B)
+assert X.shape == (2, 50)
+```
+
+<WhyItMatters>
+
+Newton's method solves `H p = -g` at every step with the same-shaped Hessian; Gaussian processes
+solve against one kernel matrix for many targets; implicit layers solve a system in the forward
+pass. Reusing a factorisation instead of re-solving is a routine and large speed-up in all of them.
+
+</WhyItMatters>
+
+## When LU is not the right tool
+
+If `A` is symmetric positive definite, Cholesky (`A = L L.T`) is twice as fast, needs no pivoting,
+and doubles as the tool for log-determinants and sampling. If the system is overdetermined —
+least squares — form the problem with QR or the SVD, not the normal equations, which square the
+condition number.
+
+If `A` is large and sparse, a dense LU destroys the sparsity through fill-in; use a sparse solver or
+an iterative method like conjugate gradients. LU is the default for dense, square, general systems,
+not for every system.
+
+## Doing this in floating point
+
+The quantity that governs accuracy is the condition number of `A`. A residual `norm(A @ x - b)` can
+be tiny while the error `norm(x - x_true)` is large, because the error is the residual amplified by
+roughly the condition number.
+
+One cheap safeguard is iterative refinement: compute the residual in higher precision, solve
+`A d = r` with the existing factorisation, and update `x += d`. One or two rounds recover digits
+lost to a moderately ill-conditioned `A`.
+
+```python
+A = np.array([[1.0, 1.0], [1.0, 1.0 + 1e-10]])
+b = np.array([2.0, 2.0 + 1e-10])
+lu, piv = sla.lu_factor(A)
+x = sla.lu_solve((lu, piv), b)
+r = b - A @ x
+x = x + sla.lu_solve((lu, piv), r)          # one refinement step
+assert np.allclose(A @ x, b, atol=1e-12)
+```
+
+<ProductionNote>
+
+For a repeated solve, factor once and keep `(lu, piv)` (or the Cholesky factor) alongside the
+matrix. Log the condition number when you factor; a jump means the problem became ill-posed, and the
+solution should be treated with suspicion regardless of how small the residual looks.
+
+</ProductionNote>
+
+## Cost
+
+Factorisation is `O(n^3 / 3)` for LU and `O(n^3 / 6)` for Cholesky. A triangular solve is `O(n^2)`.
+Forming `A_inv` explicitly is `O(n^3)` and then every "solve" is an `O(n^2)` dense matmul that is
+less accurate than a triangular solve — strictly worse on both axes.
+
+For `k` right-hand sides known up front, solve them as a block: `lu_solve` on an `(n, k)` array uses
+BLAS level-3 and is far faster than a Python loop over columns. Batching is the same lesson here as
+everywhere else in linear algebra.
+
+## Exercises
+
+<Exercise id="la-lu-solution-count" difficulty="easy">
+
+For each system decide whether it has no solution, one solution, or infinitely many:
+(a) `x + y = 2, 2x + 2y = 5`; (b) `x + y = 2, x - y = 0`; (c) `x + y = 2, 2x + 2y = 4`.
+
+<Solution>
+
+(a) The second equation is `2*(x + y) = 5`, i.e. `x + y = 2.5`, which contradicts `x + y = 2`. The
+lines are parallel and distinct: no solution. Rank of `A` is 1, rank of `[A | b]` is 2.
+
+(b) Adding the equations gives `2x = 2`, so `x = 1`, then `y = 1`. The lines cross once: one
+solution. `A` has full rank 2.
+
+(c) The second equation is `2*(x + y) = 4`, identical to the first. One line, infinitely many
+solutions: `y` free, `x = 2 - y`. Rank of `A` and of `[A | b]` are both 1, below the two unknowns.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-lu-eliminate-by-hand" difficulty="medium">
+
+Run Gaussian elimination on `A = [[1, 2, 1], [2, 3, 1], [3, 5, 3]]` with `b = (4, 5, 11)`. Give
+`U`, the multipliers, and the solution.
+
+<Solution>
+
+Pivot on `A[0,0] = 1`. Row 2 minus `2 *` row 1: `(0, -1, -1)`, and `b[1] = 5 - 8 = -3`. Row 3 minus
+`3 *` row 1: `(0, -1, 0)`, and `b[2] = 11 - 12 = -1`. Multipliers so far: `2` and `3`.
+
+Pivot on the new `A[1,1] = -1`. Row 3 minus `1 *` row 2: `(0, 0, 1)`, and `b[2] = -1 - (-3) = 2`.
+Multiplier `1`.
+
+So `U = [[1, 2, 1], [0, -1, -1], [0, 0, 1]]` and the reduced right-hand side is `(4, -3, 2)`. Back
+substitution: `z = 2`; `-y - z = -3` gives `y = 1`; `x + 2y + z = 4` gives `x = 0`. Solution
+`(0, 1, 2)`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-lu-why-pivot" difficulty="hard">
+
+Solve `[[1e-16, 1], [1, 1]] x = [1, 2]` first without pivoting and then with a row swap, in
+simulated 3-significant-digit arithmetic, and explain the difference.
+
+<Solution>
+
+Without pivoting: the multiplier is `1 / 1e-16 = 1e16`. Row 2 becomes
+`(0, 1 - 1e16)` and `b[1]` becomes `2 - 1e16`. Rounded to 3 significant digits, `1 - 1e16` and
+`2 - 1e16` both round to `-1e16`, so back substitution gives `y = 1` and then
+`x = (1 - y) / 1e-16 = 0`. The true answer is `x approx 1`, so `x` is completely wrong.
+
+With a row swap first, the system is `[[1, 1], [1e-16, 1]] x = [2, 1]`. The multiplier is
+`1e-16`, row 2 becomes `(0, 1 - 1e-16) approx (0, 1)` with `b approx 1`, so `y = 1` and
+`x = 2 - y = 1`. Correct.
+
+The tiny pivot forced a huge multiplier that swamped the real information in `b` when rounded.
+Pivoting keeps every multiplier at most 1 in magnitude, so nothing is swamped.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-lu-interview-reuse" difficulty="interview">
+
+In an interview: "You need to solve `A x = b` for 10000 different `b` vectors with the same
+`500 x 500` `A`. How do you structure it?"
+
+<Solution>
+
+Factor `A` once: `lu, piv = scipy.linalg.lu_factor(A)`, which is about `500^3 / 3` operations. Then
+each solve is `scipy.linalg.lu_solve((lu, piv), b)` at about `500^2` operations, so 10000 solves
+cost roughly `10000 * 500^2`, dominated by cheap triangular solves rather than repeated
+elimination.
+
+If the right-hand sides are available together, stack them into a `(500, 10000)` array and call
+`lu_solve` once; it uses level-3 BLAS and is much faster than a Python loop.
+
+If `A` is symmetric positive definite, use `cho_factor` / `cho_solve` for roughly half the
+factorisation cost and better stability. I would also log the condition number at factor time, since
+one bad `A` would quietly corrupt all 10000 answers.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-lu-realworld-gp" difficulty="real-world">
+
+A Gaussian process implementation calls `np.linalg.inv(K)` on its `n x n` kernel matrix and then
+does `K_inv @ y` for the mean and `K_inv` again for the variance. Profiling shows the inverse
+dominates and results are noisy for large `n`. Redesign it.
+
+<Solution>
+
+`K` is symmetric positive definite (a valid kernel plus jitter), so replace the inverse with a
+Cholesky factorisation: `L = np.linalg.cholesky(K + jitter * I)`, done once at `n^3 / 6`.
+
+The predictive mean is `k_star.T @ alpha` where `alpha = cho_solve((L, True), y)`, one triangular
+pair of solves, no inverse. The predictive variance needs `v = solve_triangular(L, k_star)` and then
+`k_star_star - v.T @ v`, again no inverse. The log marginal likelihood uses
+`-0.5 * y.T @ alpha - np.sum(np.log(np.diag(L))) - const`, reusing the same factor.
+
+This removes the explicit inverse entirely, halves the factorisation cost versus LU, and is
+numerically stable because Cholesky needs no pivoting for an SPD matrix. Add jitter on the diagonal
+if the Cholesky fails, and log `2 * sum(log(diag(L)))` as the log-determinant.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. State the row picture and the column picture of `A x = b`, and which one makes existence of a
+   solution obvious.
+2. Given `rank(A)`, `rank([A | b])`, and the number of unknowns, how do you read off no / one / many
+   solutions?
+3. What does each forward-elimination step correspond to as a matrix operation, and what is `L`?
+4. Why is partial pivoting necessary, and what does `P` in `P A = L U` record?
+5. Why does an LU factorisation make solving 100 right-hand sides against one `A` cheap?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="My hand-written solver works on all my test matrices.">
+
+Check whether any of them have a small entry in a pivot position. Elimination without pivoting is
+accurate on well-scaled integer matrices and silently wrong on realistic ones. Add partial pivoting
+or use `scipy.linalg.lu_factor`.
+
+</Gotcha>
+
+<Gotcha question="The residual `norm(A @ x - b)` is tiny, so `x` must be accurate.">
+
+Not necessarily. The error in `x` is roughly the residual times the condition number of `A`. A
+small residual with a condition number of `1e10` still allows a large error. Check the condition
+number, and consider one step of iterative refinement.
+
+</Gotcha>
+
+<Gotcha question="I computed `A_inv` so I can solve quickly for many `b`.">
+
+Forming `A_inv` is `O(n^3)` and each subsequent `A_inv @ b` is an `O(n^2)` matmul that is less
+accurate than a triangular solve. Keep the `(lu, piv)` factor instead — same reusability, cheaper,
+more stable.
+
+</Gotcha>
+
+<Gotcha question="LU worked, so my matrix must be fine.">
+
+`lu_factor` will happily factor a singular or near-singular matrix and return huge or `inf` entries
+in `U`. Inspect the smallest diagonal magnitude of `U`, or the condition number, before trusting the
+solve.
+
+</Gotcha>
+
+<Gotcha question="Should I always use LU for `A x = b`?">
+
+Use Cholesky if `A` is symmetric positive definite (faster, no pivoting), QR or SVD if the system is
+least squares, and a sparse or iterative solver if `A` is large and sparse. LU is the default only
+for dense, square, general `A`.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+A linear system has a row picture — a point on many hyperplanes — and a column picture — a
+combination of columns equal to `b`. The column picture makes existence a question of whether `b` is
+in the column space, and rank comparisons settle no / one / many.
+
+Gaussian elimination clears below each pivot; every step is a left-multiplication, and remembering
+the multipliers gives `A = L U`. Partial pivoting swaps the largest available entry into the pivot
+so multipliers stay bounded, recorded as `P A = L U`. The factorisation is reused across right-hand
+sides for `O(n^2)` per solve, and yields the determinant for free.
+
+In floating point, accuracy is governed by the condition number, not the residual, and iterative
+refinement recovers lost digits. Choose Cholesky, QR, or a sparse solver when the matrix's structure
+calls for it. The Practice, Debug, Interview, Test, Project, and Review tabs build the solver and
+its safeguards.

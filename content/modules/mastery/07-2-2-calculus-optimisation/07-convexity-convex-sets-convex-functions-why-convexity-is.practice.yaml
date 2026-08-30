@@ -1,0 +1,824 @@
+lessonId: "roadmap:phase-2-2.2:6"
+module: 2-2-calculus-optimisation
+lesson: 07-convexity-convex-sets-convex-functions-why-convexity-is
+title: "Convexity, convex sets, convex functions, why convexity is nice and why DL isn't convex"
+summary: Convex sets contain every chord; convex functions lie below every chord, above every tangent, and have a PSD Hessian. Convexity makes local optima global and optimisation tractable — structure deep networks give up by composing linear and nonlinear layers.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lcvx-read-chord-check
+    tier: normal
+    kind: code-reading
+    title: Read a numerical convexity check
+    minutes: 10
+    requiredForMastery: true
+    concepts: [chord-definition, convexity, spot-check]
+    prompt: |
+      Read this and say what it verifies and why it can only disprove, not prove, convexity.
+      ```python
+      def maybe_convex(f, xs, n=200, rng=None):
+          rng = rng or np.random.default_rng(0)
+          for _ in range(n):
+              x, y = rng.choice(len(xs), 2)
+              t = rng.random()
+              a, b = xs[x], xs[y]
+              if f(t*a + (1-t)*b) > t*f(a) + (1-t)*f(b) + 1e-9:
+                  return False
+          return True
+      ```
+    hints:
+      - It samples the chord inequality at random pairs and interpolation weights.
+      - Convexity must hold for *every* pair and weight.
+    solution: |
+      It samples the chord inequality `f(t a + (1-t) b) <= t f(a) + (1-t) f(b)` at `n` random pairs
+      from `xs` and random `t in [0, 1]`. A single violation returns `False` and correctly proves
+      non-convexity. Passing all samples returns `True` but only means "no violation found" — the
+      inequality must hold for *all* points and weights, a global and continuous condition that no
+      finite sample can certify. A real proof comes from the construction (disciplined convex
+      programming rules) or a closed-form Hessian-PSD argument.
+  - id: lcvx-write-projection
+    tier: normal
+    kind: write-code
+    title: Projection onto a convex set
+    minutes: 12
+    requiredForMastery: true
+    concepts: [projection, convex-set, projected-gradient-descent]
+    prompt: |
+      Write `project_box(x, lo, hi)` and `project_l2_ball(x, r)`, the Euclidean projections onto a
+      box and an L2 ball, and state the projected-gradient-descent step.
+    hints:
+      - Box projection is an elementwise clamp.
+      - L2-ball projection rescales only when the norm exceeds `r`.
+    solution: |
+      `project_box(x, lo, hi) = np.clip(x, lo, hi)`. `project_l2_ball(x, r)`:
+      `n = np.linalg.norm(x); return x if n <= r else x * (r / n)`. Both sets are convex, so the
+      projection is unique and is the nearest point in the set. Projected gradient descent is
+      `x <- project(x - eta * grad_f(x))`: take an unconstrained step, then snap back to the
+      feasible set. It converges like the unconstrained method (up to the projection) whenever the
+      set is convex, because the projection onto a convex set is a non-expansive map.
+  - id: lcvx-predict-preserving-ops
+    tier: normal
+    kind: predict-output
+    title: Which operations keep convexity
+    minutes: 10
+    requiredForMastery: true
+    concepts: [convexity-preserving, max, composition, affine-precomposition]
+    prompt: |
+      Given convex `f, g` on `R^n`, state whether each is guaranteed convex: `2f + 3g`;
+      `max(f, g)`; `min(f, g)`; `f(A x + b)`; `f(x) * g(x)`.
+    hints:
+      - Non-negative sums and pointwise max preserve convexity.
+      - Products and pointwise min generally do not.
+    solution: |
+      `2f + 3g`: convex (non-negative weighted sum). `max(f, g)`: convex (pointwise max of convex
+      functions). `min(f, g)`: **not** guaranteed convex — the pointwise min of convex functions
+      generally is not (e.g. `min(x^2, (x-2)^2)`). `f(A x + b)`: convex (affine precomposition
+      preserves convexity). `f(x) * g(x)`: **not** guaranteed convex — even `x^2 * x^2 = x^4` is
+      convex but `x * x` treated as a product of two convex linear-ish pieces is not the general
+      rule; products of convex functions need extra conditions (e.g. both non-negative,
+      non-decreasing, and one-dimensional).
+  - id: lcvx-explain-local-global
+    tier: normal
+    kind: explain
+    title: Why a convex stationary point is global
+    minutes: 10
+    requiredForMastery: true
+    concepts: [first-order-condition, global-minimum, convexity]
+    prompt: |
+      Use the first-order characterisation of convexity to show that `grad f(x*) = 0` implies `x*`
+      is a global minimum.
+    hints:
+      - The first-order condition says every tangent underestimates `f`.
+      - Substitute `grad f(x*) = 0`.
+    solution: |
+      For a differentiable convex `f`, the first-order condition is `f(y) >= f(x) + grad f(x) .
+      (y - x)` for all `x, y` — the tangent plane at `x` lies below the graph. Put `x = x*` where
+      `grad f(x*) = 0`: `f(y) >= f(x*) + 0 . (y - x*) = f(x*)` for every `y`. So `x*` attains the
+      smallest value anywhere — a global minimum. The same argument shows the minimiser set
+      `{y : f(y) = f(x*)}` is convex, and that a convex function has no saddles: a stationary point
+      is always a global minimum, never a point that is up in some directions and down in others.
+  - id: lcvx-strong-convexity
+    tier: intermediate
+    kind: predict-output
+    title: Strong convexity and the condition number
+    minutes: 12
+    requiredForMastery: true
+    concepts: [strong-convexity, l-smoothness, condition-number]
+    prompt: |
+      A quadratic loss has Hessian eigenvalues in `[mu, L] = [2, 50]`. Is it strongly convex? Give
+      its condition number and the gradient-descent convergence rate with `eta = 1/L`.
+    hints:
+      - "`mu`-strong convexity means the Hessian is at least `mu I`."
+      - GD on a `mu`-strongly-convex `L`-smooth quadratic contracts the error by `1 - mu/L` per step at `eta = 1/L`.
+    solution: |
+      The Hessian is `>= 2 I` everywhere, so the loss is `2`-strongly convex (and `50`-smooth). The
+      condition number is `L / mu = 50 / 2 = 25`. With `eta = 1/L = 0.02`, gradient descent
+      contracts the squared error by a factor `(1 - mu/L) = 1 - 1/25 = 0.96` per step (in the worst
+      direction), so reaching a fixed relative accuracy takes on the order of `kappa = 25`
+      iterations up to a log factor. Strong convexity is what turns a "the loss decreases" guarantee
+      into a "linear convergence to the unique minimum" guarantee.
+  - id: lcvx-ml-convex-losses
+    tier: intermediate
+    kind: explain
+    title: Which ML losses are convex in the parameters
+    minutes: 12
+    requiredForMastery: true
+    concepts: [convex-loss, linear-model, affine-precomposition]
+    prompt: |
+      Explain why least squares, logistic regression, and the linear SVM are convex in their
+      weights, and why adding one ReLU layer breaks this.
+    hints:
+      - Each is a convex loss composed with an affine score `X w`.
+      - Affine precomposition preserves convexity; a nonlinearity does not.
+    solution: |
+      Least squares uses `0.5 (X w - y)^2` per example — a convex quadratic in the affine score
+      `X w`, so convex in `w`. Logistic regression uses `log(1 + exp(-y (x . w)))`, convex in the
+      score (second derivative `sigma(1 - sigma) > 0`) and hence in `w` by affine precomposition.
+      The linear SVM uses `max(0, 1 - y (x . w))`, a max of two affine functions — convex in `w`.
+      Non-negative sums over examples and adding `L1` or `L2` penalties keep convexity. A ReLU layer
+      replaces the affine score `X w` with `W2 ReLU(W1 x)`, which is non-affine (bilinear plus a
+      nonlinearity) in the parameters, and a convex function composed with a non-affine map is
+      generally non-convex — so the training loss is no longer convex in the weights.
+  - id: lcvx-jensen
+    tier: intermediate
+    kind: write-code
+    title: Jensen's inequality
+    minutes: 12
+    requiredForMastery: true
+    concepts: [jensen-inequality, convexity, expectation]
+    prompt: |
+      State Jensen's inequality for a convex `f` and a random variable `X`, and give one ML use
+      where it provides a bound.
+    hints:
+      - "`f(E[X]) <= E[f(X)]` for convex `f`."
+      - The ELBO and bounds on `E[loss]` use it.
+    solution: |
+      For a convex `f` and any random `X` with finite mean, `f(E[X]) <= E[f(X)]` (reversed for
+      concave `f`). Uses: the evidence lower bound (ELBO) in variational inference applies Jensen to
+      the concave `log` — `log E_q[p(x, z) / q(z)] >= E_q[log(p(x, z) / q(z))]` — turning an
+      intractable marginal likelihood into a maximisable lower bound. It also bounds the expected
+      exponential loss below by the exponential of the expected margin, underlies the AM-GM
+      inequality (concavity of `log`), and gives `E[||X||^2] >= ||E[X]||^2` (convexity of the
+      squared norm), which is the bias-variance style decomposition. A quick check: for `f(x) =
+      x^2` and `X` uniform on `{-1, 1}`, `f(E[X]) = 0 <= 1 = E[f(X)]`.
+  - id: lcvx-disconnected-minima
+    tier: intermediate
+    kind: predict-output
+    title: Disconnected minima contradict convexity
+    minutes: 12
+    requiredForMastery: true
+    concepts: [minimiser-set, permutation-symmetry, convexity]
+    prompt: |
+      A function has exactly two isolated global minimisers `a` and `b` with `a != b`. Prove it
+      cannot be convex.
+    hints:
+      - The minimiser set of a convex function is convex.
+      - Consider the midpoint of `a` and `b`.
+    solution: |
+      If `f` is convex and `f(a) = f(b) = f*` (the minimum), then for the midpoint `m = 0.5(a + b)`,
+      convexity gives `f(m) <= 0.5 f(a) + 0.5 f(b) = f*`. Since `f*` is the minimum, `f(m) = f*`, so
+      `m` is also a global minimiser. The same argument applies to every point on the segment
+      `[a, b]`, so the whole segment consists of minimisers — the minimiser set is convex and
+      connected. That contradicts "exactly two isolated minimisers". Hence `f` is not convex. This
+      is why a network with permutation symmetry (two or more isolated equal-loss parameter vectors)
+      cannot have a convex loss.
+  - id: lcvx-perspective-and-sublevel
+    tier: intermediate
+    kind: predict-output
+    title: Sublevel sets and the epigraph
+    minutes: 12
+    requiredForMastery: true
+    concepts: [sublevel-set, epigraph, convexity]
+    prompt: |
+      For a convex `f`, is every sublevel set `{x : f(x) <= c}` convex? Is the set `{x : f(x) = c}`
+      convex? What about `{x : f(x) >= c}`? And what characterises convexity via the epigraph?
+    hints:
+      - Apply the chord inequality to two points with `f <= c`.
+      - "The epigraph is the set of points on or above the graph of `f`."
+    solution: |
+      Every sublevel set `{f <= c}` is convex: if `f(a) <= c` and `f(b) <= c`, the chord inequality
+      gives `f(t a + (1-t) b) <= t f(a) + (1-t) f(b) <= c`. The level set `{f = c}` is generally
+      **not** convex (e.g. a circle for `f = ||x||`), and the superlevel set `{f >= c}` is generally
+      not convex either (it is convex for *concave* `f`). Convexity of `f` is exactly equivalent to
+      convexity of its epigraph `{(x, t) : f(x) <= t}` — this is the definition many texts take as
+      primary, and it is why the pointwise max of convex functions is convex (the epigraph of the
+      max is the intersection of the epigraphs).
+  - id: lcvx-debug-min-of-convex
+    tier: tricky
+    kind: debug
+    title: Assuming min of convex is convex
+    minutes: 14
+    requiredForMastery: true
+    concepts: [pointwise-min, convexity-preserving, mixture]
+    prompt: |
+      This "ensemble loss" takes the minimum of two convex per-model losses and assumes the result
+      is convex, so it optimises it with a method that needs convexity. Explain the flaw and a fix.
+    code: |
+      def ensemble_loss(w, loss_a, loss_b):
+          return min(loss_a(w), loss_b(w))   # "best of two convex losses, so convex"
+    solution: |
+      The pointwise minimum of convex functions is generally *not* convex — it can have a
+      non-convex bump between the two basins (e.g. `min(x^2, (x - 4)^2)` dips at `0` and `4` and
+      humps in the middle). So a solver relying on convexity (assuming any stationary point is
+      global, or using a convex duality certificate) can return a non-global point or a wrong
+      optimality gap. Fixes: (1) if you actually want "assign each input to its better model",
+      that is a non-convex clustering / mixture problem — use EM or a discrete assignment, not a
+      convex solver; (2) if you want a *convex* surrogate, use a `max` or a `logsumexp` (a smooth,
+      convex upper bound on the min's negative, or a soft-OR), or the average `0.5(loss_a + loss_b)`
+      which is convex. Regression: build two convex quadratics with separated minima and assert
+      `ensemble_loss` violates the chord inequality at their midpoint.
+    hints:
+      - Pointwise max preserves convexity; pointwise min does not.
+      - Use an average, a max, or a logsumexp for a convex surrogate.
+  - id: lcvx-debug-convex-in-wrong-variable
+    tier: tricky
+    kind: debug
+    title: Convex in predictions, not in weights
+    minutes: 14
+    requiredForMastery: true
+    concepts: [convex-loss, parameterisation, deep-network]
+    prompt: |
+      A training script asserts the loss is convex "because cross-entropy is convex" and then uses a
+      convergence guarantee that needs convexity in the parameters. The guarantee does not hold.
+      Explain and correct the reasoning.
+    code: |
+      # cross_entropy(softmax(net(x, theta)), y) -- "convex, so GD finds the global optimum"
+    solution: |
+      Cross-entropy is convex in the *predicted probabilities* (and the softmax-plus-cross-entropy
+      composite is convex in the *logits*). But `net(x, theta)` maps parameters to logits through a
+      non-affine function (linear layers interleaved with nonlinearities), and a convex function
+      composed with a non-affine map is generally non-convex. So the loss is non-convex in `theta`,
+      it has saddles and disconnected symmetric minima, and no convex convergence guarantee applies.
+      Correct reasoning: the loss is convex in `theta` only for a *linear* model (logistic
+      regression, `theta` = the single weight matrix). For a deep net, use non-convex analysis
+      (stationary-point guarantees, PL conditions in special regimes, empirical validation), and
+      keep the convex fact for the last-layer / linear-probe subproblem. Regression: construct a
+      2-hidden-unit net and exhibit a `theta`-segment where the loss exceeds its chord.
+    hints:
+      - "Convex in what variable? Cross-entropy is convex in probabilities/logits, not weights."
+      - The parameter-to-logit map is non-affine for a deep net.
+  - id: lcvx-debug-broken-projection
+    tier: tricky
+    kind: debug
+    title: A projection that is not the nearest point
+    minutes: 14
+    requiredForMastery: true
+    concepts: [projection, convex-set, projected-gradient-descent]
+    prompt: |
+      This "projection onto the probability simplex" just clips negatives to zero and renormalises.
+      It is not the Euclidean projection and slows the outer optimiser. Explain and give the correct
+      projection.
+    code: |
+      def project_simplex_wrong(v):
+          v = np.maximum(v, 0.0)
+          return v / (v.sum() + 1e-12)
+    solution: |
+      The probability simplex `{p : p >= 0, sum p = 1}` is convex, and projected gradient descent
+      needs the *Euclidean* projection — the nearest point in the simplex — for its non-expansiveness
+      guarantee. Clip-and-renormalise is a different map: it is not nearest-point (it can move a
+      point much further than necessary and distorts the direction), so the outer method loses its
+      convergence properties and can stall or oscillate. The correct projection sorts `v`
+      descending, finds the largest `k` such that `u_k + (1 - cumsum(u)_k) / k > 0` (with `u` the
+      sorted `v`), sets the threshold `tau = (cumsum(u)_k - 1) / k`, and returns
+      `np.maximum(v - tau, 0)`. This is an `O(n log n)` algorithm and gives the true Euclidean
+      projection. Regression: pick a `v` where clip-and-renormalise and the true projection differ,
+      and assert the true one is closer in L2 and preserves the descent direction better.
+    hints:
+      - Projected GD needs the *nearest* point in the set, not just any point in it.
+      - The simplex projection is a sort plus a threshold (Michelot / Duchi algorithm).
+  - id: lcvx-design-dcp-checker
+    tier: challenge
+    kind: design
+    title: Design a disciplined-convexity checker
+    minutes: 26
+    requiredForMastery: false
+    concepts: [disciplined-convex-programming, convexity-preserving, expression-tree]
+    prompt: |
+      Design `is_dcp_convex(expr)` that certifies an expression is convex by construction from a
+      grammar of atoms and rules, rather than by sampling. State the atoms, the composition rules,
+      and what it must refuse to certify.
+    hints:
+      - Track a curvature tag (affine / convex / concave / unknown) and a monotonicity tag for each node.
+      - Composition `h(g)` is convex when `h` is convex and its monotonicity matches `g`'s curvature.
+    solution: |
+      Represent the expression as a tree of atoms with known curvature and monotonicity: affine
+      (`A x + b`), convex atoms (`norm`, `square`, `max`, `logsumexp`, `neg_log` on positives,
+      `quad_over_lin`), concave atoms (`log`, `sqrt`, `min`, `geo_mean`). Bottom-up, assign each
+      node a curvature from rules: non-negative weighted sum of convex is convex; `max` of convex is
+      convex; `min` of concave is concave; affine is both; `h(g_1, ..., g_k)` is convex if `h` is
+      convex and, for each argument, `h` is non-decreasing in that slot and `g_i` is convex, or `h`
+      is non-increasing and `g_i` is concave (and `g_i` affine always works). Return "convex" only
+      if the root is convex or affine; otherwise "unknown" (not "non-convex" — DCP is a sufficient,
+      not necessary, condition). It must refuse to certify products of non-affine terms, `min` of
+      convex, `h(g)` with a curvature/monotonicity mismatch, and anything with an "unknown" subtree,
+      and it must never fall back to sampling. Golden cases: a LASSO objective (certified), a
+      logistic loss (certified), `min(f, g)` of convex (refused), and `x * y` (refused).
+  - id: lcvx-refactor-constrained-training
+    tier: challenge
+    kind: refactor
+    title: Refactor a penalty into a projection
+    minutes: 24
+    requiredForMastery: false
+    concepts: [projected-gradient-descent, constraint, convex-set]
+    prompt: |
+      A model enforces "each embedding row has L2 norm exactly 1" with a soft penalty
+      `+ lambda * sum((norm(row) - 1)^2)`, which needs tuning and never quite satisfies the
+      constraint. Refactor to a hard projection, keeping the rest of training unchanged.
+    hints:
+      - The set "unit-norm rows" is a product of spheres — project each row by normalising.
+      - Project after each optimiser step; keep the raw gradient step intact.
+    solution: |
+      Drop the penalty term. After each optimiser step on the embedding matrix `E`, project each row
+      onto the unit sphere: `E = E / np.linalg.norm(E, axis=1, keepdims=True)` (guarding a zero
+      row). Each unit sphere is not convex, but the projection (normalisation) is still the unique
+      nearest point for a nonzero row, and projected / Riemannian gradient descent on the product of
+      spheres is a standard, well-behaved method — no `lambda` to tune, and the constraint holds
+      exactly after every step. If a *ball* (`norm <= 1`) is acceptable instead of a sphere, that set
+      *is* convex and the projection rescales only when the norm exceeds 1. Add a fail-before-fix
+      test: with the old penalty, assert some row norm deviates from 1 by more than a tolerance
+      across `lambda` values; with the projection, assert every row norm is `1` to floating-point
+      tolerance after every step, and that the downstream metric is at least as good.
+quizzes:
+  - id: lcvx-checkpoint
+    title: Checkpoint — convexity
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lcvx-cp-set
+        kind: mcq
+        prompt: A set `C` is convex when what holds?
+        options:
+          - {id: segment, text: "Every point `t x + (1-t) y` with `t` between 0 and 1 stays in `C`"}
+          - {id: bounded, text: "`C` is bounded and closed"}
+          - {id: origin, text: "`C` contains the origin"}
+        answer: [segment]
+        explanation: The whole segment between any two members stays inside.
+        concepts: [convex-set]
+        points: 1
+      - id: lcvx-cp-second-order
+        kind: mcq
+        prompt: The second-order test for convexity of a twice-differentiable `f` is what?
+        options:
+          - {id: psd, text: The Hessian is positive semidefinite at every point of the domain}
+          - {id: pd-min, text: The Hessian is positive definite at the minimum}
+          - {id: trace, text: The trace of the Hessian is non-negative}
+        answer: [psd]
+        explanation: Convexity is global; the Hessian must be PSD everywhere, not just at one point.
+        concepts: [second-order-test]
+        points: 1
+      - id: lcvx-cp-nice
+        kind: multi
+        prompt: Which follow from convexity of `f`?
+        options:
+          - {id: localglobal, text: Every local minimum is a global minimum}
+          - {id: nosaddle, text: There are no saddle points}
+          - {id: convexset, text: The set of minimisers is convex}
+          - {id: unique, text: The minimiser is always unique}
+        answer: [localglobal, nosaddle, convexset]
+        explanation: Uniqueness needs *strict* convexity; plain convexity gives a convex (possibly flat) minimiser set.
+        concepts: [convexity, global-minimum]
+        points: 1
+      - id: lcvx-cp-dl
+        kind: mcq
+        prompt: Why is a deep network's training loss non-convex in its weights?
+        options:
+          - {id: nonaffine, text: The parameter-to-output map is non-affine, and symmetry gives disconnected equal-loss minima}
+          - {id: crossentropy, text: Cross-entropy is a non-convex loss}
+          - {id: sgd, text: Because SGD is used instead of full-batch gradient descent}
+        answer: [nonaffine]
+        explanation: Cross-entropy is convex in the logits; composing with a nonlinear weight map and symmetry breaks convexity in the weights.
+        concepts: [non-convex, deep-network]
+        points: 1
+  - id: lcvx-assessment
+    title: Assessment — convex sets, convex functions, and deep learning
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lcvx-as-three-defs
+        kind: explain
+        prompt: Give the chord, first-order, and second-order characterisations of a convex function.
+        modelAnswer: |
+          Chord: `f(t x + (1-t) y) <= t f(x) + (1-t) f(y)` for all `x, y`, `t` in `[0, 1]`.
+          First-order: `f(y) >= f(x) + grad f(x) . (y - x)` for all `x, y` (every tangent
+          underestimates). Second-order: `nabla^2 f(x)` is positive semidefinite at every `x`.
+        explanation: Below every chord, above every tangent, PSD Hessian everywhere.
+        concepts: [convex-function]
+        points: 1
+      - id: lcvx-as-local-global
+        kind: write-function
+        prompt: Show `grad f(x*) = 0` implies `x*` is a global minimum for convex `f`.
+        modelAnswer: |
+          The first-order condition with `x = x*` gives `f(y) >= f(x*) + grad f(x*) . (y - x*) =
+          f(x*) + 0 = f(x*)` for every `y`. So `x*` attains the least value everywhere.
+        explanation: A vanishing gradient plus the tangent-underestimate property forces globality.
+        concepts: [first-order-condition, global-minimum]
+        points: 1
+      - id: lcvx-as-preserving
+        kind: scenario
+        prompt: Given convex `f, g`, which of `f + g`, `max(f, g)`, `min(f, g)`, `f(A x + b)` are convex?
+        modelAnswer: |
+          `f + g` convex (non-negative sum). `max(f, g)` convex (pointwise max). `min(f, g)` not
+          convex in general. `f(A x + b)` convex (affine precomposition).
+        explanation: Sums and max preserve; min does not; affine input transforms preserve.
+        concepts: [convexity-preserving]
+        points: 1
+      - id: lcvx-as-ml-losses
+        kind: scenario
+        prompt: Why is logistic regression convex in its weights but a logistic-head MLP is not?
+        modelAnswer: |
+          Logistic regression is `log(1 + exp(-y (x . w)))`, a convex function of the affine score
+          `x . w`, so convex in `w` by affine precomposition; summing and adding `L2` keeps it. An
+          MLP replaces `x . w` with a non-affine `W2 sigma(W1 x)`, and a convex loss composed with a
+          non-affine map is generally non-convex; symmetry also produces disconnected equal-loss
+          minima.
+        explanation: Only a linear score keeps convexity in the parameters.
+        concepts: [convex-loss, non-convex]
+        points: 1
+      - id: lcvx-as-strong-convex
+        kind: scenario
+        prompt: What does `mu`-strong convexity add over plain convexity, and how does adding an L2 term relate?
+        modelAnswer: |
+          Strong convexity means `nabla^2 f >= mu I` — a positive curvature lower bound in every
+          direction. It upgrades "the loss decreases" to "linear convergence to the unique
+          minimiser", with rate depending on the condition number `L / mu`. Adding `(mu/2)||w||^2`
+          to any smooth loss makes it `mu`-strongly convex near a minimum (and removes exactly-flat
+          directions), which is why ridge regularisation both regularises and speeds optimisation.
+        explanation: A curvature floor gives uniqueness and a linear rate.
+        concepts: [strong-convexity, regularisation]
+        points: 1
+      - id: lcvx-as-disconnected
+        kind: find-bug
+        prompt: |
+          Someone claims a loss is convex but has two separate isolated global minima. Why is this
+          contradictory?
+        modelAnswer: |
+          A convex function's minimiser set is convex: if `a` and `b` are both minimisers, every
+          point on the segment `[a, b]` is a minimiser too (chord inequality forces `f(m) <= f*` at
+          the midpoint, hence `= f*`). So a convex function cannot have two *isolated* global minima.
+          Disconnected equal-loss minima prove non-convexity.
+        explanation: The minimiser set of a convex function is connected.
+        concepts: [minimiser-set]
+        points: 1
+      - id: lcvx-as-min-bug
+        kind: find-bug
+        prompt: Why can't you optimise `min(f, g)` of two convex `f, g` with a convex solver?
+        modelAnswer: |
+          The pointwise minimum of convex functions is generally non-convex — it can hump between
+          the two basins — so a convex solver's assumptions (any stationary point is global, valid
+          duality gap) fail and it may return a non-global point. Use EM / discrete assignment for a
+          genuine "best of two" problem, or a convex surrogate (average, max, logsumexp).
+        explanation: "`min` breaks convexity; `max` preserves it."
+        concepts: [pointwise-min]
+        points: 1
+      - id: lcvx-as-projection
+        kind: scenario
+        prompt: Why must projected gradient descent use the *Euclidean* projection onto a convex set?
+        modelAnswer: |
+          The convergence analysis relies on the projection being non-expansive (it never increases
+          the distance between two points), which the nearest-point projection onto a convex set
+          guarantees. A different "put it back in the set" map (like clip-and-renormalise for the
+          simplex) is not non-expansive, can distort the step direction, and breaks the guarantee.
+        explanation: Nearest-point projection onto a convex set is non-expansive.
+        concepts: [projection, projected-gradient-descent]
+        points: 1
+      - id: lcvx-as-numerical
+        kind: true-false
+        prompt: Passing the chord inequality on 100000 random samples proves a function is convex.
+        options:
+          - {id: "true", text: "True"}
+          - {id: "false", text: "False"}
+        answer: ["false"]
+        explanation: Convexity is a global, continuous condition; sampling can only disprove it, never prove it.
+        concepts: [convexity, spot-check]
+        points: 1
+      - id: lcvx-as-survives
+        kind: scenario
+        prompt: Name three pieces of convex structure that survive inside non-convex deep-net training.
+        modelAnswer: |
+          The last-layer / linear-probe fit on frozen features is convex; local convexity near a
+          minimum (PSD Hessian there) supports local convergence analysis; and convex subproblems
+          — proximal steps for L1, projections onto constraint sets, the trust-region and
+          line-search subproblems, temperature calibration — are convex with unique answers. Jensen's
+          inequality (ELBO, loss bounds) also applies without global convexity.
+        explanation: Convexity survives locally and in subproblems even when the whole loss is not convex.
+        concepts: [convex-subproblem, local-convexity]
+        points: 1
+interview:
+  - id: lcvx-iv-what-and-why
+    level: basic
+    requiredForMastery: true
+    concepts: [convex-function, global-minimum, tractability]
+    question: What does convexity give you in optimisation?
+    shortAnswer: |
+      Every local minimum is global, there are no saddles, the minimiser set is convex, and
+      algorithms converge to the global optimum at known rates with a duality theory for optimality
+      certificates.
+    fullAnswer: |
+      A convex function lies above every tangent, so a stationary point `grad f(x*) = 0` satisfies
+      `f(y) >= f(x*)` for all `y` — it is a global minimum, and there are no saddle points. The set
+      of minimisers is convex (a point or a connected flat region), never a scatter of separate
+      wells. Practically this means gradient descent, Newton, and interior-point methods have global
+      convergence guarantees; strong convexity upgrades these to linear rates governed by the
+      condition number; and Lagrangian duality provides lower bounds and optimality certificates
+      (zero duality gap under mild conditions). It is the setting in which "solve the problem" is a
+      well-posed, tractable statement.
+    commonWrongAnswer: Convexity just means the function is bowl-shaped.
+    followUps:
+      - How does strong convexity change the convergence rate?
+      - Why does a convex function have no saddles?
+  - id: lcvx-iv-preserving-ops
+    level: internals
+    requiredForMastery: true
+    concepts: [convexity-preserving, disciplined-convex-programming]
+    question: How do you know a function is convex without checking the Hessian everywhere?
+    shortAnswer: |
+      Build it from convex atoms with convexity-preserving rules: non-negative sums, pointwise max,
+      affine precomposition, and monotone-convex composition. This is disciplined convex programming
+      — convexity by construction.
+    fullAnswer: |
+      Checking `nabla^2 f >= 0` at every point is impossible for a general expression, so you use a
+      grammar. Start from atoms of known curvature: affine functions (both convex and concave),
+      convex atoms (`||.||`, `square`, `max`, `logsumexp`, `-log` on positives, `quad_over_lin`),
+      concave atoms (`log`, `sqrt`, `min`). Combine with rules that preserve convexity: a
+      non-negative weighted sum of convex is convex; the pointwise max/sup of convex is convex;
+      `f(Ax + b)` is convex if `f` is; and `h(g)` is convex if `h` is convex and non-decreasing and
+      `g` is convex (with the matching rule for non-increasing `h` and concave `g`). If the whole
+      expression parses under these rules it is provably convex; if not, the checker says "unknown",
+      because DCP is sufficient but not necessary. `cvxpy` and friends enforce exactly this.
+    commonWrongAnswer: You just sample the definition many times.
+    followUps:
+      - Why is the pointwise min not covered by these rules?
+      - What does "DCP is sufficient but not necessary" mean?
+  - id: lcvx-iv-why-dl-nonconvex
+    level: scenario
+    requiredForMastery: true
+    concepts: [non-convex, deep-network, symmetry]
+    question: Explain precisely why a deep network's loss is non-convex in its weights.
+    shortAnswer: |
+      The map from weights to outputs is non-affine (bilinear across layers, plus nonlinearities),
+      and a convex output loss composed with a non-affine map is generally non-convex. Permutation
+      symmetry also creates disconnected equal-loss minima, which a convex function cannot have.
+    fullAnswer: |
+      Take `f(x; theta) = W2 sigma(W1 x)`. Even the bilinear part `W2 W1` is non-convex as a
+      function of `(W1, W2)` — the product `a b` has an indefinite Hessian. Adding the nonlinearity
+      makes the loss piecewise (for ReLU, a patchwork of linear regions in `x`, polynomial pieces in
+      theta) with non-convex joins. Independently, swapping two hidden units gives a different theta
+      with the same loss; if both are isolated global minimisers the minimiser set is disconnected,
+      but a convex function's minimiser set is always convex/connected. Saddle points, which convex
+      functions cannot have, also exist. Any one of these settles it. The consequences: no global
+      optimality guarantee, sensitivity to initialisation and schedule, and no single "correct"
+      optimiser.
+    commonWrongAnswer: It is non-convex because the loss function (cross-entropy) is non-convex.
+    followUps:
+      - Which variable *is* cross-entropy convex in?
+      - What convex structure survives inside the non-convex problem?
+  - id: lcvx-iv-what-survives
+    level: scenario
+    requiredForMastery: true
+    concepts: [convex-subproblem, linear-probe, local-convexity]
+    question: If deep learning is non-convex, why study convex optimisation?
+    shortAnswer: |
+      Because convex subproblems are everywhere inside training — proximal steps, projections,
+      trust-region and line-search subproblems, the SVM/logistic dual — and the last layer, linear
+      probes, and calibration are convex. Convex analysis is also the language of learning-rate,
+      conditioning, and convergence-rate reasoning.
+    fullAnswer: |
+      Non-convex training is built from convex parts: the soft-thresholding proximal operator for
+      L1/group-lasso, Euclidean projections onto weight-norm balls or the simplex, the trust-region
+      and Wolfe line-search subproblems, and the dual problems of linear models. Evaluating a frozen
+      backbone with a linear probe, temperature-scaling calibration, and fitting a logistic head are
+      convex and give exact reference numbers. Local convergence analysis of any optimiser uses the
+      PSD Hessian near a minimum (local convexity). And the vocabulary — `L`-smoothness, strong
+      convexity, condition number, duality gap, PL condition — that you use to reason about
+      learning rates and convergence all comes from convex analysis, even when applied to a
+      non-convex loss near its solutions.
+    commonWrongAnswer: It is not useful; deep learning made it obsolete.
+    followUps:
+      - Give an example of a convex subproblem inside a training loop.
+      - What is a linear probe and why is fitting it convex?
+  - id: lcvx-iv-strong-convexity
+    level: comparison
+    requiredForMastery: true
+    concepts: [strong-convexity, l-smoothness, condition-number, pl-condition]
+    question: Compare plain convexity, strong convexity, L-smoothness, and the PL condition.
+    shortAnswer: |
+      Plain convexity: local optima are global. Strong convexity (`nabla^2 f >= mu I`): a unique
+      minimiser and linear convergence. `L`-smoothness (`nabla^2 f <= L I`): a safe step size
+      `eta < 2/L`. The PL condition `0.5||grad f||^2 >= mu(f - f*)`: linear convergence *without*
+      convexity.
+    fullAnswer: |
+      Convexity alone gives global optimality of stationary points and sublinear rates. `L`-smoothness
+      (Lipschitz gradient) bounds curvature from above and is what makes the descent lemma and the
+      `eta ~ 1/L` rule work — it applies to non-convex functions too. Strong convexity bounds
+      curvature from below (`mu I`), giving a unique minimiser and linear convergence
+      `(1 - mu/L)^k`, with the condition number `kappa = L/mu` controlling the rate; ridge
+      regularisation supplies it. The Polyak-Lojasiewicz condition, `0.5||grad f||^2 >= mu(f - f*)`,
+      is weaker than strong convexity and does not require convexity at all: it says the gradient is
+      large whenever the loss is far from optimal, which is enough for gradient descent to converge
+      linearly to the global *value*. Some over-parameterised / neural-tangent regimes provably
+      satisfy a local PL condition, which is one theoretical explanation for why non-convex training
+      still converges fast.
+    commonWrongAnswer: They are all the same thing with different names.
+    followUps:
+      - Which of these does the descent lemma need?
+      - Why is the PL condition interesting for deep learning?
+  - id: lcvx-iv-projected-gd
+    level: debugging
+    requiredForMastery: true
+    concepts: [projected-gradient-descent, projection, constraint]
+    question: How do you optimise with a convex constraint, and what is a common implementation mistake?
+    shortAnswer: |
+      Projected gradient descent: after each unconstrained step, project onto the feasible set with
+      the Euclidean (nearest-point) projection. The common mistake is using a cheap "put it back in
+      the set" map that is not the nearest-point projection, which breaks the convergence guarantee.
+    fullAnswer: |
+      For `min f(x) s.t. x in C` with `C` convex, projected gradient descent iterates
+      `x <- Proj_C(x - eta grad f(x))`, where `Proj_C` returns the closest feasible point. The
+      analysis works because `Proj_C` onto a convex set is non-expansive. Implementation pitfalls:
+      (1) using an approximate projection — e.g. clip-and-renormalise for the probability simplex
+      instead of the sort-and-threshold Euclidean projection — which distorts the step and can stall
+      the method; (2) forgetting to project the momentum/Adam state consistently; (3) projecting
+      onto a non-convex set (a sphere, an orthogonality constraint) and expecting convex guarantees
+      — there you want a manifold/Riemannian method. When the projection is expensive, Frank-Wolfe
+      (which uses a linear-minimisation oracle instead) or a penalty/augmented-Lagrangian approach
+      are alternatives.
+    commonWrongAnswer: Just clamp the parameters into the allowed range each step.
+    followUps:
+      - What is the Euclidean projection onto the probability simplex?
+      - When would you use Frank-Wolfe instead of projected gradient descent?
+projects:
+  - id: lcvx-project-convexity-toolkit
+    kind: small
+    title: Build a convexity toolkit
+    minutes: 160
+    summary: Implement a DCP-style convexity certifier, numerical convexity spot-checks that only disprove, Euclidean projections onto standard convex sets, projected gradient descent, and a demo contrasting a convex linear model with a non-convex one-hidden-layer net.
+    problem: |
+      Build a toolkit that operationalises this lesson: `is_dcp_convex(expr)` (curvature/monotonicity
+      propagation over an expression tree of atoms, returning convex / concave / affine / unknown);
+      `disprove_convexity(f, points)` (sample the chord inequality and return a violating triple or
+      `None`); `project(x, set_spec)` for box, L2 ball, and probability simplex (exact Euclidean
+      projections); `projected_gd(f, grad_f, project, x0)`; and `demo` that fits a logistic
+      regression (convex, unique optimum from any start) and a one-hidden-layer net (non-convex,
+      different optima from different starts) on the same data.
+    requirements:
+      - "`is_dcp_convex` certifies convexity by construction and returns `unknown` rather than guessing when a rule does not apply."
+      - "`disprove_convexity` returns a concrete violating `(x, y, t)` for a non-convex `f` and `None` for a convex one within the sample budget."
+      - "`project` gives the exact Euclidean projection for each set (simplex via sort-and-threshold), verified to be the nearest feasible point."
+      - "`projected_gd` converges to the constrained optimum for a convex `f` and stays feasible every step."
+      - "`demo` shows the logistic fit reaches the same optimum from many starts and the net does not."
+    constraints:
+      - NumPy and the standard library only.
+      - Never claim convexity from `disprove_convexity` passing; it only disproves.
+      - The simplex projection must be the exact Euclidean one, not clip-and-renormalise.
+      - "`is_dcp_convex` must not sample; it certifies structurally."
+    expectedBehaviour:
+      - "`is_dcp_convex` certifies a LASSO objective and a logistic loss, and returns `unknown` for `min(f, g)` and `x * y`."
+      - "`disprove_convexity` finds a chord violation for `x^3` and for a 2-hidden-unit net loss along a symmetry-swap segment."
+      - "`project` onto the simplex matches a brute-force nearest-point search on random inputs."
+      - "`projected_gd` on a convex quadratic over a box reaches the KKT point."
+      - "`demo` logistic optima agree across starts within tolerance; net optima differ."
+    structure: |
+      convexkit/
+        __init__.py
+        dcp.py
+        spotcheck.py
+        projections.py
+        pgd.py
+        demo.py
+      tests/
+        test_dcp.py
+        test_spotcheck.py
+        test_projections.py
+        test_pgd.py
+        test_demo.py
+    milestones:
+      - title: "1 — DCP certifier"
+        detail: Atom curvature/monotonicity table and the propagation rules.
+      - title: "2 — Spot-checks"
+        detail: Chord-inequality sampler that returns violating triples.
+      - title: "3 — Projections"
+        detail: Exact Euclidean projections onto box, L2 ball, and simplex.
+      - title: "4 — Projected GD and demo"
+        detail: Constrained gradient descent and the convex-vs-non-convex fitting demo.
+    testing:
+      - DCP certification on LASSO, logistic, `min` of convex, and a product.
+      - Chord violations found for known non-convex functions and a symmetric net.
+      - Simplex projection versus a brute-force nearest-point baseline.
+      - Projected GD reaching the constrained optimum on a convex quadratic.
+      - "In the demo the logistic optima are consistent across starts and the net optima are not."
+    failureCases:
+      - The DCP checker certifies `min(f, g)` of convex as convex.
+      - "`disprove_convexity` returning `True` is treated as a proof of convexity."
+      - The simplex projection uses clip-and-renormalise and is not nearest-point.
+      - Projected GD projects the iterate but not the optimiser state.
+    bonus:
+      - Add the perspective and quad-over-lin atoms to the DCP checker.
+      - Add Frank-Wolfe for a set where projection is expensive.
+      - Emit a convexity report as Markdown.
+    architectureHints:
+      - Represent expressions as nodes with `(curvature, monotonicity)` tags and compose bottom-up.
+      - Keep one nearest-point projection per set and a brute-force reference for tests.
+      - Make `projected_gd` take a `project` callable so it works for any set.
+    referenceOutline: |
+      `dcp.is_dcp_convex` walks the tree assigning curvature from atom tags and composition rules.
+      `spotcheck.disprove_convexity` samples `(x, y, t)` and checks the chord inequality.
+      `projections.project_simplex` sorts, finds the threshold `tau`, returns `max(v - tau, 0)`.
+      `pgd.projected_gd` iterates `x <- project(x - eta * grad_f(x))`. `demo` runs both fits from a
+      grid of seeds.
+  - id: lcvx-final-constrained-training-audit
+    kind: final-challenge
+    title: Turn a soft-penalty constraint into a projection and audit convexity claims
+    minutes: 90
+    summary: Given a training script that enforces constraints with tuned penalties and asserts unwarranted convexity guarantees, replace penalties with exact projections, correct the convexity reasoning, and show the constraints hold exactly with fail-before-fix tests.
+    problem: |
+      A script (1) keeps each linear layer's weight matrix inside a Frobenius-norm ball with a soft
+      penalty `+ lambda * max(0, ||W||_F - c)^2`, (2) keeps a routing distribution on the simplex by
+      clip-and-renormalise, and (3) documents that the training loss is convex "because it uses
+      cross-entropy" and uses a convex-optimality stopping certificate. Produce an audit that:
+      replaces the Frobenius penalty with the exact Euclidean projection onto the Frobenius-norm ball
+      (a convex set); replaces clip-and-renormalise with the exact simplex projection; corrects the
+      convexity claim (the loss is non-convex in the weights; only the linear-probe / last-layer
+      subproblem and the projections are convex) and removes the invalid stopping certificate; and
+      shows the constraints now hold exactly and the downstream metric is at least as good, with a
+      fail-before-fix test per change.
+    requirements:
+      - Replace the Frobenius-ball penalty with `W <- W * min(1, c / ||W||_F)` (exact projection) applied after each step; show `||W||_F <= c` exactly afterwards.
+      - Replace clip-and-renormalise with the sort-and-threshold simplex projection; show it is the nearest feasible point on random inputs.
+      - "Rewrite the convexity documentation so the weight-space loss is non-convex, name the convex subproblems (projections, last-layer fit), and replace the convex stopping certificate with a validation-plateau criterion."
+      - Show the routing / norm-dependent metric is at least as good after the change.
+      - Provide one fail-before-fix test per change plus a clean end-to-end run.
+    constraints:
+      - Do not keep any tuned `lambda` for a hard constraint that a projection can enforce exactly.
+      - Do not use clip-and-renormalise as a simplex projection.
+      - Do not claim a global-optimality certificate for the deep-net loss.
+    expectedBehaviour:
+      - After projection, every constrained weight matrix satisfies its norm bound to floating-point tolerance every step.
+      - The simplex projection matches a brute-force nearest-point search.
+      - The corrected documentation names the convex subproblems and uses a validation-based stop.
+      - The downstream metric is unchanged or improved.
+      - Each change has a regression that failed before it.
+    milestones:
+      - title: "1 — Frobenius-ball projection"
+        detail: Replace the penalty; verify the bound holds exactly after every step.
+      - title: "2 — Simplex projection"
+        detail: Sort-and-threshold; verify nearest-point against brute force.
+      - title: "3 — Convexity reasoning"
+        detail: Correct the claim, name the convex subproblems, swap the stopping criterion.
+    testing:
+      - "A fail-before-fix fixture shows that with the penalty some `||W||_F` exceeds `c` across `lambda` values."
+      - Simplex projection versus brute-force nearest point.
+      - A test that the deep-net loss violates the chord inequality along a symmetry segment (documentation is wrong before the fix).
+    failureCases:
+      - The projection is applied to `W` but not consistently to any factorised parametrisation.
+      - The simplex projection still uses renormalisation.
+      - The stopping criterion is changed but a comment still claims convex optimality.
+    bonus:
+      - Add a spectral-norm-ball projection (SVD clip) for a Lipschitz constraint and compare with spectral normalisation.
+    architectureHints:
+      - Freeze the pre-fix constraint violations and the chord-violation fixture first.
+      - One constraint per commit; re-run the regressions.
+    referenceOutline: |
+      Frobenius-ball projection: `s = np.linalg.norm(W); W = W if s <= c else W * (c / s)`. Simplex
+      projection: sort `v` descending to `u`, find max `k` with `u_k + (1 - cumsum(u)_k)/k > 0`,
+      `tau = (cumsum(u)_k - 1)/k`, return `np.maximum(v - tau, 0)`. Stop on no val improvement over
+      `k` epochs.
+resources:
+  - name: "Boyd and Vandenberghe — Convex Optimization"
+    type: book
+    difficulty: deep
+    url: "https://web.stanford.edu/~boyd/cvxbook/"
+    usefulness: 5
+    why: The standard reference for convex sets and functions, the operations that preserve convexity, disciplined convex programming, and why convex problems are tractable — the entire content of this lesson, with a free PDF.
+    covers: Convex sets and cones, convex functions and their characterisations, convexity-preserving operations, convex optimisation problems, duality, and algorithms.
+  - name: "Stanford EE364A — Convex Optimization I (lecture videos and slides)"
+    type: university
+    difficulty: core
+    url: "https://web.stanford.edu/class/ee364a/"
+    usefulness: 5
+    why: The course that accompanies the book, with worked examples of checking convexity, building convex models, and the DCP ruleset that lets you certify convexity by construction.
+    covers: Recognising and constructing convex functions, convex modelling, projections, gradient and Newton methods with convergence rates, and duality.
+  - name: "3Blue1Brown / visual — Jensen's inequality and convexity"
+    type: video
+    difficulty: intro
+    url: "https://www.youtube.com/watch?v=u6VN6rDLNZ8"
+    usefulness: 3
+    why: A short visual on why the chord lies above the graph for a convex function and how that gives Jensen's inequality, which underlies the ELBO and many loss bounds.
+    covers: The geometric meaning of convexity, the chord-above-graph picture, and Jensen's inequality for expectations.
+  - name: "Karimi, Nutini, Schmidt — Linear Convergence of Gradient and Proximal-Gradient Methods Under the PL Inequality"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1608.04636"
+    usefulness: 4
+    why: It shows the Polyak-Lojasiewicz condition gives linear convergence without convexity, which is the bridge between convex-analysis guarantees and non-convex deep-net training.
+    covers: The PL inequality, its relation to strong convexity, linear convergence of gradient and proximal-gradient methods, and examples of non-convex functions that satisfy it.
+  - name: "Diamond and Boyd — CVXPY: A Python-Embedded Modeling Language for Convex Optimization"
+    type: article
+    difficulty: core
+    url: "https://www.jmlr.org/papers/v17/15-408.html"
+    usefulness: 3
+    why: It describes how disciplined convex programming enforces convexity by construction from a grammar of atoms and rules — the practical way to certify convexity rather than sampling.
+    covers: The DCP ruleset, curvature and monotonicity of atoms, composition rules, and how a modelling language rejects non-DCP expressions.

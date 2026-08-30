@@ -49,8 +49,8 @@ hand-edited. `tests/roadmapCurriculum.test.ts` fails if the document and the cur
 `content/groups.json` defines what navigation actually shows. Material written before the site
 followed the roadmap lives in the **Extra Learning** group, sub-grouped by the track it came from.
 Every listed lesson and assignment for an `available` module has matching `.mdx` content with
-validated frontmatter; `planned` modules and lessons only need metadata. See `CONTENT_GUIDE.md` for
-the authoring contract.
+validated frontmatter; `planned` modules and lessons only need metadata. See `CLAUDE.md` for the
+short authoring contract and current topic status.
 
 Content loading is centralized in `lib/content/loader.ts`. Pages are statically generated from local
 files, and metadata failures stop the build with a file-specific error. Module slugs and lesson IDs

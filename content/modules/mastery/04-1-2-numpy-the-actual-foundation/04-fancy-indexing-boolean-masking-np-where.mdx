@@ -1,0 +1,429 @@
+---
+id: "roadmap:phase-1-1.2:3"
+title: "Fancy indexing, boolean masking, np.where"
+description: Treat advanced indexing as an explicit gather or scatter program, then derive result shape, copy behavior, mask semantics, and conditional selection without relying on trial and error.
+module: 1-2-numpy-the-actual-foundation
+order: 4
+estimatedMinutes: 110
+prerequisites: ["roadmap:phase-1-1.2:0", "roadmap:phase-1-1.2:2"]
+learningObjectives:
+  - Predict the shape, order, and copy behavior of integer-array and boolean indexing expressions
+  - Choose deliberately among paired coordinate selection, Cartesian products, masks, take, and take_along_axis
+  - Use np.where and ufunc where parameters without computing invalid or needlessly expensive branches
+  - Design validated gather and scatter boundaries that handle repeated indices, memory costs, and semantic axes correctly
+---
+
+Advanced indexing is a gather program encoded inside brackets. Integer arrays name coordinates;
+boolean arrays decide which coordinates survive. Unlike a slice, the result is assembled into new
+storage, so its shape comes from the index arrays as much as from the source array.
+
+That mental model removes most of the magic. First derive which coordinates the index describes,
+then derive the index arrays' broadcast shape, and only then attach any dimensions left untouched.
+
+<TypeScriptComparison>
+
+- JavaScript's `rows.map(i => table[i])` is an explicit gather. NumPy moves the same coordinate program into `table[rows]` and executes it in native loops.
+- A JS `filter` preserves the order of one sequence. A NumPy boolean mask can select across several axes and may collapse the matched axes.
+- `condition ? x : y` chooses one scalar branch lazily. `np.where(condition, x, y)` selects among already-created array arguments element by element.
+- Both ecosystems require runtime validation: TypeScript types and NumPy shape annotations do not prove that indices refer to the intended axis.
+
+</TypeScriptComparison>
+
+## Basic indexing and advanced indexing make different promises
+
+Integers, slices, `...`, and `None` are basic indices. They navigate the existing strided view.
+An integer or boolean array triggers advanced indexing and gathers values into a copy.
+
+```python
+import numpy as np
+
+x = np.arange(20).reshape(4, 5)
+
+view = x[1:3, :]
+gathered = x[[1, 2], :]
+
+view[0, 0] = 900
+gathered[1, 0] = 800
+
+assert x[1, 0] == 900
+assert x[2, 0] != 800
+assert np.shares_memory(x, view)
+assert not np.shares_memory(x, gathered)
+```
+
+The copy boundary is semantic, not an optimization detail. Reading through advanced indexing gives
+an independent result. Assignment through an advanced index is different: NumPy scatters the
+right-hand values back into the original array.
+
+<CommonMistake>
+
+Do not infer assignment behavior from the temporary returned by `x[index]`. `picked = x[index]`
+creates a copy, while `x[index] = values` is a scatter operation performed by NumPy.
+
+</CommonMistake>
+
+## One integer index array gathers along one axis
+
+For `x[rows]`, the shape of `rows` replaces the indexed axis. The remaining source dimensions are
+attached afterward. If `x` is `(6, 4)` and `rows` is `(2, 3)`, the result is `(2, 3, 4)`.
+
+```python
+x = np.arange(24).reshape(6, 4)
+rows = np.array([[4, 0, 4], [2, 1, 3]])
+selected = x[rows]
+
+assert selected.shape == (2, 3, 4)
+assert np.array_equal(selected[0, 1], x[0])
+```
+
+Negative indices wrap exactly like scalar negative indices. Out-of-range values raise
+`IndexError`. At an API boundary, validate integer dtype, rank, range, and the semantic axis before
+gathering; a valid coordinate can still target the wrong dimension.
+
+## Several integer arrays select coordinate tuples
+
+`x[row_ids, col_ids]` does not select all requested rows crossed with all requested columns. NumPy
+broadcasts the index arrays together, then pairs values position by position. The broadcast shape
+becomes the selection shape.
+
+```python
+x = np.arange(20).reshape(4, 5)
+row_ids = np.array([0, 3, 1])
+col_ids = np.array([4, 0, 2])
+
+paired = x[row_ids, col_ids]
+assert np.array_equal(paired, np.array([x[0, 4], x[3, 0], x[1, 2]]))
+assert paired.shape == (3,)
+```
+
+To request a Cartesian product, give the indices orthogonal singleton axes or use `np.ix_`.
+
+```python
+rows = np.array([0, 3])
+cols = np.array([1, 4, 2])
+
+outer_a = x[rows[:, None], cols[None, :]]
+outer_b = x[np.ix_(rows, cols)]
+
+assert outer_a.shape == (2, 3)
+assert np.array_equal(outer_a, outer_b)
+```
+
+<Concept>
+
+Paired selection broadcasts index arrays to one coordinate grid. Cartesian selection constructs
+independent grids, one per indexed axis. Write which one you mean before writing brackets.
+
+</Concept>
+
+## Mixed indexing can move dimensions
+
+When adjacent advanced indices appear together, their broadcast dimensions occupy that location in
+the result. If basic indices separate advanced indices, the advanced dimensions move to the front.
+This rule preserves a well-defined result, but it makes compact expressions difficult to review.
+
+```python
+x = np.zeros((2, 3, 4, 5))
+i = np.array([0, 1])
+j = np.array([1, 2])
+
+adjacent = x[:, i, j, :]
+separated = x[i, :, j, :]
+
+assert adjacent.shape == (2, 2, 5)
+assert separated.shape == (2, 3, 5)
+```
+
+The two equal twos in the first shape represent different concepts: source axis zero and the
+advanced-index broadcast axis. Prefer named intermediate indices, `take`, or `take_along_axis`
+when a reviewer would otherwise need to simulate NumPy's dimension placement.
+
+## Boolean masks describe surviving coordinates
+
+A full-shape boolean mask returns the matching scalar values as a one-dimensional copy, in
+C-order traversal. Its length is `np.count_nonzero(mask)`, so the result size is data-dependent.
+
+```python
+x = np.arange(12).reshape(3, 4)
+mask = (x % 3 == 0)
+picked = x[mask]
+
+assert picked.shape == (4,)
+assert np.array_equal(picked, np.array([0, 3, 6, 9]))
+```
+
+A lower-rank mask can match leading dimensions. If `images` is `(N, H, W, C)` and a mask is
+`(N, H, W)`, then `images[mask]` is `(N_true, C)`. The mask consumes the dimensions it matches;
+unconsumed trailing dimensions remain.
+
+Masks are not labels. Validate their exact expected shape instead of relying on a broadcast you
+wish existed. Boolean indexing normally requires the boolean dimensions to match the indexed
+dimensions; reshape or broadcast the mask explicitly when that transformation is intended.
+
+## Filtering, coordinates, and assignment are different jobs
+
+Use `x[mask]` when you need values. Use `np.nonzero(mask)` when you need one coordinate array per
+axis. Use `np.flatnonzero(mask)` when flattened offsets are the actual contract.
+
+```python
+mask = np.array([[False, True, False], [True, False, True]])
+rows, cols = np.nonzero(mask)
+
+assert np.array_equal(rows, np.array([0, 1, 1]))
+assert np.array_equal(cols, np.array([1, 0, 2]))
+```
+
+Boolean assignment mutates the selected source positions. The right-hand side must be scalar or
+compatible with the number and trailing shape of selected values. For clipping or replacement,
+in-place ufuncs can express the same intent with less temporary data.
+
+```python
+scores = np.array([0.2, np.nan, 1.4, -0.3])
+scores[~np.isfinite(scores)] = 0.0
+np.clip(scores, 0.0, 1.0, out=scores)
+```
+
+## `where` selects; it does not filter
+
+Three-argument `np.where(condition, x, y)` broadcasts all three operands to one output shape and
+chooses element by element. The result keeps that broadcast shape; it does not become shorter.
+
+```python
+logits = np.array([[-2.0, 0.5, 3.0], [1.0, -4.0, 2.0]])
+thresholds = np.array([0.0, 0.0, 1.5])
+labels = np.where(logits >= thresholds, 1, 0)
+
+assert labels.shape == logits.shape
+```
+
+With only a condition, `np.where(condition)` returns coordinate arrays and is effectively the
+condition's `nonzero`. Prefer `np.nonzero(condition)` when coordinates are the point; it states the
+contract directly and behaves correctly for array subclasses.
+
+<CommonMistake>
+
+`np.where(mask, numerator / denominator, 0)` does not protect the division. Python evaluates the
+division before calling `np.where`. Use a ufunc's `where=` parameter and an initialized `out=`
+buffer when the unselected computation must not run.
+
+</CommonMistake>
+
+```python
+numerator = np.array([10.0, 20.0, 30.0])
+denominator = np.array([2.0, 0.0, 5.0])
+valid = denominator != 0
+
+ratio = np.zeros_like(numerator)
+np.divide(numerator, denominator, out=ratio, where=valid)
+assert np.array_equal(ratio, np.array([5.0, 0.0, 6.0]))
+```
+
+## Gather along a named axis
+
+`np.take(x, indices, axis=k)` gathers the same index set along a named axis. `np.take_along_axis`
+uses a different index list for each matching slice, which is exactly what outputs from `argsort`,
+`argmin`, and `argmax` describe.
+
+```python
+scores = np.array([[0.2, 0.9, 0.4], [0.8, 0.1, 0.7]])
+order = np.argsort(scores, axis=1)
+top_two_ids = order[:, -2:]
+top_two_scores = np.take_along_axis(scores, top_two_ids, axis=1)
+
+assert top_two_scores.shape == (2, 2)
+```
+
+The explicit `axis` makes this safer than hand-built row indices. In ML code, it is a natural fit
+for top-k token scores, per-example class choices, beam ancestry, and reordered sequence positions.
+
+## Scatter updates and repeated indices
+
+Repeated targets make augmented advanced-index assignment surprising. `x[[0, 0]] += 1` gathers the
+old value twice, increments the temporary twice, then writes back; it does not guarantee two
+accumulations at index zero.
+
+```python
+counts = np.zeros(3, dtype=np.int64)
+ids = np.array([0, 0, 2])
+
+counts[ids] += 1
+assert np.array_equal(counts, np.array([1, 0, 1]))
+
+counts.fill(0)
+np.add.at(counts, ids, 1)
+assert np.array_equal(counts, np.array([2, 0, 1]))
+```
+
+Use `np.add.at` when every repeated occurrence must accumulate. For simple overwrite, decide and
+document which duplicate wins; depending on iteration order for business logic is a fragile API.
+
+## Performance starts with the output and access pattern
+
+Advanced indexing allocates the gathered result and often reads source memory irregularly. That can
+lose cache locality even when the output is small. Boolean filtering also allocates the mask and a
+data-dependent result; coordinate extraction adds integer arrays.
+
+<ProductionNote>
+
+Before a large gather, estimate the index bytes, output bytes, and any later conversion or device
+transfer. Benchmark the whole pipeline. A contiguous copy can be worthwhile if a gathered array is
+reused heavily, but repeated gathers inside a training loop usually signal a boundary to redesign.
+
+</ProductionNote>
+
+For PyTorch and JAX, the vocabulary changes but the contracts remain: gathers allocate logical
+results, masks affect shape, duplicate scatters need an explicit reduction, and device kernels make
+host-built index arrays or synchronization especially expensive.
+
+## Exercises
+
+<Exercise id="numpy-index-paired-easy" difficulty="easy">
+
+For a `(4, 5)` array, predict the values and shape returned by
+`x[np.array([0, 3]), np.array([4, 1])]`.
+
+<Solution>
+
+The two index arrays have broadcast shape `(2,)` and form coordinate pairs `(0, 4)` and `(3, 1)`.
+The result is a one-dimensional copy containing those two scalar values, so its shape is `(2,)`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-index-cartesian-medium" difficulty="medium">
+
+Select rows `[3, 0]` crossed with columns `[4, 1, 2]` from a matrix. Write two correct expressions
+and explain why `x[rows, cols]` is not one of them.
+
+<Solution>
+
+Use `x[rows[:, None], cols[None, :]]` or `x[np.ix_(rows, cols)]`. The singleton axes broadcast to a
+`(2, 3)` coordinate grid. Bare one-dimensional arrays of lengths two and three cannot broadcast,
+and equal-length arrays would mean paired coordinates rather than a Cartesian product.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-index-duplicate-hard" difficulty="hard">
+
+Build a class-frequency counter from repeated class IDs. Explain why augmented advanced-index
+assignment is incorrect and provide an accumulation-safe implementation.
+
+<Solution>
+
+`counts[ids] += 1` updates a gathered temporary, so duplicate destinations can collapse into one
+write. Initialize an integer count array and call `np.add.at(counts, ids, 1)`. Validate that IDs are
+integer and within range; otherwise negative wrapping or an out-of-bounds failure violates the class
+contract.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-index-interview" difficulty="interview">
+
+In an interview, explain the difference between slicing, integer-array indexing, boolean masking,
+and three-argument `np.where` in terms of shape and memory.
+
+<Solution>
+
+I would say that slices are basic indexing and usually return strided views. Integer arrays gather
+coordinates into a copy whose leading selection shape comes from broadcasting the indices. A full
+boolean mask filters matching elements into a data-dependent copy. Three-argument `where` does not
+filter: it broadcasts condition, left, and right to a fixed output shape and selects elementwise.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-index-topk-real-world" difficulty="real-world">
+
+Design a batched top-k boundary for scores shaped `(batch, classes)`. Return both class IDs and
+their aligned scores, and state the validation, ordering, and memory contracts.
+
+<Solution>
+
+Validate rank two, finite values or a documented NaN policy, and `0 < k <= classes`. Use
+`argpartition` for candidate IDs, optionally sort those candidates, then gather their values with
+`take_along_axis(axis=1)`. State whether output is ascending or descending and how ties behave.
+Budget the `(batch, k)` ID and score arrays instead of materializing a full sorted copy when k is
+small.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Why does advanced indexing return a copy while basic slicing can return a view?
+2. What is the difference between paired coordinates and a Cartesian product of index arrays?
+3. What shape results from applying a full-shape boolean mask, and why is it data-dependent?
+4. Why can `np.where(mask, a / b, 0)` still divide by zero?
+5. Which operation preserves repeated scatter accumulations, and when is it required?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why did changing a slice to a list stop mutations reaching the source array?">
+
+A slice is basic indexing and usually returns a view. A list triggers advanced indexing and returns
+a copy.
+
+</Gotcha>
+
+<Gotcha question="Why did x[rows, cols] return a diagonal-like vector instead of a submatrix?">
+
+The arrays describe paired coordinates after broadcasting. Use `np.ix_` or orthogonal singleton
+axes for a Cartesian product.
+
+</Gotcha>
+
+<Gotcha question="Why did my boolean mask flatten the matrix?">
+
+A mask matching the whole array selects scalar values in traversal order. The result is one
+dimensional with one entry per true position.
+
+</Gotcha>
+
+<Gotcha question="Why does my mask not broadcast like arithmetic operands do?">
+
+Boolean indexing follows indexing shape rules, not general ufunc broadcasting. Construct the exact
+mask shape deliberately before indexing.
+
+</Gotcha>
+
+<Gotcha question="Why did np.where still emit an invalid-value warning?">
+
+Its array arguments were computed before selection. Use the relevant ufunc with initialized `out=`
+and `where=` when masked-off arithmetic must not execute.
+
+</Gotcha>
+
+<Gotcha question="Why did counts[ids] += 1 lose duplicate events?">
+
+The operation increments a gathered temporary and scatters it back. Use `np.add.at` for unbuffered
+accumulation at every repeated index.
+
+</Gotcha>
+
+<Gotcha question="Why did mixing slices and index arrays move an axis to the front?">
+
+Separated advanced indices place their broadcast dimensions at the front. Split the operation or
+use an axis-named gather when dimension placement is hard to see.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Advanced indexing is easier when you call it what it is: a gather or scatter program. Integer
+arrays describe coordinates, boolean arrays describe surviving positions, and their shapes help
+determine the result.
+
+Basic slicing can expose a view; advanced reads allocate copies. Assignment writes through the
+index, but repeated destinations require an explicit reduction such as `np.add.at`.
+
+`np.where` preserves a broadcast result shape and does not make expensive branches lazy. Use
+`nonzero` for coordinates and ufunc `where=` with initialized output for guarded arithmetic.
+
+The Practice and Debug tabs turn these rules into shape derivations and failure diagnosis. The
+Project tab then applies them to a production-shaped batched selection boundary.

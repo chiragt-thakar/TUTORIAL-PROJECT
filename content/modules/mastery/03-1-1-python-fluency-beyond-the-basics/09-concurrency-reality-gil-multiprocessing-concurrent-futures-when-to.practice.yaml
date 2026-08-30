@@ -1,0 +1,886 @@
+lessonId: "roadmap:phase-1-1.1:8"
+module: 1-1-python-fluency-beyond-the-basics
+lesson: 09-concurrency-reality-gil-multiprocessing-concurrent-futures-when-to
+title: "Concurrency reality: GIL, multiprocessing, concurrent.futures, when to use which"
+summary: Choose and validate Python concurrency from workload shape, isolation costs, and explicit ownership.
+
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+
+exercises:
+  - id: concurrency-classify-goal
+    tier: normal
+    kind: explain
+    title: Separate concurrency from parallelism
+    minutes: 8
+    requiredForMastery: true
+    concepts: [concurrency, parallelism]
+    prompt: |
+      A crawler overlaps 100 socket waits on one CPU core. A parser executes four Python processes
+      on four cores. Classify each design and explain why “concurrent” does not imply “parallel.”
+    hints:
+      - Ask whether tasks merely make overlapping progress.
+      - Ask whether instructions execute at the same physical instant.
+    solution: |
+      The crawler is concurrent because one stalled operation lets another progress, but it need
+      not be parallel. The parser is both concurrent and parallel because independent processes
+      execute at the same time on different cores. Concurrency describes scheduling and progress;
+      parallelism describes simultaneous execution.
+
+  - id: concurrency-thread-io
+    tier: normal
+    kind: write-code
+    title: Overlap a blocking storage client
+    minutes: 12
+    requiredForMastery: true
+    concepts: [threads, blocking-io, futures]
+    prompt: |
+      Write `download_all(keys)` for a synchronous `store.download(key)` API. Use at most eight
+      threads, return results in input order, and ensure the executor is shut down on failure.
+    hints:
+      - An executor context manager owns shutdown.
+      - Executor `map` preserves input order.
+    solution: |
+      A thread pool overlaps socket waits while preserving cheap shared-memory handoff. The context
+      manager waits for worker shutdown even if iteration raises. Input-order results may delay
+      exposure behind one slow item; use `as_completed` when completion-order handling is wanted.
+    solutionCode: |
+      from concurrent.futures import ThreadPoolExecutor
+
+      def download_all(keys: list[str]) -> list[bytes]:
+          with ThreadPoolExecutor(max_workers=8) as pool:
+              return list(pool.map(store.download, keys))
+
+  - id: concurrency-future-states
+    tier: normal
+    kind: code-reading
+    title: Read cancellation truthfully
+    minutes: 10
+    requiredForMastery: true
+    concepts: [future, cancellation]
+    prompt: Explain what this code can and cannot guarantee about `job`.
+    code: |
+      future = pool.submit(job)
+      stopped = future.cancel()
+      if stopped:
+          print("cancelled")
+    hints:
+      - A future distinguishes pending from running.
+      - Cancellation does not safely interrupt arbitrary running code.
+    solution: |
+      If `cancel()` returns `True`, the callable had not started and will not run. If it returns
+      `False`, the future may already be running or finished; the snippet does not stop `job`.
+      Running work requires a cooperative stop mechanism, an external deadline, or a process-level
+      policy designed around its side effects.
+
+  - id: concurrency-gil-invariant
+    tier: normal
+    kind: debug
+    title: Protect the application invariant
+    minutes: 12
+    requiredForMastery: true
+    concepts: [gil, race-condition, locks]
+    prompt: Fix the oversubscription race without relying on the GIL.
+    code: |
+      available = 1
+
+      def reserve() -> bool:
+          global available
+          if available == 0:
+              return False
+          available -= 1
+          return True
+    hints:
+      - The invariant spans a check and a mutation.
+      - One lock must cover the whole compound operation.
+    solution: |
+      Protect both the check and decrement with the same lock. The GIL protects interpreter
+      internals on the normal CPython build; it does not declare this multi-step business rule
+      atomic. A queue or single owner could remove shared mutation entirely.
+    solutionCode: |
+      from threading import Lock
+
+      available = 1
+      available_lock = Lock()
+
+      def reserve() -> bool:
+          global available
+          with available_lock:
+              if available == 0:
+                  return False
+              available -= 1
+              return True
+
+  - id: concurrency-process-importability
+    tier: intermediate
+    kind: debug
+    title: Make process work importable
+    minutes: 15
+    requiredForMastery: true
+    concepts: [processes, pickle, main-guard]
+    prompt: Repair this script for portable process start methods.
+    code: |
+      from concurrent.futures import ProcessPoolExecutor
+
+      def main() -> None:
+          factor = 3
+          score = lambda value: value * factor
+          with ProcessPoolExecutor() as pool:
+              print(list(pool.map(score, [1, 2, 3])))
+
+      main()
+    hints:
+      - A child needs to import the callable by a stable name.
+      - A fresh interpreter imports the main module before doing work.
+    solution: |
+      Move the callable to module scope, pass its data explicitly, and guard the entry point. A
+      lambda and closure are not portable process-pool boundaries, and an unguarded import can
+      recursively start pools under spawn-like behavior.
+    solutionCode: |
+      from concurrent.futures import ProcessPoolExecutor
+
+      def score(item: tuple[int, int]) -> int:
+          value, factor = item
+          return value * factor
+
+      def main() -> None:
+          with ProcessPoolExecutor() as pool:
+              print(list(pool.map(score, [(1, 3), (2, 3), (3, 3)])))
+
+      if __name__ == "__main__":
+          main()
+
+  - id: concurrency-as-completed-context
+    tier: intermediate
+    kind: write-code
+    title: Preserve item context on failure
+    minutes: 15
+    requiredForMastery: true
+    concepts: [as-completed, exception-translation, futures]
+    prompt: |
+      Submit `fetch(key)` for each key, process results in completion order, and raise
+      `FetchFailed(key)` from the original failure. You may let context-manager shutdown wait for
+      already-running work.
+    hints:
+      - Map each future back to the input that created it.
+      - Calling `result()` is where a worker exception is re-raised.
+    solution: |
+      Keep a future-to-key mapping, iterate `as_completed`, and translate at `result()`. The owner
+      observes every completed result until failure. A stricter fail-fast design must also define
+      what happens to pending and already-running submissions.
+    solutionCode: |
+      from concurrent.futures import Future, ThreadPoolExecutor, as_completed
+
+      def fetch_all(keys: list[str]) -> dict[str, bytes]:
+          output: dict[str, bytes] = {}
+          with ThreadPoolExecutor(max_workers=8) as pool:
+              pending: dict[Future[bytes], str] = {
+                  pool.submit(fetch, key): key for key in keys
+              }
+              for future in as_completed(pending):
+                  key = pending[future]
+                  try:
+                      output[key] = future.result()
+                  except Exception as exc:
+                      raise FetchFailed(key) from exc
+          return output
+
+  - id: concurrency-batch-cost
+    tier: intermediate
+    kind: performance
+    title: Derive a useful process batch
+    minutes: 18
+    requiredForMastery: true
+    concepts: [batching, serialization, load-balancing]
+    prompt: |
+      Each process submission costs about 2 ms to serialize and schedule. One row takes 0.1 ms of
+      CPU. Explain why one row per future fails, then propose what to measure when selecting a batch.
+    hints:
+      - Compare coordination time with useful compute time.
+      - Large batches trade overhead for imbalance and cancellation delay.
+    solution: |
+      Per-row overhead is twenty times the useful work, so parallelism magnifies coordination cost.
+      Batch enough rows that compute dominates submission, then benchmark throughput and p99 with
+      realistic row-size and compute distributions. Track serialized bytes, worker utilization,
+      memory, result latency, load imbalance, and how quickly shutdown or cancellation responds.
+
+  - id: concurrency-native-library
+    tier: intermediate
+    kind: design
+    title: Avoid multiplying native schedulers
+    minutes: 16
+    requiredForMastery: true
+    concepts: [native-code, oversubscription, deployment]
+    prompt: |
+      A web deployment has four processes. Each request calls a numerical library that starts eight
+      native threads. A proposal adds four Python process-pool workers per web process. Assess it.
+    hints:
+      - Count runnable capacity across every layer.
+      - Model copies and memory bandwidth can bottleneck before cores do.
+    solution: |
+      The proposal can create sixteen model workers before counting the 128 possible native threads,
+      oversubscribing CPUs and multiplying memory. Benchmark the native call directly, cap its thread
+      count, include all web replicas, CPU quotas, model memory, and connection budgets, then add a
+      separate process boundary only for measured capacity or isolation needs.
+
+  - id: concurrency-pool-deadlock
+    tier: tricky
+    kind: debug
+    title: Remove a saturated-pool deadlock
+    minutes: 18
+    requiredForMastery: true
+    concepts: [deadlock, thread-pool, ownership]
+    prompt: Explain the deadlock and redesign ownership.
+    code: |
+      from concurrent.futures import ThreadPoolExecutor
+
+      pool = ThreadPoolExecutor(max_workers=1)
+
+      def outer() -> int:
+          inner = pool.submit(lambda: 41)
+          return inner.result() + 1
+
+      print(pool.submit(outer).result())
+    hints:
+      - Which worker is available to execute `inner`?
+      - Keep dependency orchestration outside the workers that perform leaves.
+    solution: |
+      The sole worker runs `outer` and blocks waiting for `inner`, but `inner` needs that same worker.
+      Submit independent leaf work from the owner and combine results there, or call the inner
+      operation directly when it belongs to the same unit. Increasing the pool only hides this
+      dependency cycle until a larger workload saturates it.
+
+  - id: concurrency-copy-cost
+    tier: tricky
+    kind: code-reading
+    title: Find the hidden data movement
+    minutes: 16
+    requiredForMastery: true
+    concepts: [processes, serialization, shared-memory]
+    prompt: |
+      A 2 GB array is passed to each of four process submissions and each worker reads a tiny slice.
+      Why can the process version lose to sequential execution, and what boundaries should be tested?
+    hints:
+      - Process arguments normally cross a serialization boundary.
+      - Send work descriptions instead of repeated bulk data when possible.
+    solution: |
+      Serializing, copying, and retaining the array can dominate the tiny computation and multiply
+      memory pressure. Test sequential/native-library execution first. Then test workers loading
+      stable state once, memory mapping, or explicitly owned shared memory while submitting only
+      slice indices. Shared memory removes copies but adds lifetime and synchronization obligations.
+
+  - id: concurrency-start-method-debug
+    tier: tricky
+    kind: debug
+    title: Stop forcing global process policy
+    minutes: 17
+    requiredForMastery: true
+    concepts: [start-method, library-design, multiprocessing-context]
+    prompt: |
+      A reusable library calls `multiprocessing.set_start_method("fork")` during import. Diagnose
+      the portability and composability failures, then describe its public API.
+    hints:
+      - The global start method can only be selected once.
+      - The host application may already have threads or require another context.
+    solution: |
+      Import now mutates process-global policy, can fail if a context was already selected, is not
+      portable to every platform, and can fork a multithreaded host unsafely. Accept an executor or
+      `multiprocessing` context from the caller, default conservatively without import side effects,
+      and document any actual requirement. Create pool primitives from that same context.
+
+  - id: concurrency-failure-policy
+    tier: tricky
+    kind: refactor
+    title: Make partial failure explicit
+    minutes: 18
+    requiredForMastery: true
+    concepts: [failure-policy, futures, idempotency]
+    prompt: |
+      A process-pool batch writes to the database inside each worker and the owner retries the full
+      input after any future fails. Refactor the boundary at the design level.
+    hints:
+      - Retry is unsafe when completed work has invisible external side effects.
+      - Separate deterministic compute from owned persistence.
+    solution: |
+      Make workers pure: accept serializable batches and return results or item-scoped failures.
+      Let one explicit owner persist using idempotency keys or transactions and record which batches
+      committed. Retry only known-safe, uncommitted work. This also avoids copying live database
+      clients into processes and makes worker crashes distinguishable from persistence failures.
+
+  - id: concurrency-execution-plan
+    tier: challenge
+    kind: design
+    title: Choose a mixed execution plan
+    minutes: 25
+    requiredForMastery: true
+    concepts: [asyncio, threads, processes, capacity]
+    prompt: |
+      Design a pipeline that accepts async HTTP requests, reads objects through a blocking SDK,
+      performs 200 ms of pure-Python feature extraction, then calls a GIL-releasing native model.
+      State owners, bounds, data boundaries, measurements, and shutdown behavior.
+    hints:
+      - Different stages can justify different mechanisms, but each boundary adds a queue.
+      - Count the model library's own threads before adding outer parallelism.
+    solution: |
+      Keep admission, deadlines, and request lifetime in asyncio. Use a bounded thread pool for the
+      blocking SDK. Benchmark coarse serializable feature batches in a bounded process pool. Run the
+      native model directly or behind a separately measured concurrency limit, with its internal
+      thread count capped. Bound every handoff, propagate item IDs rather than clients, observe every
+      future, drain accepted work on graceful shutdown, and reject work that cannot meet its deadline.
+
+  - id: concurrency-benchmark-critique
+    tier: challenge
+    kind: performance
+    title: Reject a misleading benchmark
+    minutes: 25
+    requiredForMastery: true
+    concepts: [benchmarking, warmup, tail-latency, free-threading]
+    prompt: |
+      A benchmark runs one tiny task, reports only elapsed time, and concludes that threads beat
+      processes on “Python 3.14.” Write the review that blocks this conclusion.
+    hints:
+      - Version does not identify whether the interpreter is free-threaded or GIL-enabled.
+      - Startup, warm-up, workload distribution, and deployment topology all affect the result.
+    solution: |
+      The claim lacks interpreter build and GIL state, platform, core quota, worker counts, task
+      shape, native-library behavior, payload size, serialization volume, startup inclusion, warm-up,
+      repetitions, variance, memory, CPU utilization, and tail latency. Benchmark sequential,
+      threaded, and process variants over production-like distributions, report throughput and
+      percentiles, and include the full process/native-thread topology before choosing.
+
+quizzes:
+  - id: concurrency-checkpoint
+    title: Checkpoint — mechanism and cost
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: concurrency-cp-gil
+        kind: mcq
+        prompt: On a normal GIL-enabled CPython build, which statement is accurate?
+        options:
+          - id: a
+            text: Only one thread at a time executes Python bytecode in an interpreter.
+          - id: b
+            text: Only one operating-system thread may exist.
+          - id: c
+            text: Thread races cannot happen.
+          - id: d
+            text: Native extensions can never execute in parallel.
+        answer: [a]
+        explanation: The GIL serializes Python-bytecode execution, while threads still exist, I/O can overlap, races remain, and native code may release the lock.
+        concepts: [gil]
+        points: 1
+      - id: concurrency-cp-process
+        kind: multi
+        prompt: Which costs commonly belong to process pools?
+        options:
+          - id: a
+            text: Worker startup and imports
+          - id: b
+            text: Argument and result serialization
+          - id: c
+            text: Separate memory per worker
+          - id: d
+            text: Free shared access to every live Python object
+        answer: [a, b, c]
+        explanation: Processes gain isolation and separate interpreters by giving up transparent shared-object access.
+        concepts: [processes, overhead]
+        points: 1
+      - id: concurrency-cp-cancel
+        kind: true-false
+        prompt: A successful `Future.cancel()` means a running callable was forcibly interrupted.
+        options:
+          - id: "true"
+            text: "True"
+          - id: "false"
+            text: "False"
+        answer: ["false"]
+        explanation: Cancellation succeeds before execution starts; arbitrary running code is not safely killed by the Future API.
+        concepts: [future, cancellation]
+        points: 1
+      - id: concurrency-cp-choice
+        kind: scenario
+        prompt: A synchronous SDK spends nearly all its time waiting on sockets. Name the first concurrency mechanism to benchmark and its capacity bound.
+        modelAnswer: A bounded ThreadPoolExecutor is the first candidate; cap it from downstream concurrency, connection-pool, rate-limit, memory, and latency measurements rather than CPU count alone.
+        explanation: Threads integrate blocking I/O with cheap shared-memory handoff, and waiting normally releases the GIL.
+        concepts: [threads, blocking-io]
+        points: 1
+
+  - id: concurrency-assessment
+    title: Assessment — concurrency reality
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: concurrency-assess-concepts
+        kind: mcq
+        prompt: Which example proves parallel execution?
+        options:
+          - id: a
+            text: One event loop interleaves 1,000 socket waits.
+          - id: b
+            text: Two processes execute CPU instructions simultaneously on two cores.
+          - id: c
+            text: One thread queues ten callbacks.
+          - id: d
+            text: One coroutine awaits another directly.
+        answer: [b]
+        explanation: Simultaneous execution is parallelism; overlapping progress alone is concurrency.
+        concepts: [concurrency, parallelism]
+        points: 1
+      - id: concurrency-assess-thread-choice
+        kind: multi
+        prompt: Which workloads can benefit from threads on normal CPython?
+        options:
+          - id: a
+            text: Blocking network I/O
+          - id: b
+            text: Native computation documented to release the GIL
+          - id: c
+            text: A sustained pure-Python arithmetic loop by default
+          - id: d
+            text: Several independent file waits
+        answer: [a, b, d]
+        explanation: Threads overlap waits and can parallelize cooperating native code; the GIL normally serializes Python bytecode.
+        concepts: [threads, gil]
+        points: 1
+      - id: concurrency-assess-race
+        kind: find-bug
+        prompt: |
+          Why is `if key not in cache: cache[key] = build(key)` unsafe as a threaded single-build
+          guarantee?
+        modelAnswer: The membership test and assignment are separate steps, so two threads can both observe absence and run build. Use a lock around the invariant, per-key synchronization, or a single owner; the GIL is not the contract.
+        explanation: Interpreter integrity does not make compound application workflows atomic.
+        concepts: [race-condition, locks]
+        points: 1
+      - id: concurrency-assess-pickle
+        kind: mcq
+        prompt: Which is the best portable ProcessPoolExecutor boundary?
+        options:
+          - id: a
+            text: A nested closure capturing a database session
+          - id: b
+            text: A top-level pure function accepting plain data batches
+          - id: c
+            text: A lambda capturing an open socket
+          - id: d
+            text: A bound request-handler method carrying framework state
+        answer: [b]
+        explanation: Importable callables and serializable data make process creation portable and ownership explicit.
+        concepts: [processes, pickle]
+        points: 1
+      - id: concurrency-assess-main-guard
+        kind: explain
+        prompt: Why does process-pool entry code belong under `if __name__ == "__main__"`?
+        modelAnswer: Spawn-like workers start fresh interpreters that import the main module. Guarding entry code prevents imports from recursively creating pools or rerunning application startup, while leaving top-level worker functions importable.
+        explanation: Safe importability is part of a portable multiprocessing program.
+        concepts: [main-guard, start-method]
+        points: 1
+      - id: concurrency-assess-batch
+        kind: performance
+        prompt: What indicates that process tasks are too fine-grained?
+        modelAnswer: Scheduling, serialization, and IPC consume a large share of elapsed time; workers are underutilized and throughput trails sequential execution. Increase measured batch size until useful compute dominates without unacceptable memory, imbalance, or tail latency.
+        explanation: A process pool only wins after its isolation costs are amortized.
+        concepts: [batching, performance]
+        points: 1
+      - id: concurrency-assess-deadlock
+        kind: mcq
+        prompt: What is the core risk when a worker waits on another future submitted to the same bounded pool?
+        options:
+          - id: a
+            text: Serialization becomes lossless.
+          - id: b
+            text: All workers can wait while no worker remains to run their dependencies.
+          - id: c
+            text: The GIL is permanently disabled.
+          - id: d
+            text: Results automatically switch to completion order.
+        answer: [b]
+        explanation: Nested future dependencies can exhaust pool capacity and deadlock; orchestration should remain with an external owner.
+        concepts: [deadlock, futures]
+        points: 1
+      - id: concurrency-assess-free-threaded
+        kind: multi
+        prompt: Which statements about free-threaded CPython are sound?
+        options:
+          - id: a
+            text: It is an optional build mode available from Python 3.13.
+          - id: b
+            text: It makes compound shared-state invariants automatically safe.
+          - id: c
+            text: Some extensions may re-enable the GIL.
+          - id: d
+            text: The actual interpreter and dependencies should be benchmarked.
+        answer: [a, c, d]
+        explanation: Parallel threads do not remove synchronization needs, compatibility considerations, or measurement.
+        concepts: [free-threading, gil]
+        points: 1
+      - id: concurrency-assess-start-method
+        kind: scenario
+        prompt: A library needs process workers but runs inside unknown host applications. How should it expose start behavior?
+        modelAnswer: Accept an executor or multiprocessing context from the application, create related primitives from that context, avoid setting process-global policy during import, and document any hard requirement.
+        explanation: The application owns platform and process topology; global library choices do not compose.
+        concepts: [start-method, library-design]
+        points: 1
+      - id: concurrency-assess-ml
+        kind: scenario
+        prompt: A NumPy or PyTorch call is CPU-heavy. Why is a Python process pool not automatically the first fix?
+        modelAnswer: The native library may already release the GIL and run its own thread pool. Outer process workers can oversubscribe cores, duplicate model memory, copy large inputs, and saturate memory bandwidth. Measure direct execution and control native threads first.
+        explanation: CPU-heavy at the API level does not mean the hot path is Python bytecode.
+        concepts: [native-code, oversubscription]
+        points: 1
+
+interview:
+  - id: concurrency-iv-gil
+    level: basic
+    requiredForMastery: true
+    concepts: [gil, threads]
+    question: What is the GIL, and what practical effect does it have?
+    shortAnswer: |
+      In the normal CPython build, a thread must hold the global interpreter lock to execute Python
+      bytecode and manipulate Python objects. That normally prevents CPU-bound Python threads from
+      scaling across cores, while blocking I/O and cooperating native extensions can release it.
+      It does not make application-level shared state race-free.
+    fullAnswer: |
+      The GIL is CPython's interpreter-wide lock around access to Python objects and the C API. The
+      runtime switches among threads, so they are concurrent, but only one normally executes Python
+      bytecode at a time in an interpreter.
+
+      Socket I/O releases the lock, and native libraries can release it while doing work that does
+      not touch Python objects. Python 3.13+ also offers an optional free-threaded build, which must
+      be identified and benchmarked rather than assumed from the version.
+    commonWrongAnswer: The GIL means Python has no real threads and all threaded code is safe. Threads are real OS threads; their usefulness and race behavior depend on the work and shared invariants.
+    followUps:
+      - When can native code run in parallel?
+      - What changes in a free-threaded build?
+
+  - id: concurrency-iv-compare
+    level: comparison
+    requiredForMastery: true
+    concepts: [asyncio, threads, processes]
+    question: Compare asyncio, threads, and processes for a production service.
+    shortAnswer: |
+      Asyncio is low-overhead cooperative concurrency when the whole call path is non-blocking.
+      Threads integrate blocking I/O with shared memory but need synchronization and normally do not
+      parallelize Python bytecode. Processes parallelize Python work and isolate memory, but pay for
+      startup, serialization, copies, model duplication, and more complex shutdown.
+    fullAnswer: |
+      I choose from waiting, Python CPU time, native CPU time, and boundary cost. Asyncio works well
+      for many sockets with async libraries and explicit task ownership. Threads suit blocking SDKs
+      and GIL-releasing native work where cheap shared references matter.
+
+      Processes suit coarse pure-Python CPU tasks with data-only boundaries. The final choice also
+      includes downstream capacity, cancellation, failure isolation, memory, deployment replicas,
+      native thread pools, and measured tail latency.
+    commonWrongAnswer: Asyncio is for I/O and processes are for CPU. That slogan omits blocking-library integration, native GIL release, data movement, isolation, and capacity.
+    followUps:
+      - How would you combine mechanisms without oversubscribing?
+      - What metrics would validate your choice?
+
+  - id: concurrency-iv-process-boundary
+    level: intermediate
+    requiredForMastery: true
+    concepts: [processes, pickle, batching]
+    question: What makes a good ProcessPoolExecutor task boundary?
+    shortAnswer: |
+      A top-level importable function accepts plain picklable data, performs enough deterministic
+      compute to amortize IPC, and returns a compact result. The owner retains external clients and
+      side effects. Batch size is benchmarked against throughput, memory, imbalance, and latency.
+    fullAnswer: |
+      Spawn-like workers must import the callable and deserialize its inputs. Closures, lambdas,
+      sockets, locks, sessions, and framework request objects couple the worker to state it cannot
+      safely reconstruct.
+
+      I send IDs, arrays with an explicit transfer strategy, or plain record batches. An initializer
+      can load stable read-only worker state. Persistence remains in an idempotent owner so partial
+      process failure has a recoverable meaning.
+    commonWrongAnswer: Any function works because fork copies the parent. That is platform- and version-dependent, unsafe around threads, and does not form a portable public boundary.
+    followUps:
+      - How would you handle a multi-gigabyte array?
+      - What belongs in an initializer?
+
+  - id: concurrency-iv-future
+    level: internals
+    requiredForMastery: true
+    concepts: [future, cancellation, exception]
+    question: What does a Future own, and when can it be cancelled?
+    shortAnswer: |
+      A Future represents one submitted operation and its pending, running, cancelled, or finished
+      state plus result or exception. Cancellation normally succeeds only before the callable begins.
+      Calling `result()` re-raises the worker exception in the owner.
+    fullAnswer: |
+      Submission separates scheduling from observation. The future is the handle through which the
+      owner waits, maps failures to inputs, and decides result ordering. Dropping it can discard
+      application-level observability even if executor shutdown eventually waits.
+
+      Once running, arbitrary thread work cannot be safely interrupted by `cancel()`. Cooperative
+      tokens, operation deadlines, idempotency, and process-failure policies must be designed into
+      the work rather than inferred from the Future API.
+    commonWrongAnswer: Cancelling a future kills its thread. Python cannot safely terminate an arbitrary running thread through Future cancellation.
+    followUps:
+      - What does `shutdown(cancel_futures=True)` cancel?
+      - How do you retain item context for an exception?
+
+  - id: concurrency-iv-deadlock
+    level: tricky
+    requiredForMastery: true
+    concepts: [deadlock, pool-sizing]
+    question: How can an executor deadlock even when every function is individually correct?
+    shortAnswer: |
+      Workers can submit dependent work to the same bounded pool and block on those futures. If all
+      workers do that, no capacity remains for dependencies. Keep orchestration outside leaf workers
+      and avoid cyclic or nested waits; adding workers only moves the threshold.
+    fullAnswer: |
+      Pool capacity is a resource. A task holding one worker while synchronously acquiring another
+      worker creates a resource dependency. With one worker the simplest cycle is immediate; with a
+      larger pool it appears only under load and is harder to diagnose.
+
+      The repair is structural: make pool tasks independent leaves, have the owner build and observe
+      the dependency graph, or execute nested work directly where that is the same unit.
+    commonWrongAnswer: Set max_workers higher. That can delay the deadlock but does not remove the dependency cycle.
+    followUps:
+      - Can ProcessPoolExecutor workers call executor methods safely?
+      - What telemetry reveals pool starvation?
+
+  - id: concurrency-iv-free-threading
+    level: advanced
+    requiredForMastery: true
+    concepts: [free-threading, synchronization]
+    question: Does free-threaded CPython make multiprocessing obsolete?
+    shortAnswer: |
+      No. Free-threaded builds can parallelize threads, but process isolation, memory topology,
+      extension compatibility, failure containment, and deployment constraints still matter. It
+      also makes explicit synchronization more—not less—important. Benchmark the actual build and
+      dependencies.
+    fullAnswer: |
+      Free threading changes the capacity of threads to execute Python simultaneously. It does not
+      turn compound shared-state workflows atomic, and some extensions may re-enable the GIL.
+      Runtime overhead and dependency readiness also vary.
+
+      Processes still offer isolated heaps, independent interpreters, enforceable resource
+      boundaries, and crash containment. Threads retain cheaper data sharing. The correct choice
+      remains workload- and system-specific.
+    commonWrongAnswer: Once the GIL is optional, threads are always the fastest choice. Parallel capacity does not erase contention, data locality, memory safety, or isolation requirements.
+    followUps:
+      - How do you detect the actual runtime mode?
+      - Which old assumptions become race risks?
+
+  - id: concurrency-iv-incident
+    level: scenario
+    requiredForMastery: true
+    concepts: [oversubscription, observability, ml-serving]
+    question: CPU usage and p99 latency rise after doubling inference workers. How do you investigate?
+    shortAnswer: |
+      I map every process and native thread, CPU quota, model copy, queue, connection pool, and data
+      transfer. Then I compare sequential and bounded variants while measuring throughput, p99,
+      queue age, context switching, memory, serialization, and native-library threads. More workers
+      may have oversubscribed cores or memory bandwidth.
+    fullAnswer: |
+      First I verify whether inference is Python code or a native kernel and whether it already owns
+      threads. I inspect deployment replicas and container CPU limits, because host core count may
+      not be the service quota.
+
+      I separate queue delay from service time, check model warm-up and duplication, and measure
+      payload copies. Then I sweep one concurrency control at a time with production-shaped inputs,
+      keeping correctness and failure policy constant.
+    commonWrongAnswer: CPU is high, so add more processes. High CPU may mean useful saturation or destructive oversubscription; the latency and topology evidence decides.
+    followUps:
+      - How would you cap native BLAS threads?
+      - Which result would make you remove the process pool?
+
+projects:
+  - id: concurrency-execution-lab
+    kind: major
+    title: Build a workload-aware execution lab
+    minutes: 240
+    summary: Benchmark one owned execution API across sequential, threaded, and process backends without hiding their semantic differences.
+    problem: |
+      Build a small Python package that runs three reproducible workloads: blocking I/O simulation,
+      pure-Python CPU work, and a native operation that may release the GIL. It must select an
+      execution backend from explicit configuration, preserve input identity and failures, bound
+      admitted work, and emit evidence strong enough to reject a simplistic “threads versus
+      processes” conclusion.
+    requirements:
+      - Provide sequential, ThreadPoolExecutor, and ProcessPoolExecutor runners behind a typed interface.
+      - Keep every process callable at module scope and every process payload picklable.
+      - Require an explicit worker count, process context, batch size, and maximum in-flight count.
+      - Preserve each input ID with either its result or a structured failure.
+      - Support completion-order collection without silently changing returned input ordering.
+      - Record interpreter version, free-threaded or GIL state when detectable, platform, CPU count, and configuration.
+      - Measure warm-up separately from steady-state throughput, p50, p95, p99, CPU time, wall time, and peak memory.
+      - Shut down executors on success, failure, and interruption without dropping observed exceptions.
+      - Include a report that recommends a backend separately for each workload and states uncertainty.
+    constraints:
+      - Use only the Python standard library for the runner and measurement core.
+      - Do not create one future for an unbounded input stream.
+      - Do not pass clients, locks, open files, or closures into process workers.
+      - Do not claim that elapsed time from one run proves a general rule.
+      - Keep external side effects in the owner process.
+    expectedBehaviour:
+      - Blocking waits improve under a bounded thread pool until the simulated downstream cap dominates.
+      - Coarse pure-Python CPU batches can improve under processes on a multi-core environment.
+      - Tiny process tasks expose serialization and scheduling overhead in the report.
+      - Every injected worker failure is attached to the correct input ID.
+      - Ctrl+C or a configured abort stops new admission and executes the documented shutdown policy.
+    structure: |
+      concurrency_lab/
+        __init__.py
+        models.py
+        workloads.py
+        runners.py
+        metrics.py
+        cli.py
+      tests/
+        test_runners.py
+        test_failures.py
+        test_bounds.py
+      REPORT.md
+    milestones:
+      - title: "1 — Define contracts"
+        detail: Model workload input, result, structured failure, backend configuration, and measurement records without executor-specific leakage.
+      - title: "2 — Implement owned runners"
+        detail: Add sequential and executor implementations with bounded submission, context-managed shutdown, completion collection, and item correlation.
+      - title: "3 — Make processes portable"
+        detail: Add top-level workers, the main guard, explicit context selection, batching, and tests that reject non-picklable boundary data.
+      - title: "4 — Build the benchmark harness"
+        detail: Separate warm-up, repeat steady-state trials, capture percentiles and resource evidence, and serialize results for comparison.
+      - title: "5 — Defend the recommendation"
+        detail: Run a parameter sweep, explain reversals caused by task size and transfer cost, and document production limits.
+    testing:
+      - Test that result identity survives completion-order processing.
+      - Inject failures before submission, while pending, and inside a worker.
+      - Prove maximum in-flight work never exceeds configuration.
+      - Run the process tests under an explicit spawn context.
+      - Test clean shutdown after a partial batch failure.
+      - Validate that benchmark reports contain environment and topology metadata.
+    failureCases:
+      - A lambda or nested worker passes in one environment and fails under spawn.
+      - Submitting the entire input creates an unbounded executor queue.
+      - Input-order `result()` calls make completion handling look serial.
+      - Process copies dominate the useful computation.
+      - Worker-side persistence makes full-batch retries duplicate writes.
+      - Native-library threads multiply across process workers.
+    bonus:
+      - Add cooperative stop tokens for thread tasks and document their limitations.
+      - Compare memory-mapped input against serialized process arguments.
+      - Export results as JSON and render a dependency-free Markdown comparison table.
+    architectureHints:
+      - Use a sliding window of futures rather than submitting the full iterable.
+      - Keep a future-to-input mapping and reorder only at the final boundary when required.
+      - Use `time.perf_counter_ns` for wall intervals and repeat enough trials to show variance.
+      - Let the application create and inject an executor or multiprocessing context.
+    referenceOutline: |
+      Define an `ExecutionConfig` dataclass and result union with stable item IDs. The owner consumes
+      an iterator into a fixed-size future window, observes completions, and refills capacity. A
+      module-level adapter calls each pure workload. Process execution receives an explicit context.
+      Metrics wrap the entire run and each item while resource sampling records environment facts.
+      Tests use deterministic gates rather than sleeps to prove bounds and failure behavior.
+
+  - id: concurrency-final-nine-defects
+    kind: final-challenge
+    title: Repair nine execution-boundary defects
+    minutes: 90
+    summary: Diagnose one plausible batch worker whose nine defects span races, serialization, deadlock, backpressure, and retry safety.
+    problem: |
+      You inherit an inference batch module that uses an import-time global process pool, submits a
+      nested closure capturing a database session, creates one future per row, waits on dependent
+      pool work inside workers, assumes `cancel()` kills running work, updates shared counters
+      without synchronization, retries every input after partial writes, depends on the platform's
+      default start method, and ignores the model library's native thread pool.
+
+      Find exactly nine defects. For each, state the violated guarantee, a production symptom, the
+      narrow repair, and a deterministic test or measurement. Then sketch the corrected ownership
+      and data flow. Do not rewrite unrelated business logic.
+    requirements:
+      - Identify exactly nine distinct defects from the brief.
+      - Separate correctness defects from performance and portability defects.
+      - Make application entry code own pool creation and shutdown.
+      - Replace live-object capture with a top-level data-only worker boundary.
+      - Bound admitted futures independently of worker count.
+      - Remove nested waits on the same pool.
+      - Define honest pending and running cancellation behavior.
+      - Protect or eliminate shared mutable counters.
+      - Make persistence idempotent under partial completion and retry.
+      - Select or inject process context explicitly and control native thread oversubscription.
+    constraints:
+      - Do not solve pool starvation by only increasing max_workers.
+      - Do not use worker termination as the normal cancellation path.
+      - Do not move database clients into child processes.
+      - Do not assert performance without a sequential baseline and topology metadata.
+    expectedBehaviour:
+      - The module is safe to import without starting workers.
+      - Spawn-based execution accepts every worker callable and payload.
+      - Memory remains bounded for a generated million-row input.
+      - One failed batch cannot duplicate already committed outputs.
+      - Every result and failure retains its source batch ID.
+      - Shutdown has documented behavior for pending and running work.
+    milestones:
+      - title: "1 — Inventory the nine defects"
+        detail: Tie each symptom to a concrete violated concurrency or ownership guarantee before editing.
+      - title: "2 — Redraw boundaries"
+        detail: Place admission, persistence, process creation, native-thread policy, and observability under explicit owners.
+      - title: "3 — Prove the repair"
+        detail: Add deterministic race, spawn, bound, partial-failure, and shutdown tests plus a benchmark plan.
+    testing:
+      - Use barriers or events rather than timing luck to expose the counter race and pool deadlock.
+      - Execute a child-process smoke test under spawn.
+      - Generate inputs lazily and assert the in-flight high-water mark.
+      - Crash one batch after another commits and prove retry idempotency.
+      - Inspect process and native-thread counts during the benchmark.
+    failureCases:
+      - Counting one root cause as several superficial defects.
+      - Replacing a process pool with threads without measuring workload shape.
+      - Treating cancellation of pending futures as interruption of running side effects.
+      - Depending on an accidental fork-only success.
+    bonus:
+      - Express the backend choice as a small decision record with rollback criteria.
+    architectureHints:
+      - Workers should compute plain results; one owner should commit with idempotency keys.
+      - A refill-on-completion loop provides a bounded future window.
+      - Dependency orchestration belongs outside leaf workers.
+    referenceOutline: |
+      Application `main` constructs the context and pool, streams immutable batches through a
+      bounded future window, and maps futures to batch IDs. Module-level workers initialize stable
+      model state, cap native threads, and return plain results. The owner commits idempotently,
+      records failures, stops admission on policy triggers, cancels only pending futures, waits for
+      running work according to the shutdown contract, and closes the pool.
+
+resources:
+  - name: Python threading — GIL and performance considerations
+    type: docs
+    difficulty: intro
+    url: "https://docs.python.org/3/library/threading.html#gil-and-performance-considerations"
+    usefulness: 5
+    why: Establishes the official boundary between threaded I/O, CPU work, and optional free threading.
+    covers: CPython GIL behavior, thread use cases, processes, and free-threaded builds.
+  - name: Python concurrent.futures
+    type: docs
+    difficulty: core
+    url: "https://docs.python.org/3/library/concurrent.futures.html"
+    usefulness: 5
+    why: Defines Executor and Future behavior, shutdown, cancellation, mapping, failures, and deadlock examples.
+    covers: ThreadPoolExecutor, ProcessPoolExecutor, Future states, as_completed, map, shutdown, and deadlocks.
+  - name: Python multiprocessing — contexts and programming guidelines
+    type: docs
+    difficulty: core
+    url: "https://docs.python.org/3/library/multiprocessing.html"
+    usefulness: 5
+    why: Provides the authoritative cross-platform process model and the restrictions production code must respect.
+    covers: Start methods, safe imports, picklability, queues, process lifecycle, contexts, and shared state.
+  - name: Python support for free threading
+    type: docs
+    difficulty: deep
+    url: "https://docs.python.org/3/howto/free-threading-python.html"
+    usefulness: 5
+    why: Separates current free-threaded guarantees and limitations from folklore about removing the GIL.
+    covers: Detecting runtime mode, extension compatibility, thread safety, overhead, and known limitations.
+  - name: CPython thread states and the global interpreter lock
+    type: docs
+    difficulty: deep
+    url: "https://docs.python.org/3/c-api/threads.html"
+    usefulness: 4
+    why: Explains the interpreter mechanism behind I/O overlap and native extensions that release the lock.
+    covers: Attached thread states, GIL ownership, blocking I/O, and C extension release patterns.

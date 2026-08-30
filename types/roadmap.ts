@@ -18,7 +18,7 @@ export type RoadmapBlockKind =
 
 /** One `- [ ]` line: a trackable topic, with an ID stable enough to store progress against. */
 export interface RoadmapTopic {
-  /** `roadmap:<group key>:<index within group>` — see CONTENT_GUIDE.md. */
+  /** Stable progress key: `roadmap:<group key>:<index within group>` — see CLAUDE.md. */
   id: string;
   text: string;
 }

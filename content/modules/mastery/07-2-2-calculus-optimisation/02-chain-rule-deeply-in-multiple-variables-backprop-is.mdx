@@ -1,0 +1,352 @@
+---
+id: "roadmap:phase-2-2.2:1"
+title: "Chain rule — deeply, in multiple variables. Backprop is this and nothing more."
+description: The chain rule for compositions of multivariable functions, stated as a product of Jacobians, evaluated over a computational graph, and run right-to-left as reverse-mode automatic differentiation — which is all backpropagation is.
+module: 2-2-calculus-optimisation
+order: 2
+estimatedMinutes: 110
+prerequisites: []
+learningObjectives:
+  - State the single-variable and multivariable chain rule and the "sum over paths" interpretation
+  - Write the chain rule for a composition as a product of Jacobians and evaluate it on a computational graph
+  - Contrast forward-mode (Jacobian–vector products) and reverse-mode (vector–Jacobian products) accumulation and their costs
+  - Derive backpropagation for a small network as the reverse-mode chain rule and gradient-check it
+---
+
+The chain rule is the only calculus fact backpropagation uses. Everything a framework does to
+produce a gradient is the chain rule for compositions of multivariable functions, evaluated in a
+particular order over a graph of operations.
+
+Getting this deeply means three things: the multivariable statement (a sum over every path from
+input to output), the matrix statement (a product of Jacobians), and the two ways to multiply that
+product — left-to-right (forward mode) or right-to-left (reverse mode, which is backprop).
+
+<TypeScriptComparison>
+
+- A minimal autodiff engine in TypeScript stores, per operation, a closure `(upstreamGrad) => inputGrad`; that closure is the vector–Jacobian product, and `backward()` calls them in reverse topological order.
+- Forward-mode in TS carries a `{value, dot}` dual number through the same code; `dot` is the directional derivative, a Jacobian–vector product.
+- The "sum over paths" is literally a sum over graph paths; in code it is the accumulation `node.grad += contribution` when a node feeds multiple consumers.
+- Neither language checks that your gradient closures are correct — a finite-difference `gradcheck` is the safety net in both.
+
+</TypeScriptComparison>
+
+## Single variable, then many
+
+Single variable: if `y = f(g(x))`, then `dy/dx = f'(g(x)) * g'(x)`. Multivariable: if
+`z = f(u_1, ..., u_m)` and each `u_i = g_i(x_1, ..., x_n)`, then
+
+`dz/dx_j = sum_i (dz/du_i) * (du_i/dx_j)`.
+
+Read it as a sum over paths: `z` depends on `x_j` through each intermediate `u_i`, and the total
+sensitivity is the sum of the per-path products of local sensitivities. Every extra layer adds
+another factor to each path.
+
+```python
+import numpy as np
+
+# z = (a*b) + sin(a);  a and b are the inputs
+def z(a, b): return a * b + np.sin(a)
+a, b = 2.0, 3.0
+# dz/da via sum over the two paths a->(a*b)->z and a->sin(a)->z
+dz_da = b + np.cos(a)          # 1*b through the product, cos(a) through the sine
+dz_db = a
+h = 1e-6
+assert abs(dz_da - (z(a + h, b) - z(a - h, b)) / (2 * h)) < 1e-6
+```
+
+## As a product of Jacobians
+
+For a chain `x -> u = f_1(x) -> v = f_2(u) -> ... -> y = f_k(...)`, the Jacobian of the whole map is
+
+`J_{y/x} = J_k @ J_{k-1} @ ... @ J_1`,
+
+where `J_i` is the Jacobian of the `i`-th function at its input. Jacobians multiply in the order the
+functions apply, right to left. The "sum over paths" is exactly the sum implicit in these matrix
+products.
+
+```python
+W1 = np.random.default_rng(0).standard_normal((4, 3))
+W2 = np.random.default_rng(1).standard_normal((2, 4))
+x = np.random.default_rng(2).standard_normal(3)
+
+def forward(x): return W2 @ np.tanh(W1 @ x)
+h = np.tanh(W1 @ x)
+J1 = W1
+J2 = np.diag(1 - h**2)                 # tanh' is elementwise -> diagonal Jacobian
+J3 = W2
+J_total = J3 @ J2 @ J1
+num = np.column_stack([(forward(x + e) - forward(x - e)) / 2e-6 for e in np.eye(3) * 1e-6])
+assert np.allclose(J_total, num, atol=1e-5)
+```
+
+## Forward mode versus reverse mode
+
+The product `J_k @ ... @ J_1` can be evaluated two ways. Forward mode multiplies right to left,
+carrying a column vector `v` (an input perturbation direction): each step is a Jacobian–vector
+product `J_i @ v`. Its cost is one pass per input direction.
+
+Reverse mode multiplies left to right, carrying a row vector `u` (the gradient of a scalar output):
+each step is a vector–Jacobian product `u @ J_i`, i.e. `J_i.T @ u`. Its cost is one pass per output.
+For a scalar loss with many parameters, reverse mode wins overwhelmingly — one pass, any number of
+inputs.
+
+```python
+# reverse mode for a scalar loss L = sum(forward(x))
+g = np.ones(2)                          # dL/dy
+grad_h = W2.T @ g                       # u @ J3
+grad_pre = grad_h * (1 - h**2)          # u @ J2 (diagonal)
+grad_x = W1.T @ grad_pre               # u @ J1
+def L(x): return forward(x).sum()
+num = np.array([(L(x + e) - L(x - e)) / 2e-6 for e in np.eye(3) * 1e-6])
+assert np.allclose(grad_x, num, atol=1e-5)
+```
+
+<Concept>
+
+Backpropagation = the chain rule, evaluated right-to-left over the computational graph, propagating
+vector–Jacobian products. No full Jacobian is built; each backward function maps an output-gradient
+to an input-gradient directly. That is the entire algorithm.
+
+</Concept>
+
+## The computational graph and accumulation
+
+Autodiff records the forward computation as a directed acyclic graph: nodes are intermediate values,
+edges carry local partial derivatives. Reverse mode processes nodes in reverse topological order,
+and when a node feeds several consumers, its gradient is the **sum** of the contributions from each —
+the multi-path sum made concrete.
+
+```python
+# a value used twice: y = x*x written as y = a*b with a = b = x
+x = 3.0
+a = b = x
+y = a * b
+# dy/dx = dy/da * da/dx + dy/db * db/dx = b*1 + a*1 = 2x
+grad_a = b
+grad_b = a
+grad_x = grad_a * 1 + grad_b * 1
+assert grad_x == 2 * x
+```
+
+## Higher-order: chain rule for the Hessian
+
+Differentiating the gradient again applies the chain rule a second time. For `L(theta)` the Hessian
+is `H = d/dtheta (grad L)`, and a Hessian–vector product `H @ v` is obtained by differentiating the
+scalar `grad L(theta) @ v` — reverse-over-reverse, or forward-over-reverse. No `p*p` matrix is
+formed.
+
+<WhyItMatters>
+
+Every `.backward()` call is this chain rule. Understanding it explains why frameworks need the
+forward graph retained (to know the local Jacobians), why a value reused in two places gets a summed
+gradient, why `detach()` cuts a path, and why reverse mode is what makes training a billion-parameter
+model feasible.
+
+</WhyItMatters>
+
+## Doing this in floating point
+
+The chain rule is exact in real arithmetic; in floating point each local Jacobian and each product
+carries rounding, so a reverse pass and a forward pass of the same derivative can differ in the last
+bits. Gradient-check with a relative tolerance, not exact equality.
+
+A long chain multiplies many factors, so a systematic scale in the local Jacobians compounds: all
+factors slightly above 1 explode the gradient, all slightly below 1 vanish it. This is the exploding
+/ vanishing gradient problem, and it is a property of the product of Jacobians, addressed by
+normalisation, residual connections, and careful initialisation.
+
+<ProductionNote>
+
+If a custom layer trains badly, gradient-check its backward in isolation before suspecting the
+optimiser. Watch the norm of the gradient at each layer during training: a monotonic blow-up or
+decay down the depth is the Jacobian-product scale problem, not a bug in one layer.
+
+</ProductionNote>
+
+## Cost
+
+A reverse pass costs a small constant (typically 2 to 4) times one forward pass, independent of the
+parameter count, plus memory to store the forward activations. Forward mode costs a similar constant
+times a forward pass *per seed direction*. A full Jacobian by reverse mode costs `m` passes (one per
+output); by forward mode, `n` passes (one per input) — pick the cheaper.
+
+## Exercises
+
+<Exercise id="lcr-chain-single" difficulty="easy">
+
+Differentiate `y = sin(x^2 + 1)` with respect to `x` using the chain rule, showing the layers.
+
+<Solution>
+
+Layers: `u = x^2 + 1`, then `y = sin(u)`.
+
+`dy/du = cos(u) = cos(x^2 + 1)`. `du/dx = 2x`.
+
+Chain rule: `dy/dx = (dy/du) * (du/dx) = cos(x^2 + 1) * 2x = 2x cos(x^2 + 1)`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lcr-multivariable-paths" difficulty="medium">
+
+Let `z = u*v` with `u = x + y` and `v = x - y`. Compute `dz/dx` and `dz/dy` by the multivariable
+chain rule, then check by expanding `z` directly.
+
+<Solution>
+
+`dz/du = v`, `dz/dv = u`. `du/dx = 1`, `du/dy = 1`, `dv/dx = 1`, `dv/dy = -1`.
+
+`dz/dx = (dz/du)(du/dx) + (dz/dv)(dv/dx) = v*1 + u*1 = v + u = (x - y) + (x + y) = 2x`.
+
+`dz/dy = (dz/du)(du/dy) + (dz/dv)(dv/dy) = v*1 + u*(-1) = v - u = (x - y) - (x + y) = -2y`.
+
+Direct check: `z = (x + y)(x - y) = x^2 - y^2`, so `dz/dx = 2x` and `dz/dy = -2y`. They match. The
+two paths (through `u` and through `v`) sum, and the signs come from `dv/dy = -1`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lcr-jacobian-product-order" difficulty="hard">
+
+For `y = f_3(f_2(f_1(x)))` with `f_1: R^n -> R^a`, `f_2: R^a -> R^b`, `f_3: R^b -> R^m`, give the
+Jacobian shapes, the total Jacobian, and the flop cost of computing `grad_x L` for a scalar
+`L = g(y)` by reverse mode versus forming the full Jacobian.
+
+<Solution>
+
+Jacobian shapes (numerator layout): `J_1` is `(a, n)`, `J_2` is `(b, a)`, `J_3` is `(m, b)`. The
+total Jacobian is `J_{y/x} = J_3 @ J_2 @ J_1`, shape `(m, n)`.
+
+Reverse mode for a scalar `L`: start with `u = dL/dy` of shape `(m,)`. Compute
+`u_3 = J_3.T @ u` (shape `b`, cost `m*b`), then `u_2 = J_2.T @ u_3` (shape `a`, cost `a*b`), then
+`grad_x = J_1.T @ u_2` (shape `n`, cost `a*n`). Total about `m*b + a*b + a*n` — no matrix–matrix
+product, no `(m, n)` array.
+
+Forming the full Jacobian: `J_3 @ J_2` costs `m*b*a`, then `(m, a) @ (a, n)` costs `m*a*n`, then a
+final `J.T @ u` costs `m*n`. That is `m*a*b + m*a*n + m*n`, larger by roughly a factor of the output
+dimension `m` (and it allocates `(m, n)`). This is why backprop propagates VJPs and never
+materialises Jacobians.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lcr-interview-backprop" difficulty="interview">
+
+In an interview: "Explain backpropagation without hand-waving. What exactly is it computing, and in
+what order?"
+
+<Solution>
+
+Backpropagation computes the gradient of a scalar loss with respect to every parameter by applying
+the multivariable chain rule over the computational graph, evaluated from the output backward.
+
+Concretely: the forward pass records a DAG of primitive operations and their inputs, and `dL/dL` is
+`1`. Reverse mode then visits nodes in reverse topological order, and at each node applies that
+operation's vector–Jacobian product — a function taking the gradient of `L` with respect to the
+node's output and returning the gradient with respect to its inputs.
+
+For a linear layer that VJP is `W.T @ delta` (input) and `outer(delta, x)` (weight); for an
+elementwise activation it is `delta * phi'(z)`. When a value was used by several downstream ops, its
+gradient is the sum of the contributions from each — the sum-over-paths made concrete.
+
+No Jacobian matrix is ever formed; each step is an array times a vector. The whole reverse pass
+costs a small constant times one forward pass, independent of the number of parameters, which is why
+it scales. Forward-mode autodiff computes the mirror image — Jacobian–vector products left to right —
+and is used when there are few inputs rather than few outputs.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lcr-vanishing-real-world" difficulty="real-world">
+
+A 40-layer network trains fine for the last few layers but the first layers' weights barely move.
+Relate this to the chain rule and give concrete fixes.
+
+<Solution>
+
+The gradient reaching layer `k` from the loss is a product of the Jacobians of layers `k+1` through
+`40` (times the loss gradient). If the typical singular value of each layer Jacobian is below 1, that
+product shrinks geometrically with depth, so the early layers receive a gradient many orders of
+magnitude smaller than the late layers — vanishing gradients. If it is above 1, the opposite
+(exploding) happens.
+
+Fixes target the product of Jacobians. Residual connections make each layer's Jacobian close to
+`I + (small)`, so the product stays near 1. Normalisation layers (batch, layer, RMS) rescale
+activations so each layer's Jacobian has singular values near 1. Careful initialisation (He, Xavier,
+orthogonal) sets the initial per-layer Jacobian scale to 1. Non-saturating activations (ReLU, GELU)
+avoid the near-zero `phi'` regions of sigmoid/tanh. Gradient clipping bounds the exploding case.
+
+Diagnose by logging the gradient norm per layer: a smooth exponential decay or growth with depth
+confirms the Jacobian-product scale problem rather than a bug in any single layer.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. State the multivariable chain rule for `z = f(u_1, ..., u_m)` with `u_i = g_i(x)`, and the
+   sum-over-paths reading.
+2. Write the total Jacobian of `f_3(f_2(f_1(x)))` as a product, in the right order.
+3. What does forward mode carry through the chain, and what does reverse mode carry?
+4. Why does a value used in two places get a summed gradient?
+5. Why is the gradient reaching an early layer a product of many Jacobians, and what does that
+   imply?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="I multiplied the Jacobians in the order the functions are written.">
+
+They multiply in the order the functions *apply*, which is right to left: `J_last @ ... @ J_first`.
+For `f_3(f_2(f_1(x)))` the total Jacobian is `J_3 @ J_2 @ J_1`.
+
+</Gotcha>
+
+<Gotcha question="A tensor I used twice has a gradient that looks too small.">
+
+Each use contributes a term; the gradient is their sum. If your manual backward only accounts for
+one use, it is missing a term. Frameworks accumulate with `+=` for exactly this reason.
+
+</Gotcha>
+
+<Gotcha question="Forward-mode and reverse-mode gave slightly different gradients.">
+
+Floating-point rounding differs between multiplying the Jacobian product left-to-right and
+right-to-left. The gap should be a few ULPs relative; only a large discrepancy indicates a bug.
+
+</Gotcha>
+
+<Gotcha question="My deep network's early layers do not learn — must be a bug in layer 1.">
+
+More likely the product of the later layers' Jacobians is vanishing (or exploding), starving layer
+1's gradient. Check the per-layer gradient norm profile; fix with residuals, normalisation, or
+initialisation, not by editing layer 1.
+
+</Gotcha>
+
+<Gotcha question="`detach()` / `stop_gradient` changed my result — why?">
+
+It cuts an edge in the computational graph, so the chain rule no longer propagates through that path.
+The gradient is then the sum over the *remaining* paths only. That is often intentional (target
+networks, straight-through estimators); make sure it is here.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+The multivariable chain rule says `dz/dx_j = sum_i (dz/du_i)(du_i/dx_j)` — a sum over every path
+from `x_j` to `z`, each path a product of local sensitivities. In matrix form the Jacobian of a
+composition is the product of the per-function Jacobians, multiplied right to left.
+
+That product can be evaluated forward (Jacobian–vector products, one pass per input direction) or
+backward (vector–Jacobian products, one pass per output). For a scalar loss and many parameters,
+reverse mode — backpropagation — computes the whole gradient in one pass, storing forward
+activations and summing contributions where a value is reused.
+
+No Jacobian is ever materialised. A long chain multiplies many Jacobians, so their collective scale
+decides whether gradients explode or vanish, which residuals, normalisation, and initialisation
+control. The Practice, Debug, Interview, Test, Project, and Review tabs build the chain rule, a tiny
+reverse-mode engine, and the diagnostics.

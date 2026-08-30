@@ -1,0 +1,788 @@
+lessonId: "roadmap:phase-2-2.1:4"
+module: 2-1-linear-algebra
+lesson: 05-systems-of-linear-equations-gaussian-elimination-lu-decomposition
+title: "Systems of linear equations, Gaussian elimination, LU decomposition"
+summary: Read Ax = b through the row and column pictures, run elimination as elementary row operations, store it as a pivoted LU factorisation reused across right-hand sides, and reach for Cholesky or QR when the matrix structure calls for it.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lsle-read-elimination-loop
+    tier: normal
+    kind: code-reading
+    title: Read an elimination loop
+    minutes: 10
+    requiredForMastery: true
+    concepts: [gaussian-elimination, pivots, row-operations]
+    prompt: |
+      Read this forward-elimination loop and state what each line does, and the one input property
+      that makes it fail.
+      ```python
+      for k in range(n):
+          for i in range(k + 1, n):
+              f = A[i, k] / A[k, k]
+              A[i, k:] -= f * A[k, k:]
+              b[i]     -= f * b[k]
+      ```
+    hints:
+      - "`f` is the multiplier that zeroes the entry below the pivot in column `k`."
+      - The division uses `A[k, k]`; think about what happens when that is zero or tiny.
+    solution: |
+      The outer loop walks the pivot columns. For each row `i` below the pivot, `f = A[i, k] /
+      A[k, k]` is the multiple of the pivot row that cancels `A[i, k]`. The row update
+      `A[i, k:] -= f * A[k, k:]` subtracts that multiple from the rest of row `i`, and `b[i] -=
+      f * b[k]` keeps the right-hand side consistent. After the loop `A` is upper triangular. It
+      fails when a pivot `A[k, k]` is zero (division by zero) and degrades badly when a pivot is
+      tiny, because `f` becomes huge and rounding error is amplified. Partial pivoting fixes both.
+  - id: lsle-write-back-substitution
+    tier: normal
+    kind: write-code
+    title: Back substitution
+    minutes: 12
+    requiredForMastery: true
+    concepts: [back-substitution, triangular-solve]
+    prompt: |
+      Write `back_substitute(U, c)` that solves `U x = c` for an upper-triangular `U` with nonzero
+      diagonal, working from the last row up. State its cost.
+    hints:
+      - The last equation involves only `x[n-1]`.
+      - Row `i` gives `x[i]` once `x[i+1:]` are known.
+    solution: |
+      Iterate `i` from `n - 1` down to `0`, computing
+      `x[i] = (c[i] - U[i, i+1:] @ x[i+1:]) / U[i, i]`. Each step subtracts the already-known tail
+      of the row and divides by the diagonal entry. The cost is about `n**2 / 2` multiply-adds,
+      one triangular solve. It requires every diagonal entry of `U` to be nonzero, which holds
+      exactly when the original system has a unique solution.
+  - id: lsle-predict-solution-set
+    tier: normal
+    kind: predict-output
+    title: Consistent, unique, or a family
+    minutes: 10
+    requiredForMastery: true
+    concepts: [rank, consistency, free-variables]
+    prompt: |
+      A system has 4 unknowns. You compute `rank(A) = 3` and `rank([A | b]) = 3`. How many solutions
+      are there, and how many free parameters?
+    hints:
+      - Equal ranks mean the system is consistent.
+      - Free parameters equal unknowns minus rank.
+    solution: |
+      The ranks are equal, so `b` is in the column space and the system is consistent. The rank is
+      3 but there are 4 unknowns, so there is one column without a pivot, giving one free parameter.
+      The solution set is a particular solution plus a one-dimensional line of null-space vectors:
+      infinitely many solutions, one free parameter.
+  - id: lsle-explain-lu-is-elimination
+    tier: normal
+    kind: explain
+    title: Why LU is just elimination remembered
+    minutes: 10
+    requiredForMastery: true
+    concepts: [lu-decomposition, elementary-matrices]
+    prompt: |
+      Explain why Gaussian elimination without row swaps produces a factorisation `A = L U`, and say
+      what `L` and `U` contain.
+    hints:
+      - Each elimination step is left-multiplication by a lower-triangular elementary matrix.
+      - Collect those steps and invert them.
+    solution: |
+      Forward elimination applies a sequence of elementary row operations, each of which is
+      left-multiplication by a unit lower-triangular matrix `E_k`. After all of them,
+      `E_m ... E_1 A = U` is upper triangular. Let `L = (E_m ... E_1)^{-1}`, which is again unit
+      lower triangular because the inverse and product of such matrices stay in that class. Then
+      `A = L U`. Concretely `U` is the upper-triangular result of elimination and `L` holds the
+      multipliers `f` used at each step, with ones on the diagonal.
+  - id: lsle-lu-with-pivoting
+    tier: intermediate
+    kind: write-code
+    title: Solve via a pivoted factorisation
+    minutes: 16
+    requiredForMastery: true
+    concepts: [partial-pivoting, lu-solve, permutation]
+    prompt: |
+      Using `scipy.linalg.lu_factor` and `lu_solve`, write `solve_many(A, B)` that solves `A X = B`
+      for a matrix `B` of stacked right-hand sides, factoring `A` only once. Explain what `piv`
+      encodes.
+    hints:
+      - "`lu_factor` returns `(lu, piv)`; pass that tuple to `lu_solve`."
+      - "`piv` is the sequence of row swaps chosen by partial pivoting."
+    solution: |
+      `lu, piv = scipy.linalg.lu_factor(A)` does one pivoted `O(n**3 / 3)` factorisation. Then
+      `return scipy.linalg.lu_solve((lu, piv), B)` solves every column of `B` with triangular
+      solves at `O(n**2)` each, using level-3 BLAS on the whole block. `piv` encodes the partial
+      pivoting: `piv[i]` is the row swapped to position `i` before eliminating in column `i`,
+      equivalent to a permutation matrix `P` with `P A = L U`. `lu_solve` applies that permutation
+      to `B` internally, which is the step a hand-rolled solver usually forgets.
+  - id: lsle-cholesky-when-spd
+    tier: intermediate
+    kind: write-code
+    title: Cholesky for an SPD system
+    minutes: 16
+    requiredForMastery: true
+    concepts: [cholesky, spd, log-determinant]
+    prompt: |
+      For a symmetric positive definite `A`, write `solve_spd(A, b)` using `scipy.linalg.cho_factor`
+      and `cho_solve`, and also return `log(det(A))` from the same factor. State the cost advantage
+      over LU.
+    hints:
+      - "`A == L @ L.T` with `L` lower triangular; no pivoting is needed for SPD."
+      - "`det(A) == prod(diag(L))**2`, so its log is `2 * sum(log(diag(L)))`."
+    solution: |
+      `c, low = scipy.linalg.cho_factor(A)` computes the Cholesky factor at about `n**3 / 6`
+      operations, half of LU's `n**3 / 3`, with no pivoting because an SPD matrix never needs it.
+      `x = scipy.linalg.cho_solve((c, low), b)` is two triangular solves. The log-determinant is
+      `2.0 * np.sum(np.log(np.diag(np.tril(c) if low else np.triu(c))))`; in practice take the
+      triangular part `cho_factor` returned. Cholesky is also more stable and is the standard tool
+      for Gaussian log-likelihoods and sampling.
+  - id: lsle-residual-vs-error
+    tier: intermediate
+    kind: explain
+    title: Small residual, large error
+    minutes: 14
+    requiredForMastery: true
+    concepts: [condition-number, residual, iterative-refinement]
+    prompt: |
+      A solve returns `x` with `norm(A @ x - b)` about `1e-14` but `x` is visibly wrong. Explain how
+      that is possible and one cheap way to recover accuracy.
+    hints:
+      - Relate the error in `x` to the residual through the condition number.
+      - The existing factorisation can be reused to correct `x`.
+    solution: |
+      The error satisfies `norm(x - x_true) / norm(x_true)` is at most about `cond(A)` times
+      `norm(r) / norm(b)`, where `r = A @ x - b`. If `cond(A)` is `1e12`, a relative residual of
+      `1e-14` still permits a relative error near `1e-2`. A tiny residual only means `x` nearly
+      satisfies the equations, not that it is near the true solution. Iterative refinement helps:
+      compute `r = b - A @ x` (ideally in higher precision), solve `A d = r` with the existing
+      `(lu, piv)`, set `x += d`, and repeat once or twice. Each round recovers digits lost to a
+      moderately ill-conditioned `A`.
+  - id: lsle-determinant-from-lu
+    tier: intermediate
+    kind: predict-output
+    title: Determinant from the LU factors
+    minutes: 12
+    requiredForMastery: true
+    concepts: [determinant, lu-decomposition, permutation-sign]
+    prompt: |
+      An LU factorisation with partial pivoting gives `U` with diagonal `(2, -3, 0.5)` and a
+      permutation that is a single row swap. What is `det(A)`?
+    hints:
+      - "`det(A) == det(P)^{-1} * det(L) * det(U)`; `L` is unit triangular."
+      - A single row swap has permutation sign `-1`.
+    solution: |
+      `det(L) = 1` because `L` is unit lower triangular. `det(U)` is the product of its diagonal,
+      `2 * (-3) * 0.5 = -3`. One row swap means `det(P) = -1`, and since `P A = L U` we have
+      `det(A) = det(U) / det(P) = -3 / (-1) = 3`. Equivalently, `det(A) = sign(P) * prod(diag(U))`
+      with `sign(P) = -1` for an odd number of swaps.
+  - id: lsle-detect-inconsistency
+    tier: intermediate
+    kind: predict-output
+    title: Spot inconsistency during elimination
+    minutes: 12
+    requiredForMastery: true
+    concepts: [consistency, row-echelon, elimination]
+    prompt: |
+      During elimination on a `3 x 3` system you reach a row that reads `0  0  0 | 5` in the
+      augmented matrix. What does that mean, and what would the same position show for a system with
+      infinitely many solutions?
+    hints:
+      - Read the row back as an equation.
+      - A zero coefficient row with a zero right-hand side is different from one with a nonzero right-hand side.
+    solution: |
+      The row `0 0 0 | 5` is the equation `0 = 5`, which no `x` can satisfy, so the system is
+      inconsistent and has no solution — `b` is not in the column space of `A`. For a system with
+      infinitely many solutions the corresponding row would read `0 0 0 | 0`, the trivially true
+      equation `0 = 0`, which signals a dependent equation and a free variable rather than a
+      contradiction. The count of nonzero rows after elimination is the rank of `A`; comparing it
+      with the rank of the augmented matrix distinguishes the two cases.
+  - id: lsle-debug-forgot-permute-b
+    tier: tricky
+    kind: debug
+    title: Row swaps applied to A but not b
+    minutes: 16
+    requiredForMastery: true
+    concepts: [partial-pivoting, permutation, right-hand-side]
+    prompt: |
+      This hand-rolled solver pivots the matrix rows for stability but returns wrong answers. Find
+      the bug.
+    code: |
+      def solve(A, b):
+          A = A.astype(float).copy()
+          b = b.astype(float).copy()
+          n = len(b)
+          for k in range(n):
+              p = k + np.argmax(np.abs(A[k:, k]))
+              A[[k, p]] = A[[p, k]]
+              for i in range(k + 1, n):
+                  f = A[i, k] / A[k, k]
+                  A[i, k:] -= f * A[k, k:]
+                  b[i] -= f * b[k]
+          # back substitution omitted
+          return b
+    solution: |
+      The pivot step swaps rows `k` and `p` of `A` but never swaps the matching entries of `b`.
+      After the first swap, `b` no longer corresponds to the reordered equations, so every
+      subsequent elimination and the final solve are inconsistent. Fix: swap `b[[k, p]] =
+      b[[p, k]]` immediately after `A[[k, p]] = A[[p, k]]`. Alternatively track a permutation vector
+      and apply it to `b` once at the end. Regression: a matrix whose largest first-column entry is
+      not in row 0, with a known solution, fails before the fix and passes after.
+    hints:
+      - Whatever reordering you do to the rows of `A` must also be done to `b`.
+      - Add the swap of `b` right next to the swap of `A`.
+  - id: lsle-debug-no-pivot-tiny
+    tier: tricky
+    kind: debug
+    title: No pivoting on a small leading entry
+    minutes: 16
+    requiredForMastery: true
+    concepts: [partial-pivoting, numerical-stability, multipliers]
+    prompt: |
+      This solver is correct in exact arithmetic but returns garbage for
+      `A = [[1e-15, 1], [1, 1]]`, `b = [1, 2]`. Diagnose and fix.
+    code: |
+      def solve2x2(A, b):
+          f = A[1, 0] / A[0, 0]
+          m = A[1, 1] - f * A[0, 1]
+          c = b[1] - f * b[0]
+          y = c / m
+          x = (b[0] - A[0, 1] * y) / A[0, 0]
+          return np.array([x, y])
+    solution: |
+      With `A[0, 0] = 1e-15` the multiplier `f = 1 / 1e-15 = 1e15` is enormous. `m = 1 - 1e15` and
+      `c = 2 - 1e15` both round to `-1e15` in float64, so `y` comes out as `1` (roughly right) but
+      the final `x = (1 - 1 * y) / 1e-15` evaluates `0 / 1e-15 = 0`, while the true `x` is about
+      `1`. The small pivot destroyed the information in `b`. Fix: swap the rows first because
+      `|A[1, 0]| > |A[0, 0]|`, then `f = 1e-15`, `m ~ 1`, and the solve gives `x ~ 1`, `y ~ 1`.
+      Add partial pivoting: swap when `abs(A[1, 0]) > abs(A[0, 0])`.
+    hints:
+      - The multiplier `A[1,0] / A[0,0]` blows up when the pivot is tiny.
+      - Swap the rows so the larger-magnitude entry is the pivot.
+  - id: lsle-debug-lu-singular
+    tier: tricky
+    kind: debug
+    title: Trusting LU on a singular matrix
+    minutes: 14
+    requiredForMastery: true
+    concepts: [singular-matrix, lu-decomposition, condition-number]
+    prompt: |
+      This routine factors `A` and solves, assuming success means `A` was fine. It returns a wild
+      `x` for a rank-deficient `A` without raising. Add a real check.
+    code: |
+      def solve_checked(A, b):
+          lu, piv = scipy.linalg.lu_factor(A)
+          return scipy.linalg.lu_solve((lu, piv), b)
+    solution: |
+      `lu_factor` does not raise on a singular or near-singular matrix; it produces a `U` with a
+      near-zero or zero diagonal entry, and `lu_solve` then divides by it, yielding huge or `inf`
+      or `nan` components with no error. Add a conditioning check before trusting the result: after
+      factoring, inspect `min(abs(np.diag(lu)))` relative to `max(abs(np.diag(lu)))`, or compute
+      `s = np.linalg.svd(A, compute_uv=False)` and reject when `s[0] / s[-1]` exceeds a threshold.
+      Optionally verify the residual `norm(A @ x - b)` against `tol * norm(b)`. Regression: pass a
+      matrix with two identical rows and assert the function raises or flags instead of returning
+      `x`.
+    hints:
+      - "`lu_factor` will factor a singular matrix without complaint."
+      - Check the smallest pivot magnitude or the condition number, or verify the residual.
+  - id: lsle-design-linear-solver-api
+    tier: challenge
+    kind: design
+    title: Design a dispatching linear-solve API
+    minutes: 30
+    requiredForMastery: false
+    concepts: [dispatch, cholesky, lu, least-squares, conditioning]
+    prompt: |
+      Design `linsolve(A, b, assume=None)` that picks the right method: Cholesky for SPD, LU for
+      general square, least-squares for non-square or rank-deficient. State inputs, outputs, the
+      detection logic, and what it must not do silently.
+    hints:
+      - "`assume` lets the caller assert SPD and skip a symmetry and definiteness check."
+      - Non-square or a failed Cholesky or a bad condition number should route to lstsq, with a recorded reason.
+    solution: |
+      Inputs: `A`, `b` (vector or stacked matrix), an optional `assume` in a small set such as
+      "spd", "sym", "general", "lstsq", and an optional condition-number limit. Logic: if `A` is
+      non-square, use `np.linalg.lstsq` and return the residual and rank. If square and `assume ==
+      "spd"` or (`A` is symmetric within tolerance and `cho_factor` succeeds), use Cholesky.
+      Otherwise use pivoted LU. After factoring, estimate the condition number; if it exceeds the
+      limit, either fall back to an SVD-based least-squares solve or return the solution flagged as
+      untrustworthy. Output: the solution plus an object recording the method chosen, the condition
+      number, the residual, and any fallback reason. It must not silently return a solution for a
+      singular `A`, must not choose Cholesky without confirming symmetry and success, and must not
+      hide that a fallback occurred. Include cases: SPD, general nonsingular, singular, tall
+      least-squares, and an ill-conditioned square matrix.
+  - id: lsle-refactor-repeated-solve
+    tier: challenge
+    kind: refactor
+    title: Refactor a loop that re-solves every iteration
+    minutes: 28
+    requiredForMastery: false
+    concepts: [factorisation-reuse, newton, performance]
+    prompt: |
+      A Newton-type optimiser calls `np.linalg.solve(H, -g)` each iteration, where `H` changes only
+      slightly and is symmetric. Also, a separate reporting step calls `np.linalg.inv(H)` for
+      standard errors. Refactor for speed and stability without changing the maths.
+    hints:
+      - A fresh `solve` refactorises from scratch every iteration.
+      - Standard errors need only the diagonal of `H^{-1}`, obtainable from a factor.
+    solution: |
+      Per iteration, factor `H` once with `scipy.linalg.cho_factor` (it is symmetric; add a small
+      diagonal shift or fall back to LU if it is not positive definite near a saddle), then
+      `cho_solve` for the step. If `H` barely changes between iterations, consider a quasi-Newton
+      update or reusing the previous factor for a few steps with a line search, refactoring only
+      when progress stalls. For the standard errors, do not form `np.linalg.inv(H)`; solve
+      `H @ E == I` column by column with the existing factor, or extract just the diagonal of the
+      inverse via `cho_solve` against identity columns, which is what the report needs. Add a
+      fail-before-fix benchmark capturing the old wall-clock time and the reference step and
+      standard errors within tolerance.
+quizzes:
+  - id: lsle-checkpoint
+    title: Checkpoint — systems, elimination, LU
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lsle-cp-column-picture
+        kind: mcq
+        prompt: In the column picture, a solution to `A x = b` exists exactly when what?
+        options:
+          - {id: colspace, text: "`b` lies in the column space of `A`"}
+          - {id: square, text: "`A` is square"}
+          - {id: nonzero, text: "`b` is not the zero vector"}
+        answer: [colspace]
+        explanation: "`A x` is a combination of `A`'s columns, so `b` must be reachable from them."
+        concepts: [column-picture, consistency]
+        points: 1
+      - id: lsle-cp-ranks
+        kind: mcq
+        prompt: "`rank(A) = rank([A | b]) = 2` with 3 unknowns. The system has what?"
+        options:
+          - {id: many, text: Infinitely many solutions, one free parameter}
+          - {id: one, text: Exactly one solution}
+          - {id: none, text: No solution}
+        answer: [many]
+        explanation: Consistent, but rank below the unknown count leaves one free variable.
+        concepts: [rank, free-variables]
+        points: 1
+      - id: lsle-cp-pivoting
+        kind: multi
+        prompt: Why does a dense solver use partial pivoting?
+        options:
+          - {id: zero, text: To avoid dividing by a zero pivot}
+          - {id: tiny, text: To keep multipliers bounded so rounding error is not amplified}
+          - {id: perm, text: The swaps are recorded as a permutation `P` with `P A = L U`}
+          - {id: faster, text: It makes the factorisation asymptotically faster}
+        answer: [zero, tiny, perm]
+        explanation: Pivoting is about stability, not speed; it bounds the multipliers and is tracked by `P`.
+        concepts: [partial-pivoting, stability]
+        points: 1
+      - id: lsle-cp-reuse
+        kind: mcq
+        prompt: Solving `A x = b` for 200 different `b` with one `A` is cheap because what?
+        options:
+          - {id: factor-once, text: One `O(n^3)` factorisation, then `O(n^2)` per right-hand side}
+          - {id: inv, text: "Computing the inverse of `A` once is the cheapest route"}
+          - {id: parallel, text: The solves are embarrassingly parallel and that is the main saving}
+        answer: [factor-once]
+        explanation: The expensive elimination is done once; each new solve is two triangular solves.
+        concepts: [lu-decomposition, factorisation-reuse]
+        points: 1
+  - id: lsle-assessment
+    title: Assessment — solving linear systems
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lsle-as-two-pictures
+        kind: explain
+        prompt: Describe the row picture and the column picture of `A x = b` and what each makes clear.
+        modelAnswer: |
+          Row picture: each equation is a hyperplane, and a solution is a common point; it makes the
+          geometry of no / one / many (parallel, crossing, coincident) clear. Column picture:
+          `A x = b` asks for coefficients so that a combination of `A`'s columns equals `b`; it makes
+          existence clear — a solution exists exactly when `b` is in the column space.
+        explanation: Rows give the geometry of intersection; columns give reachability of `b`.
+        concepts: [row-picture, column-picture]
+        points: 1
+      - id: lsle-as-solution-count
+        kind: scenario
+        prompt: For 5 unknowns you find `rank(A) = 4` and `rank([A | b]) = 5`. Describe the solution set.
+        modelAnswer: |
+          The augmented rank exceeds the coefficient rank, so `b` is not in the column space and the
+          system is inconsistent: no solution. Elimination would produce a row `0 = nonzero`.
+        explanation: Unequal ranks of `A` and `[A | b]` mean inconsistency.
+        concepts: [rank, consistency]
+        points: 1
+      - id: lsle-as-lu-meaning
+        kind: explain
+        prompt: Why does elimination without swaps give `A = L U`, and what is in each factor?
+        modelAnswer: |
+          Each elimination step is left-multiplication by a unit lower-triangular elementary matrix.
+          Their product `M` gives `M A = U`, upper triangular. `L = M^{-1}` is unit lower
+          triangular, so `A = L U`. `U` is the eliminated matrix; `L` holds the multipliers with a
+          unit diagonal.
+        explanation: LU is the record of the elimination steps and their result.
+        concepts: [lu-decomposition, elementary-matrices]
+        points: 1
+      - id: lsle-as-pivot-need
+        kind: find-bug
+        prompt: A hand-written solver eliminates without pivoting and fails on `[[1e-15, 1], [1, 1]]`. Why?
+        modelAnswer: |
+          The pivot `1e-15` forces a multiplier of `1e15`. The updated entries `1 - 1e15` and
+          `2 - 1e15` round to the same value, so the information carried by `b` is lost and the
+          recovered `x` is wrong. Swapping the rows first keeps the multiplier at `1e-15` and the
+          solve is accurate.
+        explanation: A tiny pivot makes a huge multiplier that swamps the data under rounding.
+        concepts: [partial-pivoting, numerical-stability]
+        points: 1
+      - id: lsle-as-permute-b
+        kind: find-bug
+        prompt: A pivoting solver swaps rows of `A` but not of `b`. What goes wrong?
+        modelAnswer: |
+          After a swap, `b` no longer matches the reordered equations, so every later elimination
+          and the back substitution use a mismatched right-hand side and the answer is wrong. Swap
+          `b` alongside `A`, or track a permutation and apply it to `b`.
+        explanation: The right-hand side must undergo the same row permutation as the matrix.
+        concepts: [permutation, partial-pivoting]
+        points: 1
+      - id: lsle-as-reuse-cost
+        kind: scenario
+        prompt: Give the cost of solving `A x = b_i` for `k` right-hand sides with one `n x n` `A`, done well.
+        modelAnswer: |
+          One pivoted LU factorisation at about `n**3 / 3`, then `k` solves at about `n**2` each,
+          for `n**3 / 3 + k * n**2` total. Stacking the right-hand sides into an `(n, k)` block and
+          calling one `lu_solve` uses level-3 BLAS and is faster than a loop.
+        explanation: Factor once, back-substitute many times.
+        concepts: [factorisation-reuse, cost]
+        points: 1
+      - id: lsle-as-cholesky
+        kind: scenario
+        prompt: "`A` is symmetric positive definite. Why prefer Cholesky over LU, and what extra does it give you?"
+        modelAnswer: |
+          Cholesky costs about `n**3 / 6`, half of LU, needs no pivoting because an SPD matrix never
+          requires it, and is more stable. The factor `L` also gives the log-determinant as
+          `2 * sum(log(diag(L)))` and the matrix square root used for sampling.
+        explanation: SPD structure removes pivoting and halves the work.
+        concepts: [cholesky, spd]
+        points: 1
+      - id: lsle-as-residual-error
+        kind: true-false
+        prompt: A tiny residual `norm(A @ x - b)` guarantees a small error `norm(x - x_true)`.
+        options:
+          - {id: "true", text: "True"}
+          - {id: "false", text: "False"}
+        answer: ["false"]
+        explanation: The error is roughly the residual amplified by the condition number of `A`.
+        concepts: [condition-number, residual]
+        points: 1
+      - id: lsle-as-det-from-lu
+        kind: scenario
+        prompt: A pivoted LU gives `U` with diagonal `(4, -1, 2)` and two row swaps. What is `det(A)`?
+        modelAnswer: |
+          `det(U) = 4 * (-1) * 2 = -8`. Two swaps give permutation sign `+1`. So
+          `det(A) = sign(P) * prod(diag(U)) = +1 * (-8) = -8`.
+        explanation: Determinant is the product of `U`'s diagonal times the permutation sign.
+        concepts: [determinant, lu-decomposition]
+        points: 1
+      - id: lsle-as-tool-choice
+        kind: scenario
+        prompt: When is LU the wrong choice for `A x = b`, and what replaces it?
+        modelAnswer: |
+          SPD `A`: use Cholesky. Overdetermined least-squares: use QR or the SVD, not the normal
+          equations. Large sparse `A`: use a sparse direct or iterative solver such as conjugate
+          gradients, since dense LU fills in the zeros. LU is the default only for dense square
+          general systems.
+        explanation: Match the factorisation to the matrix structure.
+        concepts: [cholesky, qr, sparse]
+        points: 1
+interview:
+  - id: lsle-iv-two-pictures
+    level: basic
+    requiredForMastery: true
+    concepts: [row-picture, column-picture, consistency]
+    question: What are the two ways to picture solving `A x = b`?
+    shortAnswer: |
+      The row picture: each equation is a hyperplane and a solution is a common point. The column
+      picture: find coefficients so a combination of `A`'s columns equals `b`. The column picture
+      makes existence a question of whether `b` is in the column space.
+    fullAnswer: |
+      In the row picture, `n` equations are `n` hyperplanes in `R^n`, and the geometry of parallel,
+      crossing, or coincident planes gives no, one, or many solutions. In the column picture,
+      `A x = b` asks which recipe of the columns produces `b`, so a solution exists exactly when `b`
+      is in the column space, and it is unique exactly when the columns are independent. Comparing
+      `rank(A)`, `rank([A | b])`, and the number of unknowns turns both pictures into a decision.
+    commonWrongAnswer: There is only one way — you just solve the equations.
+    followUps:
+      - How do the ranks tell you the size of the solution set?
+      - Which picture explains why an underdetermined system has a whole family of solutions?
+  - id: lsle-iv-elimination-lu
+    level: internals
+    requiredForMastery: true
+    concepts: [gaussian-elimination, lu-decomposition]
+    question: How does Gaussian elimination relate to the LU factorisation?
+    shortAnswer: |
+      Each elimination step is left-multiplication by a unit lower-triangular matrix. Their product
+      turns `A` into upper-triangular `U`; the inverse of that product is unit lower-triangular `L`,
+      so `A = L U`. `L` stores the multipliers.
+    fullAnswer: |
+      Forward elimination subtracts multiples of pivot rows from lower rows, and each of those
+      operations is an elementary matrix `E_k`. After elimination `E_m ... E_1 A = U`. Because unit
+      lower-triangular matrices are closed under product and inverse, `L = (E_m ... E_1)^{-1}` is
+      unit lower-triangular and `A = L U`. With partial pivoting the swaps collect into a
+      permutation `P`, giving `P A = L U`. Storing `L`, `U`, and `P` lets every later right-hand
+      side be solved with two `O(n^2)` triangular solves.
+    commonWrongAnswer: LU is a separate algorithm unrelated to elimination.
+    followUps:
+      - What changes in the factorisation when partial pivoting is used?
+      - How do you get the determinant from the factors?
+  - id: lsle-iv-pivoting
+    level: debugging
+    requiredForMastery: true
+    concepts: [partial-pivoting, stability]
+    question: Why is partial pivoting necessary, and what breaks without it?
+    shortAnswer: |
+      A zero pivot divides by zero; a tiny pivot creates a huge multiplier that amplifies rounding
+      error and can lose all the information in the right-hand side. Pivoting swaps the
+      largest-magnitude available entry into the pivot so multipliers stay at most 1.
+    fullAnswer: |
+      Without pivoting, elimination is accurate on well-scaled matrices and unstable in general. A
+      small pivot forces a large multiplier; the updated entries then subtract a huge number from a
+      moderate one, and after rounding the moderate part is gone. The classic `[[1e-15, 1],
+      [1, 1]]` example returns a completely wrong `x` without a swap and the right answer with one.
+      Partial pivoting chooses the row with the largest absolute entry in the current column,
+      bounding every multiplier by 1, and records the swaps in `P`. The right-hand side must be
+      permuted the same way.
+    commonWrongAnswer: Pivoting is an optimisation that makes elimination faster.
+    followUps:
+      - What is the most common bug when implementing pivoting by hand?
+      - When can you skip pivoting entirely?
+  - id: lsle-iv-reuse-factor
+    level: scenario
+    requiredForMastery: true
+    concepts: [factorisation-reuse, cost, newton]
+    question: You solve against the same matrix repeatedly in a loop. How do you make that fast?
+    shortAnswer: |
+      Factor the matrix once — LU, or Cholesky if it is SPD — and reuse the factor for every
+      right-hand side at `O(n^2)` per solve instead of re-running `O(n^3)` elimination each time.
+    fullAnswer: |
+      A fresh `np.linalg.solve` re-factorises every call. If the matrix is fixed, call `lu_factor`
+      (or `cho_factor` for SPD) once and `lu_solve` per right-hand side; batch the right-hand sides
+      into a matrix to use level-3 BLAS. If the matrix changes slightly each iteration, as in
+      Newton's method, consider a quasi-Newton update, reusing the previous factor for a few steps,
+      or refactoring only when progress stalls. Never form the inverse for reuse — the factor is
+      just as reusable and both cheaper and more accurate.
+    commonWrongAnswer: Precompute the inverse and multiply by it each iteration.
+    followUps:
+      - Why is keeping the factor better than keeping the inverse?
+      - How would you handle a matrix that changes a little each iteration?
+  - id: lsle-iv-iterative-refinement
+    level: advanced
+    requiredForMastery: true
+    concepts: [iterative-refinement, condition-number, residual]
+    question: What is iterative refinement and when does it help?
+    shortAnswer: |
+      After solving `A x = b`, compute the residual `r = b - A @ x`, solve `A d = r` with the
+      existing factorisation, and update `x += d`. One or two rounds recover digits lost to a
+      moderately ill-conditioned `A`, especially if `r` is formed in higher precision.
+    fullAnswer: |
+      A direct solve leaves an error roughly equal to the residual amplified by the condition
+      number. Iterative refinement treats the current `x` as an approximation and solves for the
+      correction `d` using the same `(lu, piv)` factor, so each round costs only `O(n^2)`. It
+      converges when `A` is not so ill-conditioned that the residual itself is inaccurate, and it
+      is most effective when the residual is computed in extended precision. It cannot rescue a
+      genuinely singular or extremely ill-conditioned system; there the problem must be
+      reformulated or regularised.
+    commonWrongAnswer: It re-factorises the matrix each round to improve accuracy.
+    followUps:
+      - Why compute the residual in higher precision?
+      - When will refinement fail to converge?
+  - id: lsle-iv-tool-choice
+    level: comparison
+    requiredForMastery: true
+    concepts: [lu, cholesky, qr, sparse]
+    question: How do you choose between LU, Cholesky, QR, and an iterative solver?
+    shortAnswer: |
+      LU for dense square general systems; Cholesky for symmetric positive definite (faster, no
+      pivoting); QR or SVD for least squares; a sparse direct or iterative method like conjugate
+      gradients for large sparse systems.
+    fullAnswer: |
+      The matrix structure decides. Dense and square with no special structure: pivoted LU.
+      Symmetric positive definite, as in Gaussian processes and Newton systems near a minimum:
+      Cholesky, which is half the cost, needs no pivoting, and gives the log-determinant.
+      Overdetermined `A x approx b`: QR of `A` or its SVD, avoiding the normal equations which
+      square the condition number. Large and sparse: a sparse LU that controls fill-in, or
+      conjugate gradients / GMRES with a preconditioner. The condition number and the residual
+      should be logged whichever route is taken.
+    commonWrongAnswer: Always use `np.linalg.solve`; it handles everything.
+    followUps:
+      - Why avoid the normal equations for least squares?
+      - What does dense LU do to a sparse matrix?
+projects:
+  - id: lsle-project-solver-kit
+    kind: major
+    title: Build a linear-system solver kit with safeguards
+    minutes: 240
+    summary: Implement pivoted LU and Cholesky from the elimination steps up, a reusable-factor interface, a dispatcher that picks the method, and conditioning and refinement safeguards, all validated against SciPy.
+    problem: |
+      Build a solver kit that makes the mechanics of this lesson explicit and safe. It should
+      contain a from-scratch pivoted LU (returning `P`, `L`, `U`), a from-scratch Cholesky for SPD
+      input, triangular solvers, a `factor` / `solve` pair that reuses a factorisation across
+      right-hand sides, a `linsolve` dispatcher (SPD to Cholesky, general square to LU, non-square
+      to least-squares), a condition-number estimate, and an iterative-refinement step. Every solve
+      returns the method used, the condition number, and the residual.
+    requirements:
+      - Implement pivoted LU by elimination, returning `P`, `L`, `U`, with all multipliers bounded by 1 in magnitude.
+      - Implement Cholesky for SPD input and raise a clear error on non-SPD input.
+      - Implement forward and back triangular solves, and apply the permutation to the right-hand side.
+      - Provide `factor(A)` and `solve(factor, B)` so one factorisation serves many right-hand sides, including a stacked matrix `B`.
+      - Provide `linsolve(A, b, assume=None)` that dispatches by structure and records the choice.
+      - Provide a condition-number estimate and a one-step iterative-refinement helper.
+    constraints:
+      - NumPy and the standard library for the core; SciPy allowed only in tests as the reference.
+      - Never divide by an unpivoted small entry; always pivot in the LU path.
+      - Never return a solution for a detected singular matrix without flagging it.
+      - Never form an explicit inverse anywhere in the kit.
+    expectedBehaviour:
+      - The from-scratch LU and Cholesky match `scipy.linalg` factorisations within a relative tolerance.
+      - Solving `[[1e-15, 1], [1, 1]] x = [1, 2]` returns the accurate solution thanks to pivoting.
+      - Factoring once and solving 100 right-hand sides matches solving each from scratch, and is faster.
+      - Iterative refinement reduces the error on a moderately ill-conditioned system.
+      - The dispatcher routes SPD, general, singular, and non-square inputs to the right method with a recorded reason.
+    structure: |
+      solver_kit/
+        __init__.py
+        lu.py
+        cholesky.py
+        triangular.py
+        dispatch.py
+        conditioning.py
+      tests/
+        test_lu.py
+        test_cholesky.py
+        test_triangular.py
+        test_dispatch.py
+        test_conditioning.py
+    milestones:
+      - title: "1 — Pivoted LU and triangular solves"
+        detail: Elimination with partial pivoting, permutation tracking, forward and back solves.
+      - title: "2 — Cholesky"
+        detail: SPD factorisation, non-SPD detection, log-determinant from the factor.
+      - title: "3 — Reuse and dispatch"
+        detail: "`factor` / `solve` for many right-hand sides, and a structure-aware `linsolve`."
+      - title: "4 — Safeguards"
+        detail: Condition-number estimate, singular-matrix flagging, iterative refinement.
+    testing:
+      - Factorisations compared against SciPy on random well-conditioned matrices.
+      - The tiny-pivot example solved accurately with pivoting and inaccurately without.
+      - Determinant from `U`'s diagonal and the permutation sign matches `np.linalg.det`.
+      - Multi-right-hand-side solve matches per-column solves and is faster on a block.
+      - Refinement lowers the error on a fixture with condition number around `1e10`.
+    failureCases:
+      - The LU path forgets to permute the right-hand side and returns wrong answers after a swap.
+      - Elimination proceeds on a zero pivot and produces `inf` or `nan` silently.
+      - Cholesky is applied to a non-SPD matrix and returns a complex or `nan` factor without error.
+      - The dispatcher chooses Cholesky for a symmetric but indefinite matrix.
+    bonus:
+      - Add a banded-matrix fast path and show the cost drop.
+      - Add a conjugate-gradients solver for large SPD systems and compare iterations to the condition number.
+      - Emit a solve report as Markdown.
+    architectureHints:
+      - Represent a factorisation as a small object holding the factors, the permutation, and the matrix shape.
+      - Keep the conditioning estimate in one place and attach it to every solve result.
+      - Make the dispatcher return a structured decision, not just a solution.
+    referenceOutline: |
+      `lu.factor` runs elimination, selecting the max-magnitude pivot per column, recording swaps in
+      a permutation vector and multipliers in `L`. `triangular.forward` and `triangular.back` do the
+      two solves. `cholesky.factor` fills `L` row by row and raises if a diagonal term is
+      non-positive. `dispatch.linsolve` checks shape and symmetry, tries Cholesky, falls back to LU,
+      and routes non-square input to a least-squares solve. `conditioning.estimate` uses the
+      singular values or a norm-based estimate.
+  - id: lsle-final-newton-solve-audit
+    kind: final-challenge
+    title: Fix the linear-algebra core of a Newton optimiser
+    minutes: 90
+    summary: Given a Newton optimiser that re-solves and inverts a symmetric Hessian every iteration, replace the linear-algebra core with a reused factorisation, correct method choice, and honest conditioning, proved with fail-before-fix tests.
+    problem: |
+      An optimiser computes its step with `p = np.linalg.solve(H, -g)` every iteration, reports
+      parameter standard errors with `np.linalg.inv(H)`, and treats any finite `p` as a valid step.
+      `H` is symmetric and usually positive definite but indefinite near saddle points, and it
+      changes only slightly between iterations. Produce an audit that: replaces the per-iteration
+      `solve` with a single factorisation per iteration (Cholesky when SPD, LU with a diagonal
+      shift otherwise); replaces `inv(H)` with factor-based extraction of the inverse diagonal;
+      adds a condition-number check that flags untrustworthy steps; and proves each change with a
+      regression that fails before the fix.
+    requirements:
+      - Factor `H` once per iteration and reuse the factor for the step and any solves the report needs.
+      - Use Cholesky when `H` is SPD; detect failure and fall back to LU with a recorded diagonal shift.
+      - Compute standard errors from the factor without forming `np.linalg.inv(H)`.
+      - Add a condition-number estimate and flag steps taken when it exceeds a threshold.
+      - Provide one fail-before-fix test per change, plus a clean end-to-end run.
+    constraints:
+      - Do not call `np.linalg.inv` anywhere.
+      - Do not proceed past an indefinite `H` without a recorded modification.
+      - Do not report a step as reliable when the conditioning check fails.
+    expectedBehaviour:
+      - The refactored optimiser reaches the same optimum on a convex test problem within tolerance.
+      - Near a saddle point the Cholesky attempt fails and the LU-with-shift path is used and logged.
+      - Standard errors from the factor match those from a reference inverse within tolerance.
+      - Scaling the problem does not change which steps are flagged.
+      - Wall-clock time per iteration drops relative to the original.
+    milestones:
+      - title: "1 — Inventory"
+        detail: List the linear-algebra anti-patterns in the optimiser and the replacement for each.
+      - title: "2 — Factor and dispatch"
+        detail: One factorisation per iteration, Cholesky-then-LU fallback with a shift, step from the factor.
+      - title: "3 — Report and guard"
+        detail: Inverse-diagonal from the factor, condition-number flagging, failing-first tests.
+    testing:
+      - Fail-before-fix regression for the per-iteration re-solve, the `inv(H)` report, and the missing conditioning guard.
+      - A convex problem where the refactor matches the original optimum within tolerance.
+      - A saddle-point fixture that exercises the indefinite fallback path.
+    failureCases:
+      - The fallback path still forms an inverse for the standard errors.
+      - An indefinite `H` is used without a shift and the step points uphill.
+      - The conditioning guard is present but never consulted before accepting a step.
+    bonus:
+      - Reuse the previous iteration's factor for a few steps with a line search and measure the speedup.
+    architectureHints:
+      - Freeze the reference optimum, standard errors, and per-iteration timing as fixtures first.
+      - Keep factorisation, reporting, and guarding in separate commits.
+    referenceOutline: |
+      Each iteration, try `scipy.linalg.cho_factor(H)`; on `LinAlgError` add `tau * I` with `tau`
+      grown until success and record `tau`. Compute the step with `cho_solve` or `lu_solve`. For
+      standard errors, solve `H @ e_j = unit_j` for the needed `j` with the same factor and read the
+      diagonal. Estimate the condition number from the factor's diagonal or the singular values and
+      flag the step if it is too large.
+resources:
+  - name: MIT 18.06 — Elimination with matrices (OCW)
+    type: university
+    difficulty: core
+    url: "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-2-elimination-with-matrices/"
+    usefulness: 5
+    why: Strang presents elimination as left-multiplication by elementary matrices and derives the LU factorisation directly from it, which is exactly the framing this lesson uses.
+    covers: Row operations as matrices, pivots, elimination to upper triangular, back substitution, and the origin of the LU factorisation.
+  - name: MIT 18.06 — LU decomposition and row exchanges (OCW)
+    type: university
+    difficulty: core
+    url: "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-4-factorization-into-a-lu/"
+    usefulness: 5
+    why: It works through `A = L U`, the cost of factorisation versus back substitution, and how row exchanges introduce the permutation `P`, matching the reuse and pivoting points here.
+    covers: The `A = L U` factorisation, operation counts, permutation matrices for row exchanges, and `P A = L U`.
+  - name: "scipy.linalg.lu_factor and lu_solve reference"
+    type: docs
+    difficulty: core
+    url: "https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.lu_factor.html"
+    usefulness: 4
+    why: It documents the pivoted factorisation, the `piv` permutation representation, and the `lu_solve` interface for reusing one factorisation across many right-hand sides.
+    covers: Partial-pivoted LU, the packed factor format, the pivot vector, and solving with a stored factorisation.
+  - name: "Trefethen and Bau — Numerical Linear Algebra (Lectures 20 to 23)"
+    type: book
+    difficulty: deep
+    url: "https://people.maths.ox.ac.uk/trefethen/text.html"
+    usefulness: 5
+    why: These lectures analyse Gaussian elimination, partial pivoting, its backward stability, and why the growth factor matters — the rigorous version of the pivoting argument in this lesson.
+    covers: LU factorisation, pivoting strategies, backward stability, the growth factor, and conditioning of linear systems.
+  - name: "Golub and Van Loan — Matrix Computations (chapter on linear systems)"
+    type: book
+    difficulty: deep
+    url: "https://www.cs.cornell.edu/cv/GVL4/golubandvanloan.htm"
+    usefulness: 4
+    why: The standard reference for the block and blocked-BLAS view of LU and Cholesky, iterative refinement, and choosing a factorisation from matrix structure, all directly relevant to production solves.
+    covers: LU and Cholesky algorithms and their blocked forms, iterative refinement, error analysis, and structure-specific solvers.

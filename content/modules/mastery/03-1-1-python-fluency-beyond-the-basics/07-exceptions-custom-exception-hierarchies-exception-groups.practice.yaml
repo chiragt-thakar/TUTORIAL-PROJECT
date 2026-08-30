@@ -1,0 +1,1075 @@
+lessonId: "roadmap:phase-1-1.1:6"
+module: 1-1-python-fluency-beyond-the-basics
+lesson: 07-exceptions-custom-exception-hierarchies-exception-groups
+title: "Exceptions, custom exception hierarchies, exception groups"
+summary: Design typed failure APIs, preserve diagnostic evidence, and handle independent grouped failures without swallowing the rest.
+
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+
+exercises:
+  - id: exc-order-handlers
+    tier: normal
+    kind: write-code
+    title: Order a recovery hierarchy
+    minutes: 8
+    requiredForMastery: true
+    concepts: [matching, hierarchy]
+    prompt: |
+      Write handlers for `InvalidRequest(InferenceError)`, `InferenceError`, and `Exception` so
+      each branch remains reachable. Add a one-line policy to each branch.
+    hints:
+      - Matching uses the raised object's class and base classes.
+      - Put narrower subclasses before their parents.
+    solution: |
+      The order is `InvalidRequest`, `InferenceError`, then `Exception`. The first ordinary handler
+      whose class matches wins, so a base class placed first consumes all its subclasses. The first
+      branch can return a client error, the second map known service failure, and the last terminate
+      the request at a containment boundary while preserving diagnostics.
+    solutionCode: |
+      try:
+          run_inference(request)
+      except InvalidRequest as exc:
+          return bad_request(exc)
+      except InferenceError as exc:
+          return service_failure(exc)
+      except Exception:
+          logger.exception("unexpected inference defect")
+          raise
+
+  - id: exc-else-success-path
+    tier: normal
+    kind: predict-output
+    title: Separate protected and success paths
+    minutes: 8
+    requiredForMastery: true
+    concepts: [try, else]
+    prompt: |
+      Predict which line runs when `parse()` succeeds but `persist()` raises `ValueError`.
+    code: |
+      try:
+          value = parse(payload)
+      except ValueError:
+          print("invalid payload")
+      else:
+          persist(value)
+          print("stored")
+    hints:
+      - Ask which statements belong to the `try` suite.
+      - An exception in `else` is not handled by sibling `except` clauses.
+    solution: |
+      Neither print runs. `parse()` succeeds, so `else` begins; `persist()` then raises and the
+      `ValueError` propagates outward. This is useful: the handler owns parsing failure and does not
+      accidentally relabel a persistence defect as invalid input.
+
+  - id: exc-finally-control-flow
+    tier: normal
+    kind: predict-output
+    title: Trace finally through return
+    minutes: 8
+    requiredForMastery: true
+    concepts: [finally, control-flow]
+    prompt: |
+      Predict the returned value and explain why this function is defective.
+    code: |
+      def result() -> int:
+          try:
+              raise RuntimeError("boom")
+          finally:
+              return 7
+    hints:
+      - "`finally` executes while an exception is active."
+      - A new control-flow exit can replace the pending one.
+    solution: |
+      It returns `7`; the `RuntimeError` disappears. A return in `finally` overrides both an active
+      exception and an earlier return. Cleanup belongs there, but the function must let the original
+      control flow resume after cleanup.
+
+  - id: exc-raise-builtins
+    tier: normal
+    kind: write-code
+    title: Choose TypeError and ValueError precisely
+    minutes: 10
+    requiredForMastery: true
+    concepts: [built-ins, validation]
+    prompt: |
+      Implement `positive_window(size)` so a non-integer gets `TypeError`, a non-positive integer
+      gets `ValueError`, and valid input is returned unchanged. Do not use `assert`.
+    hints:
+      - Separate wrong kind of value from wrong value within the accepted kind.
+      - Booleans are subclasses of `int`; decide whether your API accepts them.
+    solution: |
+      Check `type(size) is int` when booleans must be rejected. A real exception is required because
+      caller input validation must not disappear under optimized execution as assertions can.
+    solutionCode: |
+      def positive_window(size: object) -> int:
+          if type(size) is not int:
+              raise TypeError("size must be an int")
+          if size < 1:
+              raise ValueError("size must be positive")
+          return size
+
+  - id: exc-bare-reraise
+    tier: normal
+    kind: code-reading
+    title: Preserve the original traceback
+    minutes: 9
+    requiredForMastery: true
+    concepts: [traceback, raise]
+    prompt: |
+      Review the handler below. What changes when `raise exc` becomes bare `raise`, and which is
+      correct when the handler only records a metric?
+    code: |
+      try:
+          decode_artifact(blob)
+      except ArtifactError as exc:
+          metrics.increment("artifact_error")
+          raise exc
+    hints:
+      - Both forms propagate the same exception instance.
+      - Compare the traceback frame from which re-raising appears to occur.
+    solution: |
+      Bare `raise` is correct. It re-raises the active exception while preserving the original
+      traceback path. `raise exc` raises explicitly from the handler line, adding a frame that can
+      mislead diagnosis about where propagation began.
+
+  - id: exc-safe-note
+    tier: normal
+    kind: write-code
+    title: Attach structured diagnostic context
+    minutes: 10
+    requiredForMastery: false
+    concepts: [notes, privacy]
+    prompt: |
+      Catch `ModelLoadError`, attach a job identifier and operation name with `add_note()`, then
+      re-raise without changing the traceback. State one value that must not enter the note.
+    hints:
+      - Notes augment display without changing the exception class.
+      - Re-raising an active exception needs no expression.
+    solution: |
+      Add bounded, non-secret identifiers and use bare `raise`. Access tokens, full prompts, personal
+      data, and raw credentials must not enter notes because traceback output commonly reaches logs.
+    solutionCode: |
+      try:
+          load_model(model_id)
+      except ModelLoadError as exc:
+          exc.add_note(f"job_id={job_id}")
+          exc.add_note("operation=load_model")
+          raise
+
+  - id: exc-design-retry-hierarchy
+    tier: intermediate
+    kind: design
+    title: Design around caller decisions
+    minutes: 18
+    requiredForMastery: true
+    concepts: [custom-exceptions, recovery-policy]
+    prompt: |
+      Design a shallow hierarchy for an inference API with invalid requests, retryable backend
+      outages, quota rejection, and corrupt model artifacts. Show which types an HTTP adapter and a
+      scheduler catch. Do not create one class per function.
+    hints:
+      - Begin with the distinct recovery actions available to callers.
+      - A semantic parent can group several concrete causes with one policy.
+    solution: |
+      Use `InferenceError` as the public base; `InvalidRequest`, `RetryableInferenceError`, and
+      `PermanentInferenceError` as policy nodes; then `BackendUnavailable` under retryable and
+      `QuotaRejected` plus `CorruptArtifact` under permanent where separate response metadata is
+      useful. The scheduler catches `RetryableInferenceError`; the HTTP adapter maps invalid input,
+      quota, and the general public base. Stable attributes carry backend and retry timing.
+
+  - id: exc-translate-cause
+    tier: intermediate
+    kind: write-code
+    title: Translate a storage timeout
+    minutes: 14
+    requiredForMastery: true
+    concepts: [chaining, boundary]
+    prompt: |
+      Translate a low-level `TimeoutError` into `BackendUnavailable`. Store `backend` and
+      `retry_after` as attributes and preserve the original failure explicitly.
+    hints:
+      - Construct the domain exception where the infrastructure abstraction ends.
+      - The `from` clause establishes an intentional cause.
+    solution: |
+      The translated type protects callers from the storage client's implementation while
+      `raise ... from exc` retains its traceback and marks it as the direct cause. Structured fields,
+      rather than message parsing, drive retry policy.
+    solutionCode: |
+      try:
+          return store.download(model_id)
+      except TimeoutError as exc:
+          raise BackendUnavailable(
+              backend="object-store",
+              retry_after=2.0,
+          ) from exc
+
+  - id: exc-suppress-context-review
+    tier: intermediate
+    kind: explain
+    title: Decide whether to hide context
+    minutes: 12
+    requiredForMastery: false
+    concepts: [cause, context, from-none]
+    prompt: |
+      A parser converts `KeyError("version")` into `InvalidManifest("missing version")`. Compare
+      implicit context, explicit chaining, and `from None`. Choose one for a library boundary.
+    hints:
+      - The displayed traceback and stored exception attributes are related but distinct.
+      - Ask whether the lower-level key failure helps the caller or only the maintainer.
+    solution: |
+      Implicit context says the new exception happened while handling the key failure. Explicit
+      `from exc` states intentional translation and is usually best for a library diagnostic.
+      `from None` hides the old traceback from normal display and is appropriate only when the new
+      public message is complete and the implementation detail would confuse the audience. It does
+      not erase `__context__` from the object.
+
+  - id: exc-batch-validation-group
+    tier: intermediate
+    kind: write-code
+    title: Aggregate independent validation failures
+    minutes: 18
+    requiredForMastery: true
+    concepts: [ExceptionGroup, batch-validation]
+    prompt: |
+      Validate every item in a batch. Collect only `TypeError` and `ValueError`, attach each item
+      index, and raise one `ExceptionGroup` after the loop. Unexpected failures must propagate.
+    hints:
+      - Put the narrow handler inside the loop.
+      - Raise the group only when the collected list is non-empty.
+    solution: |
+      Catching only expected validation types prevents an operational or programming defect from
+      being relabeled as bad input. Notes retain item identity while each leaf keeps its own type
+      and traceback.
+    solutionCode: |
+      failures: list[Exception] = []
+      for index, item in enumerate(items):
+          try:
+              validate(item)
+          except (TypeError, ValueError) as exc:
+              exc.add_note(f"item_index={index}")
+              failures.append(exc)
+      if failures:
+          raise ExceptionGroup("invalid batch", failures)
+
+  - id: exc-except-star-partition
+    tier: intermediate
+    kind: predict-output
+    title: Partition a group recursively
+    minutes: 16
+    requiredForMastery: true
+    concepts: [except-star, recursive-matching]
+    prompt: |
+      Which labels print, and does anything escape?
+    code: |
+      try:
+          raise ExceptionGroup("all", [ValueError("v"), TypeError("t"), OSError("o")])
+      except* ValueError:
+          print("value")
+      except* (TypeError, OSError):
+          print("other")
+    hints:
+      - Unlike ordinary handlers, more than one starred clause may run.
+      - Each leaf is claimed by its first matching clause.
+    solution: |
+      It prints `value` and then `other`; nothing escapes. The first clause receives the subgroup
+      containing the `ValueError`. The second receives one subgroup containing the remaining
+      `TypeError` and `OSError`. Each clause executes once, not once per leaf.
+
+  - id: exc-group-subgroup-api
+    tier: intermediate
+    kind: code-reading
+    title: Preserve group structure while filtering
+    minutes: 15
+    requiredForMastery: false
+    concepts: [subgroup, split, tree]
+    prompt: |
+      Explain why manually flattening `.exceptions` is weaker than `subgroup()` or `split()` for a
+      nested failure tree. What does `subgroup(TimeoutError)` return when nothing matches?
+    hints:
+      - Nested group nodes encode where failures were combined.
+      - The APIs preserve metadata and omit empty branches.
+    solution: |
+      Manual flattening discards nesting and makes it easy to mishandle causes, contexts, and group
+      tracebacks. `subgroup()` preserves the matching shape and metadata; `split()` returns matching
+      and remaining trees. With no timeout match, `subgroup(TimeoutError)` returns `None`, not an
+      empty exception group.
+
+  - id: exc-taskgroup-policy
+    tier: intermediate
+    kind: design
+    title: Specify a TaskGroup failure policy
+    minutes: 20
+    requiredForMastery: true
+    concepts: [TaskGroup, cancellation, ExceptionGroup]
+    prompt: |
+      Three startup tasks warm independent model components. Specify handling for retryable outages,
+      invalid configuration, sibling cancellation, and unknown defects. Define when degraded startup
+      is allowed.
+    hints:
+      - TaskGroup cancels siblings after a non-cancellation failure.
+      - Logging a subgroup does not itself make startup safe.
+    solution: |
+      Adapters translate outages into one retryable domain branch and configuration failures into a
+      permanent branch. Tasks clean up and re-raise cancellation. The coordinator can handle the
+      retryable subgroup only if it records unavailable capabilities and every request path checks
+      that state; otherwise it re-raises. Configuration and unknown leaves propagate, preventing
+      startup. Tests cover simultaneous failures and cancellation during cleanup.
+
+  - id: exc-debug-swallowed-error
+    tier: tricky
+    kind: debug
+    title: Stop manufacturing empty success
+    minutes: 16
+    requiredForMastery: true
+    concepts: [broad-catch, error-contract]
+    prompt: |
+      Fix the function so cache misses recover, cache outages remain observable, and defects are not
+      converted to an empty embedding.
+    code: |
+      def get_embedding(key: str) -> list[float]:
+          try:
+              return cache.read(key)
+          except Exception as exc:
+              logger.warning("cache failed: %s", exc)
+              return []
+    hints:
+      - A miss and an unavailable cache require different policies.
+      - Catch the smallest type you can completely handle.
+    solution: |
+      Catch `CacheMiss` and compute the value. Either let `CacheUnavailable` propagate or translate
+      it with a cause at the adapter boundary. Unknown exceptions must propagate. An empty vector is
+      valid-looking data and can create a silent retrieval failure.
+    solutionCode: |
+      def get_embedding(key: str) -> list[float]:
+          try:
+              return cache.read(key)
+          except CacheMiss:
+              value = embedder.embed(key)
+              cache.write(key, value)
+              return value
+
+  - id: exc-debug-finally-return
+    tier: tricky
+    kind: debug
+    title: Repair cleanup that suppresses failure
+    minutes: 13
+    requiredForMastery: true
+    concepts: [finally, suppression]
+    prompt: |
+      Repair the function so it closes the lease and preserves either the result or exception.
+    code: |
+      def run_job() -> Result | None:
+          lease = acquire()
+          try:
+              return execute(lease)
+          finally:
+              release(lease)
+              return None
+    hints:
+      - Cleanup can happen without choosing a new exit value.
+      - Remove the statement that overrides pending control flow.
+    solution: |
+      Delete `return None` from `finally`. `release()` still runs on success and failure. The return
+      from `execute()` resumes after cleanup, while an exception continues unwinding. If release can
+      fail, define explicitly whether that cleanup failure should replace or be chained to the
+      active job failure.
+    solutionCode: |
+      def run_job() -> Result:
+          lease = acquire()
+          try:
+              return execute(lease)
+          finally:
+              release(lease)
+
+  - id: exc-debug-lost-cause
+    tier: tricky
+    kind: debug
+    title: Restore the diagnostic chain
+    minutes: 14
+    requiredForMastery: true
+    concepts: [translation, chaining]
+    prompt: |
+      Fix this boundary so callers see `ModelLoadError` and operators retain the storage failure.
+    code: |
+      try:
+          store.read(model_id)
+      except OSError:
+          raise ModelLoadError("load failed")
+    hints:
+      - Bind the caught object.
+      - Make the relationship explicit with the raise statement.
+    solution: |
+      Bind `OSError as exc` and `raise ModelLoadError(model_id) from exc`. The domain exception should
+      store the identifier as an attribute. Explicit chaining documents intentional translation and
+      preserves the infrastructure traceback as `__cause__`.
+    solutionCode: |
+      try:
+          store.read(model_id)
+      except OSError as exc:
+          raise ModelLoadError(model_id) from exc
+
+  - id: exc-debug-handler-order
+    tier: tricky
+    kind: debug
+    title: Make the retry branch reachable
+    minutes: 12
+    requiredForMastery: true
+    concepts: [matching, inheritance]
+    prompt: |
+      Repair the handlers. `BackendUnavailable` inherits `RetryableInferenceError`, which inherits
+      `InferenceError`.
+    code: |
+      try:
+          infer()
+      except InferenceError:
+          fail_request()
+      except RetryableInferenceError:
+          schedule_retry()
+      except BackendUnavailable:
+          fail_over()
+    hints:
+      - Ordinary matching stops at the first compatible clause.
+      - Sort the clauses from leaf toward root.
+    solution: |
+      Put `BackendUnavailable` first, then `RetryableInferenceError`, then `InferenceError`. The
+      original base-class handler captures every domain subclass, making both specialized policies
+      unreachable.
+    solutionCode: |
+      try:
+          infer()
+      except BackendUnavailable:
+          fail_over()
+      except RetryableInferenceError:
+          schedule_retry()
+      except InferenceError:
+          fail_request()
+
+  - id: exc-debug-cancellation
+    tier: tricky
+    kind: debug
+    title: Preserve async cancellation
+    minutes: 16
+    requiredForMastery: true
+    concepts: [CancelledError, cleanup]
+    prompt: |
+      Repair a worker that catches cancellation, logs completion, and keeps looping.
+    code: |
+      async def worker() -> None:
+          while True:
+              try:
+                  await process_one()
+              except BaseException:
+                  await release_current_lease()
+                  logger.info("item complete")
+    hints:
+      - "`BaseException` includes process and cancellation control flow."
+      - Cleanup may run, but cancellation must continue outward.
+    solution: |
+      Catch expected operational exceptions separately. For `asyncio.CancelledError`, perform
+      cleanup in `finally` or a narrow cancellation handler and re-raise. Never log completion for
+      an interrupted item. Catching `BaseException` also intercepts `KeyboardInterrupt` and
+      `SystemExit`, which the worker does not own.
+    solutionCode: |
+      async def worker() -> None:
+          while True:
+              try:
+                  await process_one()
+              except RecoverableJobError as exc:
+                  await record_failure(exc)
+              except asyncio.CancelledError:
+                  await release_current_lease()
+                  raise
+
+  - id: exc-unmatched-group-leaf
+    tier: tricky
+    kind: predict-output
+    title: Follow an unmatched leaf outward
+    minutes: 16
+    requiredForMastery: true
+    concepts: [except-star, propagation]
+    prompt: |
+      The inner handler prints `retry`. What reaches the outer handler?
+    code: |
+      try:
+          try:
+              raise ExceptionGroup("jobs", [TimeoutError("a"), ValueError("b")])
+          except* TimeoutError:
+              print("retry")
+      except ExceptionGroup as group:
+          print([type(item).__name__ for item in group.exceptions])
+    hints:
+      - The starred clause removes only matching leaves.
+      - The remaining tree is automatically re-raised.
+    solution: |
+      The outer handler receives an `ExceptionGroup` whose remaining leaf is the `ValueError`, so it
+      prints `['ValueError']`. The timeout subgroup was handled; the sibling was not silently lost.
+
+  - id: exc-refactor-message-contract
+    tier: tricky
+    kind: refactor
+    title: Replace message parsing with a typed API
+    minutes: 18
+    requiredForMastery: false
+    concepts: [attributes, hierarchy, API-design]
+    prompt: |
+      Refactor code that retries when `"temporary" in str(exc)` and extracts a backend name by
+      splitting the message. Preserve human-readable output without making it the machine contract.
+    hints:
+      - Recovery policy deserves a type or stable field.
+      - Diagnostic formatting and program decisions can share one exception object.
+    solution: |
+      Introduce `RetryableInferenceError` and a concrete `BackendUnavailable` carrying `backend` and
+      `retry_after`. The scheduler catches the retryable base and reads attributes. `__str__` can
+      still produce a useful human message, but wording may evolve without breaking callers or
+      localization.
+
+  - id: exc-exception-retention
+    tier: tricky
+    kind: performance
+    title: Prevent traceback-driven memory retention
+    minutes: 18
+    requiredForMastery: false
+    concepts: [traceback, frames, memory]
+    prompt: |
+      A long-running worker appends every caught exception object to a metrics list. Memory grows
+      after failed tensor operations. Explain the retention chain and redesign the metric payload.
+    hints:
+      - Exception tracebacks reference frames.
+      - Frames retain local variables, including large objects.
+    solution: |
+      The list retains exception objects; each can retain a traceback, its frames, and frame locals
+      such as tensors or requests. Record a bounded value object containing exception type, safe
+      code, operation, timestamp, and selected identifiers. Send full traceback text to the logging
+      system with retention limits rather than storing live exception graphs in process memory.
+
+  - id: exc-challenge-group-router
+    tier: challenge
+    kind: write-code
+    title: Route grouped failures without flattening
+    minutes: 35
+    requiredForMastery: true
+    concepts: [ExceptionGroup, subgroup, except-star]
+    prompt: |
+      Build a handler for a nested startup group. Report all `BackendUnavailable` leaves, abort on
+      `InvalidConfiguration`, and preserve unknown leaves. Your reporter must retain group paths or
+      nesting rather than flattening exceptions into strings.
+    hints:
+      - "`except*` gives each policy a structure-preserving subgroup."
+      - Leave failures unhandled or use bare `raise` when startup must still fail.
+    solution: |
+      Use separate `except*` clauses. The retryable clause sends its subgroup to a tree-aware
+      reporter and re-raises unless degraded startup is explicitly supported. The invalid-config
+      clause reports and bare re-raises. Do not add a final `except* Exception` that only logs;
+      unknown leaves should automatically escape. A reporter can recursively walk group nodes while
+      recording each node message and child index.
+    solutionCode: |
+      try:
+          await warm_components()
+      except* BackendUnavailable as group:
+          report_group(group, policy="retryable")
+          raise
+      except* InvalidConfiguration as group:
+          report_group(group, policy="abort")
+          raise
+
+  - id: exc-challenge-review-boundary
+    tier: challenge
+    kind: code-reading
+    title: Audit a production error boundary
+    minutes: 40
+    requiredForMastery: false
+    concepts: [boundary, chaining, cancellation, observability]
+    prompt: |
+      Review an inference worker boundary that catches `BaseException`, logs `str(exc)`, returns a
+      success-shaped empty result, stores the exception for metrics, and retries every failure.
+      Produce a defect list and a replacement policy before writing code.
+    hints:
+      - Separate domain failure categories from process control and defects.
+      - Trace what happens to traceback data, memory, client semantics, and retry load.
+    solution: |
+      The boundary swallows cancellation and shutdown; erases the traceback; manufactures false
+      success; retains traceback frames; retries permanent input errors and programming defects;
+      risks leaking message data; and creates retry storms without limits. Replace it with typed
+      retryable/permanent branches, bounded retry metadata, explicit domain-to-result mapping,
+      `logger.exception` for unexpected defects, lightweight metrics fields, cancellation cleanup
+      plus re-raise, and termination of the affected job or worker when correctness is unknown.
+
+quizzes:
+  - id: exc-checkpoint
+    title: Checkpoint — control flow and contracts
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: exc-cp-order
+        kind: mcq
+        prompt: Which ordinary handler should appear first?
+        options:
+          - id: base
+            text: InferenceError
+          - id: child
+            text: BackendUnavailable, a subclass of InferenceError
+          - id: exception
+            text: Exception
+        answer: [child]
+        explanation: First-match semantics require more specific subclasses before broad parents.
+        concepts: [matching]
+        points: 1
+      - id: exc-cp-reraise
+        kind: mcq
+        prompt: Which syntax preserves the active exception's original traceback when merely re-raising?
+        options:
+          - id: bare
+            text: bare raise
+          - id: named
+            text: raise exc
+          - id: new
+            text: raise Exception(str(exc))
+        answer: [bare]
+        explanation: Bare raise continues propagation without adding the handler line as a new raise point.
+        concepts: [traceback]
+        points: 1
+      - id: exc-cp-unmatched
+        kind: true-false
+        prompt: An except* clause silently discards leaves that do not match its type.
+        options:
+          - id: "true"
+            text: "True"
+          - id: "false"
+            text: "False"
+        answer: ["false"]
+        explanation: Unmatched leaves are recombined and automatically propagated.
+        concepts: [except-star]
+        points: 1
+      - id: exc-cp-hierarchy
+        kind: explain
+        prompt: What should determine the shape of a custom exception hierarchy?
+        modelAnswer: The distinct recovery or boundary decisions callers need, with shallow semantic parents and stable attributes for machine-readable context.
+        explanation: Mirroring implementation functions creates a noisy tree without caller value.
+        concepts: [hierarchy]
+        points: 1
+
+  - id: exc-assessment
+    title: Assessment — typed and grouped failures
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: exc-a-else
+        kind: scenario
+        prompt: Why put success-only persistence in else after a narrow parsing try block?
+        modelAnswer: A sibling except then handles only parsing failures; a persistence exception is not accidentally relabeled as malformed input.
+        explanation: Narrow protected regions preserve the ownership of each failure policy.
+        concepts: [else, boundaries]
+        points: 1
+      - id: exc-a-baseexception
+        kind: multi
+        prompt: Which failures should routine `except Exception` deliberately leave alone?
+        options:
+          - id: keyboard
+            text: KeyboardInterrupt
+          - id: system
+            text: SystemExit
+          - id: value
+            text: ValueError
+          - id: lookup
+            text: LookupError
+        answer: [keyboard, system]
+        explanation: Process-control exceptions inherit directly from BaseException.
+        concepts: [BaseException]
+        points: 1
+      - id: exc-a-finally
+        kind: find-bug
+        prompt: Find the silent failure bug in a finally suite that closes a file and returns None.
+        modelAnswer: The return overrides an active exception or earlier return. Close the file without returning, preferably through a context manager.
+        explanation: Finally must not choose a replacement control-flow exit during cleanup.
+        concepts: [finally]
+        points: 1
+      - id: exc-a-chain
+        kind: complete-code
+        prompt: Complete `raise DomainError(...) ___ exc` to record an intentional direct cause.
+        modelAnswer: "Use `from`: `raise DomainError(...) from exc`."
+        explanation: Explicit chaining sets __cause__ and communicates deliberate translation.
+        concepts: [chaining]
+        points: 1
+      - id: exc-a-assert
+        kind: true-false
+        prompt: Assert is suitable for validating an external request because it raises AssertionError.
+        options:
+          - id: "true"
+            text: "True"
+          - id: "false"
+            text: "False"
+        answer: ["false"]
+        explanation: Assertions describe internal invariants and may be disabled; external rejection needs explicit exceptions.
+        concepts: [assertions]
+        points: 1
+      - id: exc-a-message
+        kind: refactor
+        prompt: Replace retry policy based on `"timeout" in str(exc)`.
+        modelAnswer: Introduce a retryable exception class or stable retryable policy field, catch that contract, and store backend or retry delay as attributes while keeping the message human-readable.
+        explanation: Exception text is not a stable machine interface.
+        concepts: [hierarchy, attributes]
+        points: 1
+      - id: exc-a-group-run-count
+        kind: mcq
+        prompt: How often does one except* TimeoutError suite run for five matching leaves?
+        options:
+          - id: once
+            text: Once, with a subgroup containing all matches
+          - id: five
+            text: Five times, once per leaf
+          - id: never
+            text: Never, because groups cannot be matched
+        answer: [once]
+        explanation: Each starred clause executes at most once and receives a structure-preserving subgroup.
+        concepts: [except-star]
+        points: 1
+      - id: exc-a-mix
+        kind: find-bug
+        prompt: A single try statement has `except ValueError` followed by `except* TimeoutError`. What is wrong?
+        modelAnswer: Mixing ordinary except and except* clauses in one try is a SyntaxError. Use nested try statements when both matching modes are needed.
+        explanation: The two forms have different control-flow and matching semantics.
+        concepts: [except-star, syntax]
+        points: 1
+      - id: exc-a-breaking
+        kind: explain
+        prompt: Why can changing a function from raising TimeoutError to ExceptionGroup containing TimeoutError break callers?
+        modelAnswer: Ordinary `except TimeoutError` does not inspect group leaves. Callers must adopt the documented group contract and use except* or catch the whole group.
+        explanation: Exception shape is part of a public API.
+        concepts: [ExceptionGroup, compatibility]
+        points: 1
+      - id: exc-a-memory
+        kind: performance
+        prompt: Why can storing exception objects cause high retained memory in a worker?
+        modelAnswer: Exceptions retain tracebacks, tracebacks retain frames, and frames retain locals. Store bounded diagnostic values or rendered logs rather than live exception objects.
+        explanation: Failure telemetry should not extend the lifetime of application object graphs.
+        concepts: [traceback, memory]
+        points: 1
+
+interview:
+  - id: exc-iv-catch-location
+    level: basic
+    requiredForMastery: true
+    concepts: [boundaries, recovery]
+    question: Where should you catch an exception?
+    shortAnswer: Catch it at the lowest layer that can make a complete recovery, translation, compensation, or boundary-response decision. Keep the protected region narrow. Unknown defects should reach a deliberate containment boundary with their traceback intact.
+    fullAnswer: |
+      Catching near the raise site is correct only when that layer owns a recovery, such as computing
+      after a cache miss. A repository can translate driver failures, and an HTTP adapter can map
+      domain failures to responses.
+
+      Catching broadly in every function erases ownership and often invents fallback data. A top-level
+      worker may contain one failed job, but it should log diagnostics and report failure rather than
+      pretending the operation succeeded.
+    commonWrongAnswer: Catch every exception immediately so the application never crashes. This converts defects into unknown state and loses useful failure semantics.
+    followUps:
+      - What is a containment boundary?
+      - Why should a try suite be narrow?
+
+  - id: exc-iv-hierarchy
+    level: intermediate
+    requiredForMastery: true
+    concepts: [hierarchy, API-design]
+    question: How do you design a custom exception hierarchy?
+    shortAnswer: I start from decisions callers need, such as retry, reject input, or abort permanently. I keep one public semantic base, a few policy branches, and structured attributes. I avoid mirroring every function or parsing messages.
+    fullAnswer: |
+      The hierarchy is part of the public interface. A scheduler may catch a retryable branch while an
+      API adapter catches the whole domain base. Concrete leaves exist only when they add useful
+      behavior or metadata.
+
+      I prefer shallow single inheritance. Stable fields carry backend, item id, or retry delay, and
+      the text remains free to improve for humans.
+    commonWrongAnswer: Create one exception class for every function that can fail. Function-shaped trees expose implementation without helping recovery.
+    followUps:
+      - When is a built-in exception better?
+      - Why avoid multiple inheritance among exceptions?
+
+  - id: exc-iv-chaining
+    level: comparison
+    requiredForMastery: true
+    concepts: [cause, context, traceback]
+    question: Explain `raise`, `raise exc`, `raise NewError from exc`, and `from None`.
+    shortAnswer: Bare raise preserves the active failure's traceback. `raise exc` adds the current raise point. `raise NewError from exc` translates intentionally and stores the direct cause. `from None` suppresses the old context from display when that detail should stay hidden.
+    fullAnswer: |
+      Bare re-raise is right for logging and propagating the same failure. Explicit chaining is right
+      where one abstraction becomes another because callers see the domain contract while operators
+      retain the original cause.
+
+      Python also records implicit context when a new failure occurs during handling. `from None`
+      changes presentation through context suppression; it does not make the prior event never exist.
+    commonWrongAnswer: "`raise exc` and bare `raise` produce identical tracebacks. They propagate the same object but differ in the visible raise point."
+    followUps:
+      - When would you use add_note?
+      - What fields store the relationships?
+
+  - id: exc-iv-baseexception
+    level: tricky
+    requiredForMastery: false
+    concepts: [BaseException, cancellation]
+    question: Why should application code usually catch Exception rather than BaseException?
+    shortAnswer: Direct BaseException subclasses represent process or interpreter control, including KeyboardInterrupt, SystemExit, and GeneratorExit. Routine recovery should not swallow them. Async cancellation also needs cleanup followed by propagation.
+    fullAnswer: |
+      `Exception` covers ordinary application failures and intentionally excludes several signals that
+      should unwind the program or generator. A blanket BaseException handler can make Ctrl+C fail,
+      prevent shutdown, and leave structured concurrency waiting on a task that ignored cancellation.
+
+      A very top-level boundary may observe BaseException for cleanup, but it should re-raise and must
+      not turn it into success.
+    commonWrongAnswer: BaseException is safer because it guarantees nothing escapes. Escaping is exactly the required behavior for process control.
+    followUps:
+      - Where does CancelledError inherit in the Python version you use?
+      - What cleanup pattern preserves cancellation?
+
+  - id: exc-iv-groups
+    level: advanced
+    requiredForMastery: true
+    concepts: [ExceptionGroup, except-star]
+    question: What problem do ExceptionGroup and except* solve?
+    shortAnswer: They represent several independent failures as one nested exception while preserving each leaf's type and traceback. `except*` recursively selects typed subgroups, lets several policies run once each, and automatically re-raises unmatched leaves.
+    fullAnswer: |
+      Concurrent tasks and complete batch validation can produce more than one meaningful failure
+      before control returns. A list loses normal exception propagation, while raising only the first
+      discards evidence. Groups preserve where failures were combined.
+
+      Starred handlers partition the tree by type. Each clause runs once with all its matches, and
+      ordering matters because the first matching clause claims each leaf.
+    commonWrongAnswer: except* loops over leaves and runs the handler once per exception. It runs once per clause with a matching subgroup.
+    followUps:
+      - What happens to unmatched leaves?
+      - Why is adopting groups an API change?
+
+  - id: exc-iv-taskgroup
+    level: scenario
+    requiredForMastery: false
+    concepts: [TaskGroup, structured-concurrency]
+    question: How would you handle several failures from asyncio.TaskGroup?
+    shortAnswer: Tasks translate boundary failures and preserve cancellation. Outside the group I use except* for policies that genuinely apply to whole typed subgroups, such as reporting retryable outages. I let configuration and unknown failures abort unless a tested degraded mode explicitly owns them.
+    fullAnswer: |
+      TaskGroup cancels sibling tasks after a non-cancellation failure and waits for their cleanup.
+      Remaining failures are combined. Handlers should therefore avoid assuming every task ran to
+      completion or that every leaf represents the same operation.
+
+      Logging a subgroup is not recovery. If I suppress it, I record unavailable capabilities and
+      make every downstream route respect that state. Otherwise I re-raise.
+    commonWrongAnswer: Catch Exception around each task and return None so TaskGroup always completes. That destroys structured failure and creates false success.
+    followUps:
+      - What happens when one task is cancelled?
+      - How would you test simultaneous failures?
+
+  - id: exc-iv-performance
+    level: internals
+    requiredForMastery: false
+    concepts: [traceback, performance, memory]
+    question: What are the runtime costs and retention risks of exceptions?
+    shortAnswer: Raising builds traceback state and unwinds frames, so exceptions are costlier than ordinary branches on hot expected paths. Retained exception objects can retain tracebacks, frames, and large locals. I use exceptions for exceptional contracts and store bounded diagnostics rather than live failures.
+    fullAnswer: |
+      The cost that matters is raising, not merely having a try statement in ordinary Python code.
+      I do not use repeated exceptions as an inner numerical-loop signal when a conditional or result
+      type describes normal flow.
+
+      For observability, I render or log tracebacks with controlled retention and extract safe fields
+      for metrics. Keeping exception instances in queues or caches can keep whole request graphs alive.
+    commonWrongAnswer: Try blocks are always slow, so remove exception handling from production paths. Measure the raised path and preserve required correctness semantics.
+    followUps:
+      - How would you prove a retention problem?
+      - When is an exception still the right hot-path choice?
+
+  - id: exc-iv-review-catchall
+    level: debugging
+    requiredForMastery: false
+    concepts: [broad-catch, observability]
+    question: "Review `except Exception as exc: log(str(exc)); return []` in a retrieval service."
+    shortAnswer: It catches unrelated defects, drops traceback context, and returns valid-looking empty data. I catch only recoverable domain failures locally. Unexpected errors reach a request boundary that logs the traceback and returns an explicit failure response.
+    fullAnswer: |
+      Empty retrieval results have business meaning, so using them as an error sentinel corrupts the
+      contract. The caller may answer “nothing found” during a database outage. `str(exc)` also omits
+      the traceback and may contain unsafe values.
+
+      A cache miss can be recovered where it occurs. An unavailable store can be translated with a
+      cause. Defects should fail the request and remain visible to monitoring.
+    commonWrongAnswer: Add more logging but keep returning the empty list. Better logs do not repair dishonest success semantics.
+    followUps:
+      - What should the HTTP adapter return?
+      - Which exceptions might be safely retried?
+
+projects:
+  - id: exc-project-inference-failure-boundary
+    kind: major
+    title: Build a concurrent inference failure boundary
+    minutes: 210
+    summary: Build a standard-library failure layer that classifies, translates, groups, reports, and tests errors from concurrent inference dependencies.
+    problem: |
+      An inference gateway warms and queries an object store, vector index, and policy service.
+      Today every adapter leaks its client exceptions, the coordinator reports only the first
+      failure, and the worker converts unknown defects into empty success. Build the failure API and
+      tests that make retry, rejection, degraded operation, and abort decisions explicit.
+    requirements:
+      - Define one shallow domain hierarchy with retryable, invalid-input, and permanent branches plus structured attributes.
+      - Translate at least three low-level failures using explicit causes and safe notes.
+      - Run independent async operations in `asyncio.TaskGroup` and handle typed subgroups with `except*`.
+      - Preserve unknown leaves and cancellation; no catch-all may manufacture success.
+      - Implement a tree-aware report that retains nested group paths and safe leaf metadata.
+      - Define a bounded retry policy with maximum attempts, backoff input, and no retry for invalid input.
+      - Document the public failure contract and the conditions for degraded operation.
+    constraints:
+      - Use Python 3.11 or newer and the standard library only.
+      - Do not parse exception messages for program decisions.
+      - Do not store live exception objects in metrics or long-lived state.
+      - Do not catch BaseException except for cleanup followed by re-raise.
+    expectedBehaviour:
+      - Two simultaneous retryable failures appear in one structure-preserving report.
+      - A retryable leaf handled beside an unknown leaf does not hide the unknown failure.
+      - Invalid requests are rejected without retry.
+      - Cancellation releases acquired resources and remains cancellation.
+      - Every translated error exposes its original cause in the traceback chain.
+    structure: |
+      failure_boundary/
+        errors.py
+        adapters.py
+        coordinator.py
+        reporting.py
+        retry.py
+        tests/
+          test_adapters.py
+          test_groups.py
+          test_cancellation.py
+          test_retry.py
+        FAILURE_CONTRACT.md
+    milestones:
+      - title: "1 — Specify the public failure contract"
+        detail: Define caller decisions, hierarchy, attributes, and rules for chaining, notes, and privacy.
+      - title: "2 — Translate adapter failures"
+        detail: Implement narrow translations and prove every domain exception retains its cause.
+      - title: "3 — Coordinate concurrent work"
+        detail: Use TaskGroup and except* while retaining unmatched leaves and cancellation behavior.
+      - title: "4 — Report and retry"
+        detail: Serialize bounded tree diagnostics and apply retry only to the declared semantic branch.
+      - title: "5 — Attack the failure paths"
+        detail: Write simultaneous-failure, cleanup-failure, cancellation, and unknown-defect tests.
+    testing:
+      - Assert exact exception types, attributes, causes, notes, and group nesting.
+      - Prove unmatched leaves escape after a matching except* clause runs.
+      - Cancel each task at every await boundary and assert resource release.
+      - Verify retry limits and that permanent failures make zero retry calls.
+      - Use weak references or bounded state inspection to prove reports do not retain exception graphs.
+    failureCases:
+      - A broad handler converts a programming defect to an empty response.
+      - Handler ordering makes a concrete recovery branch unreachable.
+      - Logging uses str(exc) and loses the traceback.
+      - The reporter flattens a nested group and drops operation identity.
+      - Cancellation is consumed during cleanup.
+      - Retryable classification depends on message wording.
+    bonus:
+      - Add deterministic jitter injection without sleeping in tests.
+      - Export a JSON-safe report schema with redaction tests.
+      - Demonstrate nested groups from two subsystem coordinators.
+    architectureHints:
+      - Keep policy types in errors.py and client-specific translation in adapters.py.
+      - Pass exception groups to the reporter as trees; recurse with a tuple of child indexes.
+      - Inject clocks and retry scheduling so tests remain fast and deterministic.
+    referenceOutline: |
+      Create `InferenceError`, `RetryableInferenceError`, `InvalidInferenceRequest`, and
+      `PermanentInferenceError`, with concrete leaves carrying backend, operation, and retry data.
+      Each adapter catches only its client's documented errors and raises a fresh domain exception
+      from the original. The coordinator uses TaskGroup. Starred handlers report typed subgroups;
+      they re-raise unless an explicit degraded-state result accounts for every missing capability.
+      The reporter recursively converts nodes and leaves into immutable dictionaries without saving
+      exception references. Tests drive all branches, especially unmatched propagation and cancellation.
+
+  - id: exc-final-nine-defects
+    kind: final-challenge
+    title: Find nine defects in a model-serving worker
+    minutes: 70
+    summary: Diagnose nine exception-contract defects before repairing a concurrent worker and proving each regression test fails first.
+    problem: |
+      You receive one module containing adapter translation, an async TaskGroup, retry logic, and a
+      top-level worker boundary. It has exactly nine defects. At least two failures are silent: the
+      function returns plausible data while violating its contract. Write the defect list before
+      changing code, then add one focused regression test per defect.
+    requirements:
+      - Identify exactly nine distinct defects and classify each as control flow, contract, diagnostic, cancellation, grouping, retry, or retention.
+      - Include handler ordering, lost cause, a return in finally, swallowed cancellation, and an unmatched group leaf in the audit.
+      - Prove every regression test fails against the original module for the reason claimed.
+      - Repair the module without adding a broad success-producing catch-all.
+      - Write a short incident note explaining the two silent failures and their likely production symptoms.
+    constraints:
+      - Do not change the provided public success result type.
+      - Do not inspect exception messages in recovery logic.
+      - Do not flatten ExceptionGroup merely to make assertions easier.
+    expectedBehaviour:
+      - All nine tests fail before repairs and pass afterward.
+      - Unknown grouped leaves still reach the caller.
+      - Cancellation and cleanup behavior remain observable in tests.
+      - Retry is bounded and restricted to typed retryable failures.
+    milestones:
+      - title: "1 — Freeze the evidence"
+        detail: Run the original suite and record the module behavior without editing it.
+      - title: "2 — Produce the nine-item audit"
+        detail: Trace every exit path, exception relationship, group partition, and retained object.
+      - title: "3 — Write failing regression tests"
+        detail: Make each test isolate one defect and verify its pre-fix failure reason.
+      - title: "4 — Repair and explain"
+        detail: Apply the smallest changes and write the incident note for silent corruption paths.
+    testing:
+      - Inspect __cause__, traceback behavior, group structure, and cancellation explicitly.
+      - Assert returned empty collections only when the operation genuinely succeeded with no items.
+      - Verify metrics contain bounded values rather than exception instances.
+    failureCases:
+      - Listing symptoms instead of nine root defects.
+      - Writing tests only after the repair.
+      - Catching all remaining leaves to make the test suite green.
+      - Replacing one message-parsing rule with another.
+    bonus:
+      - Add a property-style table test for every hierarchy leaf and retry decision.
+      - Produce a minimal before-and-after grouped traceback for the incident note.
+    architectureHints:
+      - Draw the exception tree after each except* clause before changing the code.
+      - Search every finally suite, raise form, stored exception, and broad handler systematically.
+    referenceOutline: |
+      The nine intended categories are unreachable subclass handler, low-level exception leaked,
+      explicit cause lost, return in finally, cancellation swallowed, unmatched group leaf consumed,
+      permanent failure retried, empty success manufactured, and live exception retained for metrics.
+      Tests should establish each defect independently. Repairs restore specific-first matching,
+      boundary translation with `from`, cleanup-only finally suites, cancellation propagation,
+      automatic unmatched-leaf propagation, typed retry, explicit failure results, and bounded metrics.
+
+resources:
+  - name: Python tutorial — Errors and Exceptions
+    type: tutorial
+    difficulty: intro
+    url: "https://docs.python.org/3/tutorial/errors.html"
+    usefulness: 5
+    why: It builds the core control-flow model with canonical examples before the advanced group machinery.
+    covers: Raising, handling, else, finally, chaining, user-defined exceptions, notes, and exception groups.
+  - name: Python language reference — The try statement
+    type: docs
+    difficulty: core
+    url: "https://docs.python.org/3/reference/compound_stmts.html#the-try-statement"
+    usefulness: 5
+    why: It is the normative source for handler order, else and finally execution, and except-star restrictions.
+    covers: Exact try, except, except-star, else, and finally semantics.
+  - name: Python library reference — Built-in Exceptions
+    type: docs
+    difficulty: core
+    url: "https://docs.python.org/3/library/exceptions.html"
+    usefulness: 5
+    why: It documents the hierarchy and diagnostic attributes that production exception APIs build upon.
+    covers: BaseException tree, chaining fields, add_note, ExceptionGroup, and built-in meanings.
+  - name: PEP 654 — Exception Groups and except-star
+    type: article
+    difficulty: deep
+    url: "https://peps.python.org/pep-0654/"
+    usefulness: 5
+    why: It explains the design constraints and recursive partition semantics that surface syntax alone can hide.
+    covers: Group trees, split and subgroup, except-star matching, propagation, and compatibility.
+  - name: asyncio TaskGroup documentation
+    type: docs
+    difficulty: deep
+    url: "https://docs.python.org/3/library/asyncio-task.html#task-groups"
+    usefulness: 5
+    why: It connects exception groups to their most important standard-library production use case.
+    covers: Structured task lifetime, sibling cancellation, grouped failures, and special base exceptions.

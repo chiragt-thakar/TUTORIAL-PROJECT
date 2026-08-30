@@ -1,0 +1,790 @@
+lessonId: "roadmap:phase-2-2.2:1"
+module: 2-2-calculus-optimisation
+lesson: 02-chain-rule-deeply-in-multiple-variables-backprop-is
+title: "Chain rule — deeply, in multiple variables. Backprop is this and nothing more."
+summary: The multivariable chain rule as a sum over paths and a product of Jacobians, evaluated over a computational graph, run right-to-left as reverse-mode autodiff — which is exactly backpropagation.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lchr-read-reverse-pass
+    tier: normal
+    kind: code-reading
+    title: Read a reverse pass
+    minutes: 10
+    requiredForMastery: true
+    concepts: [reverse-mode, vector-jacobian-product, chain-rule]
+    prompt: |
+      Read this backward for `z1 = W1 @ x`, `h = tanh(z1)`, `y = W2 @ h`, scalar `L` with `dL/dy = g`.
+      Name what each line computes and why no Jacobian matrix appears.
+      ```python
+      grad_h  = W2.T @ g
+      grad_z1 = grad_h * (1 - h**2)
+      grad_x  = W1.T @ grad_z1
+      grad_W1 = np.outer(grad_z1, x)
+      grad_W2 = np.outer(g, h)
+      ```
+    hints:
+      - "`tanh'` is elementwise, so its Jacobian is diagonal and acts as a pointwise multiply."
+      - Each line is a vector-Jacobian product, an array times a vector.
+    solution: |
+      `grad_h = W2.T @ g` is `u @ J` for the linear map `y = W2 @ h` (`dy/dh = W2`), giving `dL/dh`.
+      `grad_z1 = grad_h * (1 - h**2)` applies the diagonal `tanh` Jacobian `diag(1 - h**2)` as a
+      pointwise multiply, giving `dL/dz1`. `grad_x = W1.T @ grad_z1` is the VJP for `z1 = W1 @ x`,
+      giving `dL/dx`. `grad_W1 = outer(grad_z1, x)` and `grad_W2 = outer(g, h)` are the weight
+      gradients, each entry `(i, j)` equal to the local upstream gradient times the local input. No
+      Jacobian is materialised: every step is a matrix or vector times a vector.
+  - id: lchr-write-multivariable-chain
+    tier: normal
+    kind: write-code
+    title: Multivariable chain rule by paths
+    minutes: 12
+    requiredForMastery: true
+    concepts: [multivariable-chain-rule, sum-over-paths]
+    prompt: |
+      For `z = u * v` with `u = f(x, y)` and `v = g(x, y)`, write expressions for `dz/dx` and
+      `dz/dy` in terms of the partials of `f` and `g`, and explain the sum.
+    hints:
+      - "`dz/du = v`, `dz/dv = u`."
+      - Each input reaches `z` through both `u` and `v`.
+    solution: |
+      `dz/dx = (dz/du)(du/dx) + (dz/dv)(dv/dx) = v * f_x + u * g_x`, and
+      `dz/dy = v * f_y + u * g_y`. `z` depends on `x` along two paths — `x -> u -> z` and
+      `x -> v -> z` — and the chain rule sums the product of local sensitivities along each. If `u`
+      and `v` shared more intermediates, there would be more path terms, but the pattern is the
+      same: total sensitivity is the sum over all paths of the products of edge derivatives.
+  - id: lchr-predict-jacobian-shapes
+    tier: normal
+    kind: predict-output
+    title: Jacobian shapes and product order
+    minutes: 10
+    requiredForMastery: true
+    concepts: [jacobian-shape, composition, order]
+    prompt: |
+      For `y = f3(f2(f1(x)))` with `f1: R^5 -> R^8`, `f2: R^8 -> R^3`, `f3: R^3 -> R^4`, give the
+      shape of each Jacobian, the total Jacobian expression, and its shape.
+    hints:
+      - "In numerator layout a map from `R^n` to `R^m` has an `(m, n)` Jacobian."
+      - Jacobians multiply right to left.
+    solution: |
+      `J1 = df1/dx` is `(8, 5)`; `J2 = df2/du` is `(3, 8)`; `J3 = df3/dv` is `(4, 3)`. The total
+      Jacobian is `J_total = J3 @ J2 @ J1`, evaluated right to left in the order the functions
+      apply. Its shape is `(4, 5)` — outputs by inputs. Writing it as `J1 @ J2 @ J3` would not even
+      be conformable.
+  - id: lchr-explain-forward-vs-reverse
+    tier: normal
+    kind: explain
+    title: Forward mode versus reverse mode
+    minutes: 10
+    requiredForMastery: true
+    concepts: [forward-mode, reverse-mode, jvp, vjp]
+    prompt: |
+      Explain what forward-mode and reverse-mode autodiff each carry through the Jacobian product,
+      and which to use for training.
+    hints:
+      - Forward mode carries a column vector; reverse mode carries a row vector.
+      - Count outputs versus inputs.
+    solution: |
+      Both evaluate `J_total = J_k @ ... @ J_1`. Forward mode multiplies right to left, carrying a
+      column vector `v` (an input perturbation direction) as Jacobian-vector products `J_i @ v`;
+      cost is one pass per input direction. Reverse mode multiplies left to right, carrying a row
+      vector `u` (the gradient of a scalar output) as vector-Jacobian products `J_i.T @ u`; cost is
+      one pass per output. Training has one scalar loss and millions of parameters, so reverse mode
+      — one pass for the whole gradient — is the only practical choice.
+  - id: lchr-two-layer-backprop
+    tier: intermediate
+    kind: write-code
+    title: Backprop through a two-layer net
+    minutes: 16
+    requiredForMastery: true
+    concepts: [backprop, chain-rule, gradient-check]
+    prompt: |
+      For `h = relu(W1 @ x + b1)`, `y = W2 @ h + b2`, scalar `L` with `dL/dy = g`, write the
+      backward returning grads for `x`, `W1`, `b1`, `W2`, `b2`, and outline the gradient check.
+    hints:
+      - ReLU derivative is the indicator `(W1 @ x + b1) > 0`.
+      - Bias gradient is the upstream gradient (summed over the batch axis if batched).
+    solution: |
+      `z1 = W1 @ x + b1`; `h = np.maximum(z1, 0)`. Backward: `grad_h = W2.T @ g`;
+      `grad_z1 = grad_h * (z1 > 0)`; `grad_x = W1.T @ grad_z1`; `grad_W1 = np.outer(grad_z1, x)`;
+      `grad_b1 = grad_z1`; `grad_W2 = np.outer(g, h)`; `grad_b2 = g`. Over a batch, the weight
+      gradients become `Delta.T @ X` sums and the bias gradients sum over the batch axis. Gradient
+      check: flatten all parameters into a vector, define `forward(theta) -> L`, and compare each
+      analytic block to a central finite difference with relative error below `1e-5`, at a point
+      where no pre-activation is exactly zero.
+  - id: lchr-graph-accumulation
+    tier: intermediate
+    kind: predict-output
+    title: Gradient of a reused value
+    minutes: 12
+    requiredForMastery: true
+    concepts: [computational-graph, accumulation, sum-over-paths]
+    prompt: |
+      A node `t` feeds three downstream operations whose gradients with respect to `t` are `g1`,
+      `g2`, `g3`. What is `dL/dt`, and what does a framework do at that node during the backward
+      pass?
+    hints:
+      - Each consumer is a separate path from `t` to `L`.
+      - The graph node accumulates.
+    solution: |
+      `dL/dt = g1 + g2 + g3` — the sum over the three paths from `t` to the loss. During the
+      backward pass the framework accumulates into `t.grad` with `+=` as each consumer's
+      vector-Jacobian product is computed, and only once every consumer has contributed (reverse
+      topological order guarantees this) does it propagate `t.grad` further back. Forgetting to
+      accumulate — overwriting instead of adding — is the classic bug in a hand-written engine for a
+      value used more than once.
+  - id: lchr-cost-jacobian-vs-vjp
+    tier: intermediate
+    kind: performance
+    title: Cost of VJP versus a full Jacobian
+    minutes: 14
+    requiredForMastery: true
+    concepts: [cost, vector-jacobian-product, reverse-mode]
+    prompt: |
+      For `y = f3(f2(f1(x)))` with dims `n=1000 -> a=500 -> b=200 -> m=1`, give the approximate flop
+      cost of `grad_x L` by reverse-mode VJPs versus forming `J_total` and multiplying.
+    hints:
+      - Reverse mode contracts a vector through each Jacobian in turn.
+      - Forming `J_total` needs matrix-matrix products and an `(m, n)` array.
+    solution: |
+      Reverse mode: `u = dL/dy` has length `m = 1`. `u3 = J3.T @ u` costs `m*b = 200`;
+      `u2 = J2.T @ u3` costs `a*b = 100000`; `grad_x = J1.T @ u2` costs `a*n = 500000`. Total about
+      `6e5` flops, no large intermediate. Forming `J_total`: `J3 @ J2` costs `m*b*a = 1e5`,
+      `(m,a) @ (a,n)` costs `m*a*n = 5e5`, plus `m*n`. Similar here because `m = 1`, but if `m` were
+      large the full-Jacobian route scales with `m` at every step while reverse mode does not — that
+      is why backprop for a scalar loss never forms the Jacobian.
+  - id: lchr-detach-semantics
+    tier: intermediate
+    kind: explain
+    title: What detach does to the chain rule
+    minutes: 12
+    requiredForMastery: true
+    concepts: [stop-gradient, computational-graph, straight-through]
+    prompt: |
+      Explain what `detach()` / `stop_gradient` does in terms of the computational graph and the
+      chain rule, and give one legitimate use.
+    hints:
+      - It removes an edge from the backward graph.
+      - The forward value is unchanged; only the gradient path is cut.
+    solution: |
+      `detach(t)` returns a value numerically equal to `t` but with no backward edge to `t`'s
+      producers. In the chain rule, any path from a parameter to the loss that runs through that
+      edge is removed, so `dL/d(that parameter)` becomes the sum over only the remaining paths; the
+      forward pass is unaffected. Legitimate uses: target networks in RL and self-distillation
+      (the target should not receive gradient), the straight-through estimator for a non-differentiable
+      op (use the identity gradient while detaching the true op), stopping gradient into a frozen
+      encoder, and truncated backprop through time.
+  - id: lchr-forward-mode-dual
+    tier: intermediate
+    kind: write-code
+    title: Forward mode with dual numbers
+    minutes: 14
+    requiredForMastery: true
+    concepts: [forward-mode, dual-numbers, jacobian-vector-product]
+    prompt: |
+      Sketch a `Dual` number `(value, dot)` and the rules for `+`, `*`, and `sin`, and explain what
+      running the forward computation on `Dual(x, 1.0)` gives you.
+    hints:
+      - "`dot` carries the derivative with respect to the seed direction."
+      - "`(a + b).dot = a.dot + b.dot`; `(a * b).dot = a.dot * b.value + a.value * b.dot`."
+    solution: |
+      A `Dual` holds `value` and `dot`. Rules: `Dual(av, ad) + Dual(bv, bd) = Dual(av + bv, ad +
+      bd)`; `Dual(av, ad) * Dual(bv, bd) = Dual(av * bv, ad * bv + av * bd)` (product rule);
+      `sin(Dual(av, ad)) = Dual(sin(av), cos(av) * ad)` (chain rule). Running the forward
+      computation on `Dual(x, 1.0)` (and constants as `Dual(c, 0.0)`) propagates the chain rule
+      left to right: the output's `dot` field is `df/dx`, a Jacobian-vector product with the seed
+      `v = 1`. Seeding a different input's `dot` with 1 gives the partial derivative in that
+      direction; to get a full gradient you would run it once per input, which is why forward mode
+      is used only when inputs are few.
+  - id: lchr-debug-missing-accumulation
+    tier: tricky
+    kind: debug
+    title: Reused tensor, overwritten gradient
+    minutes: 14
+    requiredForMastery: true
+    concepts: [accumulation, computational-graph, reuse]
+    prompt: |
+      This tiny engine gives a wrong gradient when a value is used twice. Find the bug.
+    code: |
+      class Node:
+          def __init__(self, value):
+              self.value = value
+              self.grad = 0.0
+              self._backward = lambda: None
+          def set_grad(self, g):
+              self.grad = g          # used by each consumer's backward
+    solution: |
+      `set_grad` overwrites `self.grad`. When a node feeds two consumers, the second consumer's
+      backward clobbers the first consumer's contribution, so the node ends up with only one path's
+      gradient instead of the sum. The chain rule says `dL/dt = sum over consumers`, so the engine
+      must accumulate: `self.grad += g`. It must also initialise `grad` to zero before each backward
+      pass and only propagate a node's gradient once all its consumers have contributed (reverse
+      topological order). Regression: compute `y = x * x` as `y = a * b` with `a = b = x`; the
+      accumulating version gives `dy/dx = 2x`, the overwriting version gives `x`.
+    hints:
+      - A node with multiple consumers needs the sum of their contributions.
+      - Replace `=` with `+=` and zero the grad before the pass.
+  - id: lchr-debug-jacobian-order
+    tier: tricky
+    kind: debug
+    title: Jacobians multiplied in the wrong order
+    minutes: 14
+    requiredForMastery: true
+    concepts: [composition, jacobian-order, numerator-layout]
+    prompt: |
+      This composes the per-layer Jacobians for `y = f3(f2(f1(x)))` but the result is transposed
+      relative to a finite-difference Jacobian. Fix it (all Jacobians are numerator layout).
+    code: |
+      def total_jacobian(J1, J2, J3):
+          return J1 @ J2 @ J3
+    solution: |
+      In numerator layout, `J1 = df1/dx` is `(a, n)`, `J2 = df2/du` is `(b, a)`, `J3 = df3/dv` is
+      `(m, b)`. The chain rule is `dy/dx = (df3/dv)(df2/du)(df1/dx) = J3 @ J2 @ J1`, right to left in
+      the order the functions apply. `J1 @ J2 @ J3` is the reverse order and is only conformable by
+      coincidence when dimensions match, giving the transpose (or a shape error). Fix:
+      `return J3 @ J2 @ J1`. Regression: pick `f1, f2, f3` with distinct in/out dimensions so the
+      wrong order raises, and compare to `num_jac(lambda x: f3(f2(f1(x))), x)`.
+    hints:
+      - Outer function's Jacobian goes leftmost.
+      - "`dy/dx = J3 @ J2 @ J1`."
+  - id: lchr-debug-detach-unintended
+    tier: tricky
+    kind: debug
+    title: An accidental stop-gradient
+    minutes: 14
+    requiredForMastery: true
+    concepts: [stop-gradient, numpy-in-graph, chain-rule]
+    prompt: |
+      A layer's parameter never updates. Its forward converts an intermediate to a NumPy array for a
+      helper, then back to a framework tensor. Explain and fix.
+    code: |
+      def forward(x, W):
+          h = framework.matmul(x, W)
+          h_np = h.numpy()                 # leaves the autodiff graph
+          feat = np.tanh(h_np) * scale
+          return framework.tensor(feat)    # a fresh leaf, no history
+    solution: |
+      Calling `.numpy()` and wrapping the result back in a fresh tensor severs the computational
+      graph: the returned value has no backward edge to `h`, so the chain rule cannot propagate
+      `dL/dh`, and therefore `dL/dW` is zero — `W` never moves. It is an unintended `detach()`. Fix:
+      do the whole forward with framework ops that support autodiff (`framework.tanh(h) * scale`).
+      If a non-differentiable third-party op is genuinely needed, wrap it with a custom
+      forward/backward (define the VJP yourself) or use a straight-through estimator. Regression:
+      assert `dL/dW` is nonzero for a random input after the fix, and zero before it.
+    hints:
+      - Converting to a raw array and back creates a new leaf with no history.
+      - Keep the forward in autodiff-aware ops, or define a custom backward.
+  - id: lchr-design-micro-autodiff
+    tier: challenge
+    kind: design
+    title: Design a scalar reverse-mode autodiff engine
+    minutes: 28
+    requiredForMastery: false
+    concepts: [reverse-mode, computational-graph, vjp, api-design]
+    prompt: |
+      Design a minimal `Value` type supporting `+`, `*`, `tanh`, `relu`, and `sum`, with a
+      `backward()` that computes gradients by the reverse-mode chain rule. State the data model, the
+      per-op VJP, the traversal, and what it must not get wrong.
+    hints:
+      - Each `Value` records its parents and a local backward closure.
+      - "`backward()` topologically sorts from the output and accumulates."
+    solution: |
+      Data model: a `Value` holds `data`, `grad` (init 0), a set/list of parent `Value`s, and a
+      `_backward` closure that, given this node's `grad`, adds the appropriate contribution to each
+      parent's `grad`. Each op constructs a new `Value`, wires its parents, and sets `_backward`:
+      for `c = a + b`, `a.grad += c.grad` and `b.grad += c.grad`; for `c = a * b`,
+      `a.grad += b.data * c.grad`, `b.grad += a.data * c.grad`; for `c = tanh(a)`,
+      `a.grad += (1 - c.data**2) * c.grad`; for `relu`, multiply by `c.data > 0`. `backward()` on
+      the scalar output: build a topological order of the graph, set `output.grad = 1`, then iterate
+      in reverse calling each `_backward`. It must accumulate (`+=`) not overwrite, zero all grads
+      before a pass, visit in reverse topological order so a node's grad is complete before it
+      propagates, and pick a subgradient (0) at the ReLU kink. Golden cases: `x*x`, a two-layer MLP,
+      and a diamond graph, each gradient-checked against central differences.
+  - id: lchr-refactor-explicit-jacobian-backward
+    tier: challenge
+    kind: refactor
+    title: Refactor a Jacobian-forming backward to VJPs
+    minutes: 24
+    requiredForMastery: false
+    concepts: [vector-jacobian-product, memory, refactor]
+    prompt: |
+      A custom module's backward builds `diag(phi'(z))` and `diag(s) - s s.T` (softmax) as dense
+      matrices and multiplies. It runs out of memory at large feature dimension. Refactor to
+      vector-Jacobian products.
+    hints:
+      - Diagonal Jacobian times a vector is an elementwise product.
+      - "`(diag(s) - s s.T) @ v` equals `s * v - s * (s @ v)`."
+    solution: |
+      For the elementwise activation, replace `np.diag(phi_prime(z)) @ grad_y` with
+      `grad_y * phi_prime(z)` — `O(n)` instead of `O(n**2)` memory. For softmax, replace forming
+      `diag(s) - np.outer(s, s)` with `grad_z = s * (grad_s - (s @ grad_s))`, again `O(n)`. The
+      linear layer already has no dense Jacobian to remove (`W.T @ grad_y`, `outer(grad_y, x)`).
+      Verify each refactored VJP against the old explicit-Jacobian path on small inputs and against a
+      finite-difference check. Add a fail-before-fix test recording the largest intermediate shape
+      (or peak memory) for a large feature dimension and asserting it drops from `O(n**2)` to
+      `O(n)`.
+quizzes:
+  - id: lchr-checkpoint
+    title: Checkpoint — the chain rule and backprop
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lchr-cp-multivariable
+        kind: mcq
+        prompt: For `z = f(u, v)` with `u, v` functions of `x`, `dz/dx` equals what?
+        options:
+          - {id: sum, text: "`(dz/du)(du/dx) + (dz/dv)(dv/dx)`"}
+          - {id: prod, text: "`(dz/du)(dz/dv)(du/dx)(dv/dx)`"}
+          - {id: max, text: The larger of the two path contributions}
+        answer: [sum]
+        explanation: The chain rule sums the product of local sensitivities over every path.
+        concepts: [multivariable-chain-rule]
+        points: 1
+      - id: lchr-cp-order
+        kind: mcq
+        prompt: The total Jacobian of `f3(f2(f1(x)))` in numerator layout is which product?
+        options:
+          - {id: j321, text: "`J3 @ J2 @ J1`"}
+          - {id: j123, text: "`J1 @ J2 @ J3`"}
+          - {id: had, text: "`J1 * J2 * J3` elementwise"}
+        answer: [j321]
+        explanation: Jacobians multiply right to left, in the order the functions apply.
+        concepts: [composition]
+        points: 1
+      - id: lchr-cp-reverse
+        kind: mcq
+        prompt: Reverse-mode autodiff for a scalar loss propagates what, and at what cost?
+        options:
+          - {id: vjp, text: Vector-Jacobian products, at a constant times one forward pass}
+          - {id: jvp, text: Jacobian-vector products, one pass per parameter}
+          - {id: full, text: The full Jacobian, one pass total}
+        answer: [vjp]
+        explanation: One row vector (the loss gradient) flows backward; cost is independent of parameter count.
+        concepts: [reverse-mode, vjp]
+        points: 1
+      - id: lchr-cp-reuse
+        kind: multi
+        prompt: Which are true when a value feeds several downstream operations?
+        options:
+          - {id: sum, text: Its gradient is the sum of the contributions from each consumer}
+          - {id: accumulate, text: A framework accumulates with `+=` during the backward pass}
+          - {id: topo, text: Its gradient must be complete before it propagates further back}
+          - {id: overwrite, text: Each consumer overwrites the previous gradient}
+        answer: [sum, accumulate, topo]
+        explanation: Multiple consumers are multiple paths; the contributions add.
+        concepts: [computational-graph, accumulation]
+        points: 1
+  - id: lchr-assessment
+    title: Assessment — chain rule and backpropagation
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lchr-as-multivariable
+        kind: explain
+        prompt: State the multivariable chain rule and the sum-over-paths reading.
+        modelAnswer: |
+          For `z = f(u_1, ..., u_m)` with each `u_i = g_i(x_1, ..., x_n)`,
+          `dz/dx_j = sum_i (dz/du_i)(du_i/dx_j)`. Each term is one path from `x_j` to `z` through an
+          intermediate `u_i`; the total sensitivity is the sum of the products of local
+          sensitivities along all paths.
+        explanation: Compositions accumulate sensitivity additively over paths.
+        concepts: [multivariable-chain-rule]
+        points: 1
+      - id: lchr-as-jacobian-product
+        kind: write-function
+        prompt: |
+          Write the total Jacobian of `f3(f2(f1(x)))` and give the shapes when `f1` maps `R^n` to
+          `R^a`, `f2` maps `R^a` to `R^b`, and `f3` maps `R^b` to `R^m`.
+        modelAnswer: |
+          `J_total = J3 @ J2 @ J1` with `J1` of shape `(a, n)`, `J2` of shape `(b, a)`, `J3` of
+          shape `(m, b)`, and `J_total` of shape `(m, n)`. Right to left in application order.
+        explanation: Conformability forces the right-to-left order.
+        concepts: [composition, jacobian-shape]
+        points: 1
+      - id: lchr-as-forward-reverse
+        kind: scenario
+        prompt: You need the gradient of a scalar loss over 10 million parameters. Which autodiff mode and why?
+        modelAnswer: |
+          Reverse mode. It carries the single scalar loss gradient backward as vector-Jacobian
+          products, computing the entire gradient in a constant times one forward pass, independent
+          of the parameter count. Forward mode would need one pass per parameter direction.
+        explanation: One output, many inputs favours reverse mode decisively.
+        concepts: [reverse-mode, forward-mode]
+        points: 1
+      - id: lchr-as-accumulation
+        kind: find-bug
+        prompt: A hand-written autodiff engine overwrites a node's gradient instead of adding. When does this bite?
+        modelAnswer: |
+          Whenever a value feeds more than one downstream operation. Each consumer's backward should
+          add its contribution; overwriting keeps only the last, so the node's gradient misses the
+          other paths. `y = x * x` (with the two factors both `x`) gives `x` instead of `2x`.
+        explanation: Multiple consumers are multiple paths and must be summed.
+        concepts: [accumulation]
+        points: 1
+      - id: lchr-as-vjp-cost
+        kind: scenario
+        prompt: Why does reverse mode not form the Jacobian of an intermediate layer?
+        modelAnswer: |
+          A layer's Jacobian is `outputs x inputs`, huge for real layers, while the VJP `J.T @ v` is
+          only `inputs`-sized and often has a closed form (`W.T @ v` for a linear layer,
+          `v * phi'(z)` for an activation). Forming Jacobians would multiply cost and memory by the
+          output dimension at every layer.
+        explanation: The VJP is the cheap, sufficient object for a scalar loss.
+        concepts: [vector-jacobian-product]
+        points: 1
+      - id: lchr-as-detach
+        kind: scenario
+        prompt: What does `detach()` do to the chain rule, and name a valid use.
+        modelAnswer: |
+          It removes a backward edge, so any gradient path through that edge is dropped and
+          `dL/dparam` becomes the sum over the remaining paths; the forward value is unchanged. Valid
+          uses: RL target networks, straight-through estimators, freezing an encoder, truncated
+          backprop through time.
+        explanation: Cutting an edge cuts every path through it.
+        concepts: [stop-gradient]
+        points: 1
+      - id: lchr-as-numpy-break
+        kind: find-bug
+        prompt: A forward converts an intermediate to a NumPy array and back to a tensor; the parameter never updates. Why?
+        modelAnswer: |
+          The round trip severs the computational graph — the returned tensor is a fresh leaf with
+          no history — so the chain rule cannot propagate to the parameter and its gradient is zero.
+          Keep the forward in autodiff-aware ops, or define a custom VJP for the external op.
+        explanation: Leaving and re-entering the graph is an accidental stop-gradient.
+        concepts: [computational-graph]
+        points: 1
+      - id: lchr-as-vanishing
+        kind: scenario
+        prompt: Why do the first layers of a very deep plain network often fail to learn?
+        modelAnswer: |
+          Their gradient is the loss gradient times the product of the Jacobians of all later
+          layers. If those Jacobians have typical singular values below 1, the product shrinks
+          geometrically with depth, so early layers get a vanishingly small gradient. Above 1 it
+          explodes. Residuals, normalisation, and good initialisation keep the per-layer Jacobian
+          near 1.
+        explanation: Depth multiplies Jacobians, so their collective scale dominates.
+        concepts: [vanishing-gradient, jacobian-product]
+        points: 1
+      - id: lchr-as-hessian-chain
+        kind: scenario
+        prompt: How do you get a Hessian-vector product `H @ v` using the chain rule twice, without forming `H`?
+        modelAnswer: |
+          Compute the gradient `g = grad L`, then differentiate the scalar `g @ v` with respect to
+          the parameters (a second reverse pass, or forward-over-reverse). The result is `H @ v`
+          exactly, at the cost of a constant times one gradient, memory `O(p)`.
+        explanation: "`H @ v` is the directional derivative of the gradient map."
+        concepts: [hessian-vector-product]
+        points: 1
+      - id: lchr-as-true-false-order
+        kind: true-false
+        prompt: The Jacobians of a composition can be multiplied in either order and give the same result.
+        options:
+          - {id: "true", text: "True"}
+          - {id: "false", text: "False"}
+        answer: ["false"]
+        explanation: They multiply right to left in application order; other orders are wrong or not conformable.
+        concepts: [composition]
+        points: 1
+interview:
+  - id: lchr-iv-explain-backprop
+    level: internals
+    requiredForMastery: true
+    concepts: [backprop, chain-rule, reverse-mode]
+    question: Explain backpropagation precisely — what it computes and in what order.
+    shortAnswer: |
+      It computes the gradient of a scalar loss with respect to every parameter by applying the
+      multivariable chain rule over the forward computational graph, from the output backward,
+      propagating vector-Jacobian products and summing where a value is reused.
+    fullAnswer: |
+      The forward pass records a DAG of primitive ops and their inputs. Set `dL/dL = 1`. Reverse
+      mode visits nodes in reverse topological order; at each op it applies that op's VJP — a
+      function mapping the gradient with respect to the op's output to the gradient with respect to
+      its inputs (`W.T @ delta` and `outer(delta, x)` for a linear layer, `delta * phi'(z)` for an
+      elementwise activation). A value feeding several consumers accumulates the sum of their
+      contributions. No Jacobian matrix is formed. The reverse pass costs a small constant times one
+      forward pass, independent of parameter count, plus memory for the stored activations.
+      Forward-mode autodiff is the mirror image (JVPs, left to right) and is used when inputs are
+      few.
+    commonWrongAnswer: Backprop is a special training algorithm separate from calculus.
+    followUps:
+      - Why is a value used twice given a summed gradient?
+      - What has to be stored from the forward pass and why?
+  - id: lchr-iv-forward-reverse
+    level: comparison
+    requiredForMastery: true
+    concepts: [forward-mode, reverse-mode, cost]
+    question: When is forward-mode autodiff the right choice over reverse-mode?
+    shortAnswer: |
+      When you have few inputs and possibly many outputs — the opposite of training. Forward mode
+      costs one pass per input direction; reverse mode costs one pass per output. For a scalar loss
+      over many parameters, reverse mode; for a Jacobian-vector product or sensitivity to a handful
+      of inputs, forward mode.
+    fullAnswer: |
+      Both compute the same Jacobian product; they differ in which factor they seed and which
+      direction they multiply. Forward mode carries a column vector `v` and returns `J @ v` at the
+      cost of one augmented forward pass; to get a full `(m, n)` Jacobian it needs `n` passes.
+      Reverse mode carries a row vector `u` and returns `u @ J` (i.e. `J.T @ u`); a full Jacobian
+      needs `m` passes. So forward mode wins when `n` is small (few input directions, JVPs for
+      Hessian-free methods, some uncertainty propagation) and reverse mode wins when `m` is small
+      (one scalar loss). Frameworks provide both and let you compose them (forward-over-reverse for
+      HVPs).
+    commonWrongAnswer: Forward mode is always slower and never used.
+    followUps:
+      - How would you compute a Hessian-vector product by composing the two modes?
+      - What is the cost of a full Jacobian in each mode?
+  - id: lchr-iv-graph-accumulation
+    level: debugging
+    requiredForMastery: true
+    concepts: [computational-graph, accumulation, reuse]
+    question: A hand-written autodiff engine gives wrong gradients for `y = x * x`. What is the likely bug?
+    shortAnswer: |
+      It overwrites a node's gradient instead of accumulating. `x` is used by both factors, so its
+      gradient should be the sum of the two contributions (`x + x = 2x`); overwriting keeps only
+      one, giving `x`.
+    fullAnswer: |
+      The chain rule says a value's gradient is the sum over every path to the loss, which in graph
+      terms means the sum over every consumer. When `x` feeds two multiply inputs, each consumer's
+      backward produces a contribution (`b * upstream` and `a * upstream`, both `x * 1` here), and
+      they must be added. A correct engine initialises every node's grad to zero, accumulates with
+      `+=` as consumers report, and — via reverse topological order — only propagates a node's grad
+      once all consumers have contributed. Overwriting, or propagating early, produces the classic
+      "off by a path" bug.
+    commonWrongAnswer: The bug is in the multiply rule itself.
+    followUps:
+      - Why does reverse topological order matter here?
+      - How would you detect this bug with a test?
+  - id: lchr-iv-vanishing-exploding
+    level: scenario
+    requiredForMastery: true
+    concepts: [vanishing-gradient, exploding-gradient, jacobian-product]
+    question: Relate vanishing and exploding gradients to the chain rule.
+    shortAnswer: |
+      The gradient reaching an early layer is the loss gradient times the product of all later
+      layers' Jacobians. If the per-layer Jacobian scale is below 1 the product vanishes with depth;
+      above 1 it explodes. Residuals, normalisation, and initialisation keep it near 1.
+    fullAnswer: |
+      Backprop multiplies one Jacobian per layer. Write the effective gain of layer `l` as the
+      typical singular value of its Jacobian `sigma_l`. The gradient at layer `k` scales like the
+      product `prod_{l>k} sigma_l`, which is exponential in depth unless the `sigma_l` are close to
+      1. Sigmoid/tanh saturate and push `sigma_l` toward 0 (vanishing); poorly scaled weights push
+      it above 1 (exploding). Residual connections make each layer's Jacobian `I + small`, so the
+      product stays near 1; layer/batch/RMS norm rescales activations so `sigma_l ~ 1`; He/Xavier/
+      orthogonal init sets the initial scale to 1; gradient clipping bounds the exploding case.
+      Diagnose with a per-layer gradient-norm plot.
+    commonWrongAnswer: It is caused by a bug in one particular layer.
+    followUps:
+      - How does a residual connection change the layer Jacobian?
+      - What would the per-layer gradient-norm plot look like in each case?
+  - id: lchr-iv-detach
+    level: scenario
+    requiredForMastery: true
+    concepts: [stop-gradient, straight-through, chain-rule]
+    question: What does stop-gradient do and where is it used deliberately?
+    shortAnswer: |
+      It cuts a backward edge so the chain rule does not propagate through that path; the forward
+      value is unchanged. Deliberate uses: RL target networks, straight-through estimators, frozen
+      encoders, truncated backprop through time.
+    fullAnswer: |
+      `stop_gradient` / `detach` returns a value equal to its input but disconnected from the graph,
+      so `dL/dparam` becomes the sum over the paths that do not run through it. This is intentional
+      when a quantity should be treated as a constant target: the bootstrapped target in Q-learning
+      (no gradient into the target network), the straight-through estimator (forward through a hard
+      quantiser, backward through the identity by detaching the difference), freezing a pretrained
+      backbone, and cutting the recurrence in truncated BPTT to bound memory. The danger is doing it
+      by accident — e.g. converting a tensor to NumPy and back — which silently zeroes a gradient.
+    commonWrongAnswer: It sets the gradient to zero everywhere in the model.
+    followUps:
+      - How does a straight-through estimator use detach?
+      - What is a symptom of an accidental stop-gradient?
+  - id: lchr-iv-what-must-be-stored
+    level: internals
+    requiredForMastery: true
+    concepts: [activation-memory, reverse-mode, checkpointing]
+    question: Why does reverse-mode autodiff need to store the forward activations, and what can you do about the memory?
+    shortAnswer: |
+      Each op's VJP needs its forward inputs (or outputs) to evaluate the local Jacobian — e.g.
+      `tanh'` needs `tanh(z)`, the linear-layer weight gradient needs `x`. So the forward
+      activations are kept until the backward pass consumes them. Activation checkpointing trades
+      recompute for memory.
+    fullAnswer: |
+      To apply the chain rule backward you multiply by each op's local Jacobian, and those Jacobians
+      depend on the forward values: `d(tanh)/dz = 1 - tanh(z)^2`, `dL/dW = delta @ x.T`, softmax's
+      Jacobian needs `s`. Reverse mode therefore stores intermediates during the forward pass,
+      giving activation memory proportional to the graph size (roughly depth times layer size times
+      batch). To reduce it: activation checkpointing keeps only a subset (e.g. layer boundaries) and
+      recomputes the rest during backward, cutting memory at the cost of about one extra forward;
+      reversible layers reconstruct inputs from outputs; and lower-precision activation storage
+      halves the bytes.
+    commonWrongAnswer: Reverse mode is memory-free because it only carries one vector.
+    followUps:
+      - What does activation checkpointing cost in extra FLOPs?
+      - Why can forward mode use less memory than reverse mode?
+projects:
+  - id: lchr-project-micro-autodiff
+    kind: major
+    title: Build a reverse-mode autodiff engine and train a small net
+    minutes: 240
+    summary: Implement a scalar-valued `Value` with `+`, `*`, `tanh`, `relu`, `sum`, `matmul`, a topological `backward()`, broadcast-aware accumulation, a gradient checker, and a training loop on a toy task.
+    problem: |
+      Build a minimal autodiff engine that is unambiguously the chain rule: a `Value` (or tensor)
+      type recording parents and a local VJP closure per op; a `backward()` that topologically sorts
+      from the output, seeds `grad = 1`, and folds VJPs in reverse order accumulating with `+=`;
+      broadcast-aware gradient reduction; `gradcheck` comparing to swept-`h` central differences;
+      and a demo training a two-layer MLP on a toy classification or regression problem.
+    requirements:
+      - Every op records a VJP closure; no full Jacobian is ever allocated.
+      - "`backward()` visits nodes in reverse topological order and accumulates gradients with `+=`, zeroing them first."
+      - A value used by multiple consumers ends with the sum of their contributions.
+      - Broadcasting ops sum the gradient over broadcasted axes to restore input shapes.
+      - "`gradcheck` compares every op and the full model to central differences with a relative threshold, away from kinks."
+      - The demo MLP's loss decreases and matches a hand-written backprop within tolerance.
+    constraints:
+      - NumPy and the standard library only.
+      - Never overwrite a node's gradient; always accumulate.
+      - Never materialise a Jacobian for an elementwise or softmax op.
+      - Use a relative-error threshold in the gradient check, and test away from ReLU kinks.
+    expectedBehaviour:
+      - "`x * x` gives gradient `2x`; a diamond graph accumulates both paths."
+      - Broadcast-aware backward gives batch-size-independent bias gradients.
+      - Every VJP passes the finite-difference check.
+      - The toy MLP trains and matches a reference backprop.
+      - Forward-mode (if added) agrees with reverse-mode within rounding.
+    structure: |
+      microrevad/
+        __init__.py
+        value.py
+        ops.py
+        graph.py
+        gradcheck.py
+        train_demo.py
+      tests/
+        test_ops.py
+        test_graph.py
+        test_broadcast.py
+        test_gradcheck.py
+        test_train.py
+    milestones:
+      - title: "1 — Value and scalar ops"
+        detail: "`+`, `*`, `tanh`, `relu`, `sum`, each with a VJP closure."
+      - title: "2 — Graph traversal"
+        detail: Topological sort from the output; reverse-order accumulation with zeroing.
+      - title: "3 — Tensors and broadcasting"
+        detail: "`matmul` and broadcast-aware gradient reduction."
+      - title: "4 — Gradient check and demo"
+        detail: Swept-`h` relative-error harness and a two-layer MLP training run.
+    testing:
+      - "`x*x` and diamond-graph gradients via accumulation."
+      - Broadcast bias-gradient equality across batch sizes.
+      - Finite-difference check for every op below `1e-5` relative error.
+      - Jacobian-product order test with distinct in/out dimensions.
+      - Toy MLP loss decreasing and matching a reference.
+    failureCases:
+      - A node's gradient is overwritten and a reused value is off by a path.
+      - The traversal propagates a node before all consumers have contributed.
+      - An elementwise op builds `np.diag(...)` and blows memory.
+      - The gradient check uses an absolute tolerance and passes a wrong rule.
+    bonus:
+      - Add forward-mode dual numbers and cross-check.
+      - Add a Hessian-vector product via double backward.
+      - Add `detach()` and a test that it cuts the expected path.
+    architectureHints:
+      - Store each op as `(new_value, parents, local_vjp)`; `backward()` folds them.
+      - Put the broadcast-reduction helper in one place.
+      - Keep `gradcheck` independent of the engine so it also tests hand-written backwards.
+    referenceOutline: |
+      `Value` holds `data`, `grad`, `_parents`, `_backward`. `ops.mul` sets
+      `_backward = lambda: (a.__iadd_grad(b.data * out.grad), b.__iadd_grad(a.data * out.grad))`.
+      `graph.backward` builds a topo order, sets `out.grad = 1`, iterates reversed calling
+      `_backward`. `gradcheck` loops entries, sweeps `h`, compares relative error.
+  - id: lchr-final-backward-audit
+    kind: final-challenge
+    title: Debug a broken custom backward
+    minutes: 90
+    summary: Given a custom layer whose backward composes Jacobians in the wrong order, misses accumulation for a reused activation, and accidentally detaches via a NumPy round trip, diagnose each from a failing gradient check and fix it.
+    problem: |
+      A custom block computes `a = W1 @ x`, `h = tanh(a)`, `s = softmax(W2 @ h)`, and a loss, but
+      reuses `h` in a skip term `out = s + alpha * h_np` where `h_np = h.numpy()`. The backward: (1)
+      composes the per-op Jacobians as `J1 @ J2 @ J3`; (2) computes `dL/dh` only through the softmax
+      path, ignoring the skip; (3) inherits a zero gradient into `alpha`'s branch because of the
+      NumPy conversion. Produce an audit that identifies each fault from a failing finite-difference
+      gradient check, fixes the Jacobian order, adds the missing accumulation for `h`, and removes
+      the accidental detach, with a fail-before-fix test per fault.
+    requirements:
+      - Run a swept-`h` relative-error gradient check on `x`, `W1`, `W2`, and `alpha` and attribute each failure.
+      - Fix the Jacobian composition to the correct right-to-left order and verify against a numerical Jacobian.
+      - Accumulate `dL/dh` from both the softmax path and the skip path; verify the reused-value gradient.
+      - Replace the NumPy round trip with autodiff-aware ops (or a custom VJP) so `dL/dalpha` is nonzero and correct.
+      - Provide one fail-before-fix test per fault plus a clean end-to-end gradient check.
+    constraints:
+      - Do not use finite differences as the production gradient.
+      - Do not test the gradient at a point where a pre-activation is exactly zero.
+      - Use a relative-error threshold near `1e-5`.
+    expectedBehaviour:
+      - After the order fix, the composed Jacobian matches the numerical Jacobian within tolerance.
+      - After adding accumulation, `dL/dh` equals the sum of the softmax-path and skip-path contributions.
+      - After removing the detach, `dL/dalpha` is nonzero and matches finite differences.
+      - All four gradient checks pass with relative error below `1e-5`.
+      - Each fault has a regression that failed before its fix.
+    milestones:
+      - title: "1 — Diagnose"
+        detail: Gradient-check each input and map each failure to a fault.
+      - title: "2 — Order and accumulation"
+        detail: Fix `J3 @ J2 @ J1`; add the skip-path contribution to `dL/dh`.
+      - title: "3 — Remove the detach"
+        detail: Autodiff-aware skip term (or custom VJP); verify `dL/dalpha`.
+    testing:
+      - Fail-before-fix gradient checks for the Jacobian order, the missing accumulation, and the detach.
+      - A numerical-Jacobian comparison for the composed map.
+      - A reused-value test that `dL/dh` is the sum of two contributions.
+    failureCases:
+      - The order is "fixed" by transposing the final result rather than reordering the product.
+      - The skip-path contribution is added but with the wrong sign or scale (`alpha`).
+      - The NumPy round trip is replaced but a different op still leaves the graph.
+    bonus:
+      - Add a straight-through estimator for a hard quantiser in the same block and test its gradient.
+    architectureHints:
+      - Freeze the pre-fix failing gradient checks and the numerical Jacobian as fixtures first.
+      - Fix one fault per commit and re-run the checks.
+    referenceOutline: |
+      Compose `dL/dx = J1.T @ (J2.T @ (J3.T @ dL/dout))` with the softmax VJP for `J3`.
+      `dL/dh = W2.T @ dL/d(pre-softmax) + alpha * dL/dout` (skip path). Replace `h.numpy()` with
+      `h` directly in the skip term so `alpha` stays in the graph.
+resources:
+  - name: "CS231n — Backpropagation, intuitions"
+    type: university
+    difficulty: core
+    url: "https://cs231n.github.io/optimization-2/"
+    usefulness: 5
+    why: It builds backprop as the chain rule over a computational graph, with worked local gradients, the add/multiply/max VJPs, and the staged "gradients flow backward" picture this lesson uses.
+    covers: The computational graph, local gradients and VJPs, backprop through add/multiply/max/sigmoid, staged computation, and gradient accumulation at branch points.
+  - name: "Karpathy — micrograd"
+    type: repo
+    difficulty: core
+    url: "https://github.com/karpathy/micrograd"
+    usefulness: 5
+    why: A ~150-line scalar reverse-mode autodiff engine that is exactly this lesson's project — each op stores a `_backward` closure and `backward()` folds them in topological order.
+    covers: A minimal `Value` type, per-op backward closures, topological-order accumulation, and training a tiny MLP on top of it.
+  - name: "Baydin, Pearlmutter, Radul, Siskind — Automatic Differentiation in Machine Learning: a Survey"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1502.05767"
+    usefulness: 4
+    why: It formalises forward and reverse accumulation, their complexity, the distinction from symbolic and numerical differentiation, and checkpointing — the theory behind "backprop is the chain rule".
+    covers: Forward and reverse mode, operation counts, dual numbers, the Jacobian-product view, checkpointing, and common misconceptions.
+  - name: "JAX autodiff cookbook"
+    type: docs
+    difficulty: core
+    url: "https://docs.jax.dev/en/latest/notebooks/autodiff_cookbook.html"
+    usefulness: 4
+    why: It defines VJP and JVP precisely, shows reverse and forward mode as those primitives, composing them for Hessian-vector products, and `stop_gradient` semantics — the computational side of the chain rule.
+    covers: "`grad`, `vjp`, `jvp`, forward versus reverse mode, Hessian-vector products, per-example gradients, and `stop_gradient`."
+  - name: "Griewank and Walther — Evaluating Derivatives (checkpointing chapters)"
+    type: book
+    difficulty: deep
+    url: "https://epubs.siam.org/doi/book/10.1137/1.9780898717761"
+    usefulness: 4
+    why: The definitive treatment of reverse-mode AD as the chain rule over an evaluation graph, its memory cost, and the checkpointing trade-off that manages activation storage.
+    covers: The evaluation-graph model, reverse-mode complexity, the memory-versus-recompute trade-off, and optimal checkpointing schedules.

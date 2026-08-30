@@ -1,0 +1,382 @@
+---
+id: "roadmap:phase-1-1.2:4"
+title: "Axis semantics — the #1 source of silent bugs in ML code"
+description: Make every dimension carry a named meaning, then derive axis-sensitive NumPy code from shape contracts instead of relying on coincidentally equal sizes.
+module: 1-2-numpy-the-actual-foundation
+order: 5
+estimatedMinutes: 120
+prerequisites: ["roadmap:phase-1-1.2:2", "roadmap:phase-1-1.2:3"]
+learningObjectives:
+  - Translate between semantic dimension names, positive axes, negative axes, and concrete shape transformations
+  - Design and validate axis contracts for common ML layouts such as NC, NCHW, NHWC, and NTC
+  - Use transpose, moveaxis, swapaxes, expand_dims, squeeze, stack, and concatenate without changing meaning accidentally
+  - Diagnose silent axis bugs with asymmetric fixtures, invariants, and boundary normalization
+---
+
+An array shape records sizes, not meanings. NumPy knows that `(32, 128, 128, 3)` has four axes,
+but it does not know whether they mean batch, height, width, channels or something else. Most axis
+bugs are therefore valid programs: the operation runs, the output has a plausible shape, and the
+numbers describe the wrong question.
+
+The cure is not memorising that `axis=0` means rows. It does not. An axis is one position in the
+current shape. Its meaning comes from your data contract, and transformations can move that meaning
+without changing the underlying elements.
+
+<TypeScriptComparison>
+
+- A TypeScript tuple type can distinguish `[width, height]` from `[height, width]`; `ndarray.shape` is only a tuple of integers.
+- JavaScript arrays usually expose nested structure through explicit loops. NumPy hides those loops behind an `axis` argument, so one wrong integer can still produce valid output.
+- A TS branded type can carry semantic identity. NumPy needs runtime shape validation, layout naming, and tests because type hints rarely prove axis meaning.
+- `Array.prototype.flat()` changes nesting mechanically. NumPy operations such as `transpose`, `squeeze`, and `stack` change a tensor's shape algebra and must preserve a declared semantic contract.
+
+</TypeScriptComparison>
+
+## Start with a semantic shape contract
+
+Write names above sizes before writing an operation. For logits shaped `(N, C)`, axis zero is the
+batch axis and axis one is the class axis. For images shaped `(N, C, H, W)`, the same integer one
+means channels. In `(N, H, W, C)`, channels moved to axis three.
+
+```python
+from dataclasses import dataclass
+import numpy as np
+import numpy.typing as npt
+
+FloatArray = npt.NDArray[np.floating]
+
+@dataclass(frozen=True)
+class NCHW:
+    batch: int
+    channels: int
+    height: int
+    width: int
+
+def require_nchw(x: FloatArray, expected_channels: int) -> NCHW:
+    if x.ndim != 4:
+        raise ValueError(f"expected NCHW rank 4, got shape {x.shape}")
+    n, c, h, w = x.shape
+    if c != expected_channels:
+        raise ValueError(f"expected C={expected_channels}, got shape {x.shape}")
+    return NCHW(n, c, h, w)
+```
+
+Rank checks catch only part of the contract. An NHWC image is also rank four. Validate dimensions
+whose sizes are known, document the layout in names, and normalize external layouts once at the
+boundary instead of scattering axis guesses through the pipeline.
+
+<Concept>
+
+A dimension is a semantic concept such as batch, token, class, channel, height, or width. An axis
+is that dimension's current integer position. Sizes may coincide; meanings must not.
+
+</Concept>
+
+## Positive and negative axes are coordinates in the current rank
+
+For rank `r`, negative axis `-k` refers to positive axis `r-k`. Thus `-1` is always the last axis,
+not always classes or features. Negative axes are useful when a function intentionally operates on
+the trailing feature dimension across several ranks.
+
+```python
+def normalize_axis(axis: int, ndim: int) -> int:
+    if ndim < 1:
+        raise ValueError("an axis requires rank at least one")
+    if not -ndim <= axis < ndim:
+        raise np.AxisError(axis, ndim=ndim)
+    return axis % ndim
+
+assert normalize_axis(-1, 4) == 3
+assert normalize_axis(-3, 4) == 1
+```
+
+Normalizing an integer does not validate its meaning. A caller can pass a valid channel axis where
+the function expects classes. Public APIs should prefer a domain name such as `class_axis`, state
+the expected layout, and assert output shape invariants.
+
+## Derive a transformation as a permutation of names
+
+`transpose` does not say where one axis goes. Its argument gives the complete old-axis order for
+the result. To convert NCHW to NHWC, ask which old dimensions should appear in the new order:
+`(N, H, W, C)` comes from old axes `(0, 2, 3, 1)`.
+
+```python
+x_nchw = np.empty((8, 3, 32, 48))
+x_nhwc = x_nchw.transpose(0, 2, 3, 1)
+
+assert x_nhwc.shape == (8, 32, 48, 3)
+assert np.shares_memory(x_nchw, x_nhwc)
+```
+
+The result is usually a strided view. Shape correctness therefore does not imply layout
+performance. A downstream native kernel may copy a non-contiguous transpose, so inspect flags and
+benchmark the whole boundary rather than adding unconditional copies.
+
+`moveaxis(x, source, destination)` is clearer when one named dimension moves and all others retain
+relative order. `swapaxes` exchanges exactly two positions. Use the operation that makes the
+semantic intent reviewable.
+
+```python
+same_nhwc = np.moveaxis(x_nchw, 1, -1)
+assert same_nhwc.shape == x_nhwc.shape
+assert np.array_equal(same_nhwc, x_nhwc)
+```
+
+<CommonMistake>
+
+Do not pass the desired new positions to `transpose` as if it were `moveaxis`. The tuple is a list
+of old axes in new order. Write the old names, then reorder those names on paper.
+
+</CommonMistake>
+
+## Inserting and removing axes changes the contract
+
+`expand_dims(x, axis=k)` inserts a size-one dimension at position `k`. Indexing with `None` does
+the same thing. This is how you make broadcasting intent explicit: `(C,)` can become `(1,C,1,1)`
+for NCHW channel parameters.
+
+```python
+scale = np.array([0.5, 1.0, 2.0])
+nchw_scale = scale[None, :, None, None]
+assert nchw_scale.shape == (1, 3, 1, 1)
+```
+
+`squeeze` removes dimensions of size one. Bare `np.squeeze(x)` removes all of them, including a
+batch axis when a batch happens to contain one example. Specify the axis whose singleton meaning
+you intend to remove; NumPy then raises if the contract is false.
+
+```python
+prediction = np.empty((1, 10, 1))  # N, C, trailing marker
+classes = np.squeeze(prediction, axis=2)
+assert classes.shape == (1, 10)
+```
+
+<ProductionNote>
+
+Keep batch dimensions even when `N == 1`. Stable ranks simplify batching, compilation, serving,
+and monitoring. Remove a batch axis only at an API explicitly returning one example.
+
+</ProductionNote>
+
+## Concatenate reuses an axis; stack creates one
+
+`concatenate` joins arrays along an existing axis. `stack` first creates a new axis, then places
+one input at each position. Equal input shapes make both calls legal in many locations, which is
+why semantic naming matters.
+
+```python
+a = np.empty((4, 16))  # N, C
+b = np.empty((6, 16))  # N, C
+more_examples = np.concatenate([a, b], axis=0)
+assert more_examples.shape == (10, 16)
+
+folds = np.stack([np.empty((4, 16)), np.empty((4, 16))], axis=0)
+assert folds.shape == (2, 4, 16)  # fold, N, C
+```
+
+Joining model outputs on the class axis can be correct for an ensemble with disjoint label sets,
+but it is wrong for appending batches. The array operation cannot decide. Name the intended output
+dimensions and assert every non-joined dimension before concatenating.
+
+## ML operations depend on semantic axes
+
+Softmax is defined over a set of competing values. For classification logits `(N, C)`, classes
+compete within each example, so the class axis is one. For token logits `(N, T, V)`, vocabulary is
+usually the last axis. Choosing batch instead produces normalized columns across unrelated users.
+
+```python
+def softmax(x: FloatArray, axis: int = -1) -> FloatArray:
+    axis = normalize_axis(axis, x.ndim)
+    shifted = x - np.max(x, axis=axis, keepdims=True)
+    exp = np.exp(shifted)
+    return exp / np.sum(exp, axis=axis, keepdims=True)
+
+logits = np.array([[2.0, 1.0, 0.0], [0.0, 1.0, 2.0]])
+probabilities = softmax(logits, axis=1)
+np.testing.assert_allclose(probabilities.sum(axis=1), 1.0)
+```
+
+The numerical-stability step and the normalization must use the same semantic axis. A mismatched
+pair can broadcast successfully and yield confident-looking nonsense. Preserve dimensions during
+axis-wise calculations so intermediate shapes encode the intended alignment.
+
+## Equal sizes are an adversary, not reassurance
+
+Square matrices and equal batch/class sizes hide wrong axes. If both `N` and `C` equal 32,
+swapping them leaves the shape unchanged. A test that asserts only shape will pass.
+
+Use deliberately asymmetric fixtures: batch 2, tokens 3, classes 5, channels 7. Give values an
+axis-specific pattern, then test invariants such as “each example sums to one across classes” or
+“moving channels to the end preserves every indexed value.”
+
+```python
+x = np.arange(2 * 3 * 5).reshape(2, 3, 5)  # N, T, C
+y = np.moveaxis(x, -1, 1)                  # N, C, T
+
+assert y.shape == (2, 5, 3)
+assert y[1, 4, 2] == x[1, 2, 4]
+```
+
+## Normalize once at system boundaries
+
+Libraries disagree on layout. Image files often arrive HWC, batched application data may be
+NHWC, and PyTorch convolution convention is NCHW. Convert at one named adapter, validate before and
+after, and keep one canonical internal layout.
+
+An axis-aware boundary should state input layout, output layout, dtype, ownership, contiguity, and
+allowed empty dimensions. If layouts are configurable, accept a symbolic layout string and derive
+the permutation from names rather than maintaining a collection of unexplained tuples.
+
+```python
+def permutation(source: str, target: str) -> tuple[int, ...]:
+    if len(source) != len(target) or len(set(source)) != len(source):
+        raise ValueError("layouts must contain unique dimensions of equal rank")
+    if set(source) != set(target):
+        raise ValueError("source and target must name the same dimensions")
+    return tuple(source.index(name) for name in target)
+
+assert permutation("NCHW", "NHWC") == (0, 2, 3, 1)
+```
+
+This representation is small but powerful: the names carry the semantics, the derived permutation
+drives `transpose`, and round-trip tests can prove the adapter preserves values.
+
+## Exercises
+
+<Exercise id="numpy-axis-map-easy" difficulty="easy">
+
+For a tensor shaped `(4, 12, 768)` with contract `(batch, tokens, hidden)`, map axes `0`, `1`, `2`,
+`-1`, and `-2` to dimension names.
+
+<Solution>
+
+Axes zero, one, and two mean batch, tokens, and hidden. At rank three, `-1` normalizes to axis two
+and means hidden; `-2` normalizes to axis one and means tokens.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-axis-nchw-medium" difficulty="medium">
+
+Convert NCHW `(8, 3, 32, 48)` to NHWC using both `transpose` and `moveaxis`. Derive the output
+shape before running either expression.
+
+<Solution>
+
+The named target order is `(N,H,W,C)`, so `transpose(0,2,3,1)` uses the old axes in that order.
+Moving old channel axis one to destination `-1` gives `moveaxis(x,1,-1)`. Both produce
+`(8,32,48,3)` and normally return views.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-axis-squeeze-hard" difficulty="hard">
+
+An inference function receives `(N,T,C)` and returns `np.squeeze(output)`. Explain the production
+failure and redesign the return contract.
+
+<Solution>
+
+A request with `N=1`, `T=1`, or `C=1` loses whichever semantic dimensions happen to be singleton,
+so rank varies with data. Return the stable `(N,T,C)` result. If one named marker dimension must be
+removed, require its size to be one and call `squeeze(axis=that_axis)` explicitly.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-axis-interview" difficulty="interview">
+
+Explain why `axis=0` does not mean “rows” and how you prevent axis bugs during code review.
+
+<Solution>
+
+Axis zero means the first dimension in the current layout; its semantic meaning might be batch,
+channel, time, or something else. I require a named shape contract, derive transformations as name
+permutations, prefer axis-specific variables, validate boundaries, and test unequal dimension sizes
+plus semantic invariants instead of shape alone.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-axis-layout-real-world" difficulty="real-world">
+
+Design an adapter accepting either NHWC or NCHW images and returning contiguous NCHW. State its
+validation, ownership, empty-input, and testing contracts.
+
+<Solution>
+
+Accept an explicit layout token, validate rank four and channel count in the named position, derive
+the permutation from dimension names, and convert only when needed. Return a C-contiguous array and
+document that a copy may occur. Decide whether zero batch is allowed, reject invalid spatial sizes,
+and test asymmetric shapes, round trips, values, dtype, contiguity, and caller aliasing.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. What is the difference between a semantic dimension and an axis?
+2. Why can negative axes improve a trailing-feature API but not prove its semantic correctness?
+3. How do `transpose`, `moveaxis`, `stack`, and `concatenate` differ?
+4. Why is bare `squeeze` dangerous at batch boundaries?
+5. Which fixtures and invariants expose bugs that square shapes hide?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why did a valid axis produce the wrong answer without an exception?">
+
+NumPy validates that the integer exists, not that it means classes, tokens, or channels. Validate
+the semantic layout and assert an operation-specific invariant.
+
+</Gotcha>
+
+<Gotcha question="Why did transpose make a downstream kernel slower?">
+
+Transpose usually creates a non-contiguous strided view. The consumer may traverse cache-unfriendly
+memory or create a hidden contiguous copy.
+
+</Gotcha>
+
+<Gotcha question="Why did one prediction lose its batch dimension?">
+
+Bare `squeeze` removed every size-one axis. Preserve stable ranks or specify exactly one removable
+axis.
+
+</Gotcha>
+
+<Gotcha question="Why did concatenate work but mix unrelated examples and classes?">
+
+The selected axis was mechanically compatible but semantically wrong. Name the output dimensions
+and validate all inputs against that contract.
+
+</Gotcha>
+
+<Gotcha question="Why did my square test miss a transpose bug?">
+
+Equal dimension sizes make swapped shapes indistinguishable. Use asymmetric sizes and values that
+encode their coordinates.
+
+</Gotcha>
+
+<Gotcha question="Why is axis=-1 not always the feature axis?">
+
+It means only the current last axis. A preceding transpose, stack, or layout change may place a
+different semantic dimension there.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Shapes contain sizes; contracts give those sizes meaning. Derive every axis-sensitive operation
+from named dimensions, then translate names to positions in the current layout.
+
+Use `transpose` for a complete permutation, `moveaxis` for a named move, explicit singleton axes
+for broadcasting, and stable ranks at public boundaries. Distinguish joining an existing axis with
+`concatenate` from creating a new one with `stack`.
+
+Most dangerous axis bugs do not crash. Defend with canonical internal layouts, boundary
+validation, asymmetric fixtures, coordinate-preserving tests, and semantic invariants. The practice
+bank turns those habits into reviewable shape algebra before the next lesson studies reductions.

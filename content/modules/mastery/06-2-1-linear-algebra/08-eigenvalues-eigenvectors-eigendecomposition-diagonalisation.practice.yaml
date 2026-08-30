@@ -1,0 +1,801 @@
+lessonId: "roadmap:phase-2-2.1:7"
+module: 2-1-linear-algebra
+lesson: 08-eigenvalues-eigenvectors-eigendecomposition-diagonalisation
+title: "Eigenvalues, eigenvectors, eigendecomposition, diagonalisation"
+summary: Find the directions a matrix only stretches, use A = V Lambda V-inverse to turn powers and stability and PCA into scalar arithmetic, tell diagonalisable from defective matrices, and compute eigenpairs the numerically sound way.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: leig-read-power-iteration
+    tier: normal
+    kind: code-reading
+    title: Read a power-iteration loop
+    minutes: 10
+    requiredForMastery: true
+    concepts: [power-iteration, dominant-eigenvector, eigenvalue]
+    prompt: |
+      Read this loop and say what `v` and `lam` converge to, and the one property of `A` that makes
+      it converge.
+      ```python
+      v = rng.standard_normal(A.shape[0])
+      for _ in range(100):
+          w = A @ v
+          v = w / np.linalg.norm(w)
+      lam = v @ (A @ v)
+      ```
+    hints:
+      - Each iteration multiplies by `A` and renormalises.
+      - Convergence needs one eigenvalue strictly larger in magnitude than the rest.
+    solution: |
+      `v` converges to the dominant eigenvector of `A` — the eigenvector whose eigenvalue has the
+      largest absolute value — and `lam`, the Rayleigh quotient `v @ (A @ v)`, converges to that
+      eigenvalue. Writing the start vector in the eigenbasis, each multiplication scales component
+      `i` by `lambda_i`, so after `k` steps the component along the largest `|lambda|` dominates and
+      renormalisation keeps it bounded. It converges only if there is a unique eigenvalue of maximal
+      magnitude (a strict spectral gap); a tie, or a complex-conjugate dominant pair, breaks it.
+  - id: leig-write-eig-powers
+    tier: normal
+    kind: write-code
+    title: Matrix power via the eigendecomposition
+    minutes: 12
+    requiredForMastery: true
+    concepts: [eigendecomposition, matrix-power, diagonalisation]
+    prompt: |
+      Write `matrix_power_eig(A, k)` for a diagonalisable `A` using `np.linalg.eig`, and say when
+      this beats repeated multiplication.
+    hints:
+      - "`A**k == V @ diag(vals**k) @ inv(V)`."
+      - Factor once, then each power is cheap.
+    solution: |
+      `vals, V = np.linalg.eig(A)`; `return (V @ np.diag(vals**k) @ np.linalg.inv(V)).real` (taking
+      the real part if `A` is real and `k` an integer). It costs one `O(n**3)` decomposition plus
+      `O(n**2)` per power, versus `O(n**3)` per power for repeated `A @ A`. It wins when you need
+      many powers, very large `k`, or non-integer powers such as `A**0.5`. For a one-off small
+      integer power, repeated squaring is simpler and avoids the `inv(V)` accuracy cost, which is
+      severe if `A` is non-normal and `cond(V)` is large.
+  - id: leig-predict-convergence
+    tier: normal
+    kind: predict-output
+    title: Does the power sequence converge
+    minutes: 10
+    requiredForMastery: true
+    concepts: [spectral-radius, matrix-power, stability]
+    prompt: |
+      A `3 x 3` matrix has eigenvalues `0.9`, `-0.3`, and `0.99`. Does `A^k` converge as
+      `k -> infinity`, and to what? What if one eigenvalue were `1.01`?
+    hints:
+      - Compare every `|lambda|` with 1.
+      - The spectral radius is the largest absolute eigenvalue.
+    solution: |
+      All three eigenvalues have magnitude below 1 (`0.9`, `0.3`, `0.99`), so `A^k -> 0` as
+      `k -> infinity`, at a rate set by the spectral radius `0.99` — slow, since `0.99^k` decays
+      only gradually. If one eigenvalue were `1.01`, its magnitude exceeds 1, so `A^k` would grow
+      without bound along that eigenvector and the sequence would diverge. Convergence of `A^k` to
+      the zero matrix holds exactly when every eigenvalue satisfies `|lambda| < 1`.
+  - id: leig-explain-similarity
+    tier: normal
+    kind: explain
+    title: Why similarity preserves eigenvalues
+    minutes: 10
+    requiredForMastery: true
+    concepts: [similarity-transform, eigenvalues, invariants]
+    prompt: |
+      Explain why `B = P_inv @ A @ P` has the same eigenvalues as `A`, but generally different
+      eigenvectors.
+    hints:
+      - Substitute `B` into the characteristic polynomial and use the product rule for determinants.
+      - If `A v = lambda v`, what does `B` do to `P_inv @ v`?
+    solution: |
+      `det(B - lambda I) = det(P_inv (A - lambda I) P) = det(P_inv) det(A - lambda I) det(P) =
+      det(A - lambda I)`, since `det(P_inv) det(P) = 1`. So `A` and `B` have the same characteristic
+      polynomial and hence the same eigenvalues with the same multiplicities. The eigenvectors
+      transform: if `A v = lambda v` then `B (P_inv v) = P_inv A P P_inv v = P_inv A v = lambda
+      (P_inv v)`, so `P_inv @ v` is the corresponding eigenvector of `B`. Eigenvalues are properties
+      of the underlying map; eigenvectors are expressed in whatever basis you chose.
+  - id: leig-symmetric-spectral-theorem
+    tier: intermediate
+    kind: write-code
+    title: Spectral decomposition of a symmetric matrix
+    minutes: 14
+    requiredForMastery: true
+    concepts: [spectral-theorem, eigh, orthonormal-eigenvectors]
+    prompt: |
+      Write `spectral(S)` for a symmetric `S` that returns `w, Q` with `S == Q @ diag(w) @ Q.T`,
+      using the right routine, and assert orthonormality and reconstruction.
+    hints:
+      - Use `np.linalg.eigh`, not `np.linalg.eig`, for symmetric input.
+      - "`eigh` returns real eigenvalues in ascending order and orthonormal eigenvectors."
+    solution: |
+      `w, Q = np.linalg.eigh(S)`; assert `np.allclose(Q @ Q.T, np.eye(len(w)))` and
+      `np.allclose(Q @ np.diag(w) @ Q.T, S)`; return `w, Q`. `eigh` exploits symmetry: it returns
+      real eigenvalues sorted ascending and an orthonormal eigenvector matrix `Q`, so the inverse in
+      the general decomposition is replaced by `Q.T`. It is both faster and more accurate than
+      `eig`, and it never returns spurious imaginary parts. Covariance matrices, Gram matrices,
+      Laplacians, and Hessians are all symmetric, so this is the common case.
+  - id: leig-multiplicity
+    tier: intermediate
+    kind: predict-output
+    title: Algebraic versus geometric multiplicity
+    minutes: 12
+    requiredForMastery: true
+    concepts: [algebraic-multiplicity, geometric-multiplicity, defective]
+    prompt: |
+      For `A = [[5, 0, 0], [0, 5, 0], [0, 0, 5]]` and `B = [[5, 1, 0], [0, 5, 1], [0, 0, 5]]`, give
+      the algebraic and geometric multiplicity of eigenvalue 5 for each, and say which is
+      diagonalisable.
+    hints:
+      - Algebraic multiplicity is the root multiplicity of `(5 - lambda)`.
+      - Geometric multiplicity is the dimension of the null space of `A - 5I`.
+    solution: |
+      Both have characteristic polynomial `(5 - lambda)^3`, so eigenvalue 5 has algebraic
+      multiplicity 3 in each. For `A`, `A - 5I` is the zero matrix, whose null space is all of
+      `R^3`, so geometric multiplicity is 3 and `A` is diagonalisable (it already is diagonal). For
+      `B`, `B - 5I` has rank 2 (the two superdiagonal 1s), so its null space is 1-dimensional:
+      geometric multiplicity 1. The gap `3` versus `1` means `B` is defective and cannot be
+      diagonalised.
+  - id: leig-pca-connection
+    tier: intermediate
+    kind: explain
+    title: PCA as an eigendecomposition
+    minutes: 14
+    requiredForMastery: true
+    concepts: [pca, covariance, eigenvalues, variance]
+    prompt: |
+      Explain how principal component analysis is the eigendecomposition of a covariance matrix, and
+      what the eigenvalues and eigenvectors mean.
+    hints:
+      - The covariance matrix is symmetric positive semidefinite.
+      - Variance along a unit direction `u` is `u.T @ C @ u`.
+    solution: |
+      For centred data with covariance `C`, the variance captured along a unit direction `u` is
+      `u.T @ C @ u`. Maximising this over unit `u` is a Rayleigh-quotient problem whose solution is
+      the top eigenvector of `C`, with the maximum value equal to the top eigenvalue. Iterating on
+      the orthogonal complement gives the rest. So `C = Q diag(w) Q.T` with `eigh`: the columns of
+      `Q` are the principal directions, ordered by the eigenvalues `w`, which are the variances
+      along them. The cumulative sum of `w` over their total is the fraction of variance explained,
+      and truncating to the top `k` eigenvectors is the best rank-`k` linear representation of the
+      data.
+  - id: leig-trace-det-from-spectrum
+    tier: intermediate
+    kind: predict-output
+    title: Trace and determinant from eigenvalues
+    minutes: 10
+    requiredForMastery: true
+    concepts: [trace, determinant, eigenvalues]
+    prompt: |
+      A `4 x 4` matrix has eigenvalues `2, 2, -1, 3` (with `2` repeated). Give its trace and
+      determinant, and whether it could be singular.
+    hints:
+      - Trace is the sum of eigenvalues; determinant is their product.
+      - A singular matrix has a zero eigenvalue.
+    solution: |
+      Trace `= 2 + 2 + (-1) + 3 = 6`. Determinant `= 2 * 2 * (-1) * 3 = -12`. None of the
+      eigenvalues is zero, so the determinant is nonzero and the matrix is invertible, not
+      singular. The repeated eigenvalue `2` does not by itself make the matrix singular or
+      defective; it would be defective only if its eigenspace were less than 2-dimensional.
+  - id: leig-debug-eig-on-symmetric
+    tier: tricky
+    kind: debug
+    title: Using eig where eigh was needed
+    minutes: 14
+    requiredForMastery: true
+    concepts: [eig, eigh, symmetric-matrix, orthogonality]
+    prompt: |
+      This routine decomposes a covariance matrix and then relies on `Vt == np.linalg.inv(V)`. It
+      occasionally gives slightly wrong reconstructions and tiny imaginary parts. Fix it.
+    code: |
+      def decompose_cov(C):
+          vals, V = np.linalg.eig(C)
+          return vals, V, V.T
+    solution: |
+      A covariance matrix is symmetric, so it should be decomposed with `np.linalg.eigh`, which
+      returns real eigenvalues (sorted) and a genuinely orthonormal eigenvector matrix `Q` with
+      `Q.T == np.linalg.inv(Q)` to machine precision. `np.linalg.eig` ignores symmetry: it can
+      return eigenvectors that are only approximately orthogonal and eigenvalues with spurious
+      `1e-17j` imaginary parts, so `V.T` is not exactly `inv(V)` and the reconstruction
+      `V @ diag(vals) @ V.T` drifts. Fix: `w, Q = np.linalg.eigh(C); return w, Q, Q.T`. Regression:
+      build `C = X.T @ X`, decompose both ways, and assert the `eigh` reconstruction error is far
+      smaller and the eigenvalues are exactly real.
+    hints:
+      - The matrix is symmetric; `eig` does not use that.
+      - "`eigh` returns real eigenvalues and an orthonormal `Q`."
+  - id: leig-debug-char-poly
+    tier: tricky
+    kind: debug
+    title: Eigenvalues via the characteristic polynomial
+    minutes: 16
+    requiredForMastery: true
+    concepts: [characteristic-polynomial, conditioning, qr-algorithm]
+    prompt: |
+      This function finds eigenvalues by building the characteristic polynomial coefficients and
+      calling a root finder. It is accurate for `n = 3` and wildly wrong for `n = 20`. Explain and
+      fix.
+    code: |
+      def eigenvalues(A):
+          coeffs = char_poly_coefficients(A)   # degree-n polynomial in lambda
+          return np.roots(coeffs)
+    solution: |
+      Two compounding sources of error. Converting a matrix to characteristic-polynomial
+      coefficients is severely ill-conditioned: small changes in the matrix cause large changes in
+      the coefficients, especially for larger `n`. And polynomial root-finding is itself
+      ill-conditioned when roots are clustered or the coefficients span many magnitudes (the Wilkinson
+      polynomial is the classic example). Together they make the `n = 20` result meaningless. Fix:
+      use `np.linalg.eig` (or `eigh` for symmetric `A`), which runs the QR algorithm — iterated
+      orthogonal similarity transforms toward triangular form — and is backward stable. Never form
+      the characteristic polynomial numerically. Regression: on a `20 x 20` matrix with known
+      eigenvalues, assert the `np.linalg.eig` error is near machine epsilon and the polynomial route
+      is orders of magnitude worse.
+    hints:
+      - Matrix-to-coefficients and coefficients-to-roots are each ill-conditioned.
+      - Use `np.linalg.eig` / `eigh`, which use the QR algorithm.
+  - id: leig-debug-nonnormal-eigvecs
+    tier: tricky
+    kind: debug
+    title: Trusting eigenvectors of a non-normal matrix
+    minutes: 16
+    requiredForMastery: true
+    concepts: [non-normal, eigenvector-conditioning, schur]
+    prompt: |
+      A stability analysis decomposes a non-symmetric system matrix and uses `V` and `inv(V)` to
+      transform coordinates. Results are unreproducible and sensitive to tiny model changes. Explain
+      and give a robust alternative.
+    code: |
+      def to_modal_coords(A, x):
+          vals, V = np.linalg.eig(A)
+          return np.linalg.inv(V) @ x
+    solution: |
+      For a non-normal matrix the eigenvectors can be almost linearly dependent even when the
+      eigenvalues are well separated, so `V` is nearly singular, `cond(V)` is huge, and
+      `np.linalg.inv(V)` amplifies rounding and any perturbation of `A` enormously. The eigenvalues
+      may still be accurate, but the modal transform is not. Robust alternative: use the Schur
+      decomposition `T, Z = scipy.linalg.schur(A)`, where `Z` is orthogonal (`cond(Z) == 1`) and
+      `T` is upper triangular with the eigenvalues on the diagonal; transform with `Z.T @ x`. For
+      stability you often only need the eigenvalues (`np.linalg.eigvals`) or the numerical
+      abscissa/pseudospectra, not the eigenvectors. Regression: perturb `A` by `1e-10` and assert
+      the Schur transform changes negligibly while the eigenvector transform does not.
+    hints:
+      - Non-normal matrices can have ill-conditioned eigenvectors, so `inv(V)` is unstable.
+      - The Schur decomposition uses an orthogonal `Z` instead.
+  - id: leig-perf-top-k-eigsh
+    tier: tricky
+    kind: performance
+    title: Top-k eigenpairs of a large sparse matrix
+    minutes: 16
+    requiredForMastery: true
+    concepts: [lanczos, eigsh, sparse, cost]
+    prompt: |
+      You need the 10 largest eigenpairs of a symmetric sparse `10^6 x 10^6` graph Laplacian. A full
+      `eigh` is impossible. Describe the right approach and its cost drivers.
+    hints:
+      - Iterative methods need only matrix-vector products, which are cheap for sparse matrices.
+      - "`scipy.sparse.linalg.eigsh` with `k=10` and `which='LM'`."
+    solution: |
+      Use a Krylov-subspace method: `scipy.sparse.linalg.eigsh(L, k=10, which='LM')`, which runs
+      Lanczos (the symmetric Arnoldi). It only ever multiplies `L` by vectors, so each iteration
+      costs `O(nnz(L))` rather than `O(n**3)`, and it converges to the extreme eigenpairs in a
+      number of iterations that depends on the eigenvalue gaps, typically tens to low hundreds for
+      well-separated extremes. Memory is `O(n * k)` for the basis, not `O(n**2)`. Cost drivers: the
+      sparsity `nnz(L)`, the number of requested pairs `k`, and the spectral gap around the wanted
+      eigenvalues (small gaps need more iterations or a shift-invert mode). For interior eigenvalues
+      use `sigma` with shift-invert, which trades a sparse solve per iteration for far faster
+      convergence.
+  - id: leig-design-spectral-monitor
+    tier: challenge
+    kind: design
+    title: Design a spectral-health monitor
+    minutes: 30
+    requiredForMastery: false
+    concepts: [spectral-radius, condition-number, monitoring, hessian]
+    prompt: |
+      Design `spectral_monitor(matrices)` for a training loop that tracks the eigen-quantities most
+      predictive of trouble: recurrent-weight spectral radius, Hessian (or Gauss-Newton)
+      conditioning, and covariance flatness. State which quantities, how to estimate them cheaply,
+      what to flag, and what it must not do.
+    hints:
+      - Use power iteration or `eigsh` with a tiny iteration budget rather than a full decomposition.
+      - Symmetric matrices go through `eigh` / Lanczos; recurrent weights need the spectral radius, which may be complex.
+    solution: |
+      Inputs: named matrices with a type tag (recurrent-weight, symmetric-curvature,
+      symmetric-covariance) and the step number. For a recurrent weight, estimate the spectral
+      radius with a few iterations of the complex power method on `A` (not `A.T A`), since rotation
+      makes the dominant eigenvalue complex; flag when it exceeds a threshold near 1. For a
+      symmetric curvature matrix, estimate the largest and smallest eigenvalues with `eigsh`
+      (`which='LM'` and `which='SA'`) or Lanczos with a small budget; report the condition number
+      and flag values outside a healthy band, plus any negative eigenvalue as a saddle indicator.
+      For a covariance, report the smallest eigenvalue relative to the largest as a flatness score.
+      It must not run a full `O(n**3)` decomposition inside the loop, must not use `A.T A` power
+      iteration for the recurrent spectral radius, must record the iteration budget and the
+      resulting uncertainty, and must not raise on a slow-converging estimate — it should report low
+      confidence. Provide golden traces for a healthy run, a run with recurrent spectral radius
+      drifting above 1, and a run entering a saddle.
+  - id: leig-refactor-pca-via-eig
+    tier: challenge
+    kind: refactor
+    title: Refactor a PCA that eigendecomposes the covariance
+    minutes: 28
+    requiredForMastery: false
+    concepts: [pca, svd, eigh, conditioning]
+    prompt: |
+      A PCA implementation computes `C = X.T @ X / (n - 1)` then `vals, V = np.linalg.eig(C)`, sorts
+      descending, and projects. It gives negative "variances" and unstable directions for
+      wide, near-collinear `X`. Refactor it to be numerically sound while keeping the same outputs.
+    hints:
+      - Forming `X.T @ X` squares the condition number and can produce tiny negative eigenvalues.
+      - The SVD of the centred `X` gives the same principal directions without forming the covariance.
+    solution: |
+      Centre `X`, then compute `U, s, Vt = np.linalg.svd(Xc, full_matrices=False)`. The principal
+      directions are the rows of `Vt` (columns of `Vt.T`), and the explained variances are
+      `s**2 / (n - 1)`, guaranteed non-negative. Project as `Xc @ Vt.T[:, :k]` or `U[:, :k] *
+      s[:k]`. This avoids forming `X.T @ X`, whose condition number is `cond(X)**2` and whose
+      rounding can yield small negative eigenvalues that the old code reported as negative variance.
+      If the covariance is genuinely needed as an output, still derive it from the SVD. Keep the
+      `eig` path only for the case where `X` is unavailable and only `C` is given, and there clamp
+      eigenvalues at 0 and use `eigh`, not `eig`. Add a fail-before-fix test on a wide near-collinear
+      `X` asserting all reported variances are non-negative and the directions are stable under a
+      tiny perturbation.
+quizzes:
+  - id: leig-checkpoint
+    title: Checkpoint — eigenvalues and diagonalisation
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: leig-cp-definition
+        kind: mcq
+        prompt: "`v` is an eigenvector of `A` with eigenvalue `lambda` when what holds?"
+        options:
+          - {id: avlv, text: "`A @ v == lambda * v` with `v` nonzero"}
+          - {id: vtv, text: "`v.T @ v == lambda`"}
+          - {id: det, text: "`det(A) == lambda`"}
+        answer: [avlv]
+        explanation: An eigenvector keeps its direction under `A` and is scaled by its eigenvalue.
+        concepts: [eigenpair]
+        points: 1
+      - id: leig-cp-decomp
+        kind: mcq
+        prompt: In `A = V @ Lambda @ inv(V)`, applied to a vector, what does `inv(V)` do?
+        options:
+          - {id: tobasis, text: Rewrites the vector in the eigenbasis}
+          - {id: scale, text: Scales each coordinate by an eigenvalue}
+          - {id: back, text: Maps eigenbasis coordinates back to standard ones}
+        answer: [tobasis]
+        explanation: "`inv(V)` changes to the eigenbasis; `Lambda` scales; `V` maps back."
+        concepts: [diagonalisation]
+        points: 1
+      - id: leig-cp-convergence
+        kind: mcq
+        prompt: "`A^k` converges to the zero matrix as `k -> infinity` exactly when what?"
+        options:
+          - {id: allsub1, text: Every eigenvalue satisfies `|lambda| < 1`}
+          - {id: detsub1, text: "`det(A) < 1`"}
+          - {id: tracesub1, text: "`trace(A) < 1`"}
+        answer: [allsub1]
+        explanation: "`A^k == V Lambda^k inv(V)`, and `Lambda^k -> 0` iff every `|lambda| < 1`."
+        concepts: [spectral-radius]
+        points: 1
+      - id: leig-cp-symmetric
+        kind: multi
+        prompt: Which are true for a real symmetric matrix?
+        options:
+          - {id: real, text: All eigenvalues are real}
+          - {id: ortho, text: Eigenvectors can be chosen orthonormal}
+          - {id: qlqt, text: "`A == Q @ diag(w) @ Q.T` with `Q` orthogonal"}
+          - {id: defective, text: It may be defective}
+        answer: [real, ortho, qlqt]
+        explanation: The spectral theorem guarantees a real, orthonormal eigendecomposition; symmetric matrices are never defective.
+        concepts: [spectral-theorem]
+        points: 1
+  - id: leig-assessment
+    title: Assessment — eigenvalues, eigenvectors, diagonalisation
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: leig-as-definition
+        kind: explain
+        prompt: Define an eigenpair and describe it geometrically.
+        modelAnswer: |
+          `A v = lambda v` with `v` nonzero: `A` maps the direction `v` to a scalar multiple of
+          itself, scaling by `lambda` without rotating it. `v` spans a line that `A` leaves
+          invariant.
+        explanation: An eigenvector is a fixed direction; its eigenvalue is the stretch factor.
+        concepts: [eigenpair]
+        points: 1
+      - id: leig-as-decomp-meaning
+        kind: explain
+        prompt: Explain `A = V Lambda V_inv` as an operation on a vector.
+        modelAnswer: |
+          `V_inv` expresses the vector in the eigenbasis, `Lambda` scales each eigen-coordinate by
+          its eigenvalue independently, and `V` converts back to standard coordinates. In the
+          eigenbasis `A` is `n` decoupled scalings.
+        explanation: Change basis, scale coordinatewise, change back.
+        concepts: [diagonalisation]
+        points: 1
+      - id: leig-as-powers
+        kind: write-function
+        prompt: Give `A**k` for a diagonalisable `A` in terms of its eigendecomposition, and the cost advantage.
+        modelAnswer: |
+          `A**k == V @ np.diag(vals**k) @ np.linalg.inv(V)`. One `O(n**3)` decomposition then
+          `O(n**2)` per power, versus `O(n**3)` per power for repeated multiplication; also enables
+          non-integer powers.
+        explanation: "`Lambda**k` is elementwise, so powers are cheap in the eigenbasis."
+        concepts: [matrix-power]
+        points: 1
+      - id: leig-as-defective
+        kind: find-bug
+        prompt: Code assumes every matrix with `n` eigenvalues has `n` independent eigenvectors. When is that false?
+        modelAnswer: |
+          When an eigenvalue's geometric multiplicity (eigenspace dimension) is less than its
+          algebraic multiplicity (root multiplicity). Such a matrix is defective, `V` is singular,
+          and `A = V Lambda V_inv` does not exist. Example: `[[2, 1], [0, 2]]`.
+        explanation: A multiplicity gap means too few eigenvectors to form a basis.
+        concepts: [defective, multiplicity]
+        points: 1
+      - id: leig-as-similarity
+        kind: scenario
+        prompt: You apply a change of basis `B = P_inv @ A @ P`. What is preserved and what changes?
+        modelAnswer: |
+          Eigenvalues (and their multiplicities), trace, determinant, and rank are preserved,
+          because `B` has the same characteristic polynomial. The eigenvectors change: if
+          `A v = lambda v` then `B (P_inv v) = lambda (P_inv v)`.
+        explanation: Similarity preserves spectrum; eigenvectors are basis-dependent.
+        concepts: [similarity-transform]
+        points: 1
+      - id: leig-as-symmetric
+        kind: scenario
+        prompt: Why should you use `np.linalg.eigh` rather than `np.linalg.eig` for a covariance matrix?
+        modelAnswer: |
+          A covariance matrix is symmetric. `eigh` returns real eigenvalues (sorted) and an
+          orthonormal eigenvector matrix `Q` with `Q.T == inv(Q)` to machine precision, and it is
+          faster. `eig` ignores symmetry, may give near-orthogonal eigenvectors and spurious
+          imaginary parts, and reconstructs less accurately.
+        explanation: "`eigh` exploits and guarantees the structure symmetric matrices have."
+        concepts: [eigh, spectral-theorem]
+        points: 1
+      - id: leig-as-char-poly
+        kind: find-bug
+        prompt: Why is computing eigenvalues from the characteristic polynomial coefficients numerically bad?
+        modelAnswer: |
+          Forming the coefficients from the matrix is ill-conditioned, and polynomial root-finding
+          is ill-conditioned for clustered roots or wide-magnitude coefficients. The errors compound
+          and grow with `n`. Library `eig` / `eigh` use the backward-stable QR algorithm instead.
+        explanation: Both the transform and the root-finding are unstable.
+        concepts: [characteristic-polynomial, qr-algorithm]
+        points: 1
+      - id: leig-as-hessian
+        kind: scenario
+        prompt: How do the eigenvalues of the loss Hessian govern gradient descent near a minimum?
+        modelAnswer: |
+          In the Hessian eigenbasis, a step with rate `eta` multiplies the error along eigenvalue
+          `lambda` by `1 - eta lambda`. Stability needs `eta < 2 / lambda_max`, and then the
+          slowest direction converges at rate `~ 1 - 2 lambda_min / lambda_max`, so iteration count
+          scales with the condition number `lambda_max / lambda_min`. Negative eigenvalues mean a
+          saddle.
+        explanation: Curvature eigenvalues set both the safe step size and the convergence rate.
+        concepts: [hessian, condition-number]
+        points: 1
+      - id: leig-as-complex
+        kind: true-false
+        prompt: A real matrix can only have real eigenvalues.
+        options:
+          - {id: "true", text: "True"}
+          - {id: "false", text: "False"}
+        answer: ["false"]
+        explanation: Real matrices can have complex-conjugate eigenvalue pairs; a rotation is the canonical example.
+        concepts: [complex-eigenvalues]
+        points: 1
+      - id: leig-as-nonnormal
+        kind: scenario
+        prompt: The eigenvalues of a non-symmetric matrix look fine but a modal transform using `inv(V)` is unstable. Why, and what do you use instead?
+        modelAnswer: |
+          For a non-normal matrix the eigenvectors can be nearly dependent, so `V` is ill-conditioned
+          and `inv(V)` amplifies error even though the eigenvalues are accurate. Use the Schur
+          decomposition, which has an orthogonal `Z` (`cond == 1`) and a triangular `T` with the
+          eigenvalues on the diagonal, or work directly with the eigenvalues.
+        explanation: Non-normality makes eigenvectors ill-conditioned; Schur stays orthogonal.
+        concepts: [non-normal, schur]
+        points: 1
+interview:
+  - id: leig-iv-what-is-eigenvector
+    level: basic
+    requiredForMastery: true
+    concepts: [eigenpair, invariant-direction]
+    question: What is an eigenvector, in plain terms?
+    shortAnswer: |
+      A nonzero direction that a matrix only stretches or shrinks, without rotating it. The stretch
+      factor is the eigenvalue: `A v = lambda v`.
+    fullAnswer: |
+      Most directions get rotated when you apply a matrix. An eigenvector is one of the special
+      directions that comes out pointing the same way (or exactly reversed), just scaled by the
+      eigenvalue. Algebraically it is a nonzero solution of `(A - lambda I) v = 0`, so it lives in
+      the null space of `A - lambda I`, which is why `lambda` must make that matrix singular. These
+      directions are the natural coordinate system for the matrix: in the basis they form, the
+      matrix acts as independent scalings.
+    commonWrongAnswer: Any vector you multiply by the matrix.
+    followUps:
+      - Why does `det(A - lambda I) = 0` have to hold?
+      - What does it mean geometrically for an eigenvalue to be negative?
+  - id: leig-iv-diagonalisation-use
+    level: scenario
+    requiredForMastery: true
+    concepts: [diagonalisation, matrix-power, recurrence]
+    question: What does diagonalisation let you compute easily that is otherwise hard?
+    shortAnswer: |
+      Anything that depends on repeated application of the matrix: powers `A^k`, the matrix
+      exponential, linear recurrences, Markov-chain limits. In the eigenbasis these become
+      elementwise operations on the eigenvalues.
+    fullAnswer: |
+      With `A = V Lambda V_inv`, `A^k = V Lambda^k V_inv` and `exp(A) = V exp(Lambda) V_inv`, where
+      `Lambda^k` and `exp(Lambda)` are just applied entrywise. A linear recurrence `x_{t+1} = A x_t`
+      has closed form `x_t = V Lambda^t V_inv x_0`, so its long-run behaviour is read straight off
+      the eigenvalue magnitudes. This is the machinery behind Markov-chain stationary distributions,
+      PageRank, stability analysis of dynamical systems, and the analysis of gradient descent as a
+      linear recurrence near a minimum.
+    commonWrongAnswer: It just makes the matrix look simpler with no practical benefit.
+    followUps:
+      - How do you read off whether `x_t` converges?
+      - What breaks this approach for a defective matrix?
+  - id: leig-iv-symmetric
+    level: comparison
+    requiredForMastery: true
+    concepts: [spectral-theorem, eigh, eig]
+    question: How is the eigendecomposition of a symmetric matrix different, and why does it matter in code?
+    shortAnswer: |
+      Symmetric matrices have real eigenvalues and orthonormal eigenvectors, so `A = Q Lambda Q.T`
+      with no inverse and guaranteed existence. Use `np.linalg.eigh`, which is faster, sorted, real,
+      and more accurate than `eig`.
+    fullAnswer: |
+      The spectral theorem says a real symmetric matrix is always orthogonally diagonalisable:
+      `A = Q Lambda Q.T`, `Q` orthogonal, `Lambda` real. There are no complex eigenvalues, no
+      defectiveness, and `Q.T` replaces `inv(Q)` exactly. `np.linalg.eigh` assumes this and returns
+      ascending real eigenvalues and orthonormal eigenvectors; `np.linalg.eig` does not exploit
+      symmetry and can return spurious imaginary parts and non-orthogonal eigenvectors. Since
+      covariance matrices, Gram matrices, Laplacians, and Hessians are all symmetric, `eigh` is the
+      routine you reach for in practice.
+    commonWrongAnswer: There is no real difference; `eig` handles everything.
+    followUps:
+      - What structural guarantees does symmetry add?
+      - When is a symmetric matrix also positive definite, and why does that matter?
+  - id: leig-iv-char-poly
+    level: internals
+    requiredForMastery: true
+    concepts: [characteristic-polynomial, qr-algorithm, conditioning]
+    question: Why do libraries not compute eigenvalues from the characteristic polynomial?
+    shortAnswer: |
+      Both steps are ill-conditioned: turning a matrix into polynomial coefficients amplifies small
+      errors, and finding polynomial roots is unstable for clustered roots. Libraries use the QR
+      algorithm, iterated orthogonal similarity transforms, which is backward stable.
+    fullAnswer: |
+      The map from matrix entries to characteristic-polynomial coefficients has a huge condition
+      number for anything but tiny matrices, and root-finding on a polynomial with coefficients
+      spanning many orders of magnitude (or with close roots) loses most of its digits — the
+      Wilkinson polynomial is the standard cautionary example. The QR algorithm avoids polynomials
+      entirely: it applies a sequence of orthogonal similarity transforms (which preserve
+      eigenvalues exactly) that drive the matrix toward upper triangular (Schur) form, reading the
+      eigenvalues off the diagonal. It is backward stable, so the computed eigenvalues are the exact
+      eigenvalues of a matrix very close to the input.
+    commonWrongAnswer: They do; `np.roots` on the characteristic polynomial is how `eig` works.
+    followUps:
+      - What does "backward stable" mean here?
+      - What is the Schur decomposition and how does it relate?
+  - id: leig-iv-power-iteration
+    level: scenario
+    requiredForMastery: true
+    concepts: [power-iteration, dominant-eigenvector, pagerank]
+    question: How does power iteration work and where is it used?
+    shortAnswer: |
+      Repeatedly multiply a vector by `A` and renormalise; it converges to the eigenvector of
+      largest `|lambda|`. PageRank, PCA's top component, and spectral-norm estimation all use it.
+    fullAnswer: |
+      Write the start vector in the eigenbasis. Each multiplication by `A` scales the component
+      along `v_i` by `lambda_i`, so after many steps the component along the largest `|lambda|`
+      dominates, and renormalisation keeps the vector bounded; the Rayleigh quotient then gives the
+      eigenvalue. It needs a strict gap between the largest and second-largest magnitudes.
+      Applications: PageRank is the dominant eigenvector of a stochastic web matrix; PCA's first
+      component is power iteration on the covariance; spectral normalisation estimates the top
+      singular value via power iteration on `A.T A`. Variants (deflation, block/subspace iteration,
+      Lanczos) get more eigenpairs.
+    commonWrongAnswer: It finds all the eigenvalues at once.
+    followUps:
+      - What makes power iteration converge slowly?
+      - How would you get the second eigenvector?
+  - id: leig-iv-stability
+    level: debugging
+    requiredForMastery: true
+    concepts: [spectral-radius, rnn-stability, gradient-explosion]
+    question: A recurrent model's activations blow up over long sequences. How do eigenvalues explain and fix it?
+    shortAnswer: |
+      The hidden state grows roughly like the recurrent weight raised to the step count, so if the
+      spectral radius of that weight exceeds 1, activations grow geometrically. Keep it below 1 with
+      orthogonal init or spectral normalisation, and clip gradients.
+    fullAnswer: |
+      Linearising the recurrence, `h_t ~ W_rec^t h_0`, and `W_rec^t` is governed by the largest
+      `|lambda|` of `W_rec`. Above 1, the state and the backpropagated gradient both explode; well
+      below 1, gradients vanish over long horizons. Fixes: initialise `W_rec` orthogonally or scale
+      it to a spectral radius just under 1; apply spectral normalisation using a power-method
+      estimate; use gated units (LSTM/GRU) that keep the effective recurrent Jacobian near 1; and
+      clip the global gradient norm so one bad batch cannot trigger divergence. Monitor the spectral
+      radius or largest singular value of `W_rec` during training.
+    commonWrongAnswer: Just lower the learning rate until it stops.
+    followUps:
+      - Why does a spectral radius below 1 risk vanishing gradients instead?
+      - How does spectral normalisation differ from clipping the weight norm?
+projects:
+  - id: leig-project-eigen-toolkit
+    kind: major
+    title: Build an eigenvalue toolkit and dynamical-systems analyser
+    minutes: 240
+    summary: Implement power iteration with deflation, a QR-algorithm eigenvalue solver, the symmetric spectral decomposition, matrix powers and exponential via the decomposition, and a stability analyser, all validated against NumPy.
+    problem: |
+      Build a toolkit that makes the eigen-machinery of this lesson concrete: `power_iteration(A,
+      k)` returning the top-`k` eigenpairs by deflation with a reported convergence rate;
+      `qr_eigenvalues(A)` implementing the unshifted and shifted QR algorithm; `spectral(S)` for
+      symmetric input via one-sided Jacobi or a call-through to a tridiagonal solver;
+      `matrix_power(A, k)` and `matrix_exp(A)` via the decomposition with a `cond(V)` guard; and
+      `analyse_recurrence(A)` reporting spectral radius, whether `A^k` converges, the dominant mode,
+      and complex-pair rotation rates. Every result carries diagnostics.
+    requirements:
+      - "`power_iteration` returns eigenpairs sorted by `|lambda|`, uses deflation for `k > 1`, and reports the ratio of consecutive Rayleigh quotients as a convergence proxy."
+      - "`qr_eigenvalues` implements the QR iteration with a Wilkinson shift and matches `np.linalg.eigvals` within tolerance for well-conditioned matrices."
+      - "`spectral` returns real ascending eigenvalues and an orthonormal `Q` for symmetric input, matching `np.linalg.eigh`."
+      - "`matrix_power` and `matrix_exp` use the eigendecomposition, return real results for real input where appropriate, and refuse (or warn) when `cond(V)` exceeds a threshold, falling back to scaling-and-squaring for `matrix_exp`."
+      - "`analyse_recurrence` reports the spectral radius, a convergence verdict, the dominant eigenvector, and the rotation angle of any dominant complex pair."
+      - Every routine returns diagnostics (iteration counts, `cond(V)`, residual `||A v - lambda v||`).
+    constraints:
+      - NumPy and the standard library for the core; `np.linalg.eig` / `eigh` allowed only in tests as references.
+      - Never form the characteristic polynomial.
+      - Never use `eig` where the input is known symmetric.
+      - Never return a modal transform without reporting `cond(V)`.
+    expectedBehaviour:
+      - "`power_iteration` converges on matrices with a spectral gap and reports low confidence when the gap is small."
+      - "`qr_eigenvalues` matches the reference eigenvalues for random and structured matrices."
+      - "`spectral` reconstruction error is at machine-epsilon level and beats an `eig`-based reconstruction."
+      - "`matrix_exp` matches `scipy.linalg.expm` and stays accurate for a non-normal matrix by falling back."
+      - "`analyse_recurrence` correctly classifies decaying, growing, and rotating systems."
+    structure: |
+      eigen_kit/
+        __init__.py
+        power.py
+        qr_algorithm.py
+        symmetric.py
+        functions.py
+        dynamics.py
+      tests/
+        test_power.py
+        test_qr_algorithm.py
+        test_symmetric.py
+        test_functions.py
+        test_dynamics.py
+    milestones:
+      - title: "1 — Power iteration and deflation"
+        detail: Top-`k` eigenpairs with a convergence proxy and a small-gap warning.
+      - title: "2 — QR algorithm"
+        detail: Shifted QR iteration matching `np.linalg.eigvals` on well-conditioned inputs.
+      - title: "3 — Symmetric and matrix functions"
+        detail: Spectral decomposition plus powers and exponential with a `cond(V)` guard and fallback.
+      - title: "4 — Dynamics analyser"
+        detail: Spectral radius, convergence verdict, dominant mode, and complex-pair rotation rate.
+    testing:
+      - Power iteration versus the reference top eigenpair, including a near-degenerate case flagged as low confidence.
+      - Shifted QR eigenvalues versus `np.linalg.eigvals` on random and companion-form matrices.
+      - Symmetric reconstruction error versus an `eig`-based one.
+      - "`matrix_exp` versus `scipy.linalg.expm` on normal and non-normal matrices."
+      - Dynamics classification on hand-built decaying, growing, and rotating systems.
+    failureCases:
+      - The eigenvalue solver forms the characteristic polynomial and fails for `n = 20`.
+      - "`spectral` calls `eig` and returns non-orthonormal eigenvectors for symmetric input."
+      - "`matrix_power` uses `inv(V)` for a non-normal matrix and returns garbage without warning."
+      - Power iteration is declared converged on a matrix with a complex-conjugate dominant pair.
+    bonus:
+      - Add inverse iteration for eigenvectors given an eigenvalue estimate.
+      - Add a Lanczos routine for the extreme eigenpairs of a large sparse symmetric matrix.
+      - Emit a spectral report as Markdown.
+    architectureHints:
+      - Represent an eigenpair result as an object with `value`, `vector`, `residual`, and `iterations`.
+      - Keep the `cond(V)` guard in one place and consult it from every matrix-function path.
+      - Separate the QR-step code so both the plain and shifted iterations reuse it.
+    referenceOutline: |
+      `power.iterate` renormalises `A @ v` and deflates by subtracting `lambda v v.T` (or using a
+      projector) for further pairs. `qr_algorithm.eig` repeatedly factors `A_k - mu I = Q R` and
+      forms `A_{k+1} = R Q + mu I` with `mu` a Wilkinson shift, stopping on subdiagonal decay.
+      `symmetric.spectral` tridiagonalises then runs the symmetric QR. `functions.matrix_power` and
+      `matrix_exp` apply `Lambda**k` or `exp(Lambda)` and guard on `cond(V)`. `dynamics.analyse`
+      reads the spectrum.
+  - id: leig-final-optimiser-curvature-audit
+    kind: final-challenge
+    title: Diagnose an optimiser from its curvature spectrum
+    minutes: 90
+    summary: Given a training run that stalls and occasionally diverges, use cheap eigenvalue estimates of the curvature and the recurrent weight to explain the behaviour and propose fixes, with fail-before-fix tests.
+    problem: |
+      A model with a recurrent component trains slowly, plateaus, and every few thousand steps the
+      loss spikes. You are given hooks to the recurrent weight matrix and a function that returns
+      Hessian-vector products. Produce an audit that: estimates the top and bottom eigenvalues of
+      the curvature with a bounded number of Hessian-vector products (Lanczos), reporting the
+      condition number and any negative eigenvalue; estimates the spectral radius of the recurrent
+      weight with the complex power method; relates the plateau to the condition number and the
+      spikes to the spectral radius; and proposes concrete changes (learning-rate schedule or
+      preconditioning for the plateau, spectral control and gradient clipping for the spikes), each
+      backed by a regression that fails before the fix.
+    requirements:
+      - Estimate `lambda_max` and `lambda_min` of the curvature via Lanczos with a fixed
+        Hessian-vector-product budget, and report the condition number and confidence.
+      - Detect any negative curvature eigenvalue and report it as a saddle indicator.
+      - Estimate the recurrent-weight spectral radius with the complex power method on the weight
+        itself, not on `W.T W`.
+      - Tie the plateau to the condition number and the loss spikes to a spectral radius near or
+        above 1, with evidence.
+      - Provide one fail-before-fix test per proposed fix and a clean run afterwards.
+    constraints:
+      - Do not run a full `O(n**3)` eigendecomposition of the curvature.
+      - Do not estimate the recurrent spectral radius from `W.T W` (that gives a singular value, not the spectral radius).
+      - Do not claim a cause without the corresponding spectral estimate.
+    expectedBehaviour:
+      - The Lanczos condition-number estimate is within a stated tolerance of a reference on a small test problem.
+      - The spectral-radius estimate tracks the true value on a synthetic recurrent weight.
+      - After the learning-rate or preconditioning fix, the plateau shortens measurably.
+      - After spectral control plus clipping, the loss spikes disappear over long rollouts.
+      - Each fix has a regression that failed before it landed.
+    milestones:
+      - title: "1 — Curvature spectrum"
+        detail: Bounded-budget Lanczos for `lambda_max`, `lambda_min`, condition number, and saddle detection.
+      - title: "2 — Recurrent spectral radius"
+        detail: Complex power method on the recurrent weight, tracked over training.
+      - title: "3 — Explain and fix"
+        detail: Map plateau to conditioning and spikes to spectral radius; apply fixes with failing-first tests.
+    testing:
+      - Fail-before-fix regression for the plateau (pre-fix iteration count to a loss threshold) and the spikes (max loss over a rollout).
+      - Lanczos condition-number estimate versus a dense reference on a small problem.
+      - Spectral-radius estimate versus the true value on a constructed matrix.
+    failureCases:
+      - The audit runs a full eigendecomposition and is too slow to use in the loop.
+      - The recurrent spectral radius is computed from singular values and misses a rotational instability.
+      - A fix is proposed without a spectral estimate justifying it.
+    bonus:
+      - Add a Hutchinson trace estimate of the Hessian to complement the extreme eigenvalues.
+    architectureHints:
+      - Freeze the pre-fix plateau length and spike magnitude as fixtures first.
+      - Keep curvature estimation, spectral-radius estimation, and remediation in separate commits.
+    referenceOutline: |
+      Run `k`-step Lanczos on the Hessian-vector-product operator to get a small tridiagonal matrix
+      whose eigenvalues approximate the extremes of the curvature spectrum; the ratio is the
+      condition number and a negative Ritz value flags a saddle. Run the complex power method
+      `v <- A @ v; v /= norm(v)` on the recurrent weight and take the Rayleigh quotient for the
+      dominant (possibly complex) eigenvalue. Correlate with the loss curve.
+resources:
+  - name: 3Blue1Brown — Eigenvectors and eigenvalues
+    type: video
+    difficulty: intro
+    url: "https://www.3blue1brown.com/lessons/eigenvalues"
+    usefulness: 5
+    why: It gives the geometric picture that eigenvectors are the directions a transformation does not knock off their span, and shows why diagonalisation is choosing those directions as the basis.
+    covers: The geometric meaning of eigenvectors and eigenvalues, the characteristic equation, diagonalisation, and the case of no real eigenvectors (rotation).
+  - name: MIT 18.06 — Eigenvalues and eigenvectors, diagonalization (OCW)
+    type: university
+    difficulty: core
+    url: "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-21-eigenvalues-and-eigenvectors/"
+    usefulness: 5
+    why: Strang derives the eigendecomposition, shows how it trivialises matrix powers and difference equations, and treats the symmetric case and defective matrices explicitly.
+    covers: The characteristic polynomial, diagonalisation, powers and recurrences via eigenvalues, symmetric matrices, and defective matrices.
+  - name: "Trefethen and Bau — Numerical Linear Algebra (Lectures 24 to 28)"
+    type: book
+    difficulty: deep
+    url: "https://people.maths.ox.ac.uk/trefethen/text.html"
+    usefulness: 5
+    why: These lectures explain why the characteristic polynomial is not used, how the QR algorithm and its shifts work, and how non-normality makes eigenvectors ill-conditioned (pseudospectra).
+    covers: The QR algorithm, Hessenberg reduction, shifts, the Schur form, sensitivity of eigenvalues and eigenvectors, and pseudospectra.
+  - name: "numpy.linalg.eig and eigh reference"
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.linalg.eigh.html"
+    usefulness: 4
+    why: It states what each routine assumes and returns — `eigh` real and sorted for symmetric or Hermitian input, `eig` general and complex — which is the practical choice this lesson stresses.
+    covers: The eigenvalue and eigenvector outputs, the symmetric or Hermitian assumption of `eigh`, ordering guarantees, and the underlying LAPACK drivers.
+  - name: "Ghorbani, Krishnan, Xiao — An Investigation into Neural Net Optimization via Hessian Eigenvalue Density"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1901.10159"
+    usefulness: 4
+    why: It shows how the Hessian eigenvalue spectrum of real networks is estimated with Lanczos on Hessian-vector products and how its shape (bulk plus outliers, near-zero mass) explains optimisation behaviour.
+    covers: Stochastic Lanczos quadrature for the Hessian spectrum, the role of large outlier eigenvalues and near-zero bulk, and implications for step size and conditioning.

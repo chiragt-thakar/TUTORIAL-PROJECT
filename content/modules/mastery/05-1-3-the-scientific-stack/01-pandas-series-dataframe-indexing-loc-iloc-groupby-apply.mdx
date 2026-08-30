@@ -1,0 +1,231 @@
+---
+id: "roadmap:phase-1-1.3:0"
+title: "pandas: Series/DataFrame, indexing (loc/iloc), groupby-apply-agg, merges, reshaping (melt/pivot), time series, MultiIndex"
+description: "Build reliable pandas pipelines by reasoning about labels, alignment, grouping, relational joins, shapes, time, and hierarchical indexes."
+module: 1-3-the-scientific-stack
+order: 1
+estimatedMinutes: 150
+prerequisites: ["roadmap:phase-1-1.2:2", "roadmap:phase-1-1.2:3", "roadmap:phase-1-1.2:4"]
+learningObjectives:
+  - Distinguish labels, positions, index alignment, and copy behavior when selecting or assigning data
+  - Choose aggregation, transformation, filtering, and apply deliberately in grouped computations
+  - Validate merge cardinality and reshape data without silently duplicating or losing observations
+  - Build timezone-aware time-series and MultiIndex pipelines with explicit invariants
+---
+
+pandas is a labelled, column-oriented data system built on NumPy. A `DataFrame` is not merely a two-dimensional array: each axis carries an `Index`, columns may have different dtypes, and operations align labels before computing.
+
+That alignment is pandas' greatest convenience and a frequent source of silent bugs. Reliable code states which labels should exist, which rows should match, and which shape should emerge.
+
+<TypeScriptComparison>
+
+A JavaScript array of records behaves like a list of independent objects. A `DataFrame` behaves more like typed columns joined by row labels. Assigning one `Series` to another frame aligns index values instead of copying by array position. Treat the index like an implicit relational key, not an array offset.
+
+</TypeScriptComparison>
+
+## Series, DataFrame, and indexes
+
+A `Series` couples one-dimensional values with an index. A `DataFrame` couples named Series that share a row index. Inspect `shape`, `index`, `columns`, and `dtypes` before trusting a transformation.
+
+```python
+import pandas as pd
+
+readings = pd.DataFrame(
+    {
+        "device": ["a", "a", "b"],
+        "watts": [120.0, 135.0, 90.0],
+    },
+    index=pd.Index([101, 103, 108], name="sample_id"),
+)
+
+assert readings.index.is_unique
+assert readings["watts"].dtype == "float64"
+```
+
+`loc` selects by labels and includes both endpoints in a label slice. `iloc` selects zero-based positions and excludes the stop position. Boolean masks align by labels, so build them from the same frame or deliberately reindex them.
+
+```python
+high = readings.loc[readings["watts"].ge(100), ["device", "watts"]]
+first_two = readings.iloc[:2, :]
+readings.loc[readings["device"].eq("a"), "watts"] *= 1.01
+```
+
+Make assignment in one `.loc[...]` operation. Chained selection may target a temporary object and is ambiguous under evolving copy-on-write behavior.
+
+## Alignment changes arithmetic
+
+Binary operations align both axes. Missing labels produce missing results unless you specify a fill policy. Converting prematurely to NumPy discards those labels and computes positionally.
+
+```python
+actual = pd.Series({"a": 10.0, "b": 8.0})
+target = pd.Series({"b": 10.0, "c": 12.0})
+ratio = actual.div(target)       # index a, b, c; only b has both values
+ratio_checked = ratio.dropna()
+```
+
+Alignment is valuable only when the labels are the intended keys. Assert uniqueness and compare index sets at boundaries.
+
+## Split, apply, combine—using the narrowest operation
+
+`groupby` creates groups from key values. `agg` reduces each group, `transform` returns a result aligned to every original row, and `filter` retains or removes whole groups. General `apply` is more flexible but obscures output shape and often prevents optimized execution.
+
+```python
+summary = (
+    readings.groupby("device", as_index=False)
+    .agg(samples=("watts", "size"), mean_watts=("watts", "mean"))
+)
+
+readings["delta_from_device_mean"] = (
+    readings["watts"] - readings.groupby("device")["watts"].transform("mean")
+)
+```
+
+Aggregate with named outputs so schemas remain stable. Decide how missing grouping keys behave with `dropna=` and whether categorical groupers should emit unseen combinations with `observed=`.
+
+## Merges are cardinality claims
+
+A merge is a relational join. Before joining, state whether each key is one-to-one, one-to-many, or many-to-many. Use `validate=` to turn that claim into an executable invariant and `indicator=True` to audit unmatched rows.
+
+```python
+enriched = readings.reset_index().merge(
+    pd.DataFrame({"device": ["a", "b"], "site": ["north", "south"]}),
+    on="device",
+    how="left",
+    validate="many_to_one",
+    indicator=True,
+)
+assert enriched["_merge"].eq("both").all()
+```
+
+Null keys can match differently from SQL expectations, so reject or normalize them explicitly. Never diagnose a join solely by its final row count; duplicated keys can expand some rows while unmatched keys remove others.
+
+## Wide, long, pivot, and duplicate observations
+
+Long data stores one observation per row and one variable per column. `melt` turns repeated measurement columns into variable/value rows. `pivot` requires a unique value for every index/column pair; `pivot_table` aggregates duplicates and therefore needs an explicit aggregation policy.
+
+```python
+wide = pd.DataFrame({"device": ["a"], "v": [230.0], "i": [4.2]})
+long = wide.melt(id_vars="device", var_name="metric", value_name="reading")
+restored = long.pivot(index="device", columns="metric", values="reading")
+```
+
+Treat an unexpected duplicate error from `pivot` as useful evidence. Do not silence it with `pivot_table(..., aggfunc="first")` until “first” has domain meaning.
+
+## Time series require a time model
+
+Parse timestamps explicitly, localize naive civil times to their source timezone, then convert to UTC for storage and comparison. Resampling bins observations by time; rolling windows compute over rows or elapsed time depending on the window specification.
+
+```python
+events = pd.DataFrame(
+    {"ts": ["2026-01-01T00:00:00Z", "2026-01-01T00:04:00Z"], "kw": [4.0, 5.0]}
+)
+events["ts"] = pd.to_datetime(events["ts"], utc=True)
+five_minute = events.set_index("ts")["kw"].resample("5min").mean()
+```
+
+A mean of irregular power samples is not automatically energy. Integrate over elapsed time when duration matters. Daylight-saving transitions also make naive local timestamps ambiguous or nonexistent.
+
+## MultiIndex is a tuple key
+
+A `MultiIndex` represents hierarchical labels such as `(site, device, timestamp)`. It can express a natural compound key and enable partial selection, but it also makes sorting and serialization contracts important.
+
+```python
+indexed = enriched.set_index(["site", "device", "sample_id"]).sort_index()
+north = indexed.loc[("north", slice(None), slice(None)), :]
+flat = indexed.reset_index()
+```
+
+Use a MultiIndex when tuple-key operations dominate. Keep ordinary columns when data frequently crosses JSON, SQL, Arrow, or plotting boundaries.
+
+## Performance and pipeline discipline
+
+Prefer vectorized expressions, categorical dtypes for repeated labels when appropriate, and explicit column selection. Measure memory with `memory_usage(deep=True)`. Avoid row-wise `apply(axis=1)` for work expressible as column operations.
+
+Method chains are easiest to test when each step preserves a stated schema. Use `.assign`, `.rename`, `.query`, and `.pipe` for readable transformations, but name complex domain functions rather than constructing an unreadable chain.
+
+<ProductionNote>
+
+At ingestion, validate required columns, dtypes, key uniqueness, null policy, units, timezone, and expected row-count bounds. At every merge or reshape, assert cardinality and shape. Persist these checks in tests instead of relying on notebook inspection.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="pandas-label-position-easy" difficulty="easy">
+
+Explain why `df.loc[10:12]` and `df.iloc[10:12]` can select different rows.
+
+<Solution>
+
+`loc` slices index labels and includes the ending label when present. `iloc` slices integer positions and excludes position 12. Integer-looking labels are still labels under `loc`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pandas-transform-medium" difficulty="medium">
+
+Add each row's difference from its device mean without changing row count.
+
+<Solution>
+
+Use `df["watts"] - df.groupby("device")["watts"].transform("mean")`. `transform` broadcasts one group result back to each original row in aligned order.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pandas-merge-hard" difficulty="hard">
+
+A lookup table unexpectedly contains duplicate device IDs. Make a readings-to-device join fail loudly.
+
+<Solution>
+
+Use `readings.merge(devices, on="device", how="left", validate="many_to_one")`. Audit missing matches with `indicator=True` or a separate anti-join check.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pandas-alignment-interview" difficulty="interview">
+
+What is pandas label alignment, and when can it become dangerous?
+
+<Solution>
+
+Series and DataFrame operations match index and column labels before computing. It prevents positional mismatches when keys are correct, but stale, duplicated, or differently typed labels can introduce missing values or unintended expansion. Validate indexes at boundaries.
+
+</Solution>
+</Exercise>
+
+<Exercise id="pandas-pipeline-real-world" difficulty="real-world">
+
+Design a pipeline that loads device readings, joins metadata, computes hourly energy, and emits one row per site-hour.
+
+<Solution>
+
+Validate source schemas and unique metadata keys, parse timestamps as UTC, join with `validate="many_to_one"`, sort within device, integrate power over elapsed intervals, then group by site and hourly bins. Assert match coverage, interval bounds, units, and final key uniqueness.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+  <Gotcha question="Why did assigning a Series fill my column with NaN?">
+    pandas aligned the Series index with the frame index. Reset or deliberately reindex only after proving positional assignment is intended.
+  </Gotcha>
+  <Gotcha question="Why did a merge multiply my rows?">
+    Duplicate keys created a many-to-many join. Inspect key counts and enforce the intended relationship with `validate=`.
+  </Gotcha>
+  <Gotcha question="Why is a resampled power mean not energy?">
+    Power must be integrated over duration. Sampling gaps and irregular intervals make a simple mean physically incomplete.
+  </Gotcha>
+</Gotchas>
+
+## Checkpoint
+
+You are ready when you can predict `loc` versus `iloc`, explain alignment, choose `agg` versus `transform`, validate joins, distinguish `pivot` from `pivot_table`, and state a timezone policy before writing a pipeline.
+
+## Summary
+
+- pandas computes on labelled axes, so index invariants are part of correctness.
+- Use the narrowest grouped operation and treat `apply` as an escape hatch.
+- Joins need explicit cardinality and unmatched-row checks.
+- Reshaping and time-series work require duplicate, unit, and timezone policies.
+- MultiIndex is useful when tuple keys serve the workload, not as a default display trick.

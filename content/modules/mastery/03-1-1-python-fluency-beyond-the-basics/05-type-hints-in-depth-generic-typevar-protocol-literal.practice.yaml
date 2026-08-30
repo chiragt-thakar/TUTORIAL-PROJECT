@@ -1,0 +1,1240 @@
+# Practice bank for roadmap topic 1.1 #5 — deep Python typing.
+# Ids are durable progress keys. Never rename a shipped id.
+
+lessonId: "roadmap:phase-1-1.1:4"
+module: 1-1-python-fluency-beyond-the-basics
+lesson: 05-type-hints-in-depth-generic-typevar-protocol-literal
+title: "Type hints in depth: Generic, TypeVar, Protocol, Literal, overload"
+summary: Preserve real relationships with generics, express consumer-shaped structural contracts, narrow value domains, and make overloads tell the truth about one runtime implementation.
+
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+
+exercises:
+  - id: td-pick-first
+    tier: normal
+    kind: write-code
+    title: Preserve the element type
+    minutes: 8
+    requiredForMastery: true
+    concepts: [TypeVar, generics, Sequence]
+    prompt: |
+      Write `pick_first(items)` for any non-empty `Sequence`. Its result must retain the concrete
+      element type. Raise `ValueError` when empty. Explain why neither `object` nor `Any` is equal.
+    hints:
+      - One unknown type appears in two positions.
+      - Parameterise `Sequence` and reuse that parameter as the result.
+    solution: |
+      Create `T = TypeVar("T")`, accept `Sequence[T]`, and return `T`. `object` is safe but loses
+      the concrete result, forcing narrowing later. `Any` is permissive and disables checking of
+      operations on the result. The type variable keeps the caller's element type connected to the
+      return while remaining reusable for every element type.
+    solutionCode: |
+      from collections.abc import Sequence
+      from typing import TypeVar
+
+      T = TypeVar("T")
+
+      def pick_first(items: Sequence[T]) -> T:
+          if not items:
+              raise ValueError("items must not be empty")
+          return items[0]
+
+  - id: td-pair-same-family
+    tier: normal
+    kind: write-code
+    title: Constrain text families without mixing them
+    minutes: 9
+    requiredForMastery: true
+    concepts: [TypeVar, constraints, str, bytes]
+    prompt: |
+      Type `join_pair(left, right)` so it accepts two strings or two bytes values and returns the
+      same family, but a static checker rejects one string plus one bytes value.
+    hints:
+      - A union on each parameter allows the mixed combination.
+      - This is the finite-family form of `TypeVar`.
+    solution: |
+      Use a constrained type variable rather than independent unions. Both parameters share one
+      inference variable, so the checker must choose either `str` or `bytes` for the whole call.
+      The result carries the same selected family. Runtime concatenation still supplies the actual
+      enforcement if untyped code calls it incorrectly.
+    solutionCode: |
+      from typing import TypeVar
+
+      Text = TypeVar("Text", str, bytes)
+
+      def join_pair(left: Text, right: Text) -> Text:
+          return left + right
+
+  - id: td-bounded-entity
+    tier: normal
+    kind: write-code
+    title: Preserve a bounded subtype
+    minutes: 10
+    requiredForMastery: true
+    concepts: [TypeVar, bound, Protocol]
+    prompt: |
+      Define an `Identified` protocol with a read-only string `id`. Type `audit_and_return(entity)`
+      so it may read `.id` and returns the same concrete subtype it received.
+    hints:
+      - The function needs an upper bound, not a finite constraint list.
+      - Bind a type variable to the protocol and return that variable.
+    solution: |
+      A bound proves the required capability inside the function while preserving the caller's
+      concrete subtype. The read-only property avoids promising that callers may assign arbitrary
+      strings through the protocol. Returning the bound itself would erase a `User` to merely
+      `Identified`; returning `E` retains `User`.
+    solutionCode: |
+      from typing import Protocol, TypeVar
+
+      class Identified(Protocol):
+          @property
+          def id(self) -> str: ...
+
+      E = TypeVar("E", bound=Identified)
+
+      def audit_and_return(entity: E) -> E:
+          record(entity.id)
+          return entity
+
+  - id: td-generic-page
+    tier: normal
+    kind: write-code
+    title: Build a typed page wrapper
+    minutes: 12
+    requiredForMastery: true
+    concepts: [Generic, TypeVar, dataclass]
+    prompt: |
+      Implement `Page[T]` with `items: list[T]`, `next_cursor: str | None`, and `map(fn)` returning
+      `Page[U]`. Cursor metadata must survive the transformation.
+    hints:
+      - Mapping introduces a second independent type variable.
+      - The callback relates each old element to each new element.
+    solution: |
+      The class parameter records the current element type. `map` introduces `U` because the
+      transformation may change that type. Annotating the callback `Callable[[T], U]` and the
+      result `Page[U]` preserves the relationship end to end, while copying the cursor preserves
+      pagination state independently of element transformation.
+    solutionCode: |
+      from collections.abc import Callable
+      from dataclasses import dataclass
+      from typing import Generic, TypeVar
+
+      T = TypeVar("T")
+      U = TypeVar("U")
+
+      @dataclass
+      class Page(Generic[T]):
+          items: list[T]
+          next_cursor: str | None
+
+          def map(self, fn: Callable[[T], U]) -> "Page[U]":
+              return Page([fn(item) for item in self.items], self.next_cursor)
+
+  - id: td-literal-device
+    tier: normal
+    kind: write-code
+    title: Close a deployment choice
+    minutes: 7
+    concepts: [Literal, runtime validation]
+    prompt: |
+      Type `select_device(name)` for exactly `cpu`, `cuda`, or `mps`. Then state what must happen
+      before passing a raw `DEVICE` environment variable to it.
+    hints:
+      - Enumerate values in the annotation.
+      - An environment variable is still a broad string at runtime.
+    solution: |
+      Define a `Literal` alias for the three strings. A raw environment value must be validated
+      against that set before it can be treated as the alias; the annotation itself will not reject
+      a bad runtime string. Pydantic settings, an explicit membership test, or a parser can provide
+      that boundary proof.
+    solutionCode: |
+      from typing import Literal
+
+      Device = Literal["cpu", "cuda", "mps"]
+
+      def select_device(name: Device) -> RuntimeDevice:
+          return RuntimeDevice(name)
+
+  - id: td-reader-protocol
+    tier: normal
+    kind: design
+    title: Shape a protocol around its consumer
+    minutes: 10
+    requiredForMastery: true
+    concepts: [Protocol, dependency inversion, covariance]
+    prompt: |
+      A service only calls `get(key)` on a 15-method repository. Design the smallest generic
+      contract it should accept. Decide the variance and justify it from data direction.
+    hints:
+      - Do not copy the whole repository interface.
+      - The element type only leaves the protocol.
+    solution: |
+      Define `Reader[T_co]` with only `get(key) -> T_co | None`. Since the protocol produces the
+      entity and never accepts one, covariance is safe: a reader producing a subtype can satisfy a
+      caller expecting the base. The smaller contract decouples the service, documents actual use,
+      and makes focused fakes trivial without weakening type safety.
+    solutionCode: |
+      T_co = TypeVar("T_co", covariant=True)
+
+      class Reader(Protocol[T_co]):
+          def get(self, key: str) -> T_co | None: ...
+
+  - id: td-read-overloads
+    tier: normal
+    kind: code-reading
+    title: Identify the function that exists
+    minutes: 8
+    requiredForMastery: true
+    concepts: [overload, runtime, implementation]
+    prompt: |
+      Read this code. How many callable implementations exist at runtime, and what static result
+      does each call receive: `load("x")`, `load("x", required=True)`, and
+      `load("x", required=flag)` where `flag: bool`?
+    code: |
+      @overload
+      def load(key: str, *, required: Literal[True]) -> User: ...
+      @overload
+      def load(key: str, *, required: Literal[False] = False) -> User | None: ...
+      def load(key: str, *, required: bool = False) -> User | None:
+          ...
+    hints:
+      - Decorated variants are promises to the checker.
+      - A broad boolean cannot select one literal branch.
+    solution: |
+      Exactly one runtime implementation exists: the final undecorated body. The omitted argument
+      matches the defaulted false variant and yields `User | None`. Literal `True` yields `User`.
+      A variable typed as broad `bool` may take either path, so a sound checker returns
+      `User | None` or may require an additional fallback overload depending on checker rules.
+
+  - id: td-sequence-variance
+    tier: intermediate
+    kind: explain
+    title: Derive variance from permitted operations
+    minutes: 10
+    requiredForMastery: true
+    concepts: [variance, Sequence, list]
+    prompt: |
+      Explain why `Sequence[Dog]` is safe where `Sequence[Animal]` is required, but `list[Dog]` is
+      not safe where `list[Animal]` is required. Name the exact operation that would break it.
+    hints:
+      - Compare reading with writing.
+      - Imagine the receiver appending a `Cat`.
+    solution: |
+      A read-only sequence only produces elements. Every dog is an animal, so reading is safe and
+      covariance works. A list also consumes elements through `append`, item assignment, and
+      extension. Code accepting `list[Animal]` may append a `Cat`; if the actual object were a
+      `list[Dog]`, the caller's element invariant would be silently broken.
+
+  - id: td-paramspec-trace
+    tier: intermediate
+    kind: write-code
+    title: Preserve a decorated signature
+    minutes: 14
+    requiredForMastery: true
+    concepts: [ParamSpec, Callable, decorators]
+    prompt: |
+      Type `timed(func)` so the returned wrapper preserves all original parameter names and kinds
+      plus its result. Use `functools.wraps` and `time.perf_counter`.
+    hints:
+      - One variable captures parameters; another captures the result.
+      - Forward `P.args` and `P.kwargs` through the wrapper.
+    solution: |
+      `ParamSpec` preserves the whole call shape while a separate `TypeVar` preserves the result.
+      `Callable[..., R]` would allow incorrect argument lists after decoration. `wraps` preserves
+      runtime metadata, but it does not replace the static relationship; the two tools solve
+      complementary problems.
+    solutionCode: |
+      import time
+      from collections.abc import Callable
+      from functools import wraps
+      from typing import ParamSpec, TypeVar
+
+      P = ParamSpec("P")
+      R = TypeVar("R")
+
+      def timed(func: Callable[P, R]) -> Callable[P, R]:
+          @wraps(func)
+          def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+              started = time.perf_counter()
+              try:
+                  return func(*args, **kwargs)
+              finally:
+                  observe(time.perf_counter() - started)
+          return wrapper
+
+  - id: td-self-builder
+    tier: intermediate
+    kind: refactor
+    title: Keep fluent subclasses fluent
+    minutes: 10
+    concepts: [Self, fluent API, subclasses]
+    prompt: |
+      Refactor `Query.limit` and `Query.filter` so calling them on `VectorQuery` is inferred as
+      `VectorQuery`, without defining a bound type variable on every method.
+    code: |
+      class Query:
+          def limit(self, count: int) -> "Query": ...
+          def filter(self, expression: str) -> "Query": ...
+
+      class VectorQuery(Query):
+          def nearest(self, vector: list[float]) -> "VectorQuery": ...
+    hints:
+      - Python has a special receiver-relative return annotation.
+      - Apply it to methods that actually return `self`.
+    solution: |
+      Annotate both base methods with `Self`. It means the concrete type of the receiver, so a
+      `VectorQuery` remains a `VectorQuery` through inherited fluent calls. This is only truthful if
+      the methods return `self` or an instance of the receiver's class; it is wrong if they always
+      construct a plain `Query`.
+    solutionCode: |
+      from typing import Self
+
+      class Query:
+          def limit(self, count: int) -> Self:
+              self._limit = count
+              return self
+
+          def filter(self, expression: str) -> Self:
+              self._filters.append(expression)
+              return self
+
+  - id: td-stream-overload
+    tier: intermediate
+    kind: write-code
+    title: Correlate streaming mode with its result
+    minutes: 14
+    requiredForMastery: true
+    concepts: [overload, Literal, Iterator]
+    prompt: |
+      Declare overloads for `infer(prompt, stream=False)`: false or omitted returns `Prediction`;
+      true returns `Iterator[TokenChunk]`. Include the complete implementation annotation.
+    hints:
+      - Put the default only on the false overload.
+      - The implementation accepts broad `bool` and returns the union.
+    solution: |
+      Two literal variants expose the correlation to callers, while one runtime implementation
+      accepts their union. The default belongs on the false variant so the omitted call narrows to
+      `Prediction`. Each runtime branch must make the promise true; annotations do not prevent an
+      accidental iterator from escaping the false branch.
+    solutionCode: |
+      @overload
+      def infer(prompt: str, *, stream: Literal[False] = False) -> Prediction: ...
+      @overload
+      def infer(prompt: str, *, stream: Literal[True]) -> Iterator[TokenChunk]: ...
+
+      def infer(
+          prompt: str, *, stream: bool = False
+      ) -> Prediction | Iterator[TokenChunk]:
+          if stream:
+              return stream_tokens(prompt)
+          return collect_prediction(prompt)
+
+  - id: td-typeguard-labels
+    tier: intermediate
+    kind: write-code
+    title: Narrow an unknown payload honestly
+    minutes: 12
+    requiredForMastery: true
+    concepts: [TypeGuard, object, runtime validation]
+    prompt: |
+      Write `is_labels(value: object) -> TypeGuard[list[str]]`. It must reject tuples, mixed lists,
+      and non-lists. Explain why accepting `Any` would weaken the boundary.
+    hints:
+      - Prove the outer container, then every element.
+      - "`object` forces the implementation to narrow before iteration."
+    solution: |
+      Check `isinstance(value, list)` and require every element to be a string. Starting from
+      `object` prevents unchecked operations until proof exists. `Any` would allow iteration and
+      string operations regardless of evidence, letting an incomplete validator appear correct to
+      the checker. The guard's body is security-sensitive because a false positive is an unsound
+      static promise.
+    solutionCode: |
+      from typing import TypeGuard
+
+      def is_labels(value: object) -> TypeGuard[list[str]]:
+          return isinstance(value, list) and all(
+              isinstance(item, str) for item in value
+          )
+
+  - id: td-concatenate-auth
+    tier: intermediate
+    kind: write-code
+    title: Type an injected request context
+    minutes: 15
+    concepts: [ParamSpec, Concatenate, decorator]
+    prompt: |
+      Type a decorator `with_context` that accepts a callable whose first argument is `Context`
+      and returns a callable where callers provide only the remaining parameters.
+    hints:
+      - Capture the remaining parameters with `ParamSpec`.
+      - Use `Concatenate` on the input callable, not the output.
+    solution: |
+      The decorator consumes a callable shaped as `(Context, *P) -> R` and returns `(*P) -> R`.
+      `Concatenate` expresses the injected leading parameter, while `ParamSpec` preserves every
+      remaining positional and keyword detail. The wrapper obtains context at runtime and forwards
+      the caller's original arguments unchanged.
+    solutionCode: |
+      P = ParamSpec("P")
+      R = TypeVar("R")
+
+      def with_context(
+          func: Callable[Concatenate[Context, P], R],
+      ) -> Callable[P, R]:
+          @wraps(func)
+          def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+              return func(current_context(), *args, **kwargs)
+          return wrapper
+
+  - id: td-protocol-property
+    tier: intermediate
+    kind: code-reading
+    title: Read a mutable-member mismatch
+    minutes: 10
+    concepts: [Protocol, property, invariance]
+    prompt: |
+      Why may `IntConfig` fail to satisfy `Config`, even though reading its timeout always produces
+      a valid float? Give the smallest contract repair if consumers never assign timeout.
+    code: |
+      class Config(Protocol):
+          timeout: float
+
+      class IntConfig:
+          timeout: int = 5
+    hints:
+      - The protocol attribute promises both reading and writing.
+      - A caller could assign a non-integral float.
+    solution: |
+      `Config.timeout` is writable, so a consumer may assign `2.5`. `IntConfig` promises its member
+      is an integer, making that write unsafe. Change the protocol to a read-only
+      `@property def timeout(self) -> float: ...`. Then covariance of the returned value makes the
+      narrower integer implementation safe for read-only consumption.
+
+  - id: td-debug-any-leak
+    tier: tricky
+    kind: debug
+    title: Stop Any at the JSON boundary
+    minutes: 14
+    requiredForMastery: true
+    concepts: [Any, object, TypeGuard, boundary]
+    prompt: |
+      The checker misses a production crash in `normalise`. Repair the boundary without `cast` or
+      `# type: ignore`, and ensure invalid payloads raise a useful error.
+    code: |
+      def decode(raw: str) -> Any:
+          return json.loads(raw)
+
+      def normalise(raw: str) -> list[str]:
+          payload = decode(raw)
+          return [tag.strip().lower() for tag in payload["tags"]]
+    hints:
+      - Return the least-assuming safe type from decoding.
+      - Prove mapping shape and every list element before using string methods.
+    solution: |
+      Return `object` from the untrusted decoder, then narrow with runtime checks. This prevents
+      `Any` from making indexing and `.strip()` silently legal. A production implementation may use
+      Pydantic, but explicit checks show the required proof: mapping, `tags` key, list container,
+      and string elements. Every failed proof becomes a boundary error, not a later attribute crash.
+    solutionCode: |
+      def decode(raw: str) -> object:
+          return json.loads(raw)
+
+      def normalise(raw: str) -> list[str]:
+          payload = decode(raw)
+          if not isinstance(payload, dict):
+              raise ValueError("payload must be an object")
+          tags = payload.get("tags")
+          if not isinstance(tags, list) or not all(
+              isinstance(tag, str) for tag in tags
+          ):
+              raise ValueError("tags must be a list of strings")
+          return [tag.strip().lower() for tag in tags]
+
+  - id: td-debug-overload-lie
+    tier: tricky
+    kind: debug
+    title: Repair a lying overload
+    minutes: 12
+    requiredForMastery: true
+    concepts: [overload, soundness, control flow]
+    prompt: |
+      The signature promises a `User` for `required=True`, but a rare cache miss returns `None`.
+      Repair the implementation without weakening the overload.
+    code: |
+      @overload
+      def get_user(key: str, required: Literal[True]) -> User: ...
+      @overload
+      def get_user(key: str, required: Literal[False]) -> User | None: ...
+      def get_user(key: str, required: bool) -> User | None:
+          user = cache.get(key)
+          if user is None:
+              return None
+          return user
+    hints:
+      - Preserve the useful caller guarantee.
+      - The missing case must branch on `required`.
+    solution: |
+      Raise `UserNotFound` when the value is absent and `required` is true; return `None` only for
+      the false branch. Weakening both overloads to a union would make the annotations truthful but
+      discard the API's intended guarantee. The best repair aligns runtime control flow with the
+      public contract and tests both cache-miss branches.
+    solutionCode: |
+      def get_user(key: str, required: bool) -> User | None:
+          user = cache.get(key)
+          if user is None and required:
+              raise UserNotFound(key)
+          return user
+
+  - id: td-debug-invariant-list
+    tier: tricky
+    kind: debug
+    title: Remove an unsafe mutable promise
+    minutes: 11
+    requiredForMastery: true
+    concepts: [invariance, Sequence, mutation]
+    prompt: |
+      A checker rejects `summarise(dogs)`. Repair the function contract without copying and without
+      changing `dogs` to `list[Animal]`.
+    code: |
+      def summarise(animals: list[Animal]) -> str:
+          return ", ".join(animal.name for animal in animals)
+
+      dogs: list[Dog] = load_dogs()
+      print(summarise(dogs))
+    hints:
+      - The function never mutates its input.
+      - Advertise only the operation the body needs.
+    solution: |
+      Accept `Sequence[Animal]` or `Iterable[Animal]`. The original `list` annotation falsely
+      advertised mutation and therefore required invariance. A read-only covariant abstraction
+      accepts `list[Dog]` safely and describes the implementation more accurately. Copying would
+      hide the contract mistake while adding unnecessary allocation.
+    solutionCode: |
+      from collections.abc import Sequence
+
+      def summarise(animals: Sequence[Animal]) -> str:
+          return ", ".join(animal.name for animal in animals)
+
+  - id: td-debug-paramspec
+    tier: tricky
+    kind: debug
+    title: Restore a decorator's call contract
+    minutes: 13
+    concepts: [ParamSpec, Callable, decorator]
+    prompt: |
+      This decorator makes every wrapped function callable with arbitrary arguments according to
+      the checker. Repair the annotations and preserve the runtime metadata.
+    code: |
+      R = TypeVar("R")
+
+      def logged(fn: Callable[..., R]) -> Callable[..., R]:
+          def wrapper(*args: object, **kwargs: object) -> R:
+              log(fn.__name__)
+              return fn(*args, **kwargs)
+          return wrapper
+    hints:
+      - Capture the original parameter specification.
+      - "`wraps` and `ParamSpec` solve different halves."
+    solution: |
+      Use `ParamSpec` for the original call signature, annotate forwarding with `P.args` and
+      `P.kwargs`, and apply `wraps` for runtime metadata. The repaired return is `Callable[P, R]`,
+      so the checker retains valid arguments. `wraps` alone only affects metadata and cannot restore
+      the static signature erased by ellipsis.
+    solutionCode: |
+      P = ParamSpec("P")
+      R = TypeVar("R")
+
+      def logged(fn: Callable[P, R]) -> Callable[P, R]:
+          @wraps(fn)
+          def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+              log(fn.__name__)
+              return fn(*args, **kwargs)
+          return wrapper
+
+  - id: td-debug-cast-crash
+    tier: tricky
+    kind: debug
+    title: Replace belief with evidence
+    minutes: 10
+    concepts: [cast, runtime validation, narrowing]
+    prompt: |
+      `parse_score` passes the checker and crashes for `{"score": "high"}`. Remove the false
+      assertion and return a clear validation error.
+    code: |
+      def parse_score(raw: str) -> int:
+          data = cast(dict[str, int], json.loads(raw))
+          return data["score"] + 1
+    hints:
+      - "`cast` does not inspect the value."
+      - Narrow the decoded object and selected field separately.
+    solution: |
+      Decode to `object`, prove the outer mapping, obtain the field, and prove it is an integer.
+      Avoid treating booleans as scores if the domain excludes them because `bool` subclasses
+      `int`. The original cast only silenced the checker; the repaired code creates runtime evidence
+      and reports the invalid boundary where it occurs.
+    solutionCode: |
+      def parse_score(raw: str) -> int:
+          data: object = json.loads(raw)
+          if not isinstance(data, dict):
+              raise ValueError("payload must be an object")
+          score = data.get("score")
+          if not isinstance(score, int) or isinstance(score, bool):
+              raise ValueError("score must be an integer")
+          return score + 1
+
+  - id: td-runtime-protocol-shallow
+    tier: tricky
+    kind: predict-output
+    title: See what runtime_checkable cannot see
+    minutes: 9
+    concepts: [runtime_checkable, Protocol, signatures]
+    prompt: |
+      Predict the output and explain why it does not prove the object is safe to call through the
+      protocol.
+    code: |
+      @runtime_checkable
+      class Closer(Protocol):
+          def close(self) -> None: ...
+
+      class Broken:
+          close = 42
+
+      print(isinstance(Broken(), Closer))
+    hints:
+      - Runtime protocol checks inspect member presence.
+      - The member's callability and signature are not fully checked.
+    solution: |
+      On supported current Python versions the result is `True`: the named member exists. Calling
+      it still raises because the value is an integer, not a compatible method. Static checking of
+      `Broken` against `Closer` catches the mismatch; runtime-checkable protocols are deliberately
+      shallow and should never be used as full interface validation.
+
+  - id: td-overlap-order
+    tier: tricky
+    kind: code-reading
+    title: Find the shadowed overload
+    minutes: 11
+    concepts: [overload, overlap, ordering]
+    prompt: |
+      Which variant is unreachable for an integer argument, and how should the declarations be
+      ordered if the special integer result is intentional?
+    code: |
+      @overload
+      def encode(value: object) -> bytes: ...
+      @overload
+      def encode(value: int) -> memoryview: ...
+    hints:
+      - An integer is also an object.
+      - Checkers normally choose the first matching variant.
+    solution: |
+      The `int` variant is shadowed because the earlier `object` variant already accepts every
+      integer. Put the narrower `int` overload first and the broad fallback last. Then ensure the
+      runtime implementation actually returns `memoryview` for all integer paths and `bytes` for
+      remaining object paths; ordering cannot repair a lying implementation.
+
+  - id: td-design-model-backend
+    tier: tricky
+    kind: design
+    title: Separate model capability from framework ancestry
+    minutes: 16
+    concepts: [Protocol, generics, architecture]
+    prompt: |
+      Design protocols for an inference service that tokenises `str` into `TokenBatch`, runs a
+      backend producing `Logits`, and decodes logits into `str`. Keep contracts consumer-shaped and
+      explain how a fake participates without inheritance.
+    hints:
+      - Use three narrow capabilities instead of one framework interface.
+      - Each protocol should expose only the service's actual call.
+    solution: |
+      Define `Tokenizer.encode(text) -> TokenBatch`, `Backend.run(batch) -> Logits`, and
+      `Decoder.decode(logits) -> str`. The service accepts those protocols independently. A test fake
+      satisfies a protocol by exposing a compatible method; it imports no base class. Splitting the
+      stages makes failure injection and substitution precise while preventing PyTorch or vendor SDK
+      types from leaking into application policy.
+    solutionCode: |
+      class Tokenizer(Protocol):
+          def encode(self, text: str) -> TokenBatch: ...
+
+      class Backend(Protocol):
+          def run(self, batch: TokenBatch) -> Logits: ...
+
+      class Decoder(Protocol):
+          def decode(self, logits: Logits) -> str: ...
+
+  - id: td-challenge-envelope
+    tier: challenge
+    kind: write-code
+    title: Build a result-preserving envelope
+    minutes: 25
+    requiredForMastery: true
+    concepts: [Generic, TypeVar, overload, Literal]
+    prompt: |
+      Implement immutable `Result[T]` with `ok(value)`, `error(message)`, and overloads for
+      `unwrap(default=...)`: omitted default raises on errors and returns `T`; a supplied default of
+      type `U` returns `T | U`. Do not use `Any`.
+    hints:
+      - Represent success and error explicitly in fields.
+      - A private sentinel distinguishes omitted from a supplied `None`.
+    solution: |
+      The generic stores an optional value plus an optional error, with constructors maintaining
+      exactly one active side. Overloads distinguish omission from supplying a fallback; a private
+      sentinel provides the runtime distinction that `None` cannot. The implementation returns the
+      stored `T`, the provided `U`, or raises. A production version should make invalid direct
+      construction impossible or validate it in `__post_init__`.
+    solutionCode: |
+      from dataclasses import dataclass
+      from typing import Generic, TypeVar, overload
+
+      T = TypeVar("T")
+      U = TypeVar("U")
+      _MISSING = object()
+
+      @dataclass(frozen=True)
+      class Result(Generic[T]):
+          value: T | None = None
+          message: str | None = None
+
+          @classmethod
+          def ok(cls, value: T) -> "Result[T]":
+              return cls(value=value)
+
+          @classmethod
+          def error(cls, message: str) -> "Result[T]":
+              return cls(message=message)
+
+          @overload
+          def unwrap(self) -> T: ...
+          @overload
+          def unwrap(self, default: U) -> T | U: ...
+          def unwrap(self, default: object = _MISSING) -> object:
+              if self.message is None:
+                  return self.value
+              if default is not _MISSING:
+                  return default
+              raise RuntimeError(self.message)
+
+  - id: td-challenge-review-sdk
+    tier: challenge
+    kind: performance
+    title: Review a typed batching boundary
+    minutes: 22
+    concepts: [Iterable, Iterator, generics, performance]
+    prompt: |
+      Review an API typed `def batches(items: list[T], size: int) -> list[list[T]]`. For a stream of
+      ten million records, propose a more general, lazy signature and state the ownership caveat.
+    hints:
+      - The input need not support indexing or be fully materialised.
+      - Yield each completed batch instead of accumulating all batches.
+    solution: |
+      Prefer `def batches(items: Iterable[T], size: int) -> Iterator[list[T]]`. It accepts lists,
+      generators, and file-backed streams while retaining the element relationship. The
+      implementation holds at most one batch plus iterator state. Document that consumption is
+      single-pass and that early abandonment may leave resources owned by the input iterator open;
+      the caller or an enclosing context manager owns cleanup.
+    solutionCode: |
+      def batches(items: Iterable[T], size: int) -> Iterator[list[T]]:
+          if size < 1:
+              raise ValueError("size must be positive")
+          batch: list[T] = []
+          for item in items:
+              batch.append(item)
+              if len(batch) == size:
+                  yield batch
+                  batch = []
+          if batch:
+              yield batch
+
+quizzes:
+  - id: td-checkpoint
+    title: Checkpoint — relationships and boundaries
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: td-cp-typevar
+        kind: mcq
+        prompt: "What does `T` add to `def first(xs: Sequence[T]) -> T`?"
+        options:
+          - id: validation
+            text: Runtime validation of every element
+          - id: relation
+            text: A static relationship between input element and result
+          - id: speed
+            text: Faster sequence indexing
+        answer: [relation]
+        explanation: TypeVar preserves the caller's element type; it changes neither runtime validation nor speed.
+        concepts: [TypeVar]
+        points: 1
+      - id: td-cp-variance
+        kind: mcq
+        prompt: Why is a mutable list normally invariant?
+        options:
+          - id: both
+            text: It both produces and consumes its element type
+          - id: slow
+            text: Mutation is too slow for covariance
+          - id: runtime
+            text: Runtime generics reject subclasses
+        answer: [both]
+        explanation: Reads motivate covariance while writes motivate contravariance; supporting both requires invariance.
+        concepts: [variance]
+        points: 1
+      - id: td-cp-protocol
+        kind: true-false
+        prompt: A runtime-checkable protocol validates method signatures during `isinstance`.
+        options:
+          - id: "true"
+            text: "True"
+          - id: "false"
+            text: "False"
+        answer: ["false"]
+        explanation: The runtime check is shallow and primarily checks member presence.
+        concepts: [Protocol, runtime_checkable]
+        points: 1
+      - id: td-cp-overload
+        kind: explain
+        prompt: What happens to overload declaration bodies at runtime?
+        modelAnswer: Only the final implementation is callable; overload declarations are consumed by static tooling and their ellipsis bodies are not dispatched.
+        explanation: Overload is a static call-contract mechanism, not multiple dispatch.
+        concepts: [overload]
+        points: 1
+
+  - id: td-assessment
+    title: Assessment — deep Python typing
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: td-a-bound
+        kind: mcq
+        prompt: Which construct accepts any subtype of `HasId` while preserving the concrete subtype?
+        options:
+          - id: union
+            text: "`HasId | object`"
+          - id: bound
+            text: "`T = TypeVar(\"T\", bound=HasId)`"
+          - id: any
+            text: "`Any`"
+        answer: [bound]
+        explanation: A bound grants the upper-limit capability and retains the inferred subtype.
+        concepts: [TypeVar, bound]
+        points: 1
+      - id: td-a-constraint
+        kind: multi
+        prompt: Which statements about constrained `TypeVar("Text", str, bytes)` are correct?
+        options:
+          - id: same
+            text: Shared occurrences select one allowed family
+          - id: runtime
+            text: It validates runtime values automatically
+          - id: finite
+            text: It enumerates a finite set of allowed type families
+          - id: mix
+            text: It intentionally allows str and bytes to mix in one call
+        answer: [same, finite]
+        explanation: Constraints enumerate allowed families and preserve agreement; they add no runtime checks.
+        concepts: [constraints]
+        points: 1
+      - id: td-a-output
+        kind: predict-output
+        prompt: Predict whether this prints True or False on current Python, then explain the danger.
+        code: |
+          @runtime_checkable
+          class Runner(Protocol):
+              def run(self) -> int: ...
+          class Bad:
+              run = "not callable"
+          print(isinstance(Bad(), Runner))
+        modelAnswer: It prints True because the named member exists, but calling it fails; runtime protocol checking does not prove signature or callability compatibility.
+        explanation: Static protocol checking and runtime member inspection provide different guarantees.
+        concepts: [Protocol, runtime_checkable]
+        points: 1
+      - id: td-a-find-overload
+        kind: find-bug
+        prompt: Find the static contract bug.
+        code: |
+          @overload
+          def fetch(required: Literal[True]) -> User: ...
+          @overload
+          def fetch(required: Literal[False]) -> None: ...
+          def fetch(required: bool) -> User | None:
+              return cache.get("user")
+        modelAnswer: The true overload promises User, but the implementation returns None on a cache miss regardless of required. It must raise or otherwise produce a User in the true branch.
+        explanation: Sound overloads describe actual branch guarantees, not desired outcomes.
+        concepts: [overload, soundness]
+        points: 1
+      - id: td-a-paramspec
+        kind: complete-code
+        prompt: Name the constructs replacing the blanks to preserve a decorator's signature.
+        code: |
+          P = ___("P")
+          R = TypeVar("R")
+          def deco(fn: Callable[___, R]) -> Callable[___, R]: ...
+        modelAnswer: Use `ParamSpec` for the constructor and `P` in both Callable parameter positions.
+        explanation: ParamSpec captures the complete positional and keyword parameter specification.
+        concepts: [ParamSpec]
+        points: 1
+      - id: td-a-list
+        kind: scenario
+        prompt: A function only iterates animals, but `list[Dog]` is rejected for `list[Animal]`. What is the best signature repair?
+        modelAnswer: Accept a read-only covariant abstraction such as `Sequence[Animal]` or `Iterable[Animal]`, choosing based on whether repeated traversal or indexing is required.
+        explanation: The contract should expose only used operations and avoid advertising mutation.
+        concepts: [variance, Sequence]
+        points: 1
+      - id: td-a-literal
+        kind: true-false
+        prompt: "`Literal[\"cpu\", \"cuda\"]` raises at runtime when passed `\"gpu\"`."
+        options:
+          - id: "true"
+            text: "True"
+          - id: "false"
+            text: "False"
+        answer: ["false"]
+        explanation: Literal is a static constraint unless a runtime validation framework consumes it.
+        concepts: [Literal]
+        points: 1
+      - id: td-a-cast
+        kind: explain
+        prompt: Explain the runtime difference between `cast(User, value)` and validating `value` as a User.
+        modelAnswer: Cast returns value unchanged and only changes a checker's belief. Validation inspects runtime data and either constructs or proves a User, or rejects the input.
+        explanation: Treat casts as assertions based on external proof, never as parsers.
+        concepts: [cast, validation]
+        points: 1
+      - id: td-a-self
+        kind: mcq
+        prompt: When is `Self` an unsound return annotation?
+        options:
+          - id: receiver
+            text: The method returns the receiver
+          - id: concrete
+            text: The method always constructs the base class even for subclass receivers
+          - id: factory
+            text: A classmethod constructs `cls(...)`
+        answer: [concrete]
+        explanation: Self promises the concrete receiver class, which a fixed base-class result violates.
+        concepts: [Self]
+        points: 1
+      - id: td-a-design
+        kind: scenario
+        prompt: A service consumes `get` only, while its repository interface has 20 methods. Describe the typed redesign.
+        modelAnswer: Define a small consumer-owned generic Reader protocol containing only get, choose covariance if the entity type is only returned, and let concrete repositories and fakes satisfy it structurally.
+        explanation: Narrow protocols reduce coupling without giving up static guarantees.
+        concepts: [Protocol, architecture]
+        points: 1
+
+interview:
+  - id: td-iv-typevar-any
+    level: basic
+    requiredForMastery: true
+    concepts: [TypeVar, Any]
+    question: What is the difference between an unconstrained TypeVar and Any?
+    shortAnswer: A TypeVar represents an unknown but consistent type across its occurrences. Any opts out of checking and lets unchecked operations and results flow onward.
+    fullAnswer: |
+      In `def first(xs: Sequence[T]) -> T`, the caller chooses a concrete `T`, and the result keeps
+      that type. The function cannot assume arbitrary operations on `T`.
+
+      With `Any`, the body and caller may perform nearly any operation without diagnostics. It is an
+      escape hatch, not a generic relationship.
+    commonWrongAnswer: They are equivalent until the TypeVar receives a bound. Even unbounded, TypeVar preserves agreement and restricts unsupported operations.
+    followUps:
+      - When is object safer than Any?
+      - How does a bound change what the generic body may do?
+
+  - id: td-iv-protocol-abc
+    level: comparison
+    requiredForMastery: true
+    concepts: [Protocol, ABC]
+    question: Protocol or ABC for a repository boundary?
+    shortAnswer: Usually a small Protocol owned by the consumer, because implementations and fakes can satisfy it structurally. Use an ABC when explicit nominal membership or shared runtime implementation is part of the design.
+    fullAnswer: |
+      A protocol checks compatible members without requiring inheritance, which avoids coupling a
+      database adapter and test fake to a shared base. It supports interface segregation naturally.
+
+      An ABC is useful when registration, runtime nominal checks, protected shared logic, or enforced
+      abstract construction matters. Neither choice proves semantic correctness; integration tests do.
+    commonWrongAnswer: Protocol is always newer and therefore always better. The choice depends on structural capability versus nominal family and shared behaviour.
+    followUps:
+      - What does runtime_checkable actually check?
+      - Why should the consumer own the protocol?
+
+  - id: td-iv-variance
+    level: advanced
+    requiredForMastery: true
+    concepts: [variance, mutability]
+    question: Explain covariance, contravariance, and invariance without reciting definitions.
+    shortAnswer: Follow values. A producer can safely return a subtype, so it is covariant. A consumer able to accept a base can stand in for one accepting a subtype, so it is contravariant. Mutable containers do both and are invariant.
+    fullAnswer: |
+      If code wants an `Animal` producer, a `Dog` producer is safe because every dog is an animal.
+      If code wants a dog consumer, an animal consumer is safe because it handles every dog.
+
+      A list is both readable and writable. Treating `list[Dog]` as `list[Animal]` would permit
+      appending a cat, violating the original list's promise.
+    commonWrongAnswer: Covariance means subclasses are always accepted. Direction depends on where the parameter appears and which operations the abstraction permits.
+    followUps:
+      - Why is Sequence usually covariant?
+      - How do callable parameter types vary?
+
+  - id: td-iv-overloads
+    level: internals
+    requiredForMastery: true
+    concepts: [overload, runtime]
+    question: How do overloads work at runtime, and how can an overload be unsound?
+    shortAnswer: Overload declarations are for static tools; only the final implementation executes. They are unsound when a declared call shape promises a result the implementation does not guarantee.
+    fullAnswer: |
+      A checker matches the caller against ordered variants and uses the selected result type. The
+      implementation must accept all variant inputs and cover all their outputs.
+
+      Runtime dispatch remains ordinary control flow in one body. A `Literal[True] -> User` variant
+      lies if any true branch can return `None`, even if the checker accepts callers.
+    commonWrongAnswer: Python chooses the overload body matching the runtime arguments. The variant bodies do not implement dispatch.
+    followUps:
+      - When is a TypeVar clearer than overloads?
+      - How should broad fallback variants be ordered?
+
+  - id: td-iv-literal-enum
+    level: intermediate
+    concepts: [Literal, Enum]
+    question: When would you use Literal instead of Enum?
+    shortAnswer: Use Literal for a small closed set of primitive values close to one API. Use Enum when the domain needs runtime identity, behaviour, iteration, or broad reuse.
+    fullAnswer: |
+      Literal is lightweight and works well for mode flags, ordering choices, and overload
+      discrimination. Checkers can narrow control flow from exact values.
+
+      Enum creates runtime members and a durable domain object. Neither removes the need to parse
+      untrusted strings before the typed boundary.
+    commonWrongAnswer: Literal is runtime validation while Enum is only documentation. Literal alone performs no runtime validation.
+    followUps:
+      - How does Pydantic use Literal?
+      - When does a large Literal union become a smell?
+
+  - id: td-iv-paramspec
+    level: advanced
+    concepts: [ParamSpec, Callable]
+    question: Why is Callable[..., R] inadequate for a transparent decorator?
+    shortAnswer: Ellipsis preserves only the return type and accepts any arguments. ParamSpec captures the original positional and keyword signature so invalid calls remain invalid after decoration.
+    fullAnswer: |
+      A transparent decorator should expose the same call contract as the wrapped function. Use
+      `Callable[P, R]`, forward `P.args` and `P.kwargs`, and return `Callable[P, R]`.
+
+      `functools.wraps` preserves runtime metadata and `__wrapped__`; it does not recreate the static
+      signature relationship by itself.
+    commonWrongAnswer: functools.wraps is enough because it copies the signature. Static checkers need ParamSpec even when runtime introspection follows `__wrapped__`.
+    followUps:
+      - What problem does Concatenate solve?
+      - What cannot ParamSpec express cleanly?
+
+  - id: td-iv-cast
+    level: tricky
+    concepts: [cast, TypeGuard, validation]
+    question: Why is cast dangerous at an external-data boundary?
+    shortAnswer: Cast does no runtime work; it only tells the checker to trust the author. On external data that assertion lacks proof and can suppress the exact warning predicting a crash.
+    fullAnswer: |
+      Start unknown data as `object`, then validate it with a schema or explicit narrowing. A
+      trustworthy TypeGuard performs runtime checks and communicates successful narrowing.
+
+      Cast is acceptable after an invariant established elsewhere that the checker cannot model.
+      Document that invariant so reviewers can verify the assertion.
+    commonWrongAnswer: cast converts the value into the requested class. It returns the original object unchanged.
+    followUps:
+      - How can a TypeGuard itself be unsound?
+      - Why is object preferable to Any here?
+
+  - id: td-iv-api-review
+    level: scenario
+    concepts: [generics, Protocol, overload, API design]
+    question: How would you review typing for a model inference SDK?
+    shortAnswer: Type untrusted boundaries with validation, use small backend and tokenizer protocols, preserve payloads with generics, and use overloads only for real streaming-result correlations. Audit every Any and cast.
+    fullAnswer: |
+      I would begin at public boundaries: configuration, serialized model responses, callbacks, and
+      backend adapters. Runtime schemas prove external values; typed domain objects flow inward.
+
+      Protocols prevent vendor types from owning application policy. Generics preserve batches and
+      result payloads. Literal modes and sound overloads improve callers, while tests verify runtime
+      branches and tensor or shape invariants the type system cannot express.
+    commonWrongAnswer: Add annotations to every local variable first. Boundary relationships deliver more safety and guide useful internal inference.
+    followUps:
+      - Which invariants still require runtime checks?
+      - How would you prevent Any from leaking from a vendor SDK?
+
+projects:
+  - id: td-project-inference-sdk
+    kind: major
+    title: A strictly typed inference SDK boundary
+    minutes: 210
+    summary: Build a standard-library inference client whose public API preserves request and result relationships across sync, batch, and streaming modes.
+    problem: |
+      An application currently calls a vendor SDK directly. The SDK returns `Any`, supports two
+      incompatible model backends, and uses one function whose result changes when streaming is
+      enabled. Build a typed boundary that contains uncertainty and is testable without either
+      vendor dependency.
+    requirements:
+      - Define consumer-shaped `Tokenizer`, `Backend`, and `Clock` protocols with no shared base class.
+      - Implement generic `Request[TMeta]`, `Prediction[TMeta]`, and lazy `Batch[T]` abstractions.
+      - Expose sound overloads for collected and streaming inference modes.
+      - Parse vendor payloads from `object` into typed domain values without leaking `Any` or using unchecked cast.
+      - Preserve a caller's metadata type from request to every prediction and token chunk.
+      - Include one ParamSpec-based instrumentation decorator that keeps the decorated signature.
+      - Run under strict mypy or Pyright settings with no unscoped ignores.
+    constraints:
+      - Use only the Python standard library in the core package and tests.
+      - Keep vendor adapters outside the domain package.
+      - Every overload promise must have a runtime branch test.
+      - No public annotation may contain `Any`.
+    expectedBehaviour:
+      - A fake backend satisfies its protocol without inheritance.
+      - Collected mode is inferred as `Prediction[Meta]` and streaming mode as `Iterator[TokenChunk[Meta]]`.
+      - Invalid vendor payloads fail at the adapter with path-specific messages.
+      - Batch processing remains lazy and holds at most one configured batch in memory.
+      - Instrumentation preserves keyword-only and positional-only call constraints.
+    structure: |
+      typed_inference/
+        domain.py
+        protocols.py
+        client.py
+        validation.py
+        instrumentation.py
+        adapters/
+          fake.py
+        tests/
+          test_client.py
+          test_validation.py
+          test_types.py
+    milestones:
+      - title: "1 — Freeze the public contracts"
+        detail: Write type-checking examples for valid and invalid calls before implementation.
+      - title: "2 — Contain external uncertainty"
+        detail: Parse object-shaped payloads into typed domain values with explicit errors.
+      - title: "3 — Implement inference modes"
+        detail: Add collected, streaming, and lazy batch paths whose branches match overloads.
+      - title: "4 — Prove substitution"
+        detail: Run identical contract tests against two structural backend implementations.
+      - title: "5 — Enforce the boundary"
+        detail: Add strict checker configuration and a test preventing Any in exported annotations.
+    testing:
+      - Type-check fixtures showing correct narrowing for omitted, false, true, and broad boolean stream flags.
+      - Unit-test every invalid payload shape and error path.
+      - Measure peak retained batch size over at least one million generated requests.
+      - Verify a fake backend participates without subclassing or registration.
+      - Inspect decorated functions to confirm metadata and static call constraints survive.
+    failureCases:
+      - Using cast on vendor payloads instead of validation.
+      - Returning Iterator on a branch promised as Prediction.
+      - Making one giant protocol mirror the vendor SDK.
+      - Materialising the entire iterable before batching.
+      - Replacing precise generics with Any to appease the checker.
+      - Adding runtime_checkable and mistaking it for signature validation.
+    bonus:
+      - Add a contravariant observer protocol for prediction events.
+      - Support a Literal deployment policy whose runtime parser produces actionable errors.
+      - Generate a small public API typing report using `reveal_type` fixtures.
+    architectureHints:
+      - Put validation at the adapter boundary; domain code should never receive raw dictionaries.
+      - Make streaming a different return shape, not a Prediction that sometimes contains an iterator.
+      - Test types with checker fixtures that are expected to pass and expected to fail.
+    referenceOutline: |
+      Start with frozen generic dataclasses carrying metadata. Define three narrow protocols in the
+      application package. Let adapters accept `object`, validate mapping keys and leaf types, then
+      construct domain objects. Put two Literal overloads above one broad-bool implementation.
+      Implement batching as an iterator retaining one list. Use ParamSpec for metrics. Finally run
+      strict checking over positive examples and deliberately invalid fixtures with expected error
+      codes, plus ordinary runtime tests for every branch.
+
+  - id: td-final-defect-hunt
+    kind: final-challenge
+    title: Nine typing lies in a production adapter
+    minutes: 75
+    summary: Audit a compact inference adapter containing exactly nine defects, including silent Any leaks and overload promises that runtime code violates.
+    problem: |
+      You receive `broken_adapter.py` with exactly nine seeded defects spanning `Any`, cast,
+      invariant mutable contracts, a giant protocol, a shallow runtime protocol check, a lost
+      decorator signature, a shadowed overload, an implementation mismatch, and an incorrect Self
+      return. Two defects produce silent wrong behaviour rather than exceptions.
+
+      Before editing code, submit a numbered defect list naming the violated relationship and its
+      production consequence. Then add one regression test per defect, prove each test fails against
+      the original, and make the smallest repair.
+    requirements:
+      - Identify exactly nine defects before changing implementation code.
+      - Classify each as static-only, runtime-only, or both.
+      - Add nine regression tests and record their original failures.
+      - Repair without public Any, unscoped ignore, or unchecked cast.
+      - Keep all documented valid calls source-compatible.
+    constraints:
+      - Do not replace precise interfaces with object merely to silence diagnostics.
+      - Do not add inheritance solely to satisfy a protocol.
+      - Do not weaken a useful overload when runtime control flow can honour it.
+    expectedBehaviour:
+      - Strict checking reports no errors in production files.
+      - Deliberately invalid checker fixtures fail for the intended reason.
+      - Both silent defects have behavioural regression tests.
+      - All nine repairs map one-to-one to the submitted defect list.
+    milestones:
+      - title: "1 — Evidence before edits"
+        detail: Record checker output, runtime failures, and the numbered defect inventory.
+      - title: "2 — Failing tests"
+        detail: Write a focused regression for each static or runtime contract violation.
+      - title: "3 — Minimal repairs"
+        detail: Correct one relationship at a time and rerun its focused evidence.
+      - title: "4 — Boundary review"
+        detail: Search exported annotations for Any, cast, ignores, and unnecessary mutable types.
+    testing:
+      - Run the strict checker against positive and negative fixtures.
+      - Run all nine runtime regressions against original and repaired versions.
+      - Add a memory test for the repaired lazy batching contract.
+    failureCases:
+      - Editing before recording the defect inventory.
+      - Counting formatting or naming as one of the nine defects.
+      - Accepting checker success while a promised runtime branch remains wrong.
+      - Using runtime_checkable as a substitute for a contract test.
+    bonus:
+      - Explain which defects TypeScript would catch differently and why.
+      - Add a CI command checking exported annotations for Any.
+    architectureHints:
+      - Trace each type parameter from its source to every consuming and producing position.
+      - For overloads, build a truth table of call shapes and runtime outcomes.
+      - For protocols, list exactly what the consumer invokes before writing the contract.
+    referenceOutline: |
+      Freeze the original file and build two evidence lanes: checker fixtures and runtime tests.
+      Locate uncertainty entering from decoding, then follow its inferred type. Derive variance from
+      operations, order overloads narrow to broad, align implementation branches, replace ellipsis
+      callables with ParamSpec, and use Self only where the receiver's concrete class is returned.
+      Finish by rerunning tests against the frozen original to prove every regression was meaningful.
+
+resources:
+  - name: Python typing module documentation
+    type: docs
+    difficulty: core
+    url: "https://docs.python.org/3/library/typing.html"
+    usefulness: 5
+    why: It is the authoritative runtime-facing reference for every construct used here and includes version notes.
+    covers: TypeVar, Generic, Protocol, Literal, overload, ParamSpec, Concatenate, Self, TypeGuard, cast, and runtime behaviour.
+  - name: Python typing specification
+    type: docs
+    difficulty: deep
+    url: "https://typing.python.org/en/latest/spec/"
+    usefulness: 5
+    why: It defines checker semantics more precisely than library documentation when variance or overload edge cases disagree.
+    covers: The normative static semantics for generics, protocols, literals, overload resolution, narrowing, and compatibility.
+  - name: PEP 484 — Type Hints
+    type: article
+    difficulty: core
+    url: "https://peps.python.org/pep-0484/"
+    usefulness: 4
+    why: It explains the original design intent and tradeoffs behind Python's gradual static typing system.
+    covers: Foundational annotation semantics, TypeVar, generics, callable typing, Any, and static versus runtime responsibilities.
+  - name: PEP 544 — Protocols
+    type: article
+    difficulty: deep
+    url: "https://peps.python.org/pep-0544/"
+    usefulness: 5
+    why: It gives the design rationale needed to understand structural subtyping beyond memorising Protocol syntax.
+    covers: Protocol member compatibility, generic protocols, runtime-checkable limits, variance, and rejected design alternatives.
+  - name: PEP 586 — Literal Types
+    type: article
+    difficulty: deep
+    url: "https://peps.python.org/pep-0586/"
+    usefulness: 4
+    why: It explains why value-level information belongs in static types and where Literal deliberately stops.
+    covers: Literal equivalence, legal parameters, narrowing, overload interactions, enums, and runtime limitations.

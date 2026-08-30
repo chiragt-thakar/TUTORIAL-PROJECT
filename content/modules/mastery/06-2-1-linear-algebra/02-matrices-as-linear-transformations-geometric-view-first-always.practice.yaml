@@ -1,0 +1,764 @@
+lessonId: "roadmap:phase-2-2.1:1"
+module: 2-1-linear-algebra
+lesson: 02-matrices-as-linear-transformations-geometric-view-first-always
+title: "Matrices as linear transformations (geometric view first, always)"
+summary: Treat every matrix as a function that moves space, read its columns as the images of the basis vectors, and predict scaling, rotation, shear, projection, determinant, and rank collapse before doing arithmetic.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lat-read-columns-images
+    tier: normal
+    kind: code-reading
+    title: Read a matrix by its columns
+    minutes: 10
+    requiredForMastery: true
+    concepts: [columns-as-images, basis, linear-map]
+    prompt: |
+      Read this function and say, in geometric terms, what it returns and why the two columns are
+      enough to describe the whole map.
+      ```python
+      def basis_images(A):
+          return {"e1_goes_to": A[:, 0], "e2_goes_to": A[:, 1]}
+      ```
+    hints:
+      - "`A[:, j]` is the same as `A @ e_j`."
+      - Linearity turns any input into a combination of the basis images.
+    solution: |
+      The function returns where the map sends the standard basis vectors: `A[:, 0]` is `A @ e1` and
+      `A[:, 1]` is `A @ e2`. Those two vectors are enough because any input `x = x1*e1 + x2*e2` maps
+      to `x1*(A @ e1) + x2*(A @ e2)` by linearity, so the images of `e1` and `e2` determine the image
+      of every vector. Geometrically the two columns are the edges of the parallelogram that the unit
+      square is sent to, which is the transformation drawn in full.
+  - id: lat-write-map-from-basis
+    tier: normal
+    kind: write-code
+    title: Build the matrix from basis images
+    minutes: 10
+    requiredForMastery: true
+    concepts: [columns-as-images, matrix-construction]
+    prompt: |
+      Write `matrix_from_images(v1, v2)` that returns the 2x2 matrix of the linear map sending `e1`
+      to `v1` and `e2` to `v2`. Then verify it on `A @ e1` and `A @ e2`.
+    hints:
+      - The columns of the matrix are exactly the basis images, in order.
+      - "`np.column_stack([v1, v2])` assembles columns without a transpose."
+    solution: |
+      Return `np.column_stack([v1, v2])`. The `j`-th column of any matrix `A` equals `A @ e_j`, so
+      placing `v1` and `v2` as columns one and two produces a matrix whose action on `e1` and `e2`
+      is `v1` and `v2` by construction. Verification: `A @ np.array([1.0, 0.0])` returns `v1` and
+      `A @ np.array([0.0, 1.0])` returns `v2`, up to floating-point equality. This is the entire
+      recipe for turning a described linear map into its matrix.
+  - id: lat-predict-square-image
+    tier: normal
+    kind: predict-output
+    title: Where does the unit square go
+    minutes: 10
+    requiredForMastery: true
+    concepts: [unit-square, parallelogram, shear]
+    prompt: |
+      The matrix is `[[1, 2], [0, 1]]`. Give the images of the four unit-square corners
+      `(0,0), (1,0), (1,1), (0,1)` and name the transformation.
+    hints:
+      - Multiply each corner by the matrix; the origin never moves under a linear map.
+      - Only the `x`-coordinate changes, and it changes in proportion to `y`.
+    solution: |
+      `(0,0) -> (0,0)`, `(1,0) -> (1,0)`, `(1,1) -> (3,1)`, `(0,1) -> (2,1)`. The bottom edge is
+      fixed and the top edge slides right by 2, so the square becomes a parallelogram of the same
+      height and base. This is a horizontal shear: `x` is replaced by `x + 2*y` while `y` is
+      untouched. The determinant is 1, so area is preserved even though angles are not.
+  - id: lat-explain-linearity-forces-basis
+    tier: normal
+    kind: explain
+    title: Why the basis determines everything
+    minutes: 10
+    requiredForMastery: true
+    concepts: [linearity, basis, superposition]
+    prompt: |
+      Explain why knowing `T(e1), ..., T(en)` for a linear map `T` is enough to compute `T(x)` for
+      any `x`, and where each linearity axiom enters the argument.
+    hints:
+      - Write `x` in coordinates as a combination of the basis vectors.
+      - Additivity lets you split the sum; homogeneity lets you pull scalars out.
+    solution: |
+      Every `x` has coordinates `x = x1*e1 + ... + xn*en`. Applying `T` and using additivity,
+      `T(x) = T(x1*e1) + ... + T(xn*en)`. Applying homogeneity to each term,
+      `T(xi*ei) = xi*T(ei)`. So `T(x) = x1*T(e1) + ... + xn*T(en)`, a fixed combination of the `n`
+      known image vectors. Additivity handled the splitting of the sum; homogeneity handled pulling
+      each scalar coordinate out. Stacking `T(e1), ..., T(en)` as columns gives the matrix that
+      performs this combination as `A @ x`.
+  - id: lat-compose-order
+    tier: intermediate
+    kind: write-code
+    title: Composition order
+    minutes: 14
+    requiredForMastery: true
+    concepts: [composition, matrix-product, non-commutativity]
+    prompt: |
+      Given rotation `R` and shear `S`, write `apply_rotate_then_shear(R, S, x)` two ways: by
+      applying the maps in sequence, and by forming a single composed matrix first. Show they agree
+      and state which product is the composed matrix.
+    hints:
+      - "Sequential: `S @ (R @ x)`. The rightmost matrix acts first."
+      - The composed matrix for "rotate then shear" is `S @ R`, not `R @ S`.
+    solution: |
+      Sequential application is `S @ (R @ x)`: `R` acts first, then `S`. By associativity of the
+      matrix product this equals `(S @ R) @ x`, so the single composed matrix for "rotate then
+      shear" is `S @ R`. Both expressions return the same vector up to rounding. The order matters
+      because `S @ R` and `R @ S` are different maps: shearing a rotated square is not the same as
+      rotating a sheared one. Composition reads right to left, like `f(g(x))`.
+  - id: lat-classify-2x2
+    tier: intermediate
+    kind: predict-output
+    title: Classify by geometric effect
+    minutes: 14
+    requiredForMastery: true
+    concepts: [rotation, reflection, scaling, determinant]
+    prompt: |
+      For `A = [[0.6, -0.8], [0.8, 0.6]]` and `B = [[0.6, 0.8], [0.8, -0.6]]`, give the determinant
+      of each, state whether each preserves lengths, and classify each as rotation or reflection.
+    hints:
+      - Check whether the columns are unit length and orthogonal.
+      - A determinant of `+1` with orthonormal columns is a rotation; `-1` is a reflection.
+    solution: |
+      Both matrices have orthonormal columns, so both preserve lengths and angles. `det(A) =
+      0.6*0.6 - (-0.8)*0.8 = 0.36 + 0.64 = 1`, so `A` is a rotation (here by the angle whose cosine
+      is 0.6). `det(B) = 0.6*(-0.6) - 0.8*0.8 = -0.36 - 0.64 = -1`, so `B` is a reflection: it
+      preserves lengths but flips orientation, across the line that bisects the angle it fixes.
+  - id: lat-determinant-area
+    tier: intermediate
+    kind: write-code
+    title: Determinant as measured area
+    minutes: 16
+    requiredForMastery: true
+    concepts: [determinant, area, orientation]
+    prompt: |
+      Write `signed_area_ratio(A)` that maps the unit square by `A` and returns the signed area of
+      the resulting parallelogram using the cross-product of its edge vectors, then assert it equals
+      `np.linalg.det(A)` for several matrices including one reflection.
+    hints:
+      - The mapped edges are the two columns of `A`.
+      - In 2-D the signed area of the parallelogram on `(a, b)` is `a[0]*b[1] - a[1]*b[0]`.
+    solution: |
+      Take `u, v = A[:, 0], A[:, 1]` and return `u[0]*v[1] - u[1]*v[0]`. This is the 2-D cross
+      product, the signed area of the parallelogram spanned by the mapped basis vectors, and it
+      equals `np.linalg.det(A)` by definition of the 2x2 determinant. For a reflection such as
+      `[[1, 0], [0, -1]]` the value is `-1`: the area is 1 but the orientation is reversed, which the
+      sign records. A collapsing map like `[[1, 1], [1, 1]]` returns `0`.
+  - id: lat-rank-image-dimension
+    tier: intermediate
+    kind: performance
+    title: Effective output dimension of a layer
+    minutes: 18
+    requiredForMastery: true
+    concepts: [rank, image, singular-values, bottleneck]
+    prompt: |
+      You have a weight matrix `W` of shape `(512, 512)` from a trained model. Describe how to
+      measure the dimension of its image without trusting the default rank tolerance, and what
+      cheaper structure to check first.
+    hints:
+      - The image dimension is the number of singular values above the noise floor.
+      - A product of two thin matrices can never have rank above their shared inner dimension.
+    solution: |
+      Compute `s = np.linalg.svd(W, compute_uv=False)`, sort descending, and plot on a log scale.
+      Set the tolerance just above the flat tail rather than using the default, and count `s > tol`
+      as the image dimension. Record `s`, the tolerance, and `s[0] / s[-1]`. Before the SVD, check
+      whether `W` is stored or defined as a product `A @ B` with a small inner dimension `r`; if so
+      the rank is at most `r` and you can inspect `A` and `B` directly. The SVD of a `512x512`
+      matrix costs about `512**3` operations, which is cheap for a one-off audit but worth avoiding
+      in a training loop.
+  - id: lat-debug-row-reading
+    tier: tricky
+    kind: debug
+    title: Reading rows instead of columns
+    minutes: 14
+    requiredForMastery: true
+    concepts: [columns-as-images, rows-vs-columns]
+    prompt: |
+      This helper is meant to return the images of the basis vectors so a caller can sketch the
+      transformation, but the sketches come out wrong. Find and fix the bug.
+    code: |
+      def basis_images(A):
+          return [A[0, :], A[1, :]]
+    solution: |
+      The function returns the rows of `A`, which are the recipes for each output coordinate, not
+      the images of the basis vectors. The image of `e_j` is the `j`-th column, `A[:, j]`. For a
+      non-symmetric matrix the rows and columns differ, so the sketched parallelogram is wrong.
+      Fix: `return [A[:, 0], A[:, 1]]`, or more generally `[A[:, j] for j in range(A.shape[1])]`.
+      Regression: use `A = [[1, 2], [0, 1]]`, whose columns are `(1, 0)` and `(2, 1)`; the old code
+      returns `(1, 2)` and `(0, 1)` instead.
+    hints:
+      - "`A[0, :]` is a row; the image of `e1` is a column."
+      - Try the fix on a matrix that is not symmetric so the error is visible.
+  - id: lat-debug-compose-order
+    tier: tricky
+    kind: debug
+    title: Composition applied in the wrong order
+    minutes: 16
+    requiredForMastery: true
+    concepts: [composition, matrix-product, order]
+    prompt: |
+      `pipeline` should apply the transforms in the given list left to right, so `transforms[0]`
+      runs first. It currently produces the reverse. Fix the accumulation.
+    code: |
+      def pipeline(transforms):
+          M = np.eye(transforms[0].shape[0])
+          for T in transforms:
+              M = M @ T
+          return M
+    solution: |
+      Multiplying on the right, `M = M @ T`, makes each new transform act *before* everything
+      accumulated so far, so the final matrix applies the list in reverse order. To make
+      `transforms[0]` act first, each new transform must be placed on the left: `M = T @ M`. With
+      that change, after processing `[A, B, C]` the matrix is `C @ B @ A`, which applied to `x` does
+      `A` first, then `B`, then `C`. Regression: pass `[rotate90, project_x]` and assert the result
+      equals `project_x @ rotate90`.
+    hints:
+      - The rightmost matrix in a product is the first to touch the vector.
+      - To prepend a transform to the pipeline, left-multiply it.
+  - id: lat-debug-det-near-singular
+    tier: tricky
+    kind: debug
+    title: Determinant as a conditioning check
+    minutes: 16
+    requiredForMastery: true
+    concepts: [determinant, condition-number, singular-values, scaling]
+    prompt: |
+      This guard is supposed to reject matrices that are numerically hard to invert, but it rejects
+      harmless scaled matrices and accepts genuinely ill-conditioned ones. Fix the criterion.
+    code: |
+      def safe_to_invert(A, floor=1e-8):
+          return abs(np.linalg.det(A)) > floor
+    solution: |
+      The determinant scales with the matrix entries: multiplying a well-conditioned `n x n` matrix
+      by `0.01` divides its determinant by `100**n` without changing how hard it is to invert.
+      Conversely a matrix with entries near 1 can have a determinant near the floor while being badly
+      conditioned. The scale-free measure is the ratio of largest to smallest singular value.
+      Fix: `s = np.linalg.svd(A, compute_uv=False); return s[0] / s[-1] < 1e12` (choose the limit
+      from how many digits you can afford to lose). Regression: `0.01 * np.eye(3)` must pass, and
+      `[[1, 1], [1, 1 + 1e-10]]` must fail.
+    hints:
+      - Scale a well-conditioned matrix by a small constant and watch the determinant collapse.
+      - Condition number is a ratio of singular values and does not depend on overall scale.
+  - id: lat-debug-nonsquare-inverse
+    tier: tricky
+    kind: debug
+    title: Trying to invert a non-square map
+    minutes: 16
+    requiredForMastery: true
+    concepts: [non-square, pseudo-inverse, image, information-loss]
+    prompt: |
+      `undo_layer` is meant to recover a layer's input from its output for a map `W` of shape
+      `(3, 5)`. It raises, and even the intended fix cannot always work. Explain both problems and
+      give the best available routine.
+    code: |
+      def undo_layer(W, y):
+          return np.linalg.inv(W) @ y
+    solution: |
+      `np.linalg.inv` requires a square matrix, so it raises on a `(3, 5)` `W`. The deeper problem
+      is that `W` maps `R^5` to `R^3`, discarding two dimensions of input, so no function can
+      recover a unique input from an output in general. The best you can do is return the
+      minimum-norm input consistent with `y`, which is the Moore-Penrose pseudo-inverse:
+      `return np.linalg.pinv(W) @ y`. This gives an exact preimage when `y` is in the image of `W`
+      and the least-squares closest attempt otherwise, but the two lost dimensions are gone. Document
+      that `undo_layer` is a pseudo-inverse, not an inverse.
+    hints:
+      - "`inv` is defined only for square matrices; check `W.shape`."
+      - A map from a bigger space to a smaller one cannot be undone uniquely — think about what is lost.
+  - id: lat-design-transform-classifier
+    tier: challenge
+    kind: design
+    title: Design a 2x2 transform classifier
+    minutes: 30
+    requiredForMastery: false
+    concepts: [classification, determinant, singular-values, orthogonality]
+    prompt: |
+      Design a function that takes a real 2x2 matrix and labels it as one of: pure scaling,
+      rotation, reflection, shear, projection (rank 1), or general. State the numeric tests, their
+      order, and the tolerances, and say what the function must not decide silently.
+    hints:
+      - "Rank first: a zero singular value forces the projection or zero label."
+      - Orthonormal columns split rotation from reflection by the sign of the determinant.
+    solution: |
+      Inputs: the matrix and an optional relative tolerance `tol`. Compute the SVD. If the smaller
+      singular value is below `tol * s[0]`, label rank 1 as projection (or zero map if both are).
+      Otherwise check orthonorm_columns via `A.T @ A` close to the identity: if so, `det > 0` is
+      rotation and `det < 0` is reflection. If `A` is diagonal within tolerance with equal entries,
+      call it pure scaling; with unequal entries, anisotropic scaling. If `A` is triangular within
+      tolerance with unit diagonal, call it a shear. Everything else is general, and the function
+      should also return the SVD and determinant as evidence. It must not pick `tol` without
+      returning it, must not report a clean label when two tests are borderline, and must surface
+      the ambiguity instead. Include golden cases for each label plus one near-boundary matrix.
+  - id: lat-refactor-layer-rank-audit
+    tier: challenge
+    kind: refactor
+    title: Turn a determinant check into a rank audit
+    minutes: 28
+    requiredForMastery: false
+    concepts: [rank, singular-values, bottleneck, reporting]
+    prompt: |
+      A model-health script flags "collapsed" linear layers by testing whether `abs(det(W)) <
+      1e-6`. It misses rectangular layers, misreads scaled layers, and gives no detail. Refactor it
+      into an audit that reports the effective image dimension of each layer with evidence.
+    hints:
+      - Determinant is undefined for non-square weights and scale-dependent for square ones.
+      - The honest quantity is the count of singular values above a spectrum-derived floor.
+    solution: |
+      Replace the determinant test with an SVD-based rank estimate that works for any shape. For
+      each layer compute `s = np.linalg.svd(W, compute_uv=False)`, normalise by `s[0]`, and count
+      values above a tolerance set from the visible noise floor (fall back to
+      `s[0] * max(W.shape) * eps` and let the caller override). Report, per layer: the shape, the
+      normalised spectrum, the effective rank, the ratio `effective_rank / min(W.shape)`, and the
+      condition number. Flag a layer only when the ratio is well below 1, and attach the spectrum so
+      a human can confirm. Keep detection separate from any remediation. Add fixtures for a
+      full-rank square layer, a scaled full-rank layer that the old code wrongly flagged, a
+      genuine rank-deficient layer, and a rectangular layer the old code could not handle.
+quizzes:
+  - id: lat-checkpoint
+    title: Checkpoint — matrices as transformations
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lat-cp-columns
+        kind: mcq
+        prompt: What do the columns of a matrix represent geometrically?
+        options:
+          - {id: images, text: The vectors the standard basis vectors are mapped to}
+          - {id: recipes, text: The formula for each output coordinate}
+          - {id: eigen, text: The eigenvectors of the map}
+        answer: [images]
+        explanation: Column `j` is `A @ e_j`, the image of the `j`-th basis vector.
+        concepts: [columns-as-images]
+        points: 1
+      - id: lat-cp-det-zero
+        kind: mcq
+        prompt: A 2x2 matrix has determinant zero. What follows?
+        options:
+          - {id: collapse, text: The map collapses the plane onto a line or point and has no inverse}
+          - {id: rotation, text: The map is a rotation}
+          - {id: identity, text: The map is the identity}
+        answer: [collapse]
+        explanation: Zero signed area means a lost dimension, so the map is not invertible.
+        concepts: [determinant, rank]
+        points: 1
+      - id: lat-cp-order
+        kind: mcq
+        prompt: The matrix that applies `B` first and then `A` is which product?
+        options:
+          - {id: ab, text: "`A @ B`"}
+          - {id: ba, text: "`B @ A`"}
+          - {id: sum, text: "`A + B`"}
+        answer: [ab]
+        explanation: The rightmost factor touches the vector first, so `A @ B` means "B then A".
+        concepts: [composition]
+        points: 1
+      - id: lat-cp-near-singular
+        kind: multi
+        prompt: Which are sound ways to judge whether a linear map is nearly singular?
+        options:
+          - {id: cond, text: The ratio of largest to smallest singular value}
+          - {id: smallsv, text: A singular value close to zero relative to the largest}
+          - {id: det, text: A small absolute determinant, regardless of scale}
+          - {id: mapped-circle, text: The mapped unit circle is a very thin ellipse}
+        answer: [cond, smallsv, mapped-circle]
+        explanation: All three are scale-free views of the same thing; the raw determinant is not, because it scales with the entries.
+        concepts: [condition-number, singular-values]
+        points: 1
+  - id: lat-assessment
+    title: Assessment — the transformation view of matrices
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lat-as-linearity
+        kind: explain
+        prompt: State the two conditions that make a map linear and give the visual version of each.
+        modelAnswer: |
+          `T(u + v) = T(u) + T(v)` (additivity) and `T(c*v) = c*T(v)` (homogeneity). Visually, grid
+          lines stay straight, parallel, and evenly spaced, and the origin does not move. A map that
+          bends grid lines or shifts the origin fails one of the two.
+        explanation: Additivity and homogeneity together are equivalent to the "straight, evenly spaced grid, fixed origin" picture.
+        concepts: [linearity]
+        points: 1
+      - id: lat-as-basis-determines
+        kind: explain
+        prompt: Why is a linear map fully determined by its action on a basis?
+        modelAnswer: |
+          Any `x` is a unique combination `sum xi*ei` of basis vectors. Additivity and homogeneity
+          give `T(x) = sum xi*T(ei)`, so the images `T(ei)` fix `T` everywhere. Stacking those
+          images as columns is the matrix.
+        explanation: Linearity turns the map into a fixed combination of the basis images.
+        concepts: [basis, linearity]
+        points: 1
+      - id: lat-as-classify
+        kind: scenario
+        prompt: A 2x2 matrix has orthonormal columns and determinant `-1`. What transformation is it, and what does it do to lengths and orientation?
+        modelAnswer: |
+          It is a reflection. Orthonormal columns mean lengths and angles are preserved; determinant
+          `-1` means orientation is reversed. It flips the plane across some line through the origin.
+        explanation: Orthonormal columns give an isometry; the determinant sign splits rotation from reflection.
+        concepts: [reflection, orthogonality, determinant]
+        points: 1
+      - id: lat-as-composition-order
+        kind: find-bug
+        prompt: A pipeline accumulates transforms with `M = M @ T` for each `T` in order and claims the first transform runs first. What is wrong?
+        modelAnswer: |
+          Right-multiplication makes each new transform act before the accumulated map, so the
+          pipeline runs in reverse. To make the first listed transform act first, left-multiply:
+          `M = T @ M`, giving `... @ T2 @ T1`.
+        explanation: The rightmost factor acts first, so prepending a stage means left-multiplying.
+        concepts: [composition, order]
+        points: 1
+      - id: lat-as-det-product
+        kind: true-false
+        prompt: For square matrices of the same size, `det(A @ B) = det(A) * det(B)`.
+        options:
+          - {id: "true", text: "True"}
+          - {id: "false", text: "False"}
+        answer: ["true"]
+        explanation: Area scales multiplicatively through composition, and so do the orientation signs.
+        concepts: [determinant, composition]
+        points: 1
+      - id: lat-as-rank-compose
+        kind: scenario
+        prompt: "`A` has rank 3 and `B` has rank 5. What can you say about the rank of `A @ B`?"
+        modelAnswer: |
+          It is at most `min(3, 5) = 3`. A composition cannot create directions that either map
+          lacks, so once `A` restricts the image to 3 dimensions nothing `B` did can raise it.
+        explanation: Rank of a product is bounded by the smaller of the two ranks.
+        concepts: [rank, composition]
+        points: 1
+      - id: lat-as-nonsquare
+        kind: scenario
+        prompt: A weight matrix has shape `(64, 256)`. What does it do to dimension, and can its action be inverted?
+        modelAnswer: |
+          It maps `R^256` into `R^64`, so it discards at least 192 dimensions of input. Its action
+          cannot be inverted uniquely; the best available reconstruction is the minimum-norm
+          preimage from the pseudo-inverse.
+        explanation: A map to a smaller space loses information that no function can restore.
+        concepts: [non-square, pseudo-inverse]
+        points: 1
+      - id: lat-as-det-vs-cond
+        kind: find-bug
+        prompt: Why is `abs(det(A)) < 1e-8` a poor test for "hard to invert"?
+        modelAnswer: |
+          The determinant scales with the matrix entries — scaling `A` by a constant `c` multiplies
+          it by `c**n` — so a well-conditioned matrix can have a tiny determinant and an
+          ill-conditioned one a moderate determinant. Use the ratio of largest to smallest singular
+          value instead.
+        explanation: Determinant magnitude is scale-dependent; the condition number is not.
+        concepts: [determinant, condition-number]
+        points: 1
+      - id: lat-as-image-subspace
+        kind: mcq
+        prompt: The image (column space) of a linear map is best described as what?
+        options:
+          - {id: reachable, text: The set of output vectors the map can actually produce, a subspace}
+          - {id: inputs, text: The set of inputs that map to zero}
+          - {id: all, text: The entire output space, always}
+        answer: [reachable]
+        explanation: The image is the span of the columns; its dimension is the rank.
+        concepts: [image, rank]
+        points: 1
+      - id: lat-as-whitening
+        kind: scenario
+        prompt: A feature cloud is a stretched ellipsoid. What linear map makes its covariance the identity, and what are its two geometric steps?
+        modelAnswer: |
+          Using the covariance `C = V diag(w) V.T`, apply `x -> diag(w)^(-1/2) V.T (x - mean)`.
+          Step one, `V.T`, rotates the ellipsoid to align its axes with the coordinate axes. Step
+          two, `diag(w)^(-1/2)`, rescales each axis to unit variance, turning the ellipsoid into a
+          sphere. Floor the small eigenvalues before inverting to cap the map's condition number.
+        explanation: Whitening is a rotation to the eigenbasis followed by per-axis rescaling.
+        concepts: [whitening, eigendecomposition]
+        points: 1
+interview:
+  - id: lat-iv-what-is-a-matrix
+    level: basic
+    requiredForMastery: true
+    concepts: [linear-map, columns-as-images]
+    question: What does it mean to say a matrix "is" a linear transformation?
+    shortAnswer: |
+      The matrix encodes a function that moves vectors while keeping the origin fixed and grid lines
+      straight and evenly spaced. Its columns are where the standard basis vectors land, and
+      linearity extends that to every vector.
+    fullAnswer: |
+      A linear map satisfies `T(u + v) = T(u) + T(v)` and `T(c*v) = c*T(v)`. Those force
+      `T(x) = sum xi*T(ei)`, so the map is nothing more than the list of basis images, and stacking
+      them as columns gives a matrix with `A @ x = T(x)`. Reading a matrix means reading its columns
+      as landing spots: the unit square goes to the parallelogram on those columns, the determinant
+      is the signed area factor, and the rank is the dimension of the image.
+    commonWrongAnswer: A matrix is just a grid of numbers you multiply by rules.
+    followUps:
+      - Why do the columns, not the rows, give the geometric picture?
+      - What breaks if the map moves the origin?
+  - id: lat-iv-composition-order
+    level: intermediate
+    requiredForMastery: true
+    concepts: [composition, non-commutativity]
+    question: How does matrix multiplication relate to composing transformations, and why does order matter?
+    shortAnswer: |
+      `A @ B` is the map "do `B`, then `A`" — the rightmost matrix acts first. Order matters because
+      function composition is not commutative: rotating then shearing differs from shearing then
+      rotating.
+    fullAnswer: |
+      Applying `B` then `A` to `x` is `A @ (B @ x) = (A @ B) @ x`, so the product `A @ B` is the
+      composed map with `B` first. Since most transformations do not commute as functions, their
+      matrices do not commute either, and `A @ B` generally differs from `B @ A`. This is why layer
+      order in a network changes the function even with the same weights, and why you left-multiply
+      to prepend a stage to a pipeline.
+    commonWrongAnswer: "`A @ B` means apply `A` first because it is written first."
+    followUps:
+      - Give two 2x2 matrices where `A @ B` and `B @ A` differ visibly.
+      - How does `det` behave under composition?
+  - id: lat-iv-determinant-meaning
+    level: intermediate
+    requiredForMastery: true
+    concepts: [determinant, area, orientation]
+    question: What does the determinant of a transformation tell you?
+    shortAnswer: |
+      Its absolute value is the factor by which areas or volumes are scaled, and its sign says
+      whether orientation is preserved. Zero means the map collapses a dimension and has no inverse.
+    fullAnswer: |
+      Map the unit cube and measure the volume of the image; that is `abs(det)`. If the map turns
+      the cube inside out, swapping handedness, `det` is negative. `det = 0` means the image has
+      lower dimension than the input, so the map is not invertible. The determinant multiplies under
+      composition. It is not, however, a good numerical conditioning measure, because it scales with
+      the matrix entries; the singular value spectrum is the scale-free tool for that.
+    commonWrongAnswer: The determinant measures how close a matrix is to being invertible.
+    followUps:
+      - Why is a small determinant not the same as ill-conditioned?
+      - What does a negative determinant do to a right-handed coordinate frame?
+  - id: lat-iv-rank-bottleneck
+    level: advanced
+    requiredForMastery: true
+    concepts: [rank, image, bottleneck]
+    question: How does the rank of a weight matrix limit what a linear layer can represent?
+    shortAnswer: |
+      The layer's outputs lie in the column space of the weight matrix, whose dimension is the rank.
+      A rank-`r` layer can only produce an `r`-dimensional set of outputs no matter how wide it is.
+    fullAnswer: |
+      A linear layer computes `h = W x`, and every possible `h` is a combination of the columns of
+      `W`, so the reachable outputs form a subspace of dimension `rank(W)`. If `W` is low rank —
+      by design as a factorised layer, or in practice from weight decay and training dynamics — the
+      representation is confined to that subspace and the remaining output coordinates are linear
+      functions of the rest. Rank also cannot recover under composition, so a narrow layer caps
+      every layer after it. Measuring rank means reading the singular value spectrum with a
+      deliberate tolerance, not the default.
+    commonWrongAnswer: A wider layer always represents a higher-dimensional space.
+    followUps:
+      - How would you measure the effective rank of a trained weight matrix?
+      - Why can a later wide layer not undo an earlier bottleneck?
+  - id: lat-iv-nonsquare
+    level: scenario
+    requiredForMastery: true
+    concepts: [non-square, pseudo-inverse, information-loss]
+    question: A teammate wants to invert a `(3, 5)` layer to recover its inputs. What do you tell them?
+    shortAnswer: |
+      You cannot. The map goes from a 5-dimensional space to a 3-dimensional one, so it destroys two
+      dimensions of input. The pseudo-inverse gives the minimum-norm input consistent with an
+      output, which is the best available answer.
+    fullAnswer: |
+      `np.linalg.inv` is undefined for rectangular matrices, and even conceptually there is no
+      inverse: many distinct inputs map to the same output. `np.linalg.pinv(W) @ y` returns the
+      minimum-norm preimage when `y` is in the image of `W`, and the least-squares closest attempt
+      otherwise. If recovering inputs actually matters, the layer needs to be at least as wide in
+      output as input and full rank, or the pipeline needs to keep the information some other way,
+      such as a skip connection.
+    commonWrongAnswer: Use `np.linalg.inv` on the non-square matrix.
+    followUps:
+      - When does the pseudo-inverse give an exact preimage?
+      - How does this connect to the null space of `W`?
+  - id: lat-iv-debug-conditioning
+    level: debugging
+    requiredForMastery: true
+    concepts: [condition-number, singular-values, scaling]
+    question: A linear solve gives wildly different answers on inputs that barely differ. How do you diagnose it with the transformation picture?
+    shortAnswer: |
+      The matrix maps the unit circle to a very thin ellipse, so small perpendicular changes in the
+      input become large changes in the solution. Compute the singular values; the ratio
+      `s[0] / s[-1]` is how much error is amplified.
+    fullAnswer: |
+      An ill-conditioned matrix nearly collapses one direction: its smallest singular value is tiny
+      relative to the largest, so the inverse map stretches that direction enormously and any noise
+      along it explodes. I would compute the SVD, report the condition number, and look at the small
+      right-singular vectors to see which input combination is barely represented. Fixes are to
+      rescale or reformulate the problem, add regularisation to lift the small singular values, or
+      solve a least-squares version instead of a direct inverse. The determinant would not reveal
+      this reliably because it is scale-dependent.
+    commonWrongAnswer: Increase the solver's iteration count or tolerance.
+    followUps:
+      - Why does regularisation help the conditioning?
+      - How is the condition number related to digits of accuracy lost?
+projects:
+  - id: lat-project-transform-lab
+    kind: major
+    title: Build a 2-D linear transformation lab
+    minutes: 240
+    summary: Implement a small library that constructs, classifies, composes, and visualises 2-D linear maps, with every geometric claim backed by a numeric check.
+    problem: |
+      Learners keep guessing what a matrix does by squinting at its numbers. Build a NumPy library
+      that makes the transformation picture concrete: constructors for scaling, rotation,
+      reflection, shear, and projection; a classifier that labels an arbitrary 2x2 matrix from its
+      SVD, determinant, and column geometry; a composer that reports how order changes the result;
+      and an ASCII or matrix-of-points renderer that shows where the unit square and unit circle
+      go. Every function returns the evidence it used.
+    requirements:
+      - Provide named constructors for the five standard transformation families with documented parameters.
+      - Classify any real 2x2 matrix into one family or "general", returning the SVD, determinant, and column dot products as evidence.
+      - Compose a list of transforms in a stated order and report the composed matrix plus a demonstration that the reverse order differs.
+      - Render the image of the unit square and unit circle as coordinates a caller can plot.
+      - Compute determinant as a measured signed area and assert it matches `np.linalg.det`.
+      - Report the condition number for any map and warn when it exceeds a caller-set limit.
+    constraints:
+      - Use NumPy and the standard library only.
+      - Never use the raw determinant as a near-singularity test; use singular values.
+      - Never return a classification label without the numbers that justify it.
+      - Keep tolerances explicit and included in every result.
+    expectedBehaviour:
+      - Constructed rotations and reflections have unit-length orthogonal columns to tolerance.
+      - The classifier labels each constructor's output correctly and flags a near-boundary matrix as ambiguous.
+      - Composing `[A, B]` and `[B, A]` yields different matrices for non-commuting inputs, and the report shows it.
+      - Measured signed area equals `np.linalg.det` for every test matrix, including reflections.
+      - Scaling a matrix by a constant does not change its classification or its reported condition number.
+    structure: |
+      transform_lab/
+        __init__.py
+        constructors.py
+        classify.py
+        compose.py
+        render.py
+        conditioning.py
+      tests/
+        test_constructors.py
+        test_classify.py
+        test_compose.py
+        test_render.py
+        test_conditioning.py
+    milestones:
+      - title: "1 — Constructors and rendering"
+        detail: The five families plus a unit-square and unit-circle image renderer.
+      - title: "2 — Classifier"
+        detail: SVD- and determinant-based labelling with evidence and an ambiguity signal.
+      - title: "3 — Composition"
+        detail: Ordered composition with a reverse-order comparison report.
+      - title: "4 — Conditioning"
+        detail: Condition number from singular values with a caller-set warning threshold.
+    testing:
+      - Hand-checked images of the unit square for a shear and a projection.
+      - Orthonormality assertions for constructed rotations and reflections.
+      - Classification golden cases for all five families plus a general matrix and a boundary case.
+      - Scale-invariance tests on classification and condition number.
+      - Property test that measured signed area equals `np.linalg.det` on random matrices.
+    failureCases:
+      - The classifier uses the determinant to detect rank collapse and misses a scaled near-singular matrix.
+      - Composition is reported in the wrong order because transforms were right-multiplied to prepend.
+      - Rows are rendered instead of columns, so the drawn parallelogram is wrong for non-symmetric matrices.
+      - A classification label is returned for a borderline matrix with no ambiguity warning.
+    bonus:
+      - Add a homogeneous-coordinate mode so translations can be composed with linear maps.
+      - Animate a transform as a sequence of interpolated matrices from the identity.
+      - Emit the classification report as Markdown.
+    architectureHints:
+      - Keep one SVD helper and thread its result into classification and conditioning.
+      - Separate the geometry (what the map does) from the presentation (how it is drawn or described).
+      - Return small dataclasses that carry both the answer and its evidence.
+    referenceOutline: |
+      `constructors` builds each family from parameters. `classify.classify` runs SVD, checks the
+      smaller singular value against `tol * s[0]` for rank collapse, tests `A.T @ A` for
+      orthonormal columns, and inspects diagonal or triangular structure, returning a label plus
+      evidence. `compose.compose` folds a transform list with left-multiplication and also returns
+      the reversed composition. `render` maps sampled square and circle points. `conditioning`
+      returns `s[0] / s[-1]` and a threshold flag.
+  - id: lat-final-transform-audit
+    kind: final-challenge
+    title: Explain a mystery pipeline from its matrices
+    minutes: 90
+    summary: Given four unlabelled 2x2 matrices and the order they are applied, produce a defensible written account of what the pipeline does to space, with numeric evidence and fail-before-fix tests.
+    problem: |
+      You are handed four real 2x2 matrices `M1, M2, M3, M4`, told they are applied in that order,
+      and asked what the pipeline does overall. One matrix is a rotation, one is an anisotropic
+      scaling, one is a shear, and one is rank 1. Produce an account that classifies each matrix
+      from its SVD and determinant, composes them in the correct order, states the overall effect
+      (including that the rank-1 matrix makes the whole pipeline rank 1), and shows where the unit
+      square ends up. Back every claim with a computed number and a test that fails if the claim is
+      wrong.
+    requirements:
+      - Classify each of the four matrices with its singular values, determinant, and column geometry.
+      - Compose them in the given order and report the single resulting matrix.
+      - State the overall rank and explain why the rank-1 factor forces it.
+      - Give the image of the unit square under the full pipeline as coordinates.
+      - Provide one fail-before-fix test per claim (each classification, the composition order, the overall rank).
+    constraints:
+      - Do not use the determinant as the rank-collapse test.
+      - Do not assume an application order; use the one given and show that reversing it changes the result.
+      - Do not state an overall effect without the composed matrix and its SVD.
+    expectedBehaviour:
+      - Each matrix's label matches its constructor family within tolerance.
+      - The composed matrix equals `M4 @ M3 @ M2 @ M1`.
+      - The overall rank is 1, and removing the rank-1 factor raises it.
+      - Scaling any input matrix by a constant does not change the pipeline's classification story.
+    milestones:
+      - title: "1 — Classify the parts"
+        detail: SVD and determinant for each matrix, with a family label and evidence.
+      - title: "2 — Compose in order"
+        detail: Build `M4 @ M3 @ M2 @ M1` and show the reverse order differs.
+      - title: "3 — Overall effect and tests"
+        detail: Report the rank, the unit-square image, and a failing-first test per claim.
+    testing:
+      - Fail-before-fix regression for each matrix classification.
+      - A test asserting the composition equals the correct ordered product.
+      - A test asserting the pipeline rank is 1 and rises when the rank-1 factor is dropped.
+      - Scale-invariance check on the full account.
+    failureCases:
+      - The rank-1 matrix is classified as full rank because the determinant test was used.
+      - The composition is built in list order and ends up reversed.
+      - The overall effect is described from the individual matrices without composing them.
+    bonus:
+      - Render the pipeline stage by stage, showing the square after each matrix.
+    architectureHints:
+      - Freeze the expected family of each matrix as a fixture before writing the classifier calls.
+      - Keep classification, composition, and reporting in separate functions and commits.
+    referenceOutline: |
+      For each matrix take the SVD, read the singular values for rank and conditioning, check
+      `A.T @ A` for orthonormal columns, and inspect diagonal or triangular structure to assign a
+      family. Fold the list with left-multiplication into `M4 @ M3 @ M2 @ M1`, take its SVD, and
+      report a zero smaller singular value as the rank-1 collapse. Map the unit-square corners
+      through the composed matrix for the final picture.
+resources:
+  - name: 3Blue1Brown — Linear transformations and matrices
+    type: video
+    difficulty: intro
+    url: "https://www.3blue1brown.com/lessons/linear-transformations"
+    usefulness: 5
+    why: This is the canonical visual explanation that a matrix moves space and that its columns are the images of the basis vectors, which is the mental model the whole lesson is built on.
+    covers: Linear transformations as motions of space, columns as basis images, composition as matrix multiplication, and a first look at the determinant.
+  - name: 3Blue1Brown — The determinant
+    type: video
+    difficulty: intro
+    url: "https://www.3blue1brown.com/lessons/determinant"
+    usefulness: 5
+    why: It builds the determinant as a signed area and volume scaling factor and shows exactly what a zero or negative determinant means for the transformation, which is the framing used here.
+    covers: Determinant as signed area or volume change, orientation reversal, the zero-determinant collapse, and the multiplicative property under composition.
+  - name: MIT 18.06 — Linear transformations and their matrices (OCW)
+    type: university
+    difficulty: core
+    url: "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-30-linear-transformations-and-their-matrices/"
+    usefulness: 4
+    why: Strang's lecture derives the matrix of a linear map from its action on a basis and connects change of basis to the same map seen in different coordinates, reinforcing the column picture rigorously.
+    covers: Defining a linear map, constructing its matrix from basis images, change of basis, and how the matrix depends on the chosen bases.
+  - name: numpy.linalg.matrix_rank reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.linalg.matrix_rank.html"
+    usefulness: 4
+    why: The image dimension of a transformation is its numerical rank, and this page defines the singular-value threshold and the default tolerance you must override for trained weight matrices.
+    covers: Numerical rank via singular values, the default tolerance formula, the tol argument, and batched behaviour on stacked matrices.
+  - name: Interactive Linear Algebra (Margalit & Rabinoff, Georgia Tech) — Linear Transformations
+    type: interactive
+    difficulty: core
+    url: "https://textbooks.math.gatech.edu/ila/linear-transformations.html"
+    usefulness: 4
+    why: The chapter develops a transformation as a function on space with live figures, defines its matrix through the images of the basis vectors, and treats composition and one-to-one and onto maps in the same column-first language used here.
+    covers: Linear transformations as functions, the standard matrix from basis images, composition, one-to-one and onto maps, and the geometry of common 2-D transformations.

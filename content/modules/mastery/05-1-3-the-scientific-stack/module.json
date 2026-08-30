@@ -1,1 +1,90 @@
-{"slug":"1-3-the-scientific-stack","track":"mastery","number":5,"title":"1.3 The scientific stack","description":"Roadmap 1.3 — 6 topics, in the document's own order.","status":"planned","estimatedMinutes":270,"prerequisites":[],"learningOutcomes":["Take every topic in this section to pass 3 of the roadmap's rule: intuition, then derived on paper, then implemented from scratch."],"lessons":[{"id":"roadmap:phase-1-1.3:0","slug":"01-pandas-series-dataframe-indexing-loc-iloc-groupby-apply","title":"pandas: Series/DataFrame, indexing (loc/iloc), groupby-apply-agg, merges, reshaping (melt/pivot), time series, MultiIndex","order":1,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-1-1.3:1","slug":"02-polars-learn-it-after-pandas-it-s-what","title":"polars — learn it after pandas; it's what you'll actually reach for on large data","order":2,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-1-1.3:2","slug":"03-matplotlib-the-figure-axes-object-model-not-plt","title":"matplotlib: the Figure/Axes object model (not plt. state-machine style)","order":3,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-1-1.3:3","slug":"04-seaborn-for-statistical-plots","title":"seaborn for statistical plots","order":4,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-1-1.3:4","slug":"05-scipy-stats-optimize-linalg-sparse","title":"scipy: stats, optimize, linalg, sparse","order":5,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-1-1.3:5","slug":"06-jupyter-discipline-notebooks-for-exploration-only-never-for","title":"Jupyter discipline: notebooks for exploration only, never for production logic","order":6,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]}],"group":"phase-1","roadmapPhase":1,"roadmapGroup":"1.3","roadmapSectionId":"phase-1-1.3","roadmapRef":"1.3","tag":"TOOL"}
+{
+  "slug": "1-3-the-scientific-stack",
+  "track": "mastery",
+  "number": 5,
+  "title": "1.3 The scientific stack",
+  "description": "Build reliable scientific Python workflows across labelled data, columnar query engines, statistical visualization, numerical computing, and reproducible exploration.",
+  "status": "available",
+  "estimatedMinutes": 745,
+  "prerequisites": [],
+  "learningOutcomes": [
+    "Construct schema-aware pandas and Polars pipelines with explicit indexing, join, null, ordering, and performance contracts",
+    "Create accessible Matplotlib and seaborn visualizations whose scales, estimators, distributions, and uncertainty are honest",
+    "Validate statistical, optimization, dense linear-algebra, and sparse numerical results with mathematical and computational diagnostics",
+    "Use Jupyter for reproducible exploration while production logic remains importable, tested, reviewable, and deployable"
+  ],
+  "lessons": [
+    {
+      "id": "roadmap:phase-1-1.3:0",
+      "slug": "01-pandas-series-dataframe-indexing-loc-iloc-groupby-apply",
+      "title": "pandas: Series/DataFrame, indexing (loc/iloc), groupby-apply-agg, merges, reshaping (melt/pivot), time series, MultiIndex",
+      "description": "Build reliable pandas pipelines by reasoning about labels, alignment, grouping, relational joins, shapes, time, and hierarchical indexes.",
+      "status": "available",
+      "order": 1,
+      "estimatedMinutes": 150,
+      "prerequisites": ["roadmap:phase-1-1.2:2", "roadmap:phase-1-1.2:3", "roadmap:phase-1-1.2:4"],
+      "learningObjectives": ["Distinguish labels, positions, index alignment, and copy behavior", "Choose grouped operations deliberately", "Validate merge and reshape cardinality", "Build timezone-aware time-series and MultiIndex pipelines"]
+    },
+    {
+      "id": "roadmap:phase-1-1.3:1",
+      "slug": "02-polars-learn-it-after-pandas-it-s-what",
+      "title": "polars — learn it after pandas; it's what you'll actually reach for on large data",
+      "description": "Use Polars expressions, lazy query plans, Arrow-style columnar memory, streaming, and schema-aware validation for large analytical pipelines.",
+      "status": "available",
+      "order": 2,
+      "estimatedMinutes": 125,
+      "prerequisites": ["roadmap:phase-1-1.3:0", "roadmap:phase-1-1.2:0"],
+      "learningObjectives": ["Build transformations from native expressions", "Explain lazy optimization and materialization", "Handle schemas, nulls, joins, groups, and windows", "Choose engines from workload evidence"]
+    },
+    {
+      "id": "roadmap:phase-1-1.3:2",
+      "slug": "03-matplotlib-the-figure-axes-object-model-not-plt",
+      "title": "matplotlib: the Figure/Axes object model (not plt. state-machine style)",
+      "description": "Create predictable visualizations by owning Figure, Axes, Artist, transform, layout, scale, and export decisions explicitly.",
+      "status": "available",
+      "order": 3,
+      "estimatedMinutes": 110,
+      "prerequisites": ["roadmap:phase-1-1.3:0"],
+      "learningObjectives": ["Explain the Figure, Axes, Axis, and Artist hierarchy", "Choose honest scales, limits, and transforms", "Build composable Axes-level helpers", "Produce deterministic accessible exports"]
+    },
+    {
+      "id": "roadmap:phase-1-1.3:3",
+      "slug": "04-seaborn-for-statistical-plots",
+      "title": "seaborn for statistical plots",
+      "description": "Use seaborn's semantic mappings and statistical estimators without hiding aggregation, uncertainty, sampling, or distribution shape.",
+      "status": "available",
+      "order": 4,
+      "estimatedMinutes": 105,
+      "prerequisites": ["roadmap:phase-1-1.3:0", "roadmap:phase-1-1.3:2"],
+      "learningObjectives": ["Distinguish axes-level and figure-level functions", "Control aggregation and uncertainty", "Choose honest distribution and relationship plots", "Separate statistical assumptions from rendering"]
+    },
+    {
+      "id": "roadmap:phase-1-1.3:4",
+      "slug": "05-scipy-stats-optimize-linalg-sparse",
+      "title": "scipy: stats, optimize, linalg, sparse",
+      "description": "Use SciPy's statistical, optimization, linear-algebra, and sparse tools by making mathematical assumptions and numerical failure modes explicit.",
+      "status": "available",
+      "order": 5,
+      "estimatedMinutes": 155,
+      "prerequisites": ["roadmap:phase-1-1.2:7", "roadmap:phase-1-1.2:8", "roadmap:phase-1-1.3:0"],
+      "learningObjectives": ["Select statistics from estimands and sampling design", "Validate optimization formulation and convergence", "Solve systems with structure-aware factorizations", "Choose sparse formats and iterative solvers"]
+    },
+    {
+      "id": "roadmap:phase-1-1.3:5",
+      "slug": "06-jupyter-discipline-notebooks-for-exploration-only-never-for",
+      "title": "Jupyter discipline: notebooks for exploration only, never for production logic",
+      "description": "Use notebooks as reproducible exploration interfaces while moving tested, reusable, deployable logic into Python packages.",
+      "status": "available",
+      "order": 6,
+      "estimatedMinutes": 100,
+      "prerequisites": ["roadmap:phase-1-1.1:9", "roadmap:phase-1-1.1:10", "roadmap:phase-1-1.3:0"],
+      "learningObjectives": ["Explain kernel state and execution-order hazards", "Separate exploration from production logic", "Design deterministic execution and provenance", "Review notebooks for security and version-control quality"]
+    }
+  ],
+  "group": "phase-1",
+  "roadmapPhase": 1,
+  "roadmapGroup": "1.3",
+  "roadmapSectionId": "phase-1-1.3",
+  "roadmapRef": "1.3",
+  "tag": "TOOL"
+}

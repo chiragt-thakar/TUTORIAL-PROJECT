@@ -1,0 +1,475 @@
+---
+id: "roadmap:phase-1-1.1:4"
+title: "Type hints in depth: Generic, TypeVar, Protocol, Literal, overload"
+description: "Python typing as a language for preserving relationships: generics and TypeVar, structural Protocol contracts, Literal value domains, callable forwarding, variance, and honest overloads that match runtime behaviour."
+module: 1-1-python-fluency-beyond-the-basics
+order: 5
+estimatedMinutes: 110
+prerequisites: ["roadmap:phase-1-1.1:0"]
+learningObjectives:
+  - Use TypeVar and generic syntax to preserve relationships between inputs, outputs, containers, and callback signatures
+  - Design small Protocol contracts and explain structural subtyping, runtime_checkable limits, and variance at API boundaries
+  - Use Literal, constrained and bounded type variables, ParamSpec, and Self only where each communicates a real invariant
+  - Write sound overload sets whose variants match one runtime implementation, and recognise when a union or generic is clearer
+---
+
+Type hints are executable design claims checked before execution. Their most valuable job is not naming one value; it is preserving a relationship across an API boundary.
+
+`Any` says “stop checking here.” A type variable says “the concrete type is unknown, but every occurrence bearing this variable must agree.” A protocol says “I need this behaviour, not this ancestry.” An overload says “these argument shapes produce these result shapes.”
+
+Python normally erases these claims at runtime. A checker reasons over annotations, while runtime validation remains the job of Pydantic, explicit checks, tests, and the code itself.
+
+<TypeScriptComparison>
+
+- Python `Protocol` is closest to a TypeScript structural interface: compatible shape matters, not explicit inheritance.
+- Python generics preserve relationships like TypeScript generics, but mutable built-ins and variance rules often surprise TS developers.
+- `Literal["cpu", "cuda"]` resembles a TypeScript string-literal union. Neither validates untrusted input by itself.
+- Python overload declarations describe one implementation. They do not select a function body at runtime.
+- Both ecosystems lose safety when `Any` crosses a boundary. Type the boundary, then let inference carry facts inward.
+
+</TypeScriptComparison>
+
+## An annotation is a static claim, not a guard
+
+This function accepts a string at runtime despite its annotation:
+
+```python
+def double(value: int) -> int:
+    return value * 2
+
+print(double("ha"))  # haha
+```
+
+The interpreter does not automatically call a checker. Annotations are metadata consumed by tools. Modern Python may also defer their evaluation, so production code should not assume every annotation is already a live class object.
+
+<CommonMistake>
+
+Do not use annotations as evidence that external data is safe. HTTP JSON, environment variables, Kafka payloads, and model output still need runtime parsing. Typing begins after that boundary has proved what entered.
+
+</CommonMistake>
+
+## TypeVar preserves identity between positions
+
+A union permits alternatives independently. A type variable links them.
+
+```python
+from collections.abc import Sequence
+from typing import TypeVar
+
+T = TypeVar("T")
+
+def first(items: Sequence[T]) -> T:
+    if not items:
+        raise ValueError("items must not be empty")
+    return items[0]
+```
+
+Passing `Sequence[Embedding]` makes the result `Embedding`. `object` loses that fact. `Any` disables checking of the result. A union supports only named alternatives and does not automatically say that the return matches the input.
+
+Python 3.12 added type-parameter syntax:
+
+```python
+def first[T](items: Sequence[T]) -> T:
+    ...
+
+class Batch[T]:
+    def __init__(self, values: list[T]) -> None:
+        self.values = values
+```
+
+The older `TypeVar` form remains common because libraries support earlier versions. Use the syntax matching the project's declared minimum Python version.
+
+### Bounds and constraints answer different questions
+
+A bound accepts any subtype of an upper limit and preserves the concrete subtype.
+
+```python
+from typing import Protocol, TypeVar
+
+class HasId(Protocol):
+    id: str
+
+E = TypeVar("E", bound=HasId)
+
+def audited(entity: E) -> E:
+    record(entity.id)
+    return entity
+```
+
+Pass a `User`; receive a `User`. The bound proves `.id` is legal inside the function.
+
+Constraints enumerate allowed families:
+
+```python
+Text = TypeVar("Text", str, bytes)
+
+def concat(left: Text, right: Text) -> Text:
+    return left + right
+```
+
+This forbids mixing `str` and `bytes`. It expresses a relationship a pair of `str | bytes` parameters cannot: both arguments and the result belong to the same family.
+
+<Callout>
+
+Use a bound for “anything supporting this base contract.” Use constraints for “exactly one of these related families.” If no relationship matters, a union is simpler.
+
+</Callout>
+
+## Generic classes carry relationships through state
+
+```python
+from dataclasses import dataclass
+from typing import Generic, TypeVar
+
+T = TypeVar("T")
+
+@dataclass
+class Page(Generic[T]):
+    items: list[T]
+    next_cursor: str | None
+
+    def first(self) -> T:
+        if not self.items:
+            raise LookupError("empty page")
+        return self.items[0]
+```
+
+`Page[ModelResult]` tells callers what `items` and `first()` contain. At runtime it normally constructs the same `Page` class; the parameter mainly exists for static tools.
+
+Do not add a parameter merely because a class stores an object. A generic earns its place when the public API relates, returns, or consumes that type.
+
+## Protocol describes a capability
+
+Inheritance asks “what declared family is this?” A protocol asks “what can this value do?” This keeps services independent from SQLAlchemy repositories, HTTP clients, vector stores, and test doubles.
+
+```python
+from typing import Protocol, TypeVar
+
+T_co = TypeVar("T_co", covariant=True)
+
+class Reader(Protocol[T_co]):
+    def get(self, key: str) -> T_co | None: ...
+
+class UserService:
+    def __init__(self, users: Reader[User]) -> None:
+        self.users = users
+```
+
+An in-memory fake and Postgres implementation can satisfy `Reader[User]` without inheriting it. The checker compares visible members and signatures. This is static duck typing with a reusable name.
+
+Protocols should be consumer-shaped. If a service only reads, requiring a 20-method repository couples it to unused methods. Split `Reader[T]`, `Writer[T]`, and `Clock`; tests can then supply the smallest honest fake.
+
+### Attributes and runtime checks
+
+Static compatibility includes parameter kinds and return types. A writable protocol attribute is invariant because clients may assign through it. Use a read-only property when consumers only read.
+
+```python
+class Config(Protocol):
+    @property
+    def timeout(self) -> float: ...
+```
+
+`@runtime_checkable` enables `isinstance` for a protocol, but only checks member presence. It does not validate full signatures, annotations, or behaviour. It is narrow introspection, not a runtime schema.
+
+## Variance follows data direction
+
+If `Dog` is an `Animal`, a producer of dogs is safe where a producer of animals is expected. That is covariance. A consumer able to handle every animal is safe where a consumer of dogs is expected. That is contravariance.
+
+Mutable containers both produce and consume. `list[Dog]` cannot replace `list[Animal]` because the receiver could append a different animal and corrupt the caller's promise.
+
+```python
+from collections.abc import Sequence
+
+def names(animals: Sequence[Animal]) -> list[str]:
+    return [animal.name for animal in animals]
+```
+
+`Sequence[Dog]` can flow into `names` because `Sequence` is read-only and covariant.
+
+<ProductionNote>
+
+Prefer read-only interfaces at boundaries. `Sequence[T]`, `Iterable[T]`, and producer protocols admit more safe implementations than `list[T]`. Use a mutable concrete type only when mutation is part of the contract.
+
+</ProductionNote>
+
+With classic `TypeVar`, variance is declared using `covariant=True` or `contravariant=True`. Never choose one to silence an error; derive it from whether values flow out, in, or both.
+
+## Literal narrows values, not inputs
+
+```python
+from typing import Literal
+
+Device = Literal["cpu", "cuda", "mps"]
+
+def load_model(device: Device) -> Model:
+    ...
+```
+
+A checker rejects a visible `"gpu"` literal. A plain `str` remains too broad until code validates and narrows it. FastAPI or Pydantic can validate at runtime; `Literal` documents the closed set afterward.
+
+Use an `Enum` when values need runtime behaviour, iteration, or a stable widely shared domain. Use `Literal` for a small choice close to an API.
+
+## overload describes correlated call shapes
+
+```python
+from typing import Literal, overload
+
+@overload
+def find_user(user_id: str, *, required: Literal[True]) -> User: ...
+
+@overload
+def find_user(
+    user_id: str, *, required: Literal[False] = False
+) -> User | None: ...
+
+def find_user(user_id: str, *, required: bool = False) -> User | None:
+    user = repository.find(user_id)
+    if required and user is None:
+        raise UserNotFound(user_id)
+    return user
+```
+
+The decorated bodies are never called. At runtime, only the final implementation exists. A checker chooses a matching variant for the caller.
+
+The implementation must accept every variant and return their combined possibilities. Overlapping variants should agree on outcomes; an overly broad first variant can make later declarations unreachable.
+
+<CommonMistake>
+
+Do not use overloads to promise facts the implementation does not enforce. If `required=True` returns `None` on one path, the annotation hides a production bug.
+
+</CommonMistake>
+
+A generic is better when one type flows through. Overloads fit a small finite set of call shapes with distinct outcomes. If every combination returns the same union, skip them.
+
+## ParamSpec and Self preserve harder relationships
+
+Decorators need to preserve a complete callable signature. `ParamSpec` captures positional and keyword parameters together.
+
+```python
+from collections.abc import Callable
+from functools import wraps
+from typing import ParamSpec, TypeVar
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def traced(func: Callable[P, R]) -> Callable[P, R]:
+    @wraps(func)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        record(func.__qualname__)
+        return func(*args, **kwargs)
+    return wrapper
+```
+
+`Callable[..., R]` preserves only the result and permits any arguments. `Concatenate[Request, P]` handles a decorator that injects or removes a leading argument.
+
+`Self` says a method returns the concrete class of its receiver:
+
+```python
+from typing import Self
+
+class Query:
+    def limit(self, count: int) -> Self:
+        self._limit = count
+        return self
+```
+
+It suits fluent APIs and alternative constructors. It is wrong when a method always returns the base class regardless of the subclass.
+
+## Narrow unknown values instead of spreading Any
+
+At untrusted boundaries, start with `object` or a schema. `object` forces proof before use; `Any` silently infects expressions.
+
+```python
+from typing import TypeGuard
+
+def is_str_list(value: object) -> TypeGuard[list[str]]:
+    return isinstance(value, list) and all(isinstance(x, str) for x in value)
+```
+
+A `TypeGuard` makes a runtime claim and tells the checker how a successful branch narrows. Review it like a parser: one unsound `True` lets an invalid value cross.
+
+`cast(User, value)` performs no check. It only changes the checker's belief. Use it after an external fact the checker cannot express, and comment that fact.
+
+## Where this matters in AI and backend systems
+
+Pydantic validates model output at runtime; generics preserve which payload a response wrapper contains afterward. FastAPI dependencies benefit from tiny protocols, letting handlers accept a clock, model runner, or repository without importing a concrete adapter.
+
+PyTorch has value-dependent tensor shapes beyond today's standard typing. Shape checks, tests, and runtime assertions still matter. An inference gateway can nevertheless type tokenizer and model protocols, literal deployment modes, generic batches, and streaming overloads.
+
+## Exercises
+
+<Exercise id="typing-depth-easy" difficulty="easy">
+
+Write `last(items: Sequence[T]) -> T` and raise `LookupError` for an empty sequence.
+
+<Solution>
+
+```python
+T = TypeVar("T")
+
+def last(items: Sequence[T]) -> T:
+    if not items:
+        raise LookupError("empty sequence")
+    return items[-1]
+```
+
+`T` preserves the input element and result relationship.
+
+</Solution>
+</Exercise>
+
+<Exercise id="typing-depth-medium" difficulty="medium">
+
+Define the smallest generic protocol for a service that only loads an entity by string ID.
+
+<Solution>
+
+```python
+T_co = TypeVar("T_co", covariant=True)
+
+class Reader(Protocol[T_co]):
+    def get(self, entity_id: str) -> T_co | None: ...
+```
+
+It only produces `T_co`, so covariance is sound. Concrete adapters need no inheritance.
+
+</Solution>
+</Exercise>
+
+<Exercise id="typing-depth-hard" difficulty="hard">
+
+Type a decorator that accepts and returns a callable without losing its parameters or result.
+
+<Solution>
+
+```python
+P = ParamSpec("P")
+R = TypeVar("R")
+
+def with_retry(func: Callable[P, R]) -> Callable[P, R]:
+    @wraps(func)
+    def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+        try:
+            return func(*args, **kwargs)
+        except TransientError:
+            return func(*args, **kwargs)
+    return wrapper
+```
+
+`Callable[..., R]` would lose the valid argument shape.
+
+</Solution>
+</Exercise>
+
+<Exercise id="typing-depth-interview" difficulty="interview">
+
+“When would you choose a `Protocol` over an ABC, and what does `runtime_checkable` add?”
+
+<Solution>
+
+Choose a protocol when a consumer needs a capability and implementations should not inherit a shared base. It gives static structural compatibility for adapters and fakes. An ABC suits nominal membership or shared implementation. `runtime_checkable` only enables shallow member checks; it does not verify signatures.
+
+</Solution>
+</Exercise>
+
+<Exercise id="typing-depth-real-world" difficulty="real-world">
+
+Type `infer`: `stream=False` returns `Prediction`; `stream=True` returns `Iterator[TokenChunk]`.
+
+<Solution>
+
+```python
+@overload
+def infer(prompt: str, *, stream: Literal[False] = False) -> Prediction: ...
+@overload
+def infer(prompt: str, *, stream: Literal[True]) -> Iterator[TokenChunk]: ...
+
+def infer(
+    prompt: str, *, stream: bool = False
+) -> Prediction | Iterator[TokenChunk]:
+    return stream_tokens(prompt) if stream else collect_prediction(prompt)
+```
+
+Every runtime branch must honour the corresponding overload.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. What does `Sequence[T] -> T` preserve that `object` does not?
+2. Why is `list[Dog]` invariant while `Sequence[Dog]` is covariant?
+3. How do a bound and constraints differ?
+4. What overload code runs at runtime?
+5. Why can neither `runtime_checkable` nor `cast` validate payload data?
+
+<Checkpoint>
+
+You can read a typed API as relationships, choose the smallest construct expressing each one, and identify the runtime proof annotations do not provide.
+
+</Checkpoint>
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why did my annotation accept bad data at runtime?">
+
+Annotations do not validate calls. Use a checker for source claims and explicit validation at untrusted boundaries.
+
+</Gotcha>
+
+<Gotcha question="Why did Any make the errors disappear?">
+
+`Any` permits almost every operation. A type variable keeps an unknown type consistent instead.
+
+</Gotcha>
+
+<Gotcha question="Why is list[Child] rejected as list[Parent]?">
+
+The receiver could append another `Parent`, breaking the caller's list promise.
+
+</Gotcha>
+
+<Gotcha question="Why does isinstance with my Protocol fail?">
+
+Protocols are static by default. `runtime_checkable` adds only a shallow member-presence check.
+
+</Gotcha>
+
+<Gotcha question="Why does my overload implementation need annotations too?">
+
+Variants describe outside calls. The implementation must cover every accepted argument and possible result internally.
+
+</Gotcha>
+
+<Gotcha question="Why does a bool variable produce a union with Literal overloads?">
+
+A `bool` variable might hold either value, so the checker cannot choose one literal branch.
+
+</Gotcha>
+
+<Gotcha question="Why did cast fix the checker but not the crash?">
+
+`cast()` returns its input unchanged. It overrides belief and performs no runtime check.
+
+</Gotcha>
+
+<Gotcha question="Why does a writable Protocol attribute reject a narrow implementation?">
+
+Writable attributes are consumed and produced. Use a read-only property if assignment is not required.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Deep typing begins with relationships. `TypeVar` connects parameters, results, and state; bounds and constraints limit that relationship differently; generic classes carry it through an API.
+
+Protocols express consumer-shaped capabilities. Variance follows whether an API produces, consumes, or mutates a type.
+
+`Literal` closes a small value domain, overloads correlate call shapes, `ParamSpec` preserves callable parameters, and `Self` preserves a receiver's concrete class. None validates runtime data.
+
+Use Practice to build these contracts, Debug to repair plausible lies, Test to distinguish similar constructs, and Project to type a production-shaped inference SDK without letting `Any` escape.

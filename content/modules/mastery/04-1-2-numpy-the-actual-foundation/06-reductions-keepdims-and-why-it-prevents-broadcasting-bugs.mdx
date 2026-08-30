@@ -1,0 +1,431 @@
+---
+id: "roadmap:phase-1-1.2:5"
+title: "Reductions, keepdims, and why it prevents broadcasting bugs"
+description: Treat a reduction as a shape transformation with an explicit numerical policy, then preserve reduced axes as singleton dimensions so later broadcasting cannot silently align with the wrong meaning.
+module: 1-2-numpy-the-actual-foundation
+order: 6
+estimatedMinutes: 125
+prerequisites: ["roadmap:phase-1-1.2:2", "roadmap:phase-1-1.2:4"]
+learningObjectives:
+  - Derive reduction output shapes from semantic axes, including tuples of axes and negative axes
+  - Use keepdims to preserve broadcast alignment and prevent same-size dimensions from hiding semantic bugs
+  - Choose accumulator dtype, initial values, masks, and empty-input policy deliberately
+  - Implement and test stable ML reductions such as normalization, softmax, and log-sum-exp
+---
+
+A reduction answers a question over one or more dimensions. `sum`, `mean`, `max`, `all`, and
+`argmax` differ in what they compute, but they share a shape rule: selected axes are consumed.
+That shape change is part of the operation's contract, not a cosmetic detail.
+
+The dangerous moment often comes next. A rank-reduced result is fed back into the original array,
+and broadcasting aligns it from the right. If two unrelated dimensions happen to have the same
+size, the code runs and applies the statistic to the wrong meaning. `keepdims=True` keeps each
+consumed axis as size one, making the intended alignment explicit.
+
+<TypeScriptComparison>
+
+- JavaScript's `Array.prototype.reduce` collapses an iterable chosen by your loop; NumPy reduces named axes while retaining every other dimension.
+- TypeScript can label a field `perExampleMean`, but an `ndarray` result carries only shape and dtype. Singleton axes preserve some of that structural intent at runtime.
+- JS numbers accumulate as double-precision values. NumPy's result and accumulator dtype depend on the input dtype and operation, so numerical policy is part of the API.
+- A nested JS loop makes the surviving indices visible. NumPy hides that loop, so derive the output shape before relying on broadcasting.
+
+</TypeScriptComparison>
+
+## A reduction partitions axes into consumed and surviving sets
+
+For input shape `(d0, d1, ..., dr-1)`, normalize the requested axes to positive positions. Without
+`keepdims`, delete those positions. With `keepdims=True`, replace each consumed size with one.
+Every surviving index identifies one group whose elements are combined.
+
+```python
+import numpy as np
+
+x = np.empty((2, 3, 5))  # batch, tokens, features
+
+assert x.sum(axis=1).shape == (2, 5)
+assert x.sum(axis=1, keepdims=True).shape == (2, 1, 5)
+assert x.mean(axis=(0, 1)).shape == (5,)
+assert x.mean(axis=(0, 1), keepdims=True).shape == (1, 1, 5)
+```
+
+The first sum does not reduce “rows.” It consumes tokens and leaves one result for each
+`(batch, feature)` pair. The tuple reduction consumes batch and tokens together. Axis order in the
+tuple does not change the mathematical grouping, though the implementation may choose its own
+iteration strategy.
+
+<Concept>
+
+A reduction axis names the dimensions whose coordinates disappear into each aggregate. The output
+is indexed by the complement: every dimension not reduced.
+
+</Concept>
+
+## Derive shapes before calculating values
+
+A small helper makes the rule mechanical. It should normalize negative axes, reject duplicates,
+and preserve original axis order in the result.
+
+```python
+def reduction_shape(
+    shape: tuple[int, ...],
+    axes: int | tuple[int, ...] | None,
+    *,
+    keepdims: bool,
+) -> tuple[int, ...]:
+    ndim = len(shape)
+    raw = tuple(range(ndim)) if axes is None else ((axes,) if isinstance(axes, int) else axes)
+
+    if any(not -ndim <= axis < ndim for axis in raw):
+        raise ValueError("axis out of range")
+    normalized = tuple(axis % ndim for axis in raw)
+    if len(set(normalized)) != len(normalized):
+        raise ValueError("duplicate reduction axis")
+
+    consumed = set(normalized)
+    if keepdims:
+        return tuple(1 if axis in consumed else size for axis, size in enumerate(shape))
+    return tuple(size for axis, size in enumerate(shape) if axis not in consumed)
+```
+
+Scalar arrays need separate care because they have rank zero and no valid axis zero. Production
+helpers should define whether `axis=None`, empty axis tuples, scalars, and zero-length dimensions
+are accepted rather than inheriting accidental behavior from whichever reducer is called.
+
+## The silent broadcasting bug
+
+Suppose activations use `(N, C)`. To center each example across its classes, reduce class axis one.
+Without `keepdims`, the means have shape `(N,)`. Broadcasting aligns that one dimension against
+the trailing class axis of `(N, C)`.
+
+```python
+x = np.array([
+    [1.0, 2.0, 3.0],
+    [10.0, 20.0, 30.0],
+])  # N=2, C=3
+
+means = x.mean(axis=1)  # shape (2,)
+# x - means raises: trailing sizes 3 and 2 are incompatible
+
+safe_means = x.mean(axis=1, keepdims=True)  # shape (2, 1)
+centered = x - safe_means
+np.testing.assert_allclose(centered.mean(axis=1), 0.0)
+```
+
+The exception above is helpful. If `N == C`, shape `(N,)` fits the class axis, so each class
+column receives one example's mean. The output shape remains `(N, C)`, and a shape-only test passes.
+
+```python
+square = np.arange(9.0).reshape(3, 3)
+wrong = square - square.mean(axis=1)
+right = square - square.mean(axis=1, keepdims=True)
+
+assert wrong.shape == right.shape
+assert not np.allclose(wrong.mean(axis=1), 0.0)
+np.testing.assert_allclose(right.mean(axis=1), 0.0)
+```
+
+<CommonMistake>
+
+Do not repair a broadcast error by reshaping until the operation runs. Name the reduced and
+surviving dimensions first. The correct singleton position follows from semantics, not convenience.
+
+</CommonMistake>
+
+## `keepdims` preserves positions, not information
+
+With `keepdims=True`, consumed axes remain at their original positions with size one. The values
+are still aggregated; the original coordinates cannot be recovered. What survives is an alignment
+template suitable for broadcasting back to the source layout.
+
+For NCHW images, per-channel statistics aggregate batch and spatial axes `(0, 2, 3)`. The safe
+result shape is `(1, C, 1, 1)`. It can be reused directly without reconstructing singleton axes.
+
+```python
+def standardize_channels(x: np.ndarray, eps: float = 1e-6) -> np.ndarray:
+    if x.ndim != 4:
+        raise ValueError(f"expected NCHW rank four, got {x.shape}")
+
+    axes = (0, 2, 3)
+    mean = x.mean(axis=axes, keepdims=True, dtype=np.float64)
+    variance = np.mean((x - mean) ** 2, axis=axes, keepdims=True, dtype=np.float64)
+    out = (x - mean) / np.sqrt(variance + eps)
+
+    np.testing.assert_allclose(out.mean(axis=axes), 0.0, atol=1e-6)
+    return out
+```
+
+This function states a semantic policy: channels survive, all other dimensions are reduced, and
+accumulation uses float64. A caller can now review shape, alignment, and numerical choices together.
+
+## Multiple axes describe one grouping
+
+Reducing `(0, 2, 3)` is not three sequential public operations. It forms one group for every
+surviving channel coordinate and combines all batch-spatial values in that group. A tuple is often
+clearer and can avoid materializing intermediate arrays.
+
+Sequential reductions may also change axis numbering. After reducing axis zero without keeping
+dimensions, the old axis two becomes new axis one. Tuple reductions and `keepdims` reduce this
+bookkeeping risk.
+
+```python
+x = np.arange(2 * 3 * 4).reshape(2, 3, 4)
+
+direct = x.sum(axis=(0, 2))
+sequential_safe = x.sum(axis=2).sum(axis=0)
+np.testing.assert_array_equal(direct, sequential_safe)
+```
+
+Floating-point results need not be bit-identical across different reduction orders. Addition is
+not associative in finite precision, and optimized kernels may use pairwise or parallel trees.
+Test tolerances and mathematical invariants unless exact integer arithmetic is the contract.
+
+## Reducers carry dtype and identity policies
+
+An input's storage dtype does not fully describe reduction safety. Integer sums can overflow if
+the accumulator is too narrow. Float32 means and sums can lose small contributions in long axes.
+Choose an accumulator dtype from the maximum group size and required error budget.
+
+```python
+pixels = np.full((1_000_000,), 255, dtype=np.uint8)
+safe_total = pixels.sum(dtype=np.uint64)
+assert safe_total == 255_000_000
+
+losses = np.linspace(0.0, 1.0, 2_000_000, dtype=np.float32)
+mean64 = losses.mean(dtype=np.float64)
+```
+
+`sum` and `prod` have algebraic identities, so empty groups can return zero or one. `mean` has no
+mean value for an empty group and normally yields `nan` with a warning. `max` and `min` need an
+element or an explicit `initial` value.
+
+<ProductionNote>
+
+Empty-input behavior belongs in the boundary contract. Decide whether to reject empty groups,
+return a masked result, emit a sentinel, or use a domain-specific identity. Do not silence a
+warning without defining what the result means.
+
+</ProductionNote>
+
+The `where` argument lets a reducer include selected elements without first constructing a packed
+copy. For identity-free reductions such as maximum, an `initial` value may be required when the
+mask selects nothing. The initial value participates in every group, so choose it from domain and
+dtype semantics rather than as a convenient placeholder.
+
+```python
+scores = np.array([[0.2, -4.0, 1.1], [3.0, 8.0, -2.0]])
+valid = np.array([[True, False, True], [False, False, False]])
+
+masked_max = np.max(scores, axis=1, where=valid, initial=-np.inf, keepdims=True)
+assert masked_max.shape == (2, 1)
+```
+
+The second row returns negative infinity, which may or may not be a valid downstream sentinel.
+Carry an `any_valid = valid.any(axis=1, keepdims=True)` mask when consumers must distinguish an
+empty group from a real aggregate.
+
+## Stable softmax and log-sum-exp are reduction pipelines
+
+Softmax is not just `exp` followed by `sum`. It is a sequence of reductions that must share the
+same semantic axis and preserve alignment. Subtracting the maximum keeps exponentials in range.
+
+```python
+def softmax(x: np.ndarray, axis: int = -1) -> np.ndarray:
+    maximum = np.max(x, axis=axis, keepdims=True)
+    shifted = x - maximum
+    numerator = np.exp(shifted)
+    denominator = np.sum(numerator, axis=axis, keepdims=True)
+    return numerator / denominator
+
+def logsumexp(x: np.ndarray, axis: int = -1) -> np.ndarray:
+    maximum = np.max(x, axis=axis, keepdims=True)
+    shifted_sum = np.sum(np.exp(x - maximum), axis=axis, keepdims=True)
+    return maximum + np.log(shifted_sum)
+```
+
+This `logsumexp` deliberately returns a kept-rank result. A public API can `squeeze` the explicitly
+validated reduction axis at the final boundary if rank reduction is desired. Keeping dimensions
+through the numerical pipeline makes every broadcast auditable.
+
+All-negative-infinity groups need an explicit policy because subtracting `-inf` from `-inf`
+produces `nan`. Masked attention has the same problem when a row contains no valid keys. Stable
+arithmetic does not replace domain validation.
+
+## Boolean and index reductions have different result meanings
+
+`all` and `any` reduce truth values but follow the same axis algebra. `count_nonzero` returns counts.
+`argmax` consumes an axis but returns an index into that consumed dimension, not the maximum value.
+
+```python
+logits = np.array([[0.1, 0.7, 0.2], [0.8, 0.1, 0.1]])
+classes = np.argmax(logits, axis=1)
+scores = np.take_along_axis(logits, classes[:, None], axis=1)
+
+assert classes.shape == (2,)
+assert scores.shape == (2, 1)
+```
+
+Keeping the class index as `(N, 1)` makes `take_along_axis` alignment explicit. When flattening
+before `argmax`, the result indexes flattened order; use `unravel_index` to recover coordinates.
+Prefer an axis-aware arg reduction when the semantic question is per example or per token.
+
+## Test meaning, not only shapes
+
+Reduction tests should use asymmetric sizes and values with known group behavior. Assert output
+shape, dtype, empty-group policy, and invariants. For centering, the reduced mean should be zero.
+For softmax, sums should be one and adding an unrelated batch item must not change existing rows.
+
+Include singleton and zero-length dimensions deliberately. Use constant slices to test zero
+variance, extreme values to test stability, masks with no selected elements, and long axes to test
+accumulator precision. A correct happy-path example proves very little about a reduction API.
+
+## Exercises
+
+<Exercise id="numpy-reduction-shape-easy" difficulty="easy">
+
+For `(N,T,C) = (2,3,5)`, derive the shapes of `x.sum(axis=1)` and
+`x.sum(axis=1, keepdims=True)`. Name the surviving dimensions.
+
+<Solution>
+
+Reducing tokens consumes axis one. Without kept dimensions the result is `(N,C) = (2,5)`. With
+`keepdims=True`, the token position remains size one, producing `(N,1,C) = (2,1,5)`. Batch and
+class survive in both results.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-reduction-center-medium" difficulty="medium">
+
+Center each row of an `(N,C)` array and prove the implementation does not depend on `N != C`.
+
+<Solution>
+
+Compute `mean = x.mean(axis=1, keepdims=True)` and return `x - mean`. Test both rectangular and
+square shapes, then assert `centered.mean(axis=1)` is approximately zero. The kept result `(N,1)`
+aligns by meaning even when batch and class sizes coincide.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-reduction-mask-hard" difficulty="hard">
+
+Design a masked maximum over tokens for `(N,T,C)` that distinguishes an example with no valid
+tokens from a real maximum. Preserve a broadcast-safe shape.
+
+<Solution>
+
+Expand a token mask from `(N,T)` to `(N,T,1)`. Reduce token axis one with `where=mask`,
+`initial=-np.inf`, and `keepdims=True`, producing `(N,1,C)`. Separately compute
+`has_token = mask.any(axis=1, keepdims=True)`. Return both so the sentinel is never mistaken for a
+real aggregate.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-reduction-interview" difficulty="interview">
+
+Explain what `keepdims=True` guarantees, what it does not guarantee, and why you use it in ML
+normalization code.
+
+<Solution>
+
+It retains every reduced axis at its original position with size one, so the result broadcasts
+back along the dimensions that were actually aggregated. It does not retain the lost values,
+validate semantic axis choice, or solve numerical instability. I use it to make alignment explicit,
+then test the domain invariant over the named axis.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-reduction-monitor-real-world" difficulty="real-world">
+
+Design a batch metrics reducer for loss shaped `(N,T)` with a validity mask. It must report a
+global mean, per-example means, valid counts, and empty-example status without producing misleading
+statistics.
+
+<Solution>
+
+Validate matching shapes, accumulate masked sums and counts in safe dtypes, and divide only where
+counts are positive. Keep token axis for per-example outputs `(N,1)` and reduce both axes for the
+global scalar. Return counts and an explicit empty mask beside values. Test empty batches, fully
+masked examples, long axes, non-finite inputs, and concatenated-batch consistency.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. How do consumed and surviving axes determine a reduction's output shape?
+2. Why can dropping a reduced axis produce a silent bug when two dimensions have equal sizes?
+3. What exactly does `keepdims=True` preserve?
+4. Which policies must be defined for accumulator dtype, masks, and empty groups?
+5. Why must stable softmax use the same kept axis for maximum and sum?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why does subtracting a row mean work only for some shapes?">
+
+The rank-one means align with the trailing axis. They fail when batch and classes differ, and align
+silently with classes when they match. Keep the reduced class axis as `(N,1)`.
+
+</Gotcha>
+
+<Gotcha question="Why did my sequential multi-axis reduction use the wrong axis?">
+
+Dropping one axis renumbers every later axis. Reduce a tuple directly or retain dimensions until
+the full operation is complete.
+
+</Gotcha>
+
+<Gotcha question="Why did an empty mean become nan while an empty sum became zero?">
+
+Addition has an identity, so zero is meaningful for an empty sum. A mean needs both a total and a
+positive count; with no observations its value is undefined.
+
+</Gotcha>
+
+<Gotcha question="Why did my integer total wrap around?">
+
+The accumulator or result dtype could not represent the sum. Choose a safe dtype from the input
+range and maximum group size, then test the boundary.
+
+</Gotcha>
+
+<Gotcha question="Why are two mathematically equal reductions not bit-identical?">
+
+Floating-point addition is not associative. Different axis orders, memory layouts, vectorization,
+or parallel reduction trees can round at different points.
+
+</Gotcha>
+
+<Gotcha question="Why did stable softmax still produce nan?">
+
+A group containing only negative infinity makes `x - max(x)` evaluate `-inf - -inf`. Validate that
+each group has a valid competitor and define masked-row behavior.
+
+</Gotcha>
+
+<Gotcha question="Why did initial change a non-empty maximum?">
+
+`initial` participates in every reduction group; it is not used only for empty groups. It must be a
+true identity or a deliberate bound for the domain.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+A reduction consumes named dimensions and leaves one aggregate for every coordinate of the
+surviving dimensions. Derive that partition first; `axis` is a semantic decision expressed as an
+integer or tuple.
+
+`keepdims=True` replaces consumed sizes with one. It does not recover information, but it preserves
+positions so later broadcasting follows the reduction contract. This blocks a particularly nasty
+class of bugs where equal batch, class, token, or channel sizes make the wrong alignment legal.
+
+Correct reduction code also defines accumulator dtype, masked and empty-group behavior, numerical
+stability, and acceptable reproducibility. The Practice, Debug, Interview, Test, Project, and
+Review tabs turn those policies into an ML metrics pipeline you can prove rather than merely run.

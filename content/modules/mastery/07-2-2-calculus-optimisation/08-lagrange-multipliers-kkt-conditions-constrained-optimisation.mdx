@@ -1,0 +1,379 @@
+---
+id: "roadmap:phase-2-2.2:7"
+title: "Lagrange multipliers, KKT conditions, constrained optimisation"
+description: At a constrained optimum the objective gradient is a combination of the active constraint gradients. Lagrange multipliers make that precise for equalities; the KKT conditions extend it to inequalities and give the multipliers a shadow-price meaning — the machinery behind SVMs, max-entropy softmax, PCA, and trust regions.
+module: 2-2-calculus-optimisation
+order: 8
+estimatedMinutes: 120
+prerequisites: []
+learningObjectives:
+  - Derive the Lagrange condition ∇f = Σ λ_i ∇g_i for equality constraints and interpret it geometrically
+  - State the four KKT conditions for inequality-constrained problems and check them
+  - Interpret a multiplier as the sensitivity of the optimal value to relaxing its constraint
+  - Recognise SVMs, max-entropy softmax, PCA, and the trust-region subproblem as Lagrangian problems and connect to duality
+---
+
+Unconstrained optimisation stops where `∇f = 0`. Constrained optimisation stops somewhere the
+gradient is *not* zero — it is balanced against the constraints. The Lagrange multiplier is the
+exchange rate in that balance, and it carries a concrete meaning: how much the optimal value would
+improve if you relaxed the constraint.
+
+This one idea generates a surprising amount of machine learning: the SVM dual, softmax as the
+maximum-entropy distribution, PCA as a norm-constrained Rayleigh quotient, and the trust-region
+subproblem are all Lagrangian problems.
+
+<TypeScriptComparison>
+
+- The KKT system (stationarity + feasibility) is a set of nonlinear equations; solving it in TypeScript or Python means a Newton iteration on the augmented `[∇f + Jᵀλ; g]` residual.
+- Complementary slackness `μ_i g_i = 0` is a branching condition — each inequality is either "tight" (`g_i = 0`, `μ_i ≥ 0`) or "slack" (`g_i < 0`, `μ_i = 0`) — which is why active-set solvers loop over subsets.
+- Projected gradient descent (previous lesson) is the KKT conditions of `min f(x) s.t. x ∈ C` solved implicitly: the projection enforces primal feasibility and the multiplier is the projection residual.
+- A penalty method turns a constraint into a term you can `+=` to the loss; an augmented-Lagrangian method adds an explicit multiplier estimate that it updates each outer iteration.
+
+</TypeScriptComparison>
+
+## Equality constraints and the Lagrange condition
+
+Minimise `f(x)` subject to `g(x) = 0`. At a solution `x*`, you cannot decrease `f` by moving along
+the constraint surface, which means `∇f(x*)` has no component tangent to that surface — it is
+parallel to the surface normal `∇g(x*)`:
+
+`∇f(x*) = λ ∇g(x*)` for some scalar `λ` (the multiplier), together with `g(x*) = 0`.
+
+Both conditions are the stationarity of the **Lagrangian** `L(x, λ) = f(x) − λ g(x)`: setting
+`∇_x L = 0` gives the parallel-gradients equation, and `∂L/∂λ = 0` gives back `g(x*) = 0`. With `m`
+equality constraints, `∇f = Σ_i λ_i ∇g_i`.
+
+```python
+import numpy as np
+
+# minimise x^2 + y^2 subject to x + y = 1  ->  gradients: (2x, 2y) = lambda (1, 1)
+# so x = y = lambda/2, and x + y = 1 gives lambda = 1, x = y = 0.5
+x_star = np.array([0.5, 0.5]); lam = 1.0
+assert np.allclose(np.array([2*x_star[0], 2*x_star[1]]), lam * np.array([1.0, 1.0]))
+assert np.isclose(x_star.sum(), 1.0)
+```
+
+## Inequality constraints: the KKT conditions
+
+Minimise `f(x)` subject to `g_i(x) ≤ 0` (inequalities) and `h_j(x) = 0` (equalities). Form the
+Lagrangian `L = f + Σ μ_i g_i + Σ λ_j h_j`. A point `x*` with multipliers `μ*, λ*` is a KKT point
+when:
+
+1. **Stationarity.** `∇f(x*) + Σ μ_i* ∇g_i(x*) + Σ λ_j* ∇h_j(x*) = 0`.
+2. **Primal feasibility.** `g_i(x*) ≤ 0`, `h_j(x*) = 0`.
+3. **Dual feasibility.** `μ_i* ≥ 0` (the inequality multipliers are non-negative).
+4. **Complementary slackness.** `μ_i* g_i(x*) = 0` for every `i` — each inequality is either active
+   (`g_i = 0`) with a possibly-positive multiplier, or inactive (`g_i < 0`) with `μ_i = 0`.
+
+Under a constraint qualification (e.g. the active constraint gradients are linearly independent),
+KKT is *necessary* for a local optimum; for a convex problem it is also *sufficient*.
+
+```python
+# minimise x^2 subject to x >= 1, i.e. g(x) = 1 - x <= 0
+# stationarity: 2x + mu*(-1) = 0 ; dual feas: mu >= 0 ; comp slack: mu*(1 - x) = 0
+# try active: x = 1 -> mu = 2 >= 0, slackness 0. KKT point at x* = 1, mu* = 2.
+x_star, mu_star = 1.0, 2.0
+assert np.isclose(2*x_star - mu_star, 0.0) and mu_star >= 0 and np.isclose(mu_star * (1 - x_star), 0.0)
+```
+
+## Multipliers are shadow prices
+
+Perturb a constraint from `g(x) = 0` to `g(x) = c` and let `f*(c)` be the new optimal value. Then
+
+`df*/dc = −λ`  (equality case; `df*/dc = −μ` for an active inequality `g ≤ c`).
+
+So the multiplier is the marginal value of the constraint: a large `μ_i` means constraint `i` is
+"expensive" — relaxing it a little would improve the objective a lot — and a zero multiplier means
+the constraint is not binding and could be removed. This is the "shadow price" reading used in
+economics and in sensitivity analysis of optimisation models.
+
+```python
+# min x^2 + y^2 s.t. x + y = c has f*(c) = c^2 / 2, so df*/dc = c = lambda(c). matches -λ sign
+# with L = f - lambda*(x + y - c): df*/dc = lambda. (sign depends on the Lagrangian convention.)
+```
+
+## Duality
+
+The **Lagrange dual function** is `d(μ, λ) = min_x L(x, μ, λ)`. For any `μ ≥ 0` it is a *lower bound*
+on the optimal value `p*` — **weak duality**, `d(μ, λ) ≤ p*`, always. The best such bound is the
+**dual problem** `max_{μ≥0, λ} d(μ, λ)`, whose value is `d*`.
+
+`p* − d* ≥ 0` is the **duality gap**. For a convex problem satisfying a mild condition (Slater's:
+there is a strictly feasible point), the gap is zero — **strong duality** — and solving the dual
+solves the primal. The SVM is the canonical example: the dual is a bounded quadratic program in the
+per-example multipliers.
+
+```python
+# weak duality sanity check on min x^2 s.t. x >= 1:
+# L(x, mu) = x^2 + mu*(1 - x); d(mu) = min_x L = 1 - x^2 |_{x=mu/2} ... = mu - mu^2/4
+mu = np.linspace(0, 4, 100)
+d = mu - mu**2 / 4
+assert d.max() <= 1.0 + 1e-9              # p* = 1, and max_mu d(mu) = 1 (strong duality here)
+```
+
+## Where this shows up in ML
+
+- **SVM.** Hard-margin: `min ½||w||² s.t. y_i(w·x_i + b) ≥ 1`. The dual is
+  `max Σ α_i − ½ Σ α_i α_j y_i y_j x_i·x_j` with `α_i ≥ 0`, `Σ α_i y_i = 0`. Complementary slackness
+  makes `α_i > 0` only for **support vectors** (points on the margin).
+- **Softmax = maximum entropy.** Maximise entropy `−Σ p_i log p_i` subject to `Σ p_i = 1` and
+  `Σ p_i f_i = μ` (feature expectations). The Lagrange solution is `p_i ∝ exp(λ·f_i)` — exactly the
+  softmax, with `λ` the natural parameters.
+- **PCA.** `max vᵀ C v s.t. ||v||² = 1`. Lagrangian stationarity gives `C v = λ v` — the top
+  eigenvector, and `λ` is the variance it captures.
+- **Trust-region subproblem.** `min m(p) s.t. ||p|| ≤ Δ`. KKT gives `(H + μ I) p = −g` with `μ ≥ 0`
+  and `μ(||p|| − Δ) = 0` — the Levenberg–Marquardt damping is the multiplier.
+- **Constrained policy optimisation** (TRPO/CPO), **projection**, and **normalisation layers** as
+  constraints all follow the same pattern.
+
+<WhyItMatters>
+
+Seeing "softmax" and "the SVM dual" and "Levenberg–Marquardt damping" as the *same* construction —
+Lagrangian stationarity — means one piece of theory explains all of them, and the multiplier tells
+you *which constraints matter* (support vectors, active bounds) and *how much* (shadow prices).
+
+</WhyItMatters>
+
+## Solving constrained problems in practice
+
+- **Projected / proximal gradient**: enforce the constraint by a projection (or prox) each step;
+  best when the projection is cheap (box, ball, simplex).
+- **Penalty**: add `ρ Σ max(0, g_i)²` and increase `ρ`; simple but ill-conditioned as `ρ → ∞`.
+- **Barrier / interior-point**: add `−t Σ log(−g_i)` and decrease `t`; stays strictly feasible,
+  polynomial-time for convex problems.
+- **Augmented Lagrangian (ADMM)**: penalty plus an explicit multiplier estimate updated each outer
+  loop; avoids `ρ → ∞` and converges under mild conditions.
+- **Active-set / SQP**: solve the KKT system directly, guessing the active set.
+
+```python
+def penalty_objective(f, g_list, x, rho):
+    return f(x) + rho * sum(max(0.0, g(x))**2 for g in g_list)   # increase rho over outer iterations
+```
+
+## Doing this in floating point
+
+The sign of a multiplier depends on the Lagrangian convention (`f − λg` vs `f + λg`) and on whether
+a constraint is written `g ≤ 0` or `g ≥ 0`. Fix one convention and check dual feasibility (`μ ≥ 0`)
+against it; a negative "inequality multiplier" almost always means a sign flip somewhere.
+
+Complementary slackness never holds exactly numerically — check `|μ_i g_i| ≤ tol · (1 + |μ_i| +
+|g_i|)`. An interior-point solver keeps `μ_i g_i = −t` for a shrinking `t`, so it is *deliberately*
+not slack until convergence.
+
+<ProductionNote>
+
+If a constrained solver returns a point that violates a constraint, or an inequality multiplier is
+negative, suspect a sign or convention bug before the algorithm. Log the KKT residual (stationarity
+norm, max feasibility violation, max complementary-slackness product) as the convergence measure —
+not just the objective.
+
+</ProductionNote>
+
+## Cost
+
+Each Lagrangian/KKT Newton step solves an `(n + m) × (n + m)` saddle-point system, `O((n+m)³)` dense
+or much less with structure. The SVM dual is an `N × N` QP in the number of examples (kernelised);
+SMO solves it in `O(N²)`-ish work by optimising two multipliers at a time. Penalty and barrier
+methods are a sequence of unconstrained solves; augmented Lagrangian is a few outer iterations of
+the same.
+
+## Exercises
+
+<Exercise id="lkkt-equality-by-hand" difficulty="easy">
+
+Minimise `f(x, y) = x + 2y` subject to `x² + y² = 5` using Lagrange multipliers.
+
+<Solution>
+
+`∇f = (1, 2)`, `∇g = (2x, 2y)`. Stationarity `∇f = λ ∇g`:
+`1 = 2λx` and `2 = 2λy`, so `x = 1/(2λ)` and `y = 1/λ`.
+
+Substitute into `x² + y² = 5`: `1/(4λ²) + 1/λ² = 5`, i.e. `5/(4λ²) = 5`, so `λ² = 1/4`,
+`λ = ±1/2`.
+
+For `λ = 1/2`: `x = 1`, `y = 2`, `f = 1 + 4 = 5` (a maximum). For `λ = −1/2`: `x = −1`, `y = −2`,
+`f = −1 − 4 = −5` (the minimum). So the constrained minimum is `−5` at `(−1, −2)`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lkkt-inequality-kkt" difficulty="medium">
+
+Solve `min (x − 2)² + (y − 2)²` subject to `x + y ≤ 2` and `x, y ≥ 0` using the KKT conditions.
+
+<Solution>
+
+The unconstrained minimum is `(2, 2)`, which violates `x + y ≤ 2`, so that constraint is active.
+Guess the active set: only `x + y ≤ 2` active (`x, y > 0`).
+
+Write `g_1 = x + y − 2 ≤ 0`. Stationarity: `∇f + μ_1 ∇g_1 = 0`:
+`(2(x−2), 2(y−2)) + μ_1 (1, 1) = 0`, so `x − 2 = −μ_1/2` and `y − 2 = −μ_1/2` → `x = y`.
+
+Active constraint: `x + y = 2` → `x = y = 1`. Then `μ_1 = −2(x − 2) = −2(−1) = 2 ≥ 0` (dual
+feasible). Complementary slackness: `μ_1 (x + y − 2) = 2·0 = 0`. The bounds `x, y ≥ 0` are inactive
+(`x = y = 1 > 0`) with zero multipliers.
+
+All KKT conditions hold, and the problem is convex, so `(1, 1)` with `μ_1 = 2` is the global
+minimum, value `2·(1−2)² = 2`. The shadow price `μ_1 = 2` says loosening `x + y ≤ 2` to `≤ 2 + ε`
+would lower the optimal value by about `2ε`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lkkt-softmax-maxent" difficulty="hard">
+
+Derive the softmax as the maximum-entropy distribution subject to a normalisation constraint and a
+set of feature-expectation constraints.
+
+<Solution>
+
+Maximise the entropy `H(p) = −Σ_i p_i log p_i` over `p_i ≥ 0` subject to `Σ_i p_i = 1` and
+`Σ_i p_i f_k(i) = μ_k` for each feature `k`.
+
+Lagrangian (ignore `p_i ≥ 0`; it will hold automatically):
+`L = −Σ p_i log p_i − λ_0 (Σ p_i − 1) − Σ_k λ_k (Σ p_i f_k(i) − μ_k)`.
+
+Stationarity `∂L/∂p_i = 0`:
+`−log p_i − 1 − λ_0 − Σ_k λ_k f_k(i) = 0`,
+so `log p_i = −1 − λ_0 − Σ_k λ_k f_k(i)`, giving
+`p_i = exp(−1 − λ_0) · exp(−Σ_k λ_k f_k(i))`.
+
+The prefactor `exp(−1 − λ_0)` is fixed by `Σ p_i = 1` to be `1 / Σ_j exp(−Σ_k λ_k f_k(j))`. So
+
+`p_i = exp(θ · f(i)) / Σ_j exp(θ · f(j))`  with `θ = −λ`,
+
+which is exactly the softmax over the linear scores `θ · f(i)`. The maximum-entropy principle says
+the softmax is the *least committal* distribution consistent with the given expected features, and
+the multipliers `θ` are the natural parameters (logits) of the resulting exponential family.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lkkt-interview-svm-dual" difficulty="interview">
+
+In an interview: "Why do we solve the SVM in the dual, and what are support vectors in KKT terms?"
+
+<Solution>
+
+**Why the dual.** The hard-margin primal is `min ½||w||² s.t. y_i(w·x_i + b) ≥ 1`. Its Lagrangian
+dual is `max Σ α_i − ½ Σ_{i,j} α_i α_j y_i y_j (x_i·x_j)` subject to `α_i ≥ 0` and `Σ α_i y_i = 0`.
+
+Three advantages: the objective touches the data only through inner products, so a **kernel**
+`K(x_i, x_j)` fits a nonlinear boundary implicitly; it is a convex QP with few active variables; and
+strong duality (convex + Slater) recovers the primal exactly via `w = Σ α_i y_i x_i`.
+
+**Support vectors.** From complementary slackness, `α_i (y_i(w·x_i + b) − 1) = 0`: either `α_i = 0`
+(strictly inside the margin, no effect on `w`) or the margin constraint is tight and `α_i > 0`.
+
+Those margin-lying points with positive multipliers are the **support vectors** — the only ones that
+determine the boundary, which is why SVMs are sparse in the examples. Soft-margin adds an upper
+bound `α_i ≤ C`, and `α_i = C` marks points inside the margin or misclassified.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lkkt-trust-region-real-world" difficulty="real-world">
+
+Your trust-region optimiser needs to solve `min gᵀp + ½ pᵀHp s.t. ||p|| ≤ Δ` each step. Derive the
+KKT characterisation and use it to build a solver.
+
+<Solution>
+
+Constraint `c(p) = ½(||p||² − Δ²) ≤ 0` (squared form keeps it smooth). Lagrangian
+`L = gᵀp + ½ pᵀHp + μ · ½(||p||² − Δ²)`. KKT:
+
+1. Stationarity: `g + H p + μ p = 0`, i.e. `(H + μ I) p = −g`.
+2. Primal feasibility: `||p|| ≤ Δ`.
+3. Dual feasibility: `μ ≥ 0`.
+4. Complementary slackness: `μ(||p|| − Δ) = 0`.
+
+So there are two cases. **Interior:** `μ = 0` and `p = −H⁻¹g`, valid only if `H ⪰ 0` and
+`||H⁻¹g|| ≤ Δ`. **Boundary:** `μ > 0`, `||p(μ)|| = Δ` where `p(μ) = −(H + μ I)⁻¹g`, and additionally
+`H + μ I ⪰ 0` (so `μ ≥ −λ_min(H)`).
+
+Solver. Try the interior solution first. If `H` is indefinite or the interior step is too long, find
+`μ > max(0, −λ_min(H))` such that `φ(μ) := ||(H + μI)⁻¹g|| = Δ`; `φ` is decreasing there, so a
+safeguarded Newton iteration on `1/φ(μ) − 1/Δ = 0` (Moré–Sorensen) converges quickly, each step a
+Cholesky or CG solve.
+
+Handle the "hard case" (`g ⊥` the `λ_min` eigenspace) separately. Cheaper approximate solvers —
+**dogleg** (interpolate the Cauchy and Newton points) and **CG-Steihaug** (truncated CG stopping at
+the boundary or on negative curvature) — skip the eigen work and are what most implementations use.
+
+The multiplier `μ` is exactly the Levenberg–Marquardt damping; the trust radius `Δ` and the damping
+`μ` are dual descriptions of the same constraint.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. State the Lagrange condition for `min f(x) s.t. g(x) = 0` and its geometric meaning.
+2. List the four KKT conditions for an inequality-constrained problem.
+3. What does complementary slackness say, and how does it identify support vectors in an SVM?
+4. What is the interpretation of a Lagrange multiplier as the constraint changes?
+5. When does solving the dual solve the primal exactly?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="My inequality multiplier came out negative.">
+
+Almost always a sign-convention bug. Dual feasibility requires `μ_i ≥ 0` for constraints written
+`g_i(x) ≤ 0` with Lagrangian `f + Σ μ_i g_i`. Check whether your constraint is `≤` or `≥`, and
+whether your Lagrangian uses `+μg` or `−μg`.
+
+</Gotcha>
+
+<Gotcha question="I checked `∇f = Σ λ_i ∇g_i` and it held, so I have the optimum.">
+
+That is stationarity only. You also need primal feasibility (the constraints hold), and for
+inequalities dual feasibility (`μ ≥ 0`) and complementary slackness. And KKT is only *necessary*
+under a constraint qualification; for non-convex problems it may be a saddle of the Lagrangian.
+
+</Gotcha>
+
+<Gotcha question="Complementary slackness `μ_i g_i = 0` is violated in my solver output.">
+
+It never holds exactly in floating point. Check `|μ_i g_i|` against a scaled tolerance. Interior-point
+methods keep `μ_i g_i = −t > 0` on purpose until `t` is driven to zero.
+
+</Gotcha>
+
+<Gotcha question="I'll just crank the penalty coefficient `ρ` to enforce the constraint.">
+
+As `ρ → ∞` the penalised problem becomes badly ill-conditioned and the solve degrades. Use an
+augmented Lagrangian (penalty + updated multiplier) or a barrier/interior-point method, which
+converge without `ρ → ∞`.
+
+</Gotcha>
+
+<Gotcha question="Strong duality always holds, so I can always solve the dual instead.">
+
+Weak duality (`d* ≤ p*`) always holds. Strong duality (`d* = p*`) needs convexity plus a constraint
+qualification (Slater). For non-convex problems there can be a positive duality gap, and the dual
+solution does not recover the primal.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+At a point constrained by `g(x) = 0`, the objective gradient is parallel to the constraint normal:
+`∇f = Σ λ_i ∇g_i`, which is the stationarity of the Lagrangian `L = f − Σ λ_i g_i`. For inequality
+constraints, the KKT conditions add primal feasibility, dual feasibility (`μ ≥ 0`), and
+complementary slackness (`μ_i g_i = 0`); under a constraint qualification they are necessary, and
+for convex problems sufficient.
+
+A multiplier is a shadow price: `df*/dc = −λ`, the marginal value of relaxing that constraint. Zero
+multiplier ⇒ inactive constraint; large multiplier ⇒ binding and expensive. The Lagrange dual gives
+a lower bound always (weak duality) and the exact optimum for convex problems with Slater's
+condition (strong duality).
+
+The same construction is the SVM dual (support vectors from complementary slackness), softmax as the
+max-entropy distribution, PCA as `Cv = λv` from `||v|| = 1`, and the trust-region subproblem
+(`(H + μI)p = −g`). Solve constrained problems with projection, penalty, barrier, augmented
+Lagrangian, or SQP. The Practice, Debug, Interview, Test, Project, and Review tabs build the KKT
+checks, the SVM/max-entropy derivations, and a penalty-to-augmented-Lagrangian solver.

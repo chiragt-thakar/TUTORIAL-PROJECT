@@ -30,7 +30,7 @@ export function ResourceList({ resources }: { resources: Resource[] }) {
       {sorted.map((resource) => (
         <li key={resource.url}>
           <div className="resource-head">
-            <a href={resource.url} target="_blank" rel="noreferrer noopener">
+            <a href={resource.url}>
               {resource.name}
             </a>
             <span className="resource-type">{TYPE_LABEL[resource.type] ?? resource.type}</span>

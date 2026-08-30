@@ -1,0 +1,791 @@
+lessonId: "roadmap:phase-2-2.2:2"
+module: 2-2-calculus-optimisation
+lesson: 03-partial-derivatives-gradients-directional-derivatives
+title: "Partial derivatives, gradients, directional derivatives"
+summary: Assemble the gradient from partial derivatives, use its steepest-ascent direction, norm, and perpendicularity to level sets, project it with the directional derivative, and connect it to gradient descent and input-gradient methods.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lpgd-read-numerical-grad
+    tier: normal
+    kind: code-reading
+    title: Read a numerical gradient
+    minutes: 10
+    requiredForMastery: true
+    concepts: [numerical-gradient, central-difference, cost]
+    prompt: |
+      Read this function. Say what it returns, its cost in `f` evaluations for input dimension `n`,
+      and why it is a check rather than the production gradient.
+      ```python
+      def grad(f, x, h=1e-6):
+          g = np.zeros_like(x)
+          for i in range(x.size):
+              e = np.zeros_like(x); e[i] = h
+              g[i] = (f(x + e) - f(x - e)) / (2 * h)
+          return g
+      ```
+    hints:
+      - Each coordinate needs a plus and a minus evaluation.
+      - Autodiff gets the whole gradient for a constant times one forward pass.
+    solution: |
+      It returns the central-difference approximation of `grad f` at `x`, one component per input
+      coordinate. Cost is `2n` evaluations of `f` (a plus and a minus per coordinate), i.e. `O(n)`
+      forward passes. It carries the central-difference truncation error `O(h**2)` and cancellation
+      error `O(eps/h)`, so it is only accurate to a few digits, and it is `n` times more expensive
+      than reverse-mode autodiff, which returns the exact gradient (to rounding) in a small constant
+      times one forward pass. Use it only to gradient-check an analytic or autodiff gradient with a
+      relative tolerance.
+  - id: lpgd-write-directional
+    tier: normal
+    kind: write-code
+    title: Directional derivative
+    minutes: 12
+    requiredForMastery: true
+    concepts: [directional-derivative, unit-vector, projection]
+    prompt: |
+      Write `directional(grad, v)` returning the rate of change of `f` along `v` per unit of `v`,
+      and `directional_unit(grad, v)` returning the rate per unit distance (normalising `v`). State
+      which one to use for "steepest descent step".
+    hints:
+      - "`D_v f = grad . v`."
+      - Normalise `v` to get the per-unit-distance rate.
+    solution: |
+      `directional(grad, v)` returns `grad @ v` — the change in `f` per unit increase of the vector
+      `v` (so it scales with `||v||`). `directional_unit(grad, v)` returns `grad @ (v /
+      np.linalg.norm(v))` — the rate per unit distance, independent of `||v||`, which is the
+      directional derivative in the strict sense. For reasoning about a steepest-descent step you
+      want the unit form: the fastest decrease per unit distance is `-||grad||`, achieved along
+      `-grad / ||grad||`. Guard against a zero-norm `v`.
+  - id: lpgd-predict-gradient-geometry
+    tier: normal
+    kind: predict-output
+    title: Steepest ascent and the contour
+    minutes: 10
+    requiredForMastery: true
+    concepts: [gradient, steepest-ascent, level-set]
+    prompt: |
+      At a point `grad f = (6, 8)`. Give the unit steepest-ascent direction, the maximum rate of
+      increase, and a unit direction along which `f` is instantaneously constant.
+    hints:
+      - "`||grad f||` is the max rate; divide to get the unit direction."
+      - A constant-`f` direction is perpendicular to the gradient.
+    solution: |
+      `||grad f|| = sqrt(36 + 64) = 10`. Unit steepest-ascent direction: `(6/10, 8/10) = (0.6,
+      0.8)`. Maximum rate of increase: `10`. A direction of zero instantaneous change is
+      perpendicular to `(6, 8)`: rotate 90 degrees to `(-8, 6)` and normalise to `(-0.8, 0.6)` (or
+      its negative). Check `(6, 8) . (-0.8, 0.6) = -4.8 + 4.8 = 0`.
+  - id: lpgd-explain-partials-not-enough
+    tier: normal
+    kind: explain
+    title: Partials exist but not differentiable
+    minutes: 10
+    requiredForMastery: true
+    concepts: [differentiability, partial-derivatives, c1]
+    prompt: |
+      Explain why "both partial derivatives exist at a point" does not imply differentiability
+      there, and state a sufficient condition that does.
+    hints:
+      - Partials only probe the axis directions.
+      - Continuity of the partials near the point is the standard sufficient condition.
+    solution: |
+      A partial derivative measures the slope along one coordinate axis, so having all partials at a
+      point tells you nothing about off-axis behaviour. The classic example is `f(x, y) = x y / (x^2
+      + y^2)` with `f(0, 0) = 0`: both partials at the origin are 0, but along the line `y = x` the
+      function is constantly `1/2`, so it is not even continuous at the origin and certainly not
+      differentiable. A clean sufficient condition: if all partials exist and are continuous in a
+      neighbourhood of the point (`f` is `C^1` there), then `f` is differentiable there, with the
+      gradient given by the vector of partials.
+  - id: lpgd-total-differential
+    tier: intermediate
+    kind: write-code
+    title: First-order approximation with the gradient
+    minutes: 12
+    requiredForMastery: true
+    concepts: [linear-approximation, total-differential, gradient]
+    prompt: |
+      Write `linear_approx(f, grad_f, x0, dx)` returning `f(x0) + grad_f(x0) @ dx`, and describe how
+      its error scales with `||dx||`.
+    hints:
+      - This is the first-order Taylor polynomial in several variables.
+      - The remainder is second order.
+    solution: |
+      Return `f(x0) + grad_f(x0) @ dx`. This is the tangent-plane (first-order Taylor)
+      approximation: the best linear estimate of `f(x0 + dx)`. For a `C^2` function the error is
+      `O(||dx||^2)` — specifically about `0.5 * dx.T @ H @ dx` where `H` is the Hessian at `x0` — so
+      halving the step quarters the error. It is exact for a linear `f` and the basis of every
+      gradient step: `theta - eta * grad L` is the minimiser of this linear model over a ball, and
+      the neglected curvature is why the step size must be bounded.
+  - id: lpgd-grad-wrt-params-vs-inputs
+    tier: intermediate
+    kind: write-code
+    title: Gradient with respect to parameters and inputs
+    minutes: 14
+    requiredForMastery: true
+    concepts: [parameter-gradient, input-gradient, linear-model]
+    prompt: |
+      For a linear model `pred = w @ x` with squared loss `L = 0.5 * (pred - y)^2`, give `dL/dw` and
+      `dL/dx`, and name one use of each.
+    hints:
+      - Let `r = pred - y`; `dL/dpred = r`.
+      - Then chain through `pred = w @ x` twice.
+    solution: |
+      Let `r = pred - y`. `dL/dw = r * x` (shape of `w`) — used by gradient descent to update the
+      weights. `dL/dx = r * w` (shape of `x`) — used by adversarial-example generation (step `x`
+      along `+dL/dx` to raise the loss), saliency maps (`|dL/dx|` shows influential inputs), and
+      integrated gradients (average `dL/dx` along a path from a baseline). Both are the same chain
+      rule; only which factor you hold fixed differs.
+  - id: lpgd-jvp-for-line-search
+    tier: intermediate
+    kind: explain
+    title: Directional derivative via forward mode
+    minutes: 12
+    requiredForMastery: true
+    concepts: [jacobian-vector-product, forward-mode, line-search]
+    prompt: |
+      A line search needs the slope of `L` along a fixed search direction `p` at several step sizes.
+      Explain how to get `grad L . p` without computing the full gradient.
+    hints:
+      - This is a Jacobian-vector product with seed `p`.
+      - Forward mode carries the directional derivative through the computation.
+    solution: |
+      `grad L . p` is the directional derivative of `L` along `p`, which is a Jacobian-vector
+      product (here the "Jacobian" is the gradient row). Forward-mode autodiff computes it by
+      seeding the input tangent with `p` and propagating dual numbers `(value, dot)` through the
+      forward pass; the output's `dot` field is `grad L . p`, obtained in a constant times one
+      forward pass, with no full gradient. This is cheaper than a reverse pass when you only need
+      the slope along one direction, which is exactly the line-search inner loop (evaluate `L(theta
+      + alpha p)` and its `alpha`-derivative `grad L(theta + alpha p) . p`).
+  - id: lpgd-gradient-in-valley
+    tier: intermediate
+    kind: predict-output
+    title: Why gradient descent zig-zags
+    minutes: 12
+    requiredForMastery: true
+    concepts: [steepest-descent, ill-conditioning, valley]
+    prompt: |
+      For `f(x, y) = 0.5 * (x^2 + 100 y^2)`, give `grad f` at `(1, 1)`, the steepest-descent
+      direction, and explain why iterating `-grad f` steps zig-zags toward the minimum at the
+      origin.
+    hints:
+      - The `y` term has a much larger coefficient than the `x` term.
+      - Steepest descent points across a narrow valley, not along it.
+    solution: |
+      `grad f = (x, 100 y)`, so at `(1, 1)` it is `(1, 100)` and the steepest-descent direction is
+      `-(1, 100) / sqrt(1 + 10000) ~ (-0.01, -1.0)` — almost entirely in `y`. The level sets are
+      very elongated ellipses (a narrow valley along the `x` axis). Steepest descent points nearly
+      perpendicular to the valley floor, so a step overshoots across the valley; the next gradient
+      points back the other way, and the iterates bounce between the walls while creeping slowly
+      along `x`. The condition number `100 / 1 = 100` sets the zig-zag severity, and preconditioning
+      or momentum fixes it.
+  - id: lpgd-mixed-partials
+    tier: intermediate
+    kind: predict-output
+    title: Equality of mixed partials
+    minutes: 10
+    requiredForMastery: true
+    concepts: [second-partial-derivatives, clairaut, hessian-symmetry]
+    prompt: |
+      For `f(x, y) = x^3 y^2 + x sin(y)`, compute `d2f/dx dy` and `d2f/dy dx` and state the theorem
+      that guarantees they are equal.
+    hints:
+      - Differentiate once, then differentiate the result with respect to the other variable.
+      - Clairaut's / Schwarz's theorem.
+    solution: |
+      `df/dx = 3 x^2 y^2 + sin(y)`, then `d/dy` of that is `6 x^2 y + cos(y)`. `df/dy = 2 x^3 y + x
+      cos(y)`, then `d/dx` of that is `6 x^2 y + cos(y)`. They match. Clairaut's theorem (Schwarz's
+      theorem) says that if the second partial derivatives are continuous in a neighbourhood, the
+      mixed partials are equal: `d2f/dx dy = d2f/dy dx`. This is why the Hessian of a `C^2` function
+      is symmetric, which every second-order optimisation method relies on.
+  - id: lpgd-debug-nonunit-direction
+    tier: tricky
+    kind: debug
+    title: Directional derivative with a non-unit vector
+    minutes: 12
+    requiredForMastery: true
+    concepts: [directional-derivative, unit-vector, normalisation]
+    prompt: |
+      This reports the "rate of change along the direction to the target" but the number is too
+      large by a consistent factor. Fix it.
+    code: |
+      def rate_toward(grad, current, target):
+          direction = target - current
+          return grad @ direction
+    solution: |
+      The directional derivative is defined along a *unit* direction. `target - current` is not
+      normalised, so `grad @ direction` returns the change per unit of that whole displacement
+      vector, which is `||target - current||` times the true per-unit-distance rate — a consistent
+      overstatement by that factor. Fix: `d = target - current; n = np.linalg.norm(d); return 0.0
+      if n == 0 else grad @ (d / n)`. If the caller actually wants "expected change if we move all
+      the way to the target under the linear model", that is `grad @ direction` and should be named
+      accordingly. Regression: pick `grad`, `current`, `target` with a known displacement norm and
+      assert the fixed value equals the raw one divided by that norm.
+    hints:
+      - "`D_u f` needs `||u|| = 1`."
+      - Divide by `norm(target - current)`.
+  - id: lpgd-debug-absolute-gradcheck
+    tier: tricky
+    kind: debug
+    title: Component-wise absolute gradient check
+    minutes: 14
+    requiredForMastery: true
+    concepts: [gradient-check, relative-error, tolerance]
+    prompt: |
+      This gradient check fails on a correct analytic gradient whenever some component is near zero.
+      Fix it.
+    code: |
+      def gradcheck(g_analytic, g_numeric):
+          return np.all(np.abs(g_analytic - g_numeric) < 1e-8)
+    solution: |
+      An absolute per-component tolerance is scale-dependent: a component of the gradient that is
+      genuinely around `1e-3` can differ from its finite-difference estimate by `1e-6` (normal
+      truncation error) and fail a `1e-8` absolute test, while a huge component could be wildly off
+      and still "pass" in relative terms. Use a single relative error over the whole vector:
+      `num = np.linalg.norm(g_analytic - g_numeric); den = np.linalg.norm(g_analytic) +
+      np.linalg.norm(g_numeric) + 1e-12; return num / den < 1e-5`. Also sweep the finite-difference
+      step. Regression: build a gradient with one component `~1e-3` and one `~1e3`, perturb the
+      numeric estimate by realistic truncation error, and assert the relative check passes.
+    hints:
+      - Absolute tolerances break for small components.
+      - Use a vector relative error `||a - n|| / (||a|| + ||n|| + eps)`.
+  - id: lpgd-debug-partial-only-check
+    tier: tricky
+    kind: debug
+    title: Concluding differentiability from partials
+    minutes: 14
+    requiredForMastery: true
+    concepts: [differentiability, partial-derivatives, path-dependence]
+    prompt: |
+      This routine numerically estimates both partials at a point and returns "differentiable" if
+      both are finite. It wrongly clears a function that is not differentiable. Fix the test.
+    code: |
+      def looks_differentiable(f, x, h=1e-5):
+          gx = (f(x + [h, 0]) - f(x - [h, 0])) / (2 * h)
+          gy = (f(x + [0, h]) - f(x - [0, h])) / (2 * h)
+          return np.isfinite(gx) and np.isfinite(gy)
+    solution: |
+      Estimating the two axis-direction partials probes nothing off-axis, so a function like
+      `x y / (x^2 + y^2)` (patched to 0 at the origin) passes — both partials are 0 — while it is
+      not even continuous there. A better numerical screen: (1) check continuity by evaluating `f`
+      along several directions approaching `x` and requiring the limits to agree; (2) check that the
+      first-order model `f(x) + g . dx` predicts `f(x + dx)` with error `o(||dx||)` for random small
+      `dx` in *many* directions, not just the axes — i.e. `|f(x + dx) - f(x) - g @ dx| /
+      ||dx|| -> 0` as `||dx|| -> 0`. Passing the directional-consistency test at several scales is
+      evidence of differentiability; a single pair of axis partials is not. Regression: the
+      `x y / (x^2 + y^2)` example must now be rejected.
+    hints:
+      - Axis partials miss path-dependent behaviour.
+      - Test the linear model against random directions and shrinking step sizes.
+  - id: lpgd-design-input-attribution
+    tier: challenge
+    kind: design
+    title: Design an input-attribution module
+    minutes: 28
+    requiredForMastery: false
+    concepts: [saliency, integrated-gradients, smoothgrad, evaluation]
+    prompt: |
+      Design `attribute(model, x, target, method)` supporting vanilla gradient, SmoothGrad, and
+      Integrated Gradients, returning a per-input attribution and a sanity metric. State inputs,
+      the computation for each method, and what it must not claim.
+    hints:
+      - All three use `grad_x` of the target score via autodiff, not pixel perturbation.
+      - Integrated Gradients needs a baseline and a completeness check; SmoothGrad needs a noise level and sample count.
+    solution: |
+      Inputs: the model, an input `x`, a target class or output index, the method, and
+      method-specific params (baseline `x0` and step count for IG; noise sigma and sample count for
+      SmoothGrad). Compute: vanilla = `grad_x score` via autodiff. SmoothGrad = mean of
+      `grad_x score` over `n` samples `x + N(0, sigma^2)`. Integrated Gradients = `(x - x0) *
+      mean_k grad_x score(x0 + (k/m)(x - x0))`, and report the completeness residual
+      `|sum(attr) - (score(x) - score(x0))|`. Return the attribution map, the method params, and a
+      deletion/insertion AUC computed by masking top-attributed inputs. It must not present the map
+      as ground truth, must state its input-specificity and first-order nature, must use autodiff
+      rather than finite differences, must report the IG completeness residual, and must not pick a
+      baseline silently (baseline choice changes the result). Golden cases: a linear model (IG
+      attributions equal `w * (x - x0)` exactly), a saturating ReLU input, and a noise-sensitivity
+      comparison of vanilla versus SmoothGrad.
+  - id: lpgd-refactor-fd-grad-to-autodiff
+    tier: challenge
+    kind: refactor
+    title: Replace a per-coordinate finite-difference gradient
+    minutes: 24
+    requiredForMastery: false
+    concepts: [autodiff, numerical-gradient, cost, accuracy]
+    prompt: |
+      An optimiser computes the parameter gradient with `2 * n_params` central differences each
+      step. It is slow and slightly inaccurate. Refactor to autodiff, keeping the finite-difference
+      code as a test.
+    hints:
+      - Reverse mode returns the whole gradient in one backward pass.
+      - Keep central differences as a CI gradient-check, not the hot path.
+    solution: |
+      Express the loss in an autodiff framework (or the micro-engine from lesson 2) and get the
+      gradient from one reverse pass: cost drops from `O(n_params)` forward passes to a small
+      constant times one forward pass, and the gradient becomes exact up to rounding instead of
+      carrying `O(h^2)` truncation error and `O(eps/h)` cancellation. Move the per-coordinate
+      central-difference routine into the test suite as a `gradcheck` run on random mini-inputs with
+      a swept step and a vector relative-error threshold near `1e-5`, tested away from any kinks. Add
+      a fail-before-fix benchmark recording the old per-step wall time and the old gradient's error
+      against a high-precision reference, and assert the autodiff path is both faster and closer.
+quizzes:
+  - id: lpgd-checkpoint
+    title: Checkpoint — partials, gradients, directional derivatives
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lpgd-cp-gradient-direction
+        kind: mcq
+        prompt: The gradient `grad f` at a point does what?
+        options:
+          - {id: steepest, text: Points in the direction of steepest ascent, with norm equal to that max rate}
+          - {id: minimum, text: Points straight toward the nearest minimum}
+          - {id: contour, text: Points along the level set through the point}
+        answer: [steepest]
+        explanation: "`grad f . u` is largest when `u` aligns with `grad f`; `grad f` is normal to the level set."
+        concepts: [gradient]
+        points: 1
+      - id: lpgd-cp-directional
+        kind: mcq
+        prompt: The directional derivative of `f` along a unit vector `u` is what?
+        options:
+          - {id: dot, text: "`grad f . u`"}
+          - {id: norm, text: "`||grad f|| * ||u||`"}
+          - {id: partial, text: Always equal to `df/dx_1`}
+        answer: [dot]
+        explanation: It equals `||grad f|| cos(theta)` with `theta` the angle between `u` and `grad f`.
+        concepts: [directional-derivative]
+        points: 1
+      - id: lpgd-cp-partials
+        kind: mcq
+        prompt: All partial derivatives of `f` exist at `a`. Can you conclude `f` is differentiable at `a`?
+        options:
+          - {id: no, text: "No — partials only probe axis directions; need them continuous nearby"}
+          - {id: yes, text: "Yes — existence of all partials is sufficient"}
+          - {id: onlyif2, text: "Only if there are exactly two variables"}
+        answer: [no]
+        explanation: "`x y / (x^2 + y^2)` has both partials at the origin yet is not continuous there."
+        concepts: [differentiability]
+        points: 1
+      - id: lpgd-cp-uses
+        kind: multi
+        prompt: Which methods use the gradient with respect to the inputs, `grad_x`?
+        options:
+          - {id: adv, text: Adversarial-example generation}
+          - {id: sal, text: Saliency maps}
+          - {id: ig, text: Integrated gradients}
+          - {id: sgd, text: The parameter update in SGD}
+        answer: [adv, sal, ig]
+        explanation: SGD uses `grad_theta`; the other three step or attribute in input space.
+        concepts: [input-gradient]
+        points: 1
+  - id: lpgd-assessment
+    title: Assessment — partial derivatives, gradients, directional derivatives
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lpgd-as-gradient-facts
+        kind: explain
+        prompt: State the three geometric facts about the gradient and where each comes from.
+        modelAnswer: |
+          From `f(x + dx) ~ f(x) + grad f . dx`: (1) among unit `u`, `grad f . u` is maximal along
+          `u = grad f / ||grad f||` — steepest ascent; (2) that maximum value is `||grad f||` — the
+          max rate of increase; (3) along any contour `f` is constant so `grad f . u = 0` for `u`
+          tangent to the level set — the gradient is normal to level sets.
+        explanation: All three read off the first-order approximation.
+        concepts: [gradient]
+        points: 1
+      - id: lpgd-as-directional
+        kind: write-function
+        prompt: Give `D_u f` for a unit `u`, and the `u` that maximises and minimises it.
+        modelAnswer: |
+          `D_u f = grad f . u = ||grad f|| cos(theta)`. Maximised at `u = grad f / ||grad f||`
+          (value `+||grad f||`), minimised at `u = -grad f / ||grad f||` (value `-||grad f||`), zero
+          for `u` perpendicular to `grad f`.
+        explanation: The dot product is largest when the vectors are parallel.
+        concepts: [directional-derivative]
+        points: 1
+      - id: lpgd-as-partials-diff
+        kind: find-bug
+        prompt: Code concludes a function is differentiable because both numerical partials are finite. What is the flaw?
+        modelAnswer: |
+          Axis-direction partials say nothing about off-axis behaviour. `x y / (x^2 + y^2)` (patched
+          to 0) has both partials 0 at the origin but is not continuous there. Differentiability
+          needs the partials to exist and be continuous nearby, or a direct check that the linear
+          model has `o(||dx||)` error in every direction.
+        explanation: Partials probe two directions; differentiability is about all of them.
+        concepts: [differentiability]
+        points: 1
+      - id: lpgd-as-linear-model
+        kind: scenario
+        prompt: How does the first-order approximation `f(x0) + grad f . dx` err, and why does that bound the step size in gradient descent?
+        modelAnswer: |
+          For `C^2` `f` the error is about `0.5 dx.T H dx`, i.e. `O(||dx||^2)`. Gradient descent
+          minimises the linear model over a region; the neglected curvature means a too-large step
+          can increase `f`, so the step size must be small enough (roughly below `2 /
+          lambda_max(H)`) for the linear model to remain a good local guide.
+        explanation: The quadratic remainder is what a learning rate must respect.
+        concepts: [linear-approximation]
+        points: 1
+      - id: lpgd-as-params-inputs
+        kind: write-function
+        prompt: For `L = 0.5 (w @ x - y)^2`, give `dL/dw` and `dL/dx`.
+        modelAnswer: |
+          With `r = w @ x - y`: `dL/dw = r * x` and `dL/dx = r * w`.
+        explanation: Chain the residual through the bilinear `w @ x` on each side.
+        concepts: [parameter-gradient, input-gradient]
+        points: 1
+      - id: lpgd-as-normalise
+        kind: scenario
+        prompt: Why normalise the gradient before a step, and what is lost?
+        modelAnswer: |
+          It fixes the step distance at `eta` regardless of `||grad L||`, which helps when the
+          gradient norm varies a lot. Lost: the magnitude carries information — near a minimum
+          `||grad L||` shrinks and an un-normalised step naturally decelerates, whereas a fixed-norm
+          step oscillates unless `eta` is decayed; and relative per-parameter scaling is discarded.
+          Clipping and per-coordinate adaptive methods are the usual compromises.
+        explanation: Direction is preserved; magnitude information is thrown away.
+        concepts: [gradient-normalisation]
+        points: 1
+      - id: lpgd-as-zigzag
+        kind: scenario
+        prompt: For `f(x, y) = 0.5(x^2 + 100 y^2)`, why does steepest descent zig-zag?
+        modelAnswer: |
+          `grad f = (x, 100 y)` points nearly straight across the narrow valley (the level sets are
+          ellipses elongated 10:1). A step overshoots the valley floor, the next gradient points
+          back, and the iterates bounce between the walls while advancing slowly along `x`. The
+          condition number 100 controls the severity.
+        explanation: Steepest descent is perpendicular to elongated contours, not along the valley.
+        concepts: [ill-conditioning, steepest-descent]
+        points: 1
+      - id: lpgd-as-jvp
+        kind: scenario
+        prompt: A line search needs `grad L . p` at several step sizes for a fixed `p`. How do you get it cheaply?
+        modelAnswer: |
+          It is a Jacobian-vector product: seed forward-mode autodiff with the input tangent `p` and
+          read the output's derivative field. Cost is a constant times one forward pass, with no
+          full gradient — cheaper than a reverse pass when only the slope along one direction is
+          needed.
+        explanation: Forward mode carries the directional derivative directly.
+        concepts: [jacobian-vector-product, line-search]
+        points: 1
+      - id: lpgd-as-gradcheck
+        kind: find-bug
+        prompt: Why does a per-component absolute-tolerance gradient check fail on correct gradients?
+        modelAnswer: |
+          Gradient components span many magnitudes. A component around `1e-3` differs from its
+          finite-difference estimate by normal truncation error `~1e-6` and fails a `1e-8` absolute
+          test, while a large component can be badly wrong and still look fine absolutely. Use one
+          vector relative error `||a - n|| / (||a|| + ||n|| + eps) < 1e-5`.
+        explanation: Absolute tolerances are scale-dependent.
+        concepts: [gradient-check]
+        points: 1
+      - id: lpgd-as-saliency
+        kind: scenario
+        prompt: Name two reasons a raw-gradient saliency map is unreliable and one more robust method.
+        modelAnswer: |
+          It is noisy (piecewise-linear ReLU networks have a slope that jumps between regions) and
+          it saturates (a strongly firing input can have near-zero gradient despite mattering); it is
+          also input-specific and sign-sensitive. SmoothGrad (average the gradient over small
+          Gaussian perturbations) or Integrated Gradients (integrate along a path from a baseline,
+          with a completeness guarantee) are more robust; validate with a deletion/insertion metric.
+        explanation: First-order, input-specific attributions need denoising or path integration.
+        concepts: [saliency, integrated-gradients]
+        points: 1
+interview:
+  - id: lpgd-iv-gradient-meaning
+    level: basic
+    requiredForMastery: true
+    concepts: [gradient, steepest-ascent, level-set]
+    question: What is the gradient and what does it tell you geometrically?
+    shortAnswer: |
+      The vector of partial derivatives. It points in the direction of steepest ascent, its norm is
+      the maximum rate of increase, and it is perpendicular to the level set through the point.
+    fullAnswer: |
+      `grad f = (df/dx_1, ..., df/dx_n)`, and it is exactly the first-order picture: `f(x + dx) ~
+      f(x) + grad f . dx`. From that, among unit directions the increase `grad f . u` is maximal
+      when `u` aligns with `grad f` (steepest ascent), the maximal value is `||grad f||`, and any
+      direction tangent to a contour gives zero change, so `grad f` is the normal to the level set.
+      In optimisation, `-grad f` is the steepest-descent direction, and its norm shrinking toward
+      zero signals approach to a stationary point.
+    commonWrongAnswer: The gradient points toward the minimum.
+    followUps:
+      - Why does steepest descent not point straight at the minimum in a valley?
+      - What does the norm of the gradient tell you during training?
+  - id: lpgd-iv-directional
+    level: output
+    requiredForMastery: true
+    concepts: [directional-derivative, projection, line-search]
+    question: What is the directional derivative and how do you compute one efficiently?
+    shortAnswer: |
+      `D_u f = grad f . u` for a unit `u` — the rate of change of `f` along `u`. Efficiently, seed
+      forward-mode autodiff with the tangent `u` and read the output derivative; that is a
+      Jacobian-vector product costing one forward pass, no full gradient.
+    fullAnswer: |
+      For a unit direction `u`, `D_u f = grad f . u = ||grad f|| cos(theta)`, maximal along the
+      gradient and zero perpendicular to it; for a non-unit `v`, `grad f . v` gives the change per
+      unit of `v`. When you need the slope along one fixed direction — a line search evaluating
+      `L(theta + alpha p)` and its `alpha`-derivative — forward-mode autodiff computes `grad L . p`
+      directly by propagating dual numbers, which is cheaper than a reverse pass. Reverse mode is
+      only preferable when you need the whole gradient.
+    commonWrongAnswer: You always need the full gradient first, then dot it with the direction.
+    followUps:
+      - Why is forward mode cheaper than reverse mode for this?
+      - What is the directional derivative along a contour?
+  - id: lpgd-iv-partials-differentiability
+    level: internals
+    requiredForMastery: true
+    concepts: [differentiability, partial-derivatives, continuity]
+    question: Does the existence of all partial derivatives imply differentiability?
+    shortAnswer: |
+      No. Partials only test axis directions. The standard example `x y / (x^2 + y^2)` (patched to
+      0) has both partials at the origin but is not continuous there. Continuous partials in a
+      neighbourhood (`C^1`) is a sufficient condition.
+    fullAnswer: |
+      Differentiability at `a` means there is a linear map `L` with `f(a + h) = f(a) + L(h) +
+      o(||h||)` for all `h`, not just axis-aligned `h`. Having each `df/dx_i` only constrains `f`
+      along the axes; a function can be smooth along every line through `a` and still fail this,
+      because the `o(||h||)` must hold uniformly over directions. The practical sufficient condition
+      is `C^1`: all partials exist and are continuous near `a`, in which case `grad f(a)` is the
+      vector of partials and the linear approximation is valid. For non-smooth ML functions (ReLU,
+      L1) differentiability fails on a measure-zero set and subgradients take over.
+    commonWrongAnswer: If every partial exists, the gradient exists and the function is differentiable.
+    followUps:
+      - How would you numerically screen for differentiability at a point?
+      - Where does this matter for neural network losses?
+  - id: lpgd-iv-input-gradients
+    level: scenario
+    requiredForMastery: true
+    concepts: [input-gradient, adversarial-examples, saliency]
+    question: What can you do with the gradient of the loss with respect to the inputs?
+    shortAnswer: |
+      Step the input to change the loss (adversarial examples: ascend `grad_x L`; there are also
+      attacks that descend a target-class loss), visualise influence (saliency: `|grad_x f|`), and
+      attribute a prediction to inputs (integrated gradients along a path from a baseline).
+    fullAnswer: |
+      `grad_x L` is the same chain rule as `grad_theta L` with the roles swapped. Adversarial
+      example generation takes a small step `x + epsilon * sign(grad_x L)` (FGSM) or iterates it to
+      maximally increase the loss within an `L_inf` ball. Saliency maps display `|grad_x f_c|`, the
+      first-order sensitivity of a class score to each input. Integrated Gradients integrates
+      `grad_x f_c` along a straight line from a baseline `x0` to `x` and multiplies by `(x - x0)`,
+      giving attributions that sum to `f_c(x) - f_c(x0)` (completeness) and handle saturation.
+      SmoothGrad denoises by averaging over input perturbations. All use autodiff on the input, not
+      pixel perturbation.
+    commonWrongAnswer: The input gradient is only useful for debugging.
+    followUps:
+      - Why is a raw-gradient saliency map noisy?
+      - What axiom does Integrated Gradients satisfy that vanilla gradients do not?
+  - id: lpgd-iv-normalise-clip
+    level: comparison
+    requiredForMastery: true
+    concepts: [gradient-normalisation, gradient-clipping, adaptive-methods]
+    question: Compare normalising the gradient, clipping it, and per-coordinate adaptive scaling.
+    shortAnswer: |
+      Normalising fixes the step distance and discards all magnitude information. Clipping preserves
+      magnitude below a threshold and only rescales spikes. Adaptive methods (Adam, RMSProp) divide
+      each coordinate by a running estimate of its own scale, keeping direction information while
+      equalising disparate magnitudes.
+    fullAnswer: |
+      Plain steepest descent uses `grad L` as-is, so it slows near a minimum (good) but is sensitive
+      to the overall gradient scale and to ill-conditioning. Full normalisation `grad L / ||grad L||`
+      makes every step length `eta`, which stabilises training when the norm swings but removes the
+      natural deceleration and the relative importance of parameters. Gradient clipping by global
+      norm leaves normal steps untouched and only shrinks steps whose norm exceeds a threshold,
+      which is the standard guard against rare exploding-gradient batches. Per-coordinate adaptive
+      methods rescale each component by `sqrt(E[g_i^2])`, which is like a diagonal preconditioner:
+      it fixes the disparate-magnitude problem and much of the ill-conditioning while retaining the
+      sign and relative direction of the gradient.
+    commonWrongAnswer: They are all just ways of shrinking the learning rate.
+    followUps:
+      - When is full normalisation preferable to clipping?
+      - How is an adaptive method like a preconditioner?
+  - id: lpgd-iv-gradcheck
+    level: debugging
+    requiredForMastery: true
+    concepts: [gradient-check, relative-error, finite-difference]
+    question: How do you gradient-check a multivariable gradient, and what are the common mistakes?
+    shortAnswer: |
+      Compare the analytic gradient to a per-coordinate central difference, using a single vector
+      relative error `||g_a - g_n|| / (||g_a|| + ||g_n|| + eps)` below about `1e-5`, with a swept
+      step size and testing away from kinks.
+    fullAnswer: |
+      For each coordinate, perturb by `+h` and `-h`, take the central difference, and assemble the
+      numeric gradient. Compare with a relative error over the whole vector — a per-component
+      absolute tolerance fails on components near zero for no real reason. Sweep `h` over `1e-4` to
+      `1e-7` and take the best, since truncation error dominates at large `h` and cancellation at
+      tiny `h`. Test at a random point where no ReLU/`max`/L1 term sits exactly on its kink, since
+      there the analytic subgradient and the finite-difference average legitimately disagree. Never
+      use the finite-difference gradient as the production gradient; it costs `O(n)` forward passes
+      and carries bounded accuracy.
+    commonWrongAnswer: Check each component with an absolute tolerance like `1e-8`.
+    followUps:
+      - Why a relative error and not per-component absolute?
+      - Why sweep the step size instead of using one small value?
+projects:
+  - id: lpgd-project-gradient-geometry-kit
+    kind: small
+    title: Build a gradient-geometry and attribution kit
+    minutes: 160
+    summary: Implement a numerical gradient with vector relative-error checking, a directional-derivative helper (forward-mode and dot-product), a level-set / steepest-descent visualiser, and vanilla/SmoothGrad/Integrated-Gradients attribution with a completeness check.
+    problem: |
+      Build a toolkit that operationalises the gradient's geometry: `numerical_gradient(f, x)` with
+      swept step and a vector relative-error `gradcheck`; `directional(grad, v)` and a forward-mode
+      `jvp(f, x, v)` that agree; `descent_field(f, region)` returning `-grad f` on a grid for a
+      quiver plot plus the level-set values; and `attribute(model, x, target, method)` for vanilla
+      gradient, SmoothGrad, and Integrated Gradients with the IG completeness residual and a
+      deletion-metric sanity check.
+    requirements:
+      - "`numerical_gradient` uses central differences, sweeps `h`, and returns the most self-consistent estimate."
+      - "`gradcheck` uses `||g_a - g_n|| / (||g_a|| + ||g_n|| + eps)` and a threshold, not per-component absolute."
+      - "`jvp` (forward mode) and `directional(numerical_gradient(...), v)` agree within tolerance for a unit `v`."
+      - "`descent_field` returns `-grad f` at grid points and the `f` values for contouring."
+      - "`attribute` implements all three methods with autodiff, reports the IG completeness residual, and a deletion AUC."
+      - Every result carries its parameters (step sizes, baseline, noise level, sample count).
+    constraints:
+      - NumPy and the standard library for the core; a small autodiff (from lesson 2) or a framework for `jvp` and `attribute`.
+      - Never gradient-check with a per-component absolute tolerance.
+      - Never use pixel perturbation for attribution; use autodiff.
+      - Never present an attribution map without stating its first-order, input-specific nature.
+    expectedBehaviour:
+      - "`numerical_gradient` error is U-shaped in `h` with the minimum near `1e-6`."
+      - "`jvp` matches the dot-product directional derivative for random unit `v`."
+      - "`descent_field` arrows are perpendicular to the plotted contours."
+      - Integrated Gradients on a linear model equals `w * (x - x0)` and its completeness residual is near zero.
+      - SmoothGrad has visibly lower variance than the vanilla gradient on a noisy input.
+    structure: |
+      gradkit/
+        __init__.py
+        numgrad.py
+        directional.py
+        field.py
+        attribution.py
+      tests/
+        test_numgrad.py
+        test_directional.py
+        test_field.py
+        test_attribution.py
+    milestones:
+      - title: "1 — Numerical gradient and check"
+        detail: Swept-`h` central differences and a vector relative-error `gradcheck`.
+      - title: "2 — Directional derivative"
+        detail: Dot-product and forward-mode `jvp`, cross-checked.
+      - title: "3 — Descent field"
+        detail: Grid of `-grad f` and `f` values; orthogonality-to-contour check.
+      - title: "4 — Attribution"
+        detail: Vanilla, SmoothGrad, Integrated Gradients with completeness and a deletion metric.
+    testing:
+      - Numerical-gradient error U-shaped in `h`.
+      - "`jvp` versus dot-product directional derivative on random unit vectors."
+      - Field arrows orthogonal to contour tangents on quadratics.
+      - IG completeness near zero on a linear model; attributions equal `w * (x - x0)`.
+      - SmoothGrad variance lower than vanilla on a perturbed input.
+    failureCases:
+      - "`gradcheck` uses per-component absolute tolerance and fails on small components."
+      - "`directional` is fed a non-unit vector and overstates the rate."
+      - Attribution uses finite differences and is prohibitively slow or noisy.
+      - IG omits the `(x - x0)` factor and completeness fails.
+    bonus:
+      - Add an FGSM adversarial step and measure the loss increase for a fixed epsilon budget.
+      - Add a deletion/insertion AUC plot for the attribution methods.
+      - Emit a gradient-geometry report as Markdown.
+    architectureHints:
+      - Reuse the swept-`h` central-difference helper in `numgrad` and any numerical `jvp` fallback.
+      - Represent an attribution result as an object with `map`, `method`, `params`, `completeness`, `deletion_auc`.
+      - Keep the relative-error metric in one place.
+    referenceOutline: |
+      `numgrad.numerical_gradient` loops coordinates and `h` values. `directional.jvp` uses dual
+      numbers or a framework `jvp`. `field.descent_field` meshes the region and evaluates `-grad f`.
+      `attribution.attribute` branches on method: mean over Gaussian samples for SmoothGrad,
+      trapezoidal path integral times `(x - x0)` for IG.
+  - id: lpgd-final-attribution-audit
+    kind: final-challenge
+    title: Fix a broken saliency and adversarial pipeline
+    minutes: 75
+    summary: Given an input-gradient pipeline that perturbs pixels for the gradient, uses a per-component absolute gradient check, feeds non-unit directions to a directional derivative, and omits the IG baseline, correct each fault with fail-before-fix tests.
+    problem: |
+      A pipeline has four faults: (1) it estimates `grad_x` by perturbing each pixel with a finite
+      difference (thousands of forward passes, noisy); (2) its gradient check compares components
+      with an absolute `1e-8`; (3) a "confidence-change along the attack direction" number uses
+      `grad @ (x_target - x)` without normalising; (4) its Integrated Gradients call omits the
+      baseline and the `(x - x0)` factor, so completeness fails. Produce an audit that switches
+      `grad_x` to autodiff, fixes the gradient check to a vector relative error, normalises the
+      directional derivative (or renames it), and repairs the IG computation, each with a
+      fail-before-fix regression.
+    requirements:
+      - Replace pixel-perturbation `grad_x` with an autodiff computation; show the speedup and the noise reduction against a high-precision reference.
+      - Replace the absolute component-wise gradient check with `||g_a - g_n|| / (||g_a|| + ||g_n|| + eps) < 1e-5`; show a small-component case it fixes.
+      - Normalise the direction in the directional-derivative number (or rename it to "predicted change to target under the linear model") and show the factor error.
+      - Add the baseline and `(x - x0)` factor to Integrated Gradients; show the completeness residual drops to near zero on a linear model.
+      - Provide one fail-before-fix test per fault and a clean end-to-end run.
+    constraints:
+      - Do not use finite differences for the production input gradient.
+      - Do not use a per-component absolute tolerance in the gradient check.
+      - Do not report Integrated Gradients without a stated baseline.
+    expectedBehaviour:
+      - Autodiff `grad_x` matches the reference far better than the pixel-perturbation version and is far faster.
+      - The relative-error gradient check passes correct gradients with small components.
+      - The directional-derivative number matches the raw value divided by the displacement norm.
+      - IG completeness residual is near zero after the fix; attributions on a linear model equal `w * (x - x0)`.
+      - Each fault has a regression that failed before its fix.
+    milestones:
+      - title: "1 — Autodiff input gradient"
+        detail: Replace pixel perturbation; benchmark speed and accuracy versus a reference.
+      - title: "2 — Gradient check and directional derivative"
+        detail: Vector relative error; normalise or rename the directional-derivative number.
+      - title: "3 — Integrated Gradients"
+        detail: Add baseline and `(x - x0)`; verify completeness on a linear model.
+    testing:
+      - Fail-before-fix regressions for the pixel-perturbation gradient, the absolute gradient check, the non-unit directional derivative, and the baseline-less IG.
+      - A speed/accuracy comparison of autodiff versus pixel perturbation.
+      - A linear-model completeness check for IG.
+    failureCases:
+      - The autodiff gradient is added but a downstream reduction still uses the noisy one.
+      - The gradient check is relative but still per-component rather than over the vector.
+      - IG uses a baseline but forgets the `(x - x0)` multiply, so completeness still fails.
+    bonus:
+      - Add SmoothGrad and quantify its variance reduction versus the vanilla gradient.
+    architectureHints:
+      - Freeze the pre-fix failing checks and a high-precision `grad_x` reference as fixtures first.
+      - Fix one fault per commit and re-run the regressions.
+    referenceOutline: |
+      Autodiff `grad_x`: `x.requires_grad_(True); score = model(x)[target]; score.backward();
+      g = x.grad`. Check: vector relative error with swept `h`. Directional: `g @ (d /
+      np.linalg.norm(d))`. IG: `(x - x0) * mean_k g(x0 + (k/m)(x - x0))`, report
+      `|attr.sum() - (score(x) - score(x0))|`.
+resources:
+  - name: "3Blue1Brown — Gradient descent, and the gradient"
+    type: video
+    difficulty: intro
+    url: "https://www.3blue1brown.com/lessons/gradient-descent"
+    usefulness: 5
+    why: It builds the gradient as the direction of steepest ascent and shows why `-grad f` is the descent direction and how the geometry relates to the loss surface, exactly this lesson's framing.
+    covers: The gradient as steepest ascent, gradient descent as following `-grad f`, the role of the learning rate, and the loss-surface picture.
+  - name: "MIT 18.02 Multivariable Calculus (OCW) — gradient and directional derivatives"
+    type: university
+    difficulty: intro
+    url: "https://ocw.mit.edu/courses/18-02sc-multivariable-calculus-fall-2010/"
+    usefulness: 4
+    why: The standard treatment of partial derivatives, the gradient, directional derivatives, the tangent plane, and why the gradient is normal to level sets, at the level this lesson assumes.
+    covers: Partial derivatives, the gradient vector, directional derivatives, the total differential and linear approximation, and gradients normal to level curves and surfaces.
+  - name: "Sundararajan, Taly, Yan — Axiomatic Attribution for Deep Networks (Integrated Gradients)"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1703.01365"
+    usefulness: 4
+    why: It defines Integrated Gradients, the completeness and sensitivity axioms, and why raw gradients fail them due to saturation — the robust input-gradient method referenced here.
+    covers: The completeness and sensitivity axioms, the path integral of input gradients, baseline choice, and comparison with raw gradients and other attribution methods.
+  - name: "Smilkov, Thorat, Kim, Viegas, Wattenberg — SmoothGrad"
+    type: article
+    difficulty: core
+    url: "https://arxiv.org/abs/1706.03825"
+    usefulness: 3
+    why: It shows that averaging the input gradient over small input perturbations removes the visual noise of raw saliency maps, a simple and widely used denoising of `grad_x`.
+    covers: Noise in vanilla gradient saliency, averaging over Gaussian input perturbations, the effect of noise level and sample count, and qualitative comparisons.
+  - name: "Boyd and Vandenberghe — Introduction to Applied Linear Algebra (derivatives and gradients chapter)"
+    type: book
+    difficulty: core
+    url: "https://web.stanford.edu/~boyd/vmls/"
+    usefulness: 4
+    why: It develops the gradient and first-order approximation from a data-fitting perspective, including the least-squares gradient and the geometry of level sets, with a free PDF.
+    covers: The gradient and Jacobian, first-order Taylor approximation, gradients of common data-fitting objectives, and the geometry of sublevel sets.

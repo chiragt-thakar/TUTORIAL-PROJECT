@@ -124,7 +124,7 @@ test("navigation groups mirror the roadmap's phases, then the cross-cutting trac
 });
 
 /**
- * Roadmap lessons are now being authored in place (see `PRACTICE_SYSTEM.md`), so prose inside
+ * Roadmap lessons are authored in place (see `CLAUDE.md`), so prose inside
  * `content/modules/mastery/` is expected rather than forbidden. What still has to hold is that
  * the generated outline and the written work agree: a written lesson is published, a published
  * lesson is written, and a module only calls itself available once every one of its lessons is.

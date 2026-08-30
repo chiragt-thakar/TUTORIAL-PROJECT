@@ -1,0 +1,388 @@
+---
+id: "roadmap:phase-2-2.1:13"
+title: "Computational cost: FLOPs of matmul, memory layout, why batching wins"
+description: Count the FLOPs of the matmuls in a model, use arithmetic intensity and the roofline to tell compute-bound from memory-bound, and see why batching turns a memory-bound matrix–vector product into a compute-bound matrix–matrix one.
+module: 2-1-linear-algebra
+order: 14
+estimatedMinutes: 120
+prerequisites: []
+learningObjectives:
+  - Count the FLOPs of a matmul and of the main layers of a transformer, and use the 2·params·tokens rule
+  - Compute arithmetic intensity and place an operation on the roofline as compute- or memory-bound
+  - Explain why a row-major layout, contiguity, and cache blocking matter, and what BLAS level 3 buys
+  - Show quantitatively why batching amortises the weight load and moves a matvec into the compute-bound regime
+---
+
+The cost of a model is dominated by matrix multiplications, and a matmul's cost has two parts: the
+arithmetic (FLOPs) and the data movement (bytes). Which one dominates decides whether an operation is
+compute-bound or memory-bound, and that decides what makes it faster.
+
+Batching is the central trick. A matrix–vector product moves the whole weight matrix to do `O(d^2)`
+work — memory-bound. Batching many inputs into a matrix–matrix product does `O(B*d^2)` work for the
+same weight load — compute-bound once `B` is large enough. Same FLOPs per example, far better
+hardware use.
+
+<TypeScriptComparison>
+
+- A hand-written triple loop `for i,j,k: C[i][j] += A[i][k]*B[k][j]` in TypeScript is `2mkn` FLOPs but runs at a tiny fraction of peak because it reuses nothing from cache.
+- BLAS `gemm` (what NumPy `@` calls) tiles the loops so each block of `A` and `B` is reused `O(tile)` times from cache; that is the whole reason `np.dot` is 100x faster than the loop for the same arithmetic.
+- `performance.now()` around an op in JS is the same measurement you would do with `time.perf_counter` in Python; both are dominated by memory traffic for small matrices.
+- Neither language exposes arithmetic intensity directly; you compute it as `flops / bytes_moved` from the shapes and the dtype size.
+
+</TypeScriptComparison>
+
+## Counting FLOPs
+
+A matmul of `(m, k)` by `(k, n)` computes `m*n` output entries, each a dot product of length `k`:
+`k` multiplies and `k` adds, so `2*m*k*n` floating-point operations. (Some people count only the
+multiplies, `m*k*n`; state which convention you use.)
+
+The main layers follow:
+
+- Linear layer, batch `B`, `d_in -> d_out`: `2 * B * d_in * d_out`.
+- Attention scores, batch `B`, heads `H`, sequence `S`, head dim `d`: `2 * B * H * S^2 * d`, and the
+  same again for the value mix.
+- Transformer forward pass, rule of thumb: about `2 * (number of parameters) * (number of tokens)`.
+
+```python
+def linear_flops(B, d_in, d_out):
+    return 2 * B * d_in * d_out
+
+def attention_flops(B, H, S, d):
+    return 2 * (2 * B * H * S * S * d)      # scores + value mix
+
+assert linear_flops(32, 1024, 4096) == 2 * 32 * 1024 * 4096
+# a 7B-param model on 2048 tokens: ~2 * 7e9 * 2048 ~ 2.9e13 FLOPs per forward pass
+```
+
+## Arithmetic intensity and the roofline
+
+Arithmetic intensity is `FLOPs / bytes moved from memory`. The roofline model says achievable
+performance is `min(peak FLOP/s, intensity * memory bandwidth)`. Below a hardware-specific intensity
+you are memory-bound (a flat line rising with intensity); above it you are compute-bound (a flat
+ceiling at peak FLOP/s).
+
+A matrix–vector product `W x` with `W` of shape `(d, d)` in fp32 moves about `4*d^2` bytes and does
+`2*d^2` FLOPs, so intensity is about `0.5` — deeply memory-bound. A square matmul `W X` with `X` of
+shape `(d, B)` moves about `4*d^2` bytes but does `2*d^2*B` FLOPs, so intensity is about `B/2` —
+compute-bound once `B` passes the roofline knee (often tens to low hundreds).
+
+```python
+def intensity_matvec(d, bytes_per=4):
+    return (2 * d * d) / (bytes_per * d * d)      # ~0.5
+
+def intensity_matmul(d, B, bytes_per=4):
+    return (2 * d * d * B) / (bytes_per * (d * d + d * B + d * B))
+
+assert intensity_matvec(4096) < 1
+assert intensity_matmul(4096, 256) > 50          # now compute-bound
+```
+
+<Concept>
+
+FLOPs are not time. A memory-bound op runs at `intensity * bandwidth`, far below peak FLOP/s, no
+matter how few FLOPs it has. Making a memory-bound op faster means moving less data or raising its
+intensity (batching, fusion), not reducing arithmetic.
+
+</Concept>
+
+## Memory layout and BLAS levels
+
+An n-d array is a flat buffer read in cache-line chunks (typically 64 bytes). Row-major means the
+last axis is contiguous, so iterating the last axis is a streaming read and iterating the first axis
+of a wide matrix jumps a full row each step — a cache miss per element.
+
+BLAS is organised in levels by how much data reuse each operation allows. Level 1 is vector–vector
+(`O(n)` work, `O(n)` data, no reuse). Level 2 is matrix–vector (`O(n^2)` work, `O(n^2)` data,
+`O(1)` reuse). Level 3 is matrix–matrix (`O(n^3)` work, `O(n^2)` data, `O(n)` reuse). Only level 3
+can approach peak, because each element loaded is used many times.
+
+```python
+import numpy as np
+d = 2048
+W = np.random.default_rng(0).standard_normal((d, d)).astype(np.float32)
+x = np.random.default_rng(1).standard_normal(d).astype(np.float32)
+X = np.random.default_rng(2).standard_normal((d, 256)).astype(np.float32)
+# W @ x is BLAS level 2 (memory-bound); W @ X is level 3 (compute-bound)
+assert (W @ x).shape == (d,)
+assert (W @ X).shape == (d, 256)
+```
+
+## Why batching wins, quantitatively
+
+Run one input through a linear layer: load `W` (`d^2` numbers), do `2*d^2` FLOPs, intensity `~0.5`.
+The hardware spends almost all its time waiting for `W` to arrive from memory and its arithmetic
+units idle.
+
+Now stack `B` inputs. You still load `W` once, but do `2*d^2*B` FLOPs — the weight load is amortised
+over `B` examples, intensity rises to about `B/2`, and past the roofline knee the op runs at peak
+FLOP/s. The FLOPs per example are unchanged; the *efficiency* went from a few percent to near 100%.
+This is why training and inference batch, and why tiny-batch inference is latency- rather than
+throughput-optimal.
+
+```python
+import time
+def time_op(fn, iters=50):
+    fn(); t = time.perf_counter()
+    for _ in range(iters): fn()
+    return (time.perf_counter() - t) / iters
+
+t_matvec = time_op(lambda: W @ x)
+t_matmul = time_op(lambda: W @ X)
+# per-example time for the batched version is far lower than the matvec
+assert t_matmul / 256 < t_matvec
+```
+
+<WhyItMatters>
+
+Model FLOP utilisation (MFU) — achieved FLOP/s over peak — is the headline efficiency metric for
+training. Small batches, memory-bound elementwise ops, unfused kernels, and non-contiguous layouts
+all pull it down. Choosing batch size for the roofline, fusing ops, padding shapes to tensor-core
+multiples, and keeping tensors contiguous are the standard levers.
+
+</WhyItMatters>
+
+## Trading FLOPs for memory, and precision
+
+Activation checkpointing recomputes activations in the backward pass instead of storing them: more
+FLOPs (one extra forward), much less memory. It is the standard way to fit larger models or batches.
+
+Lower precision raises throughput: fp16 and bf16 roughly double FLOP/s versus fp32 and halve the
+bytes moved (so they help memory-bound ops too), and int8 more still. Accumulate the reduction in
+fp32 to keep accuracy. The cost model changes: `bytes_per` in the intensity formula drops, shifting
+the roofline knee.
+
+```python
+Wh = W.astype(np.float16); Xh = X.astype(np.float16)
+# half the bytes moved and (on supporting hardware) ~2x FLOP/s
+assert Wh.nbytes == W.nbytes // 2
+```
+
+## Doing this in floating point
+
+Wall time rarely matches the FLOP estimate divided by peak: kernel launch overhead, Python
+dispatch, memory-bound sections, and imperfect tiling all add up. Measure MFU on the real workload
+rather than trusting a spreadsheet.
+
+Reordering a matmul chain or an einsum for fewer FLOPs also changes the rounding, so outputs move in
+the last bits — expected. And a "faster" low-precision path can change results enough to matter for
+a sensitive metric; validate on the task, not just on speed.
+
+<ProductionNote>
+
+Profile before optimising: find the op that actually dominates wall time, check whether it is
+compute- or memory-bound (intensity versus the roofline knee), and apply the matching fix — batch or
+fuse for memory-bound, better tiling or lower precision or fewer FLOPs for compute-bound. Track MFU
+over training as a regression signal.
+
+</ProductionNote>
+
+## Cost
+
+A dense `(m, k) @ (k, n)` is `2*m*k*n` FLOPs and `~4*(m*k + k*n + m*n)` bytes in fp32. Its intensity
+is roughly `2*m*k*n / (4*(m*k + k*n + m*n))`, which grows with the smallest dimension — so tall-thin
+and matvec shapes are memory-bound and square-large shapes are compute-bound.
+
+Elementwise ops (activations, layernorm, adds) are always memory-bound: `O(n)` FLOPs for `O(n)`
+bytes, intensity `~1`. Fusing them into an adjacent matmul or into each other removes round trips to
+memory and is often a bigger win than any change to the matmul itself.
+
+## Exercises
+
+<Exercise id="la-cost-count-linear" difficulty="easy">
+
+A linear layer maps `d_in = 2048` to `d_out = 8192` for a batch of 64. Give the forward FLOP count
+(both multiply-add and multiply-only conventions) and the parameter count.
+
+<Solution>
+
+Parameters: `d_in * d_out = 2048 * 8192 = 16,777,216` in the weight, plus `8192` bias, about
+`16.8M`.
+
+Forward FLOPs, multiply-add convention: `2 * B * d_in * d_out = 2 * 64 * 2048 * 8192 =
+2,147,483,648`, about `2.1e9`. Multiply-only convention: half that, about `1.07e9`. The bias add is
+`B * d_out = 524,288`, negligible.
+
+Sanity check against the rule of thumb `2 * params * tokens`: `2 * 16.8e6 * 64 ~ 2.1e9`, matching.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-cost-intensity" difficulty="medium">
+
+For `W` of shape `(4096, 4096)` in fp32, compute the arithmetic intensity of `W @ x` (a vector) and
+of `W @ X` with `X` shape `(4096, 128)`. Classify each as compute- or memory-bound given a roofline
+knee near intensity 40.
+
+<Solution>
+
+`W @ x`: FLOPs `2 * 4096 * 4096 ~ 3.36e7`. Bytes moved (fp32): `W` is `4 * 4096^2 ~ 6.7e7`, `x` and
+the output are `~1.6e4` each, so about `6.7e7` bytes. Intensity `~ 3.36e7 / 6.7e7 ~ 0.5`. Far below
+40: **memory-bound**.
+
+`W @ X`: FLOPs `2 * 4096 * 4096 * 128 ~ 4.3e9`. Bytes: `W` `~6.7e7`, `X` `4 * 4096 * 128 ~ 2.1e6`,
+output same, so about `7.1e7` bytes. Intensity `~ 4.3e9 / 7.1e7 ~ 60`. Above 40: **compute-bound**.
+
+The FLOPs per column are identical (`2 * 4096^2`) in both cases; batching to 128 columns raised the
+intensity by roughly 128x by reusing the one `W` load, crossing the knee.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-cost-blas-levels" difficulty="hard">
+
+Explain why BLAS level 3 (matrix–matrix) can approach peak FLOP/s while levels 1 and 2 cannot, in
+terms of data reuse and the memory hierarchy.
+
+<Solution>
+
+Peak FLOP/s is only reachable if the arithmetic units are fed from fast memory (registers, L1)
+rather than stalling on DRAM. The deciding quantity is how many FLOPs each byte loaded from DRAM
+supports.
+
+Level 1 (e.g. `axpy`, `y = a*x + y`): `O(n)` FLOPs over `O(n)` data, so each element is used a
+constant number of times. Intensity is `~1`; the op runs at bandwidth, a small fraction of peak.
+
+Level 2 (e.g. `gemv`, `y = A x`): `O(n^2)` FLOPs over `O(n^2)` data (the matrix `A` dominates), so
+again `O(1)` reuse per element. Still memory-bound.
+
+Level 3 (`gemm`, `C = A B`): `O(n^3)` FLOPs over `O(n^2)` data, so each element participates in
+`O(n)` FLOPs. A blocked implementation loads a tile of `A` and a tile of `B` into cache and reuses
+each loaded value across the whole tile of `C`, so DRAM traffic is amortised `O(tile)` times.
+
+That reuse is what lets `gemm` run at 70 to 95% of peak while `axpy` and `gemv` sit at the bandwidth
+ceiling, and it is why dense algorithms are rewritten to expose `gemm` (blocked LU, blocked QR)
+rather than sequences of `gemv`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-cost-interview-batching" difficulty="interview">
+
+In an interview: "Why is inference throughput so much higher with a large batch, even though the
+FLOPs per example are the same?"
+
+<Solution>
+
+Because the weight matrices are loaded from memory once per batch, not once per example. A single
+input through a linear layer is a matrix–vector product: it streams the entire weight matrix from
+DRAM (`~d^2` numbers) to do only `~2*d^2` FLOPs, an arithmetic intensity around `0.5`. The op is
+memory-bound, so the arithmetic units sit mostly idle and the effective FLOP/s is a few percent of
+peak.
+
+Batching `B` inputs makes it a matrix–matrix product. The same one weight load now supports
+`2*d^2*B` FLOPs, so intensity rises to about `B/2`, and once that crosses the roofline knee
+(typically tens to low hundreds, lower in fp16) the op becomes compute-bound and runs near peak.
+
+Throughput — examples per second — then scales with `B` even though FLOPs per example are unchanged,
+because efficiency went from a few percent to near 100%.
+
+The trade-off is latency: a single example still has to wait for the whole batch to be assembled and
+processed, so latency-critical serving uses small batches and accepts the lower utilisation, often
+with techniques like continuous batching to recover some throughput.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-cost-profiling-real-world" difficulty="real-world">
+
+A training step is slower than the FLOP estimate predicts. You have a profiler. Describe how you
+localise and fix the bottleneck.
+
+<Solution>
+
+First, get the breakdown: run the profiler and sort kernels by wall time. Do not optimise anything
+until you know which op dominates — it is often not the big matmuls.
+
+For the top op, decide compute- or memory-bound. Estimate its arithmetic intensity from the shapes
+and dtype, and compare with the hardware's roofline knee; or read the profiler's achieved FLOP/s and
+bandwidth. Memory-bound signs: elementwise ops (activation, layernorm, residual add, dropout),
+small-batch matmuls, attention at short sequence length, or an op working on a non-contiguous view.
+
+Apply the matching fix. Memory-bound: fuse elementwise ops into neighbours, raise the batch toward
+the roofline knee, cast to bf16 to halve bytes moved, and insert `contiguous()` before an op reading
+a transposed view.
+
+Compute-bound: pad shapes to tensor-core multiples (8 or 16), use fp16/bf16 with fp32 accumulation,
+check the matmul hits a good BLAS path, and reduce FLOPs where the maths allows (low-rank factors,
+fewer layers, shorter context).
+
+Also look for non-kernel time: Python dispatch, host–device syncs, dataloader stalls, and kernel
+launch overhead on many tiny ops (fix with fusion or CUDA graphs).
+
+Re-profile after each change and track MFU (achieved FLOP/s over peak) as the summary number; a
+change that does not move MFU on the real workload did not help.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Give the FLOP count of an `(m, k) @ (k, n)` matmul and of a batch-`B` linear layer.
+2. Define arithmetic intensity and state what the roofline model predicts from it.
+3. Why is `W @ x` memory-bound while `W @ X` with a wide `X` is compute-bound?
+4. What data-reuse property lets BLAS level 3 approach peak FLOP/s when levels 1 and 2 cannot?
+5. Batching does not change FLOPs per example — so why does it raise throughput so much?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="I halved the FLOPs of my model but it is barely faster.">
+
+The dominant op was probably memory-bound, so its time was set by bytes moved, not FLOPs. Reducing
+arithmetic does nothing there. Check the arithmetic intensity and target the data movement instead
+(batch, fuse, lower precision).
+
+</Gotcha>
+
+<Gotcha question="My attention is slow at short sequence length even though `S^2` is small.">
+
+Short `S` means the score matmul is small and memory-bound, and the elementwise softmax and masking
+dominate. Use a fused attention kernel, and remember that the compute-bound regime for attention is
+long sequences, not short ones.
+
+</Gotcha>
+
+<Gotcha question="`np.einsum` matches my matmul's FLOPs but runs much slower.">
+
+Without `optimize=True` a multi-operand einsum can pick a bad contraction path, and even a
+two-operand einsum may not dispatch to the tuned `gemm`. Use `optimize=True`, or just use `@` for a
+plain matmul.
+
+</Gotcha>
+
+<Gotcha question="I increased the batch size and per-example time stopped improving.">
+
+You crossed the roofline knee — the op is now compute-bound and running near peak, so further
+batching only adds latency and memory pressure without raising per-example efficiency. That batch
+size is the sweet spot for that op.
+
+</Gotcha>
+
+<Gotcha question="My fp16 run is faster but a downstream metric got worse.">
+
+Lower precision changes results, and the reduction may be accumulating in fp16. Accumulate in fp32,
+keep sensitive ops (softmax, layernorm, loss) in fp32, and validate the metric, not just the
+speed.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+A matmul of `(m, k)` by `(k, n)` costs `2*m*k*n` FLOPs; a transformer forward pass is about
+`2 * params * tokens`. But FLOPs are not time: an operation runs at `min(peak, intensity * bandwidth)`,
+where arithmetic intensity is FLOPs per byte moved, and the roofline knee separates memory-bound
+from compute-bound.
+
+Row-major layout and contiguity decide whether memory reads stream or thrash the cache. BLAS levels
+differ by data reuse: only level 3 (matrix–matrix) reuses each loaded element `O(n)` times and can
+approach peak, which is why algorithms are rewritten around `gemm`.
+
+Batching amortises the weight load: a memory-bound matrix–vector product at intensity `~0.5` becomes
+a compute-bound matrix–matrix product at intensity `~B/2`, running near peak with no change to FLOPs
+per example. Trade FLOPs for memory with checkpointing, raise throughput with lower precision, and
+always profile the real workload and track MFU. The Practice, Debug, Interview, Test, Project, and
+Review tabs build FLOP counting, the roofline, and a batching study.

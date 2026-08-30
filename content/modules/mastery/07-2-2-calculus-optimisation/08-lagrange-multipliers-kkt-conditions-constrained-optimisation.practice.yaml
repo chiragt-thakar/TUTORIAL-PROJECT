@@ -1,0 +1,833 @@
+lessonId: "roadmap:phase-2-2.2:7"
+module: 2-2-calculus-optimisation
+lesson: 08-lagrange-multipliers-kkt-conditions-constrained-optimisation
+title: "Lagrange multipliers, KKT conditions, constrained optimisation"
+summary: The objective gradient at a constrained optimum is a combination of the active constraint gradients. Lagrange multipliers formalise it for equalities, the KKT conditions extend it to inequalities, and the multipliers are shadow prices — the machinery behind SVMs, max-entropy softmax, PCA, and trust regions.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lgm-read-penalty
+    tier: normal
+    kind: code-reading
+    title: Read a penalty objective
+    minutes: 10
+    requiredForMastery: true
+    concepts: [penalty-method, constrained-optimisation, ill-conditioning]
+    prompt: |
+      Read this and say what it does to the constraints `g_i(x) <= 0`, why `rho` must grow over
+      outer iterations, and the downside of large `rho`.
+      ```python
+      def penalty_objective(f, g_list, x, rho):
+          return f(x) + rho * sum(max(0.0, g(x))**2 for g in g_list)
+      ```
+    hints:
+      - The extra term is zero when a constraint is satisfied and positive when violated.
+      - As `rho` grows the penalised minimum is pushed toward feasibility.
+    solution: |
+      It replaces the hard constraints with a soft quadratic penalty on their violation: `max(0,
+      g_i)^2` is `0` when `g_i <= 0` and grows with the amount of violation. Minimising the sum for
+      a fixed `rho` gives a slightly-infeasible point; increasing `rho` over a sequence of outer
+      minimisations drives the point toward the feasible region and, in the limit `rho -> infinity`,
+      to the constrained optimum. The downside is conditioning: the Hessian of the penalty term
+      scales with `rho`, so for large `rho` the problem becomes badly ill-conditioned and the inner
+      solver slows or fails. An augmented Lagrangian (penalty plus an explicit multiplier estimate)
+      avoids needing `rho -> infinity`.
+  - id: lgm-write-lagrangian-stationarity
+    tier: normal
+    kind: write-code
+    title: Lagrangian stationarity residual
+    minutes: 12
+    requiredForMastery: true
+    concepts: [lagrangian, stationarity, kkt-residual]
+    prompt: |
+      Write `kkt_residual(grad_f, jac_g, g_vals, x, lam)` for equality-constrained
+      `min f s.t. g(x) = 0`, returning the concatenation of the stationarity residual
+      `grad_f(x) + jac_g(x).T @ lam` and the feasibility residual `g_vals(x)`.
+    hints:
+      - Stationarity is `grad f + sum_i lam_i grad g_i = 0`.
+      - "`jac_g(x)` has row `i` equal to `grad g_i(x)`."
+    solution: |
+      `return np.concatenate([grad_f(x) + jac_g(x).T @ lam, g_vals(x)])`. A KKT point drives this
+      whole vector to zero: the first block is `grad_x L = 0` (the objective gradient balanced
+      against the constraint gradients weighted by the multipliers `lam`), and the second block is
+      primal feasibility `g(x) = 0`. Newton's method on this `(n + m)`-dimensional residual — with
+      Jacobian the `(n + m) x (n + m)` KKT / saddle-point matrix `[[H, J.T], [J, 0]]` — is the core
+      of an equality-constrained solver. The residual norm is the convergence measure, not the
+      objective value.
+  - id: lgm-predict-multiplier-sign
+    tier: normal
+    kind: predict-output
+    title: Multiplier sign from the convention
+    minutes: 10
+    requiredForMastery: true
+    concepts: [dual-feasibility, sign-convention, kkt]
+    prompt: |
+      With Lagrangian `L = f + sum mu_i g_i` and constraints written `g_i(x) <= 0`, what sign must
+      each `mu_i` have at a KKT point? If a solver reports `mu_1 = -3` for an active constraint, what
+      is the likely bug?
+    hints:
+      - Dual feasibility is one of the four KKT conditions.
+      - A negative inequality multiplier is a red flag.
+    solution: |
+      Dual feasibility requires `mu_i >= 0` for every inequality constraint, given the convention
+      `L = f + sum mu_i g_i` with `g_i <= 0`. A reported `mu_1 = -3` for an active constraint almost
+      certainly means a sign or convention mismatch: the constraint was actually written `g_1 >= 0`
+      (so it should be negated to `-g_1 <= 0`), or the Lagrangian uses `f - mu g`, or the solver's
+      output convention differs. The fix is to pick one convention, rewrite every inequality as
+      `something <= 0`, and re-check; the magnitude `|mu_1| = 3` is likely correct and just needs
+      its sign flipped.
+  - id: lgm-explain-geometry
+    tier: normal
+    kind: explain
+    title: The parallel-gradients picture
+    minutes: 10
+    requiredForMastery: true
+    concepts: [lagrange-condition, gradient, constraint-surface]
+    prompt: |
+      Explain geometrically why `grad f(x*) = lam * grad g(x*)` at a solution of
+      `min f s.t. g(x) = 0`.
+    hints:
+      - Moving along the constraint surface keeps `g` constant.
+      - At the optimum you cannot decrease `f` by such a move.
+    solution: |
+      The constraint surface `{g(x) = 0}` has tangent directions `t` satisfying `grad g(x*) . t = 0`.
+      If `grad f(x*)` had any component along such a `t`, you could move a little in the direction
+      `-t` (staying on the surface to first order) and decrease `f` — so `x*` would not be optimal.
+      Hence `grad f(x*)` must be orthogonal to every tangent direction of the surface, i.e. parallel
+      to the surface normal `grad g(x*)`: `grad f(x*) = lam * grad g(x*)` for some scalar `lam`.
+      With several constraints, `grad f` lies in the span of the active constraint gradients.
+  - id: lgm-shadow-price
+    tier: intermediate
+    kind: predict-output
+    title: Multiplier as sensitivity
+    minutes: 12
+    requiredForMastery: true
+    concepts: [shadow-price, sensitivity, optimal-value]
+    prompt: |
+      For `min x^2 + y^2 s.t. x + y = c`, the optimal value is `f*(c) = c^2 / 2`. Give the multiplier
+      `lam(c)` (Lagrangian `L = f - lam(x + y - c)`) and verify `df*/dc = lam`.
+    hints:
+      - Solve stationarity `(2x, 2y) = lam (1, 1)` with the constraint.
+      - Differentiate `f*(c)` with respect to `c`.
+    solution: |
+      Stationarity gives `x = y = lam/2`, and `x + y = c` gives `lam = c`, so `x = y = c/2` and
+      `f* = 2 (c/2)^2 = c^2 / 2`. Then `df*/dc = c = lam(c)`. So the multiplier equals the marginal
+      change in the optimal value as the constraint level `c` moves: relaxing `x + y = c` to
+      `x + y = c + eps` changes the optimum by about `lam * eps = c * eps`. This "shadow price"
+      reading works for active inequality constraints too (with the multiplier `mu`), and a zero
+      multiplier means the constraint is not binding.
+  - id: lgm-svm-dual-structure
+    tier: intermediate
+    kind: explain
+    title: The SVM dual and support vectors
+    minutes: 14
+    requiredForMastery: true
+    concepts: [svm, dual-problem, complementary-slackness, support-vectors]
+    prompt: |
+      State the hard-margin SVM primal, name what the dual optimises over, and explain via
+      complementary slackness which points are support vectors.
+    hints:
+      - "The primal minimises `0.5||w||^2` subject to a margin inequality per point."
+      - Complementary slackness pairs each `alpha_i` with its margin constraint.
+    solution: |
+      Primal: `min 0.5 ||w||^2` subject to `y_i (w . x_i + b) >= 1` for every `i`. The dual
+      maximises `sum alpha_i - 0.5 sum_{i,j} alpha_i alpha_j y_i y_j (x_i . x_j)` over `alpha_i >= 0`
+      with `sum alpha_i y_i = 0`, and it depends on the data only through inner products (so a kernel
+      slots in). Complementary slackness is `alpha_i (y_i(w . x_i + b) - 1) = 0`: either `alpha_i =
+      0` (the point is strictly inside its margin and does not affect `w = sum alpha_i y_i x_i`) or
+      the margin constraint is tight, `y_i(w . x_i + b) = 1`, and `alpha_i > 0`. The points with
+      positive multipliers, lying exactly on the margin, are the support vectors — the only ones
+      that determine the classifier, which is why the solution is sparse in the examples.
+  - id: lgm-pca-lagrange
+    tier: intermediate
+    kind: write-code
+    title: PCA as a constrained Rayleigh quotient
+    minutes: 12
+    requiredForMastery: true
+    concepts: [pca, rayleigh-quotient, eigenvector, lagrange]
+    prompt: |
+      Set up `max v^T C v s.t. ||v||^2 = 1` as a Lagrangian problem and show its stationarity
+      condition is an eigenvalue equation. What does the multiplier represent?
+    hints:
+      - Lagrangian `L = v^T C v - lam (v^T v - 1)`.
+      - Differentiate with respect to `v`.
+    solution: |
+      `L(v, lam) = v^T C v - lam (v^T v - 1)`. Stationarity `grad_v L = 2 C v - 2 lam v = 0` gives
+      `C v = lam v` — `v` is an eigenvector of `C` and `lam` is its eigenvalue. Substituting back,
+      `v^T C v = lam v^T v = lam`, so the objective at a stationary point equals the multiplier. The
+      maximum of the constrained problem is therefore the largest eigenvalue, attained at the top
+      eigenvector; that eigenvalue is the variance captured along that direction. Deflating (adding
+      `w^T v = 0` constraints) and repeating gives the successive principal components — PCA is a
+      sequence of norm-constrained Rayleigh-quotient maximisations solved by Lagrange multipliers.
+  - id: lgm-weak-strong-duality
+    tier: intermediate
+    kind: predict-output
+    title: Weak versus strong duality
+    minutes: 12
+    requiredForMastery: true
+    concepts: [weak-duality, strong-duality, slater-condition, duality-gap]
+    prompt: |
+      For `min x^2 s.t. x >= 1`, the dual function is `d(mu) = mu - mu^2 / 4` for `mu >= 0`. Give
+      `p*`, `d* = max_mu d(mu)`, the duality gap, and say why strong duality holds here.
+    hints:
+      - Solve the primal directly for `p*`.
+      - Maximise the concave `d(mu)` over `mu >= 0`.
+    solution: |
+      Primal: `x^2` is minimised on `x >= 1` at `x = 1`, so `p* = 1`. Dual: `d(mu) = mu - mu^2 / 4`
+      is concave, maximised where `d'(mu) = 1 - mu/2 = 0`, i.e. `mu = 2`, giving `d* = 2 - 1 = 1`.
+      Duality gap `p* - d* = 0`. Strong duality holds because the problem is convex (a convex
+      quadratic objective, a convex feasible set) and Slater's condition is satisfied (there is a
+      strictly feasible point, e.g. `x = 2` with `x > 1`). So solving the dual recovers the primal
+      optimum, and `mu* = 2` is the shadow price of the constraint `x >= 1`.
+  - id: lgm-active-set-guess
+    tier: intermediate
+    kind: predict-output
+    title: Guess the active set
+    minutes: 12
+    requiredForMastery: true
+    concepts: [active-set, kkt, complementary-slackness]
+    prompt: |
+      For `min (x - 3)^2 + (y - 1)^2` subject to `x <= 2` and `y >= 0`, decide which constraints are
+      active at the optimum without a solver, then confirm with the KKT conditions.
+    hints:
+      - Start from the unconstrained minimiser and see which constraints it violates.
+      - An inactive constraint has a zero multiplier.
+    solution: |
+      The unconstrained minimiser is `(3, 1)`. It violates `x <= 2` (`3 > 2`) but satisfies `y >= 0`
+      (`1 >= 0`). Guess: `x <= 2` active, `y >= 0` inactive. Write `g_1 = x - 2 <= 0`,
+      `g_2 = -y <= 0`. Stationarity `grad f + mu_1 grad g_1 + mu_2 grad g_2 = 0`:
+      `(2(x - 3), 2(y - 1)) + mu_1 (1, 0) + mu_2 (0, -1) = 0`. With `g_2` inactive, `mu_2 = 0`, so
+      `2(y - 1) = 0` gives `y = 1`. The active `g_1` gives `x = 2`, and `2(2 - 3) + mu_1 = 0` gives
+      `mu_1 = 2 >= 0`. Complementary slackness: `mu_1 (x - 2) = 0` and `mu_2 (-y) = 0` both hold.
+      All KKT conditions satisfied, the problem is convex, so `(2, 1)` with `mu = (2, 0)` is the
+      global minimum. The guessed active set was correct.
+  - id: lgm-debug-sign-convention
+    tier: tricky
+    kind: debug
+    title: Constraint written the wrong way round
+    minutes: 14
+    requiredForMastery: true
+    concepts: [sign-convention, dual-feasibility, kkt]
+    prompt: |
+      This KKT check keeps failing dual feasibility (`mu >= 0`) on problems that clearly have a
+      solution. The constraint is passed as `constraint(x)` meaning "`x` is feasible iff
+      `constraint(x) >= 0`". Fix the check.
+    code: |
+      def kkt_ok(grad_f, grad_c, constraint, x, mu, tol=1e-6):
+          stat = np.linalg.norm(grad_f(x) + mu * grad_c(x))
+          return stat < tol and constraint(x) >= -tol and mu >= -tol and abs(mu * constraint(x)) < tol
+    solution: |
+      The KKT conditions with Lagrangian `L = f + mu * g` assume the inequality is written
+      `g(x) <= 0`. Here `constraint(x) >= 0` is the feasibility test, so the standard-form
+      constraint is `g(x) = -constraint(x) <= 0`, with gradient `-grad_c(x)`. The check must use
+      that: `stat = norm(grad_f(x) - mu * grad_c(x))`, primal feasibility `constraint(x) >= -tol`,
+      dual feasibility `mu >= -tol`, and complementary slackness `abs(mu * constraint(x)) < tol`
+      (slackness pairs `mu` with `g = -constraint`, so `mu * constraint(x) = 0` still). With the
+      sign of the stationarity term corrected, `mu` comes out non-negative. Regression: take
+      `min x^2 s.t. x >= 1`; the fixed check accepts `x = 1, mu = 2` and the old one rejected it.
+    hints:
+      - Standard-form KKT assumes `g(x) <= 0`; a `>= 0` constraint must be negated.
+      - Negating the constraint flips the sign in the stationarity term.
+  - id: lgm-debug-stationarity-only
+    tier: tricky
+    kind: debug
+    title: Checking only stationarity
+    minutes: 14
+    requiredForMastery: true
+    concepts: [kkt, primal-feasibility, complementary-slackness]
+    prompt: |
+      This routine declares a point optimal whenever the Lagrangian gradient is zero. It sometimes
+      accepts infeasible points or maxima. Fix it.
+    code: |
+      def is_optimal(grad_f, grad_gs, x, mus, tol=1e-6):
+          stat = grad_f(x) + sum(m * g(x) for m, g in zip(mus, grad_gs))
+          return np.linalg.norm(stat) < tol
+    solution: |
+      Stationarity is only one of four KKT conditions. A zero Lagrangian gradient also holds at
+      infeasible stationary points of `L`, at maxima, and at saddles of the Lagrangian. Add: primal
+      feasibility (`g_i(x) <= tol` for inequalities, `|h_j(x)| <= tol` for equalities); dual
+      feasibility (`mu_i >= -tol` for inequality multipliers); and complementary slackness
+      (`|mu_i * g_i(x)| <= tol * (1 + |mu_i| + |g_i(x)|)` for each inequality). Also note KKT is only
+      *necessary* under a constraint qualification, and for a non-convex problem a KKT point can be a
+      local max or a saddle — check second-order conditions (the Hessian of `L` restricted to the
+      tangent space of the active constraints is PSD) or the problem's convexity before claiming a
+      minimum. Regression: feed an infeasible stationary point and a constrained maximum and assert
+      both are rejected.
+    hints:
+      - Stationarity alone is satisfied at infeasible points and at maxima.
+      - Add primal feasibility, dual feasibility, and complementary slackness (and a second-order check).
+  - id: lgm-debug-penalty-blowup
+    tier: tricky
+    kind: debug
+    title: Cranking the penalty coefficient
+    minutes: 14
+    requiredForMastery: true
+    concepts: [penalty-method, ill-conditioning, augmented-lagrangian]
+    prompt: |
+      A constrained solver increases `rho` by 10x each outer iteration to force feasibility. After a
+      few rounds the inner solver stops converging. Explain and give a better scheme.
+    code: |
+      def solve(f, g_list, x0, rounds=8):
+          x, rho = x0, 1.0
+          for _ in range(rounds):
+              x = minimize(lambda z: f(z) + rho * sum(max(0.0, g(z))**2 for g in g_list), x)
+              rho *= 10
+    solution: |
+      Each `rho` multiplies the curvature of the penalty term, so the inner problem's Hessian gets
+      eigenvalues of order `rho` in the constraint-normal directions while the objective's stay
+      order 1 — the condition number grows like `rho`, and by `rho = 1e6` the inner minimisation is
+      numerically intractable. The classic fix is the **augmented Lagrangian**: minimise
+      `f(x) + sum_i lam_i g_i(x) + (rho/2) sum_i max(0, g_i(x))^2` (a moderate fixed or slowly
+      growing `rho`), and after each inner solve update the multiplier estimates
+      `lam_i <- max(0, lam_i + rho * g_i(x))`. The explicit `lam` term absorbs most of the
+      constraint force, so `rho` need not go to infinity, the conditioning stays bounded, and the
+      method converges under mild assumptions (this is the basis of ADMM). Alternatively use a
+      barrier / interior-point method that stays strictly feasible. Regression: on a fixture with a
+      tight constraint, assert the augmented-Lagrangian scheme reaches feasibility with `rho`
+      bounded while the pure penalty scheme's inner solver fails.
+    hints:
+      - The penalty Hessian scales with `rho`, so the condition number does too.
+      - Add an explicit multiplier estimate and update it each outer iteration.
+  - id: lgm-design-constrained-solver
+    tier: challenge
+    kind: design
+    title: Design a small constrained-optimisation interface
+    minutes: 26
+    requiredForMastery: false
+    concepts: [constrained-optimisation, projected-gradient, augmented-lagrangian, kkt-residual]
+    prompt: |
+      Design `minimize_constrained(f, grad_f, constraints, x0, method)` supporting projected
+      gradient (for simple sets), an augmented Lagrangian (for general constraints), and a KKT
+      residual as the convergence measure. State the interface, the per-method logic, and what it
+      must report.
+    hints:
+      - Projected gradient needs a projection oracle per constraint set.
+      - Augmented Lagrangian alternates an inner unconstrained solve and a multiplier update.
+    solution: |
+      Interface: `f`, `grad_f`, a list of constraint specs (each either a set with a `project`
+      oracle, an inequality `g_i` with `grad_g_i`, or an equality `h_j` with `grad_h_j`), `x0`, a
+      `method`, and tolerances. Projected-gradient path: iterate `x <- project_all(x - eta *
+      grad_f(x))`, requiring every constraint to be a set with a Euclidean projection; converge when
+      the projected-gradient norm is small. Augmented-Lagrangian path: maintain multiplier estimates
+      `lam` (equalities) and `mu >= 0` (inequalities) and a penalty `rho`; each outer iteration
+      minimise `f + lam.h + mu.max(0, g) + (rho/2)(||h||^2 + ||max(0, g)||^2)` to a loose inner
+      tolerance, then update `lam <- lam + rho h(x)`, `mu <- max(0, mu + rho g(x))`, and grow `rho`
+      only if the feasibility violation did not shrink enough. Report every iteration: the objective,
+      the max primal-feasibility violation, the stationarity residual norm `||grad_x L||`, the max
+      complementary-slackness product, and the multipliers. It must not use a fixed huge `rho`, must
+      not claim convergence from the objective alone (use the KKT residual), must check dual
+      feasibility, and must fall back or error if a constraint qualification appears to fail
+      (near-parallel active gradients). Golden cases: a box-constrained quadratic (projected
+      gradient), an equality-constrained least squares, and an inequality-constrained convex problem
+      with a known active set.
+  - id: lgm-refactor-penalty-to-auglag
+    tier: challenge
+    kind: refactor
+    title: Refactor a penalty method into an augmented Lagrangian
+    minutes: 24
+    requiredForMastery: false
+    concepts: [augmented-lagrangian, penalty-method, multiplier-update, conditioning]
+    prompt: |
+      A training routine enforces an equality constraint `h(theta) = 0` (e.g. a mean-zero or
+      norm-fixed constraint) with `loss + rho * h(theta)^2`, tuning `rho` by hand. It is fragile.
+      Refactor to an augmented Lagrangian with a multiplier update, keeping the base optimiser.
+    hints:
+      - Add a `lam * h(theta)` term and update `lam <- lam + rho * h(theta)` after each phase.
+      - Keep `rho` moderate and only grow it if feasibility stalls.
+    solution: |
+      Introduce a scalar (or vector) multiplier `lam` initialised to 0 and a moderate `rho`. The
+      augmented objective is `L_rho(theta) = loss(theta) + lam * h(theta) + (rho / 2) * h(theta)^2`.
+      Train in phases: run the base optimiser on `L_rho` for a fixed number of steps (or until the
+      gradient norm drops), then update `lam <- lam + rho * h(theta)`; if `|h(theta)|` did not
+      decrease by at least a factor (e.g. 0.5) since the last phase, set `rho <- 2 * rho`, else keep
+      it. Stop when `|h(theta)|` and the gradient of `L_rho` are both small. The explicit `lam` term
+      supplies the constraint force at the true multiplier value, so `rho` stays bounded and the
+      conditioning does not blow up, and the method converges to a KKT point under standard
+      assumptions. Add a fail-before-fix test: on a fixture, the pure-penalty version needs
+      `rho > 1e5` (and stalls) to reach `|h| < 1e-4`, while the augmented Lagrangian reaches it with
+      `rho <= 1e2` and a few phases.
+quizzes:
+  - id: lgm-checkpoint
+    title: Checkpoint — Lagrange multipliers and KKT
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lgm-cp-equality
+        kind: mcq
+        prompt: At a solution of `min f(x) s.t. g(x) = 0`, what holds?
+        options:
+          - {id: parallel, text: "`grad f(x*) = lam * grad g(x*)` for some scalar `lam`"}
+          - {id: zero, text: "`grad f(x*) = 0`"}
+          - {id: orth, text: "`grad f(x*)` is orthogonal to `grad g(x*)`"}
+        answer: [parallel]
+        explanation: The objective gradient is parallel to the constraint normal; it has no tangential component.
+        concepts: [lagrange-condition]
+        points: 1
+      - id: lgm-cp-kkt
+        kind: multi
+        prompt: Which are among the KKT conditions for `min f s.t. g_i(x) <= 0`?
+        options:
+          - {id: stat, text: "Stationarity: `grad f + sum mu_i grad g_i = 0`"}
+          - {id: primal, text: "Primal feasibility: `g_i(x) <= 0`"}
+          - {id: dual, text: "Dual feasibility: `mu_i >= 0`"}
+          - {id: slack, text: "Complementary slackness: `mu_i g_i(x) = 0`"}
+        answer: [stat, primal, dual, slack]
+        explanation: All four together characterise a KKT point.
+        concepts: [kkt-conditions]
+        points: 1
+      - id: lgm-cp-multiplier
+        kind: mcq
+        prompt: A Lagrange multiplier for an active constraint tells you what?
+        options:
+          - {id: shadow, text: The marginal change in the optimal value if the constraint is relaxed}
+          - {id: gradient, text: The gradient of the objective}
+          - {id: stepsize, text: The optimiser's step size}
+        answer: [shadow]
+        explanation: "`df*/dc = -lam` (shadow price / sensitivity)."
+        concepts: [shadow-price]
+        points: 1
+      - id: lgm-cp-duality
+        kind: mcq
+        prompt: When does solving the Lagrange dual give the exact primal optimum?
+        options:
+          - {id: convexslater, text: The problem is convex and satisfies a constraint qualification (Slater)}
+          - {id: always, text: Always}
+          - {id: never, text: Never; the dual is only a heuristic}
+        answer: [convexslater]
+        explanation: Weak duality always holds; strong duality (zero gap) needs convexity plus Slater.
+        concepts: [strong-duality, slater-condition]
+        points: 1
+  - id: lgm-assessment
+    title: Assessment — constrained optimisation
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lgm-as-lagrange
+        kind: explain
+        prompt: Derive the Lagrange condition for `min f(x) s.t. g(x) = 0` and give its geometric meaning.
+        modelAnswer: |
+          At `x*` no feasible direction decreases `f`. Feasible directions `t` satisfy `grad g(x*) .
+          t = 0` (tangent to the surface). If `grad f(x*)` had a tangential component you could
+          decrease `f` while staying feasible, so `grad f(x*)` must be parallel to the normal
+          `grad g(x*)`: `grad f(x*) = lam grad g(x*)`. This is `grad_x L = 0` for `L = f - lam g`,
+          and `dL/dlam = 0` recovers `g(x*) = 0`.
+        explanation: The objective gradient is normal to the constraint surface at the optimum.
+        concepts: [lagrange-condition]
+        points: 1
+      - id: lgm-as-kkt
+        kind: scenario
+        prompt: State the four KKT conditions and which one identifies the active constraints.
+        modelAnswer: |
+          Stationarity `grad f + sum mu_i grad g_i + sum lam_j grad h_j = 0`; primal feasibility
+          `g_i <= 0`, `h_j = 0`; dual feasibility `mu_i >= 0`; complementary slackness
+          `mu_i g_i = 0`. Complementary slackness identifies the active set: `g_i < 0` forces
+          `mu_i = 0` (inactive), so `mu_i > 0` only where `g_i = 0` (active).
+        explanation: Slackness pairs each multiplier with its constraint.
+        concepts: [kkt-conditions, complementary-slackness]
+        points: 1
+      - id: lgm-as-sign
+        kind: find-bug
+        prompt: A solver reports a negative multiplier for an active inequality. What is the likely cause?
+        modelAnswer: |
+          A sign-convention mismatch. Dual feasibility needs `mu >= 0` for constraints written
+          `g <= 0` with `L = f + sum mu_i g_i`. The constraint is probably written `g >= 0` (negate
+          it), or the Lagrangian uses `f - mu g`, or the output convention differs. Rewrite every
+          inequality as `something <= 0` and re-check; the magnitude is usually right.
+        explanation: Negative inequality multipliers signal a convention bug, not an algorithm failure.
+        concepts: [sign-convention, dual-feasibility]
+        points: 1
+      - id: lgm-as-shadow
+        kind: scenario
+        prompt: "`min x^2 + y^2 s.t. x + y = c` has multiplier `lam(c) = c`. What does this tell you?"
+        modelAnswer: |
+          The optimal value `f*(c) = c^2/2` changes at rate `df*/dc = c = lam(c)` as the constraint
+          level `c` moves. So relaxing the constraint by `eps` changes the optimum by about
+          `lam * eps`. A larger multiplier means the constraint is more binding / expensive; a zero
+          multiplier would mean it is not binding.
+        explanation: The multiplier is the sensitivity of the optimal value to the constraint.
+        concepts: [shadow-price]
+        points: 1
+      - id: lgm-as-svm
+        kind: scenario
+        prompt: In the SVM dual, which training points have `alpha_i > 0`, and why does that make the solution sparse?
+        modelAnswer: |
+          By complementary slackness `alpha_i (y_i(w.x_i + b) - 1) = 0`, so `alpha_i > 0` only when
+          the margin constraint is tight — the point lies exactly on the margin. These are the
+          support vectors. Since `w = sum alpha_i y_i x_i`, only support vectors contribute to `w`,
+          and there are usually few, so the classifier depends on a small subset of the data.
+        explanation: Slackness zeroes the multipliers of non-margin points.
+        concepts: [svm, complementary-slackness, support-vectors]
+        points: 1
+      - id: lgm-as-softmax
+        kind: scenario
+        prompt: Why is the softmax the maximum-entropy distribution, in Lagrangian terms?
+        modelAnswer: |
+          Maximising `-sum p_i log p_i` subject to `sum p_i = 1` and feature-expectation constraints
+          `sum p_i f_k(i) = mu_k` gives, from `dL/dp_i = 0`, `log p_i = const - sum_k lam_k f_k(i)`,
+          so `p_i proportional to exp(theta . f(i))` with `theta = -lam`. Normalisation makes this
+          the softmax over the linear scores. The multipliers are the natural parameters (logits).
+        explanation: Lagrangian stationarity of the entropy under linear constraints yields an exponential family.
+        concepts: [maximum-entropy, softmax]
+        points: 1
+      - id: lgm-as-pca
+        kind: write-function
+        prompt: Show that `max v^T C v s.t. ||v||^2 = 1` reduces to an eigenvalue problem.
+        modelAnswer: |
+          `L = v^T C v - lam(v^T v - 1)`; `grad_v L = 2 C v - 2 lam v = 0` gives `C v = lam v`. So
+          `v` is an eigenvector of `C` and the objective at a stationary point is `v^T C v = lam`.
+          The maximum is the largest eigenvalue at the top eigenvector.
+        explanation: The norm constraint's multiplier is the eigenvalue.
+        concepts: [pca, rayleigh-quotient]
+        points: 1
+      - id: lgm-as-trust-region
+        kind: scenario
+        prompt: Give the KKT characterisation of the trust-region subproblem `min g.p + 0.5 p.H.p s.t. ||p|| <= Delta`.
+        modelAnswer: |
+          With `c(p) = 0.5(||p||^2 - Delta^2) <= 0`: stationarity `(H + mu I) p = -g`; primal
+          feasibility `||p|| <= Delta`; dual feasibility `mu >= 0`; complementary slackness
+          `mu(||p|| - Delta) = 0`. Interior case `mu = 0`, `p = -H^{-1} g` (needs `H` PD and the step
+          short enough); boundary case `mu > 0`, `||p|| = Delta`, `H + mu I` PSD. The multiplier `mu`
+          is the Levenberg-Marquardt damping.
+        explanation: The damping and the trust radius are dual descriptions of the same constraint.
+        concepts: [trust-region, kkt-conditions]
+        points: 1
+      - id: lgm-as-duality
+        kind: true-false
+        prompt: Weak duality (`d* <= p*`) holds only for convex problems.
+        options:
+          - {id: "true", text: "True"}
+          - {id: "false", text: "False"}
+        answer: ["false"]
+        explanation: Weak duality holds for any problem; strong duality (zero gap) needs convexity plus Slater.
+        concepts: [weak-duality]
+        points: 1
+      - id: lgm-as-penalty
+        kind: find-bug
+        prompt: A solver drives the penalty coefficient `rho` toward infinity to enforce a constraint. Why does it fail, and what replaces it?
+        modelAnswer: |
+          The penalty term's curvature scales with `rho`, so the inner problem's condition number
+          grows like `rho` and the minimisation becomes numerically intractable. Use an augmented
+          Lagrangian: add an explicit multiplier estimate `lam` and update `lam <- lam + rho g(x)`
+          each outer iteration; the constraint force is then supplied at the true multiplier and
+          `rho` stays bounded. Or use a barrier / interior-point method.
+        explanation: The multiplier term removes the need for an unbounded penalty.
+        concepts: [penalty-method, augmented-lagrangian]
+        points: 1
+interview:
+  - id: lgm-iv-lagrange
+    level: basic
+    requiredForMastery: true
+    concepts: [lagrange-condition, constrained-optimisation]
+    question: What does a Lagrange multiplier mean?
+    shortAnswer: |
+      At a constrained optimum the objective gradient is a combination of the active constraint
+      gradients — `grad f = sum lam_i grad g_i` — and each `lam_i` is the exchange rate in that
+      balance: the marginal change in the optimal value if you relax constraint `i`.
+    fullAnswer: |
+      Geometrically, at a solution of `min f s.t. g(x) = 0` you cannot move along the constraint
+      surface to decrease `f`, so `grad f` has no tangential component and must be parallel to the
+      surface normal `grad g`: `grad f = lam grad g`. With several constraints, `grad f` lies in the
+      span of the active constraint gradients. Analytically this is the stationarity of the
+      Lagrangian `L = f - sum lam_i g_i`. The multiplier's value is a sensitivity: `df*/dc = -lam`
+      when the constraint level `c` moves, so a big multiplier flags an expensive, binding
+      constraint and a zero multiplier flags an inactive one. This "shadow price" reading is why
+      multipliers appear as prices in economics and as support-vector weights in SVMs.
+    commonWrongAnswer: It is just an auxiliary variable with no meaning.
+    followUps:
+      - What does a zero multiplier tell you about a constraint?
+      - How does the sign of the multiplier depend on the convention?
+  - id: lgm-iv-kkt
+    level: internals
+    requiredForMastery: true
+    concepts: [kkt-conditions, complementary-slackness, constraint-qualification]
+    question: State the KKT conditions and when they are necessary and sufficient.
+    shortAnswer: |
+      Stationarity of the Lagrangian, primal feasibility, dual feasibility (`mu >= 0` for
+      inequalities), and complementary slackness (`mu_i g_i = 0`). They are necessary for a local
+      optimum under a constraint qualification, and sufficient for a global optimum when the problem
+      is convex.
+    fullAnswer: |
+      For `min f s.t. g_i(x) <= 0, h_j(x) = 0`, a KKT point has: (1) `grad f + sum mu_i grad g_i +
+      sum lam_j grad h_j = 0`; (2) `g_i(x) <= 0`, `h_j(x) = 0`; (3) `mu_i >= 0`; (4) `mu_i g_i(x) =
+      0` for all `i`. Condition (4) says each inequality is either active (`g_i = 0`, `mu_i` free to
+      be positive) or inactive (`g_i < 0`, `mu_i = 0`), which identifies the active set. Necessity
+      requires a constraint qualification such as LICQ (the active constraint gradients are linearly
+      independent) or Slater's condition; without one, a local optimum may fail KKT. For a convex
+      problem (convex `f`, convex `g_i`, affine `h_j`) that satisfies Slater, KKT is also sufficient
+      for global optimality, and the KKT multipliers are the dual optimal variables.
+    commonWrongAnswer: KKT is always both necessary and sufficient.
+    followUps:
+      - What is a constraint qualification and why is it needed?
+      - How do KKT multipliers relate to the dual problem?
+  - id: lgm-iv-svm
+    level: scenario
+    requiredForMastery: true
+    concepts: [svm, dual-problem, kernel, support-vectors]
+    question: Walk through why the SVM is solved in the dual.
+    shortAnswer: |
+      The dual is a convex QP in the per-example multipliers `alpha_i >= 0`, it depends on the data
+      only through inner products (so a kernel replaces them), strong duality recovers the primal
+      exactly, and complementary slackness makes the solution sparse — only support vectors have
+      `alpha_i > 0`.
+    fullAnswer: |
+      The hard-margin primal minimises `0.5||w||^2` under one margin inequality per point. Its
+      Lagrangian, minimised over `(w, b)`, yields the dual: maximise `sum alpha_i - 0.5 sum
+      alpha_i alpha_j y_i y_j (x_i . x_j)` over `alpha_i >= 0` with `sum alpha_i y_i = 0`. Because
+      the objective touches the data only through `x_i . x_j`, you can substitute a kernel
+      `K(x_i, x_j)` and fit a nonlinear boundary implicitly. The problem is convex with Slater's
+      condition, so strong duality holds and `w = sum alpha_i y_i x_i` reconstructs the primal
+      solution. Complementary slackness `alpha_i(y_i(w.x_i + b) - 1) = 0` forces `alpha_i = 0`
+      unless the point is on the margin, so the classifier depends only on the (usually few)
+      support vectors. The soft-margin version adds an upper bound `alpha_i <= C`.
+    commonWrongAnswer: The dual is used because it is faster to compute in general.
+    followUps:
+      - What changes in the soft-margin dual?
+      - Why does the kernel trick only work in the dual?
+  - id: lgm-iv-maxent
+    level: scenario
+    requiredForMastery: true
+    concepts: [maximum-entropy, softmax, exponential-family]
+    question: How does the maximum-entropy principle produce the softmax?
+    shortAnswer: |
+      Maximise entropy subject to normalisation and matching some feature expectations. Lagrangian
+      stationarity gives `p_i proportional to exp(theta . f(i))`, and normalisation makes it the
+      softmax over linear scores. The multipliers `theta` are the logits / natural parameters.
+    fullAnswer: |
+      Given constraints that fix `sum p_i = 1` and `E_p[f_k] = mu_k`, the least-committal
+      distribution is the one of maximum entropy. Its Lagrangian is `-sum p_i log p_i - lam_0(sum
+      p_i - 1) - sum_k lam_k(sum p_i f_k(i) - mu_k)`, and setting `dL/dp_i = 0` gives `log p_i =
+      -1 - lam_0 - sum_k lam_k f_k(i)`, i.e. `p_i proportional to exp(-sum_k lam_k f_k(i))`.
+      Normalising divides by the partition function, yielding `p_i = softmax(theta . f(i))` with
+      `theta = -lam`. This is why softmax classification, logistic regression, and Boltzmann
+      distributions all have the same form: they are max-entropy models, and their parameters are
+      Lagrange multipliers enforcing expected-feature (or moment) constraints. Fitting them by
+      maximum likelihood is the dual of the max-entropy problem.
+    commonWrongAnswer: Softmax is just a convenient normalisation with no deeper reason.
+    followUps:
+      - What are the feature functions in logistic regression?
+      - How is maximum likelihood the dual of maximum entropy?
+  - id: lgm-iv-duality
+    level: comparison
+    requiredForMastery: true
+    concepts: [weak-duality, strong-duality, duality-gap, slater-condition]
+    question: Explain weak and strong duality and the duality gap.
+    shortAnswer: |
+      The dual function `d(mu, lam) = min_x L(x, mu, lam)` is a lower bound on the primal optimum
+      `p*` for any `mu >= 0` — weak duality, always. Strong duality is `d* = p*` (zero gap), which
+      holds for convex problems satisfying a constraint qualification like Slater's.
+    fullAnswer: |
+      For any feasible dual point, `d(mu, lam) <= p*` because `L(x, mu, lam) <= f(x)` at any primal
+      feasible `x` (the constraint terms are non-positive). Maximising the dual gives the best lower
+      bound `d*`, and `p* - d* >= 0` is the duality gap. When the primal is convex and there is a
+      strictly feasible point (Slater), the gap is zero: solving the dual solves the primal, and the
+      dual optimal multipliers are the KKT multipliers. For non-convex problems the gap can be
+      strictly positive, so the dual gives only a bound — though it is still useful (Lagrangian
+      relaxation, branch-and-bound bounds, SDP relaxations). Even with a gap, the dual is concave (a
+      pointwise min of affine functions in `(mu, lam)`), so the dual problem itself is always a
+      convex optimisation.
+    commonWrongAnswer: The dual value always equals the primal value.
+    followUps:
+      - Why is the dual function always concave?
+      - Give an ML example where strong duality holds.
+  - id: lgm-iv-solving
+    level: debugging
+    requiredForMastery: true
+    concepts: [penalty-method, barrier-method, augmented-lagrangian, projected-gradient]
+    question: What are the practical ways to solve a constrained optimisation problem, and their trade-offs?
+    shortAnswer: |
+      Projected/proximal gradient (cheap when the projection is), penalty (simple but ill-conditioned
+      as the coefficient grows), barrier/interior-point (stays feasible, polynomial for convex),
+      augmented Lagrangian / ADMM (penalty plus multiplier update, no unbounded coefficient), and
+      SQP/active-set (solve the KKT system).
+    fullAnswer: |
+      Projected gradient enforces `x in C` by a Euclidean projection each step and is ideal for
+      boxes, balls, and simplices. A quadratic penalty `+ rho * violation^2` is trivial to add but
+      the inner problem's condition number grows like `rho`, so it needs care; the augmented
+      Lagrangian fixes this by adding an explicit multiplier term and updating `lam <- lam + rho g`
+      each outer loop, converging with `rho` bounded (ADMM is a splitting version). Barrier /
+      interior-point methods add `-t sum log(-g_i)`, stay strictly feasible, and have polynomial
+      complexity for convex problems; they are the default for LP/QP/SDP. Sequential quadratic
+      programming and active-set methods solve the KKT system directly, guessing the active
+      inequalities, and are efficient when the active set is stable. The choice depends on problem
+      size, whether projections are cheap, convexity, and how tight the constraints must be held.
+    commonWrongAnswer: You always just add a penalty term and increase its weight.
+    followUps:
+      - Why does the penalty method become ill-conditioned?
+      - When would you choose an interior-point method?
+projects:
+  - id: lgm-project-constrained-toolkit
+    kind: small
+    title: Build a constrained-optimisation toolkit
+    minutes: 160
+    summary: Implement a KKT-residual checker, an equality-constrained Newton solver, projected gradient for simple sets, an augmented-Lagrangian solver, and worked derivations of the SVM dual and max-entropy softmax, validated against closed-form solutions.
+    problem: |
+      Build a toolkit that operationalises this lesson: `kkt_residual(problem, x, mults)` (stationarity,
+      feasibility, dual feasibility, complementary slackness, returned as a vector plus a max-violation
+      summary); `newton_equality(f, grad_f, hess_f, h, jac_h, x0)` (Newton on the saddle-point KKT
+      system); `projected_gd(f, grad_f, project, x0)`; `augmented_lagrangian(f, grad_f, g_list, h_list,
+      x0)` (inner solve + multiplier update + adaptive `rho`); and `derive` scripts that solve a small
+      hard-margin SVM in the dual and fit a max-entropy distribution, checking against the primal /
+      closed form.
+    requirements:
+      - "`kkt_residual` reports stationarity norm, max primal-feasibility violation, min inequality multiplier, and max `|mu_i g_i|`, with a stated sign convention."
+      - "`newton_equality` converges quadratically near a regular KKT point on an equality-constrained quadratic and matches the closed-form solution."
+      - "`projected_gd` reaches the KKT point of a box-constrained quadratic."
+      - "`augmented_lagrangian` reaches feasibility on an inequality-constrained convex problem with `rho` bounded, and recovers the known active set and multipliers."
+      - The SVM-dual script recovers the primal `w`, `b`, and identifies the support vectors via complementary slackness; the max-entropy script reproduces the softmax form."
+    constraints:
+      - NumPy and the standard library only; a small QP solver may be hand-rolled for the SVM.
+      - Never use a fixed huge penalty coefficient in `augmented_lagrangian`.
+      - Never claim optimality from the objective value; use the KKT residual.
+      - Fix and document one sign convention for the Lagrangian.
+    expectedBehaviour:
+      - "`kkt_residual` is near zero at a known KKT point and clearly nonzero at an infeasible or non-stationary point."
+      - "`newton_equality` residual drops quadratically near the solution."
+      - "`augmented_lagrangian` multiplier estimates converge to the analytic shadow prices."
+      - The SVM support-vector set matches the points on the margin.
+      - The max-entropy solution equals `softmax(theta . f)` for the fitted `theta`.
+    structure: |
+      constrainedkit/
+        __init__.py
+        kkt.py
+        newton_eq.py
+        projected.py
+        auglag.py
+        derivations.py
+      tests/
+        test_kkt.py
+        test_newton_eq.py
+        test_projected.py
+        test_auglag.py
+        test_derivations.py
+    milestones:
+      - title: "1 — KKT residual"
+        detail: All four conditions as a residual vector with a max-violation summary and a fixed sign convention.
+      - title: "2 — Equality-constrained Newton"
+        detail: Newton on the `[[H, J.T], [J, 0]]` saddle-point system.
+      - title: "3 — Projected gradient and augmented Lagrangian"
+        detail: Projection-based solver for simple sets; multiplier-updating solver for general constraints.
+      - title: "4 — Derivations"
+        detail: SVM dual and max-entropy softmax, checked against primal / closed form.
+    testing:
+      - KKT residual near zero at known KKT points, nonzero elsewhere.
+      - Newton-equality quadratic convergence and closed-form match on a quadratic.
+      - Projected GD reaching a box-constrained quadratic's KKT point.
+      - Augmented Lagrangian feasibility with bounded `rho` and correct multipliers.
+      - SVM support vectors and max-entropy softmax form recovered.
+    failureCases:
+      - The KKT check uses only stationarity and accepts infeasible points.
+      - A negative inequality multiplier from a sign-convention mismatch.
+      - The augmented Lagrangian grows `rho` unboundedly because the multiplier update is wrong.
+      - The SVM script keeps all points as support vectors because slackness is not checked with a tolerance.
+    bonus:
+      - Add a barrier / interior-point solver for a small QP and compare the central path.
+      - Add the trust-region subproblem solved via its KKT characterisation.
+      - Emit a KKT report as Markdown.
+    architectureHints:
+      - Represent a problem as `f`, `grad_f`, optional `hess_f`, lists of `(g_i, grad_g_i)` and `(h_j, grad_h_j)`.
+      - Keep the sign convention in one place and thread it through the residual and the multiplier updates.
+      - Make `augmented_lagrangian` take an inner-solver callable so the base optimiser is swappable.
+    referenceOutline: |
+      `kkt.residual` stacks `grad f + J_g.T mu + J_h.T lam`, `g`, `h`, and slackness products.
+      `newton_eq.solve` builds the saddle-point matrix and Newton-steps `(x, lam)`.
+      `projected.projected_gd` iterates `project(x - eta grad_f(x))`. `auglag.solve` alternates an
+      inner unconstrained minimisation of the augmented objective with `lam <- lam + rho h`,
+      `mu <- max(0, mu + rho g)`, and adaptive `rho`. `derivations` solves the SVM QP and the
+      max-entropy stationarity equations.
+  - id: lgm-final-constrained-training-audit
+    kind: final-challenge
+    title: Add a hard constraint to a training loop, correctly
+    minutes: 90
+    summary: Given a training routine that enforces an inequality constraint with a hand-tuned penalty and mislabels its KKT status, replace it with an augmented Lagrangian, add a correct KKT-residual convergence check, and interpret the multiplier as a shadow price, with fail-before-fix measurements.
+    problem: |
+      A routine trains a model subject to `c(theta) <= c_max` (e.g. a fairness gap, a latency proxy,
+      or a norm bound) by adding `rho * max(0, c(theta) - c_max)^2` with a hand-tuned `rho`, and its
+      logs claim "KKT-optimal" whenever the training loss stops changing. Produce an audit that:
+      replaces the penalty with an augmented Lagrangian (explicit multiplier `mu >= 0`, update
+      `mu <- max(0, mu + rho (c(theta) - c_max))`, adaptive `rho`); adds a KKT-residual convergence
+      check (stationarity norm, constraint violation, dual feasibility, complementary slackness) with
+      a fixed sign convention; reports the converged multiplier as the shadow price of the constraint
+      (how much the loss would drop per unit relaxation of `c_max`); and shows the constraint is
+      satisfied with `rho` bounded, with a fail-before-fix comparison to the pure-penalty run.
+    requirements:
+      - Replace the pure penalty with an augmented Lagrangian; show the constraint is met with `rho` bounded (e.g. `rho <= 100`) where the penalty needed `rho > 1e4` and stalled.
+      - Add a KKT-residual check with a documented sign convention; replace the "loss stopped changing" claim with it.
+      - Report the converged `mu` and validate it against a finite-difference estimate of `d loss* / d c_max` (re-solve at `c_max +- delta`).
+      - Confirm complementary slackness numerically (`|mu (c - c_max)| <= tol`).
+      - Provide one fail-before-fix measurement per change plus a clean end-to-end run.
+    constraints:
+      - Do not use an unbounded penalty coefficient.
+      - Do not claim KKT-optimality from the objective value alone.
+      - Do not leave the sign convention implicit.
+    expectedBehaviour:
+      - The augmented-Lagrangian run satisfies `c(theta) <= c_max + tol` with `rho` bounded.
+      - The KKT residual (stationarity, feasibility, dual feasibility, slackness) is small at convergence.
+      - The reported `mu` matches the finite-difference shadow-price estimate within tolerance.
+      - The pure-penalty run either violates the constraint or stalls for large `rho` (fail-before-fix).
+      - Each change has a measurement.
+    milestones:
+      - title: "1 — Augmented Lagrangian"
+        detail: Multiplier term and update, adaptive `rho`; show bounded `rho` reaches feasibility.
+      - title: "2 — KKT-residual check"
+        detail: Four conditions with a fixed sign convention; replace the loss-plateau claim.
+      - title: "3 — Shadow price"
+        detail: Validate the converged multiplier against a finite-difference `d loss* / d c_max`.
+    testing:
+      - "A fail-before-fix fixture records that the pure penalty needs `rho > 1e4` and stalls."
+      - KKT residual small at convergence on the augmented-Lagrangian run.
+      - Multiplier versus finite-difference shadow price within tolerance.
+    failureCases:
+      - The multiplier update has the wrong sign and `mu` goes negative or diverges.
+      - The KKT check omits complementary slackness and accepts a slightly infeasible point.
+      - "`rho` still grows unboundedly because the inner solve is not run long enough between updates."
+    bonus:
+      - Add a second constraint and show the two multipliers rank the constraints by how binding they are.
+    architectureHints:
+      - Freeze the pure-penalty run's `rho` and constraint violation as fixtures first.
+      - Keep the multiplier update, the KKT check, and the shadow-price validation in separate commits.
+    referenceOutline: |
+      Augmented objective `L_rho(theta) = loss(theta) + mu * (c(theta) - c_max) + (rho/2) *
+      max(0, c(theta) - c_max)^2`. After each inner phase: `mu <- max(0, mu + rho * (c(theta) -
+      c_max))`; grow `rho` only if the violation did not shrink by half. KKT residual: `||grad
+      L_rho||`, `max(0, c - c_max)`, `mu >= 0`, `|mu (c - c_max)|`. Shadow price:
+      `(loss*(c_max + delta) - loss*(c_max - delta)) / (2 delta)` versus `-mu`.
+resources:
+  - name: "Boyd and Vandenberghe — Convex Optimization (Chapters 5 and parts of 4, 11)"
+    type: book
+    difficulty: deep
+    url: "https://web.stanford.edu/~boyd/cvxbook/"
+    usefulness: 5
+    why: The definitive treatment of the Lagrangian, the KKT conditions, weak and strong duality, Slater's condition, and sensitivity analysis, with worked examples including the SVM and max-entropy, and a free PDF.
+    covers: The Lagrange dual function and problem, weak and strong duality, KKT conditions, constraint qualifications, sensitivity / shadow prices, and interior-point methods.
+  - name: "MIT 18.02 / Khan Academy — Lagrange multipliers"
+    type: university
+    difficulty: intro
+    url: "https://ocw.mit.edu/courses/18-02sc-multivariable-calculus-fall-2010/"
+    usefulness: 3
+    why: The geometric introduction to equality-constrained optimisation — the parallel-gradients picture and worked two-variable examples — before the KKT generalisation.
+    covers: The Lagrange condition `grad f = lam grad g`, multiple constraints, and constrained max/min examples.
+  - name: "Nocedal and Wright — Numerical Optimization (Chapters 12, 15 to 19)"
+    type: book
+    difficulty: deep
+    url: "https://link.springer.com/book/10.1007/978-0-387-40065-5"
+    usefulness: 5
+    why: It covers the KKT theory, constraint qualifications, and the practical algorithms — penalty, augmented Lagrangian, interior-point, SQP, and active-set — with convergence analysis and implementation detail.
+    covers: First- and second-order optimality conditions for constrained problems, penalty and augmented-Lagrangian methods, interior-point and SQP methods, and the trust-region subproblem.
+  - name: "Platt — Sequential Minimal Optimization (SMO) for training SVMs"
+    type: article
+    difficulty: core
+    url: "https://www.microsoft.com/en-us/research/publication/sequential-minimal-optimization-a-fast-algorithm-for-training-support-vector-machines/"
+    usefulness: 3
+    why: It shows how the SVM dual QP is solved efficiently by optimising two KKT multipliers at a time, and how KKT-violation checks drive the working-set selection — the KKT conditions used algorithmically.
+    covers: The SVM dual, KKT conditions as optimality and working-set criteria, analytic two-variable subproblem solutions, and heuristics for selecting the pair.
+  - name: "Berger, Della Pietra, Della Pietra — A Maximum Entropy Approach to Natural Language Processing"
+    type: article
+    difficulty: deep
+    url: "https://aclanthology.org/J96-1002/"
+    usefulness: 3
+    why: The classic derivation of the maximum-entropy (log-linear / softmax) model via Lagrange multipliers on expected-feature constraints, and the duality with maximum likelihood.
+    covers: The maximum-entropy principle, Lagrangian derivation of the exponential-family form, the duality with maximum-likelihood estimation, and iterative fitting algorithms.

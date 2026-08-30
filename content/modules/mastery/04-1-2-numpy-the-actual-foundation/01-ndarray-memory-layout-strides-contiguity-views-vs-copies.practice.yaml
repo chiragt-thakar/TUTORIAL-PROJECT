@@ -1,0 +1,309 @@
+lessonId: "roadmap:phase-1-1.2:0"
+module: 1-2-numpy-the-actual-foundation
+lesson: 01-ndarray-memory-layout-strides-contiguity-views-vs-copies
+title: "ndarray memory layout: strides, contiguity, views vs copies"
+summary: Derive array addresses, predict sharing and copies, and design explicit layout boundaries.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: nml-derive-offset
+    tier: normal
+    kind: write-code
+    title: Derive a byte offset
+    minutes: 10
+    requiredForMastery: true
+    concepts: [shape, strides, itemsize]
+    prompt: Write `byte_offset(strides, index)` and use it for strides `(24, 8)` at index `(2, 1)`.
+    hints: [Multiply each index by its matching stride., Sum byte steps; do not multiply by item size again.]
+    solution: Strides are already byte distances. The offset is `2 * 24 + 1 * 8 = 56` bytes from the data pointer.
+    solutionCode: |
+      def byte_offset(strides: tuple[int, ...], index: tuple[int, ...]) -> int:
+          if len(strides) != len(index):
+              raise ValueError("rank mismatch")
+          return sum(step * i for step, i in zip(strides, index, strict=True))
+  - id: nml-inspect-layout
+    tier: normal
+    kind: code-reading
+    title: Read array metadata
+    minutes: 10
+    requiredForMastery: true
+    concepts: [transpose, contiguity, views]
+    prompt: Predict which arrays share memory and which C/F flags are likely true.
+    code: |
+      x = np.arange(12).reshape(3, 4)
+      y = x.T
+      z = y.copy()
+    hints: [Transpose normally changes metadata only., A default copy packs values in C order.]
+    solution: |
+      `x` and `y` share memory; `z` is independent. `x` is C-contiguous, `y` is normally
+      F-contiguous, and the default `y.copy()` result is normally C-contiguous.
+  - id: nml-basic-versus-advanced
+    tier: normal
+    kind: predict-output
+    title: Classify selectors
+    minutes: 11
+    requiredForMastery: true
+    concepts: [basic-indexing, advanced-indexing, aliasing]
+    prompt: State whether `x[1:4]`, `x[[1,2,3]]`, and `x[x > 0]` normally share storage with `x`.
+    hints: [Slices are basic indexing., Integer arrays and boolean masks gather arbitrary positions.]
+    solution: The slice normally shares storage. Integer-array and boolean indexing return gathered copies because their selections are not described by ordinary slice strides.
+  - id: nml-ravel-flatten
+    tier: intermediate
+    kind: explain
+    title: Choose a flattening contract
+    minutes: 13
+    requiredForMastery: true
+    concepts: [ravel, flatten, ownership]
+    prompt: Choose between `ravel`, `flatten`, and `reshape(-1)` for a consumer that stores and mutates its input.
+    hints: [The consumer needs independent ownership., One API always promises a copy.]
+    solution: Use `flatten()` or an explicit `copy()` because mutation must not alias the producer. `ravel` prefers a view, while `reshape` does not promise stable ownership across layouts.
+  - id: nml-negative-stride
+    tier: intermediate
+    kind: predict-output
+    title: Walk backward through storage
+    minutes: 13
+    requiredForMastery: true
+    concepts: [negative-strides, slicing, data-pointer]
+    prompt: For `x=np.arange(6,dtype=np.int16)`, predict shape and stride of `x[::-2]` and explain its first element.
+    hints:
+      - "The selected logical values are 5, 3, 1."
+      - The data pointer moves to the first selected value.
+    solution: The view has shape `(3,)`, stride `(-4,)`, and starts at the bytes for value five. Each step moves backward across two two-byte elements.
+  - id: nml-overlap-windows
+    tier: intermediate
+    kind: design
+    title: Define ownership for windows
+    minutes: 16
+    requiredForMastery: true
+    concepts: [sliding-window, overlap, writability]
+    prompt: Design a safe API returning overlapping windows over a signal for read-only feature extraction.
+    hints: [Overlapping writable views can update one byte through multiple indices., Make mutation policy visible at the boundary.]
+    solution: Return a documented view with its writable flag disabled, validate shape and step, and require callers to copy before mutation. Tests should prove sharing, overlap, and rejected writes.
+  - id: nml-copy-after-reshape-debug
+    tier: tricky
+    kind: debug
+    title: Find the hidden reshape copy
+    minutes: 16
+    requiredForMastery: true
+    concepts: [reshape, transpose, copies]
+    prompt: The team assumes `flat` updates `x`. Diagnose and repair the ownership contract.
+    code: |
+      x = np.arange(12).reshape(3, 4)
+      flat = x.T.reshape(-1)
+      flat[0] = 999
+    hints: [A transposed layout may not support that one-dimensional traversal as a view., Check sharing instead of inferring it from `reshape`.]
+    solution: Reshaping the transpose in C order commonly materializes a copy, so mutation is not guaranteed to reach `x`. Mutate through a direct view with compatible indexing, or make the independent result explicit and stop promising propagation.
+  - id: nml-fancy-assignment-debug
+    tier: tricky
+    kind: debug
+    title: Accumulate repeated indices
+    minutes: 16
+    requiredForMastery: true
+    concepts: [advanced-assignment, repeated-indices, ufunc-at]
+    prompt: Fix the code so index zero is incremented twice.
+    code: |
+      counts = np.zeros(3, dtype=np.int64)
+      counts[[0, 0, 1]] += 1
+    hints: [Buffered advanced assignment does not promise repeated accumulation., NumPy has an unbuffered indexed ufunc method.]
+    solution: Use `np.add.at`, whose indexed updates are applied for every occurrence. This deliberately trades some speed for correct repeated-index accumulation.
+    solutionCode: |
+      np.add.at(counts, [0, 0, 1], 1)
+  - id: nml-native-boundary-debug
+    tier: tricky
+    kind: debug
+    title: Repair a native buffer boundary
+    minutes: 18
+    requiredForMastery: true
+    concepts: [contiguity, dtype, ffi]
+    prompt: A C function expects contiguous float32 rows but sometimes receives a transposed float64 view. Repair the Python boundary.
+    code: |
+      def infer(batch):
+          return native_infer(batch.ctypes.data, batch.shape)
+    hints: [A pointer does not carry stride or dtype guarantees., Normalize once before exposing the address.]
+    solution: Validate rank and expected shape, then use `np.ascontiguousarray(batch, dtype=np.float32)` and retain that owner for the native call. Passing only a pointer while ignoring dtype and strides lets C misinterpret bytes.
+  - id: nml-alias-snapshot
+    tier: tricky
+    kind: refactor
+    title: Preserve historical snapshots
+    minutes: 15
+    requiredForMastery: false
+    concepts: [aliasing, snapshots, ownership]
+    prompt: Refactor a metrics collector that appends `weights[:]` on every step and later sees every snapshot changed.
+    hints: [A full basic slice is still a view., The history list owns historical values.]
+    solution: Append `weights.copy()` at the history boundary. That allocation is required semantics because later optimizer mutation must not rewrite previous observations.
+  - id: nml-layout-benchmark
+    tier: challenge
+    kind: performance
+    title: Benchmark a layout decision
+    minutes: 24
+    requiredForMastery: false
+    concepts: [benchmarking, cache, materialization]
+    prompt: Design a fair benchmark comparing repeated reductions on a transpose with copying once and reducing the packed result.
+    hints: [Include copy time and repeated-use count., Confirm equal outputs and report strides before timing.]
+    solution: Warm both paths, validate identical results, time end-to-end across several sizes and repeat counts, and separate one-time packing from kernel time. Randomize run order and report shape, dtype, strides, hardware, and variance.
+  - id: nml-batch-contract
+    tier: challenge
+    kind: design
+    title: Specify a batch layout contract
+    minutes: 24
+    requiredForMastery: false
+    concepts: [api-contract, channels, zero-copy]
+    prompt: Specify a decoder-to-model boundary supporting HWC images but an NCHW contiguous model input.
+    hints: [Axis movement can be a view while packing is a copy., Normalize the entire batch once rather than each layer.]
+    solution: Validate HWC shapes and dtype, batch inputs, move axes to NCHW, then pack once with `ascontiguousarray`. Document ownership, writability, normalization, allocation metrics, and tests for sliced or transposed decoder outputs.
+quizzes:
+  - id: nml-checkpoint
+    title: Checkpoint — address and ownership
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: nml-cp-stride-unit
+        kind: mcq
+        prompt: What unit does `ndarray.strides` use?
+        options: [{id: elements, text: Elements}, {id: bytes, text: Bytes}, {id: bits, text: Bits}]
+        answer: [bytes]
+        explanation: Each stride is the byte step for one logical move along an axis.
+        concepts: [strides]
+        points: 1
+      - id: nml-cp-copy-api
+        kind: mcq
+        prompt: Which operation always returns independent storage?
+        options: [{id: slice, text: Basic slice}, {id: transpose, text: Transpose}, {id: flatten, text: flatten()}]
+        answer: [flatten]
+        explanation: "`flatten()` promises a copy; the other two normally create views."
+        concepts: [copies]
+        points: 1
+  - id: nml-assessment
+    title: Assessment — ndarray storage reasoning
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: nml-as-offset
+        kind: mcq
+        prompt: For strides `(40,8)`, what is the offset of `(2,3)`?
+        options: [{id: o64, text: 64 bytes}, {id: o104, text: 104 bytes}, {id: o832, text: 832 bytes}]
+        answer: [o104]
+        explanation: "`2*40 + 3*8` equals 104 bytes."
+        concepts: [addressing]
+        points: 1
+      - id: nml-as-basic
+        kind: true-false
+        prompt: A basic slice normally shares storage with its source.
+        options: [{id: "true", text: "True"}, {id: "false", text: "False"}]
+        answer: ["true"]
+        explanation: Basic indexing normally produces new metadata over the same buffer.
+        concepts: [views]
+        points: 1
+      - id: nml-as-advanced
+        kind: mcq
+        prompt: Why does boolean indexing normally copy?
+        options: [{id: gather, text: It gathers arbitrary positions}, {id: boolsize, text: Booleans are one byte}, {id: readonly, text: Masks are read-only}]
+        answer: [gather]
+        explanation: Arbitrary selected positions do not fit a simple constant-stride view.
+        concepts: [advanced-indexing]
+        points: 1
+      - id: nml-as-transpose
+        kind: explain
+        prompt: Explain how transpose can be O(1).
+        modelAnswer: It can swap shape and stride metadata while retaining the same data buffer; later consumption may still be expensive.
+        explanation: Creation cost and downstream access cost are separate.
+        concepts: [transpose]
+        points: 2
+      - id: nml-as-native
+        kind: scenario
+        prompt: Name the minimum checks before passing an ndarray buffer to a C kernel.
+        modelAnswer: Validate rank and shape, dtype, required byte order and contiguity, writability or ownership, lifetime, and alignment requirements.
+        explanation: A raw pointer contains none of those logical guarantees.
+        concepts: [ffi, contracts]
+        points: 2
+interview:
+  - id: nml-iv-model
+    level: basic
+    requiredForMastery: true
+    concepts: [ndarray, metadata]
+    question: What is an ndarray internally?
+    shortAnswer: It is a typed multidimensional interpretation of a byte buffer, defined mainly by a data pointer, dtype, shape, and strides. Several arrays can interpret the same storage.
+    fullAnswer: Shape bounds indices, dtype controls byte interpretation, and strides map an index tuple to an address. This separation lets slicing and transpose be metadata-only views, while arbitrary gathers require copies.
+    commonWrongAnswer: It is a nested list optimized in C. That misses homogeneous storage, strides, and aliasing.
+    followUps: [How do negative strides work?, Can two arrays partly overlap?]
+  - id: nml-iv-view-copy
+    level: intermediate
+    requiredForMastery: true
+    concepts: [views, advanced-indexing]
+    question: How do you predict view versus copy?
+    shortAnswer: Basic slicing usually returns a view; advanced integer or boolean indexing returns a copy. Reshape returns a view only when compatible strides exist, so ownership-sensitive code checks sharing explicitly.
+    fullAnswer: The deeper rule is whether the output can use one base plus fixed per-axis strides. If not, values must be gathered into new storage. API contracts should not depend on an incidental reshape optimization.
+    commonWrongAnswer: All indexing returns a view. Fancy indexing disproves that and creates mutation bugs.
+    followUps: [What does `shares_memory` prove?, Why is `may_share_memory` conservative?]
+  - id: nml-iv-contiguous
+    level: internals
+    requiredForMastery: false
+    concepts: [contiguity, cache]
+    question: What does C-contiguous mean and why care?
+    shortAnswer: It means logical C-order traversal maps to adjacent packed elements, with the last axis varying fastest. Many kernels and foreign APIs prefer it for simple unit-stride access.
+    fullAnswer: Contiguity is a stride relationship, not a quality label. Strided layouts remain valid, and copying only pays when the consuming kernels recover more than the materialization cost.
+    commonWrongAnswer: Non-contiguous arrays are invalid. NumPy is designed to operate on them.
+    followUps: [Can an array be both C and F contiguous?, When should you copy once?]
+  - id: nml-iv-repeated
+    level: tricky
+    requiredForMastery: false
+    concepts: [advanced-assignment, accumulation]
+    question: Why can `x[[0,0]] += 1` increment once?
+    shortAnswer: Advanced assignment may buffer gathered values and scatter results, so repeated destinations do not express repeated accumulation. `np.add.at` gives unbuffered indexed accumulation semantics.
+    fullAnswer: The indexing result is conceptually gathered, the operation happens on that temporary, and writes return to destinations. Both gathered entries began from the same old value, producing the same scattered result.
+    commonWrongAnswer: NumPy deduplicates indices as an optimization. The real issue is buffered gather/scatter semantics.
+    followUps: [What performance cost does `add.at` have?]
+  - id: nml-iv-boundary
+    level: scenario
+    requiredForMastery: false
+    concepts: [ownership, native-boundary]
+    question: Design a zero-surprise array API boundary.
+    shortAnswer: Specify shape, dtype, layout, writability, and ownership, validate them, and normalize once. State whether the function retains, mutates, views, or copies its input.
+    fullAnswer: I would use `ascontiguousarray` only where packed storage is required, track allocation, preserve the owner for native lifetime, and test sliced, transposed, read-only, wrong-dtype, and overlapping arrays.
+    commonWrongAnswer: Call `copy()` on every input. That is safe from aliasing but can destroy throughput and hides the real contract.
+    followUps: [How would you observe hidden copies in production?]
+projects:
+  - id: nml-project-layout-auditor
+    kind: major
+    title: Build an ndarray layout auditor
+    minutes: 180
+    summary: Diagnose and normalize arrays at an ML ingestion boundary without accidental copies.
+    problem: Build a Python package that accepts image batches, reports buffer metadata and sharing, validates an NCHW float32 contract, and returns a normalized array with an explicit allocation report.
+    requirements: [Report shape dtype itemsize strides C/F flags writability and ownership clues., Validate four-dimensional NCHW input and finite values., Normalize dtype and C-contiguity exactly once., Return whether storage was reused., Provide overlap checks for derived views.]
+    constraints: [Do not copy an already compliant input., Never infer sharing from `.base` alone., Keep validation separate from normalization.]
+    expectedBehaviour: [Compliant arrays retain storage., Transposed or wrong-dtype arrays produce one packed result., Invalid rank and non-finite input fail with actionable messages.]
+    milestones:
+      - {title: "1 — Inspect", detail: Implement an immutable layout report and focused tests.}
+      - {title: "2 — Validate", detail: Express the model boundary without mutation.}
+      - {title: "3 — Normalize", detail: Add allocation reporting and benchmarks.}
+    testing: [Test C and F arrays basic slices transposes negative strides and advanced-index copies., Prove source mutation behavior with shares_memory., Benchmark reuse against normalization.]
+    failureCases: [Copying every input., Passing non-contiguous bytes to native code., Promising reshape always aliases.]
+    bonus: [Add a CLI report., Support NHWC conversion with one materialization.]
+    architectureHints: [Represent requirements as a dataclass., Compare input and result with `np.shares_memory`.]
+    referenceOutline: Validate metadata into a report, move axes when configured, call `ascontiguousarray` with float32 once, then return the normalized owner and a sharing/allocation decision.
+resources:
+  - name: NumPy copies and views
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/user/basics.copies.html"
+    usefulness: 5
+    why: It is the primary guide to the aliasing rules used throughout this topic.
+    covers: Basic versus advanced indexing, views, copies, and reshape behavior.
+  - name: NumPy ndarray reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/arrays.ndarray.html"
+    usefulness: 5
+    why: It defines the array object and its memory-layout attributes precisely.
+    covers: Shape, dtype, data, strides, flags, and ownership metadata.
+  - name: ndarray.strides reference
+    type: docs
+    difficulty: deep
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.ndarray.strides.html"
+    usefulness: 4
+    why: It gives the exact address-offset equation and concrete stride examples.
+    covers: Byte strides, index-to-address calculation, and transposed layouts.

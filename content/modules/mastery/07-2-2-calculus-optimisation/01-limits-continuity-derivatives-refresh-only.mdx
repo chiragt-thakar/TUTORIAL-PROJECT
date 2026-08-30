@@ -1,0 +1,320 @@
+---
+id: "roadmap:phase-2-2.2:0"
+title: "Limits, continuity, derivatives — refresh only"
+description: A fast refresh of the single-variable calculus that everything else in this section stands on — limits and indeterminate forms, the three ways continuity can fail, the limit definition of the derivative, and the smoothness classes that decide whether a loss has a gradient everywhere.
+module: 2-2-calculus-optimisation
+order: 1
+estimatedMinutes: 90
+prerequisites: []
+learningObjectives:
+  - Evaluate limits including one-sided limits, limits at infinity, and the standard indeterminate forms
+  - State the three ways continuity fails at a point and why continuity underwrites optimisation guarantees
+  - Use the limit definition of the derivative and explain why differentiability implies continuity but not the reverse
+  - Classify a function by smoothness (C⁰, C¹, C^∞) and say where common activations sit and what a subgradient is
+---
+
+This is a refresher, not a first course: the goal is to reload the single-variable calculus that the
+chain rule, Taylor expansion, and every optimiser in this section assume. If any part here is
+genuinely new, work a dedicated calculus text first.
+
+The pieces that matter downstream are the limit definition of the derivative (autodiff is this,
+exactly), the idea that a function can be continuous without being differentiable (the ReLU kink),
+and the smoothness vocabulary that tells you whether a loss has a gradient everywhere.
+
+<TypeScriptComparison>
+
+- A numeric derivative in TypeScript is `(f(x + h) - f(x - h)) / (2 * h)`, the same symmetric difference used to gradient-check autodiff in Python.
+- Neither language has symbolic differentiation built in; JS libraries and NumPy both rely on autodiff or finite differences.
+- `Number.EPSILON` in JS and `np.finfo(float).eps` in Python are the same machine epsilon that limits how small `h` can be before cancellation ruins the estimate.
+- Plotting a tangent line — `y = f(a) + f'(a) * (x - a)` — is identical in both; it is the first-order Taylor polynomial, the object the next few lessons generalise.
+
+</TypeScriptComparison>
+
+## Limits
+
+The limit `lim_{x -> a} f(x) = L` means `f(x)` can be made arbitrarily close to `L` by taking `x`
+close enough to `a` (but not equal to `a`). One-sided limits `lim_{x -> a^-}` and `lim_{x -> a^+}`
+must agree for the two-sided limit to exist.
+
+Indeterminate forms — `0/0`, `inf/inf`, `0 * inf`, `inf - inf`, `1^inf` — are not answers; they
+signal you need more work: algebra, a known limit, or L'Hopital's rule
+`lim f/g = lim f'/g'` when the quotient is `0/0` or `inf/inf` and the right side exists.
+
+```python
+import numpy as np
+
+# lim_{x->0} sin(x)/x = 1 ; the 0/0 form resolves to a finite value
+xs = np.array([1e-1, 1e-3, 1e-5])
+assert np.allclose(np.sin(xs) / xs, 1.0, atol=1e-2)
+# lim_{x->inf} (1 + 1/x)^x = e
+assert abs((1 + 1/1e6) ** 1e6 - np.e) < 1e-4
+```
+
+## Continuity
+
+`f` is continuous at `a` when `lim_{x -> a} f(x)` exists and equals `f(a)`. It fails in exactly
+three ways: the limit does not exist (a jump, as in a step function), the limit exists but `f(a)` is
+undefined or different (a removable hole), or `f` blows up (an infinite discontinuity).
+
+Continuity is what optimisation guarantees rest on. The Intermediate Value Theorem (a continuous
+function hits every value between its endpoints) and the Extreme Value Theorem (a continuous function
+on a closed bounded set attains a max and a min) both require it.
+
+```python
+def f(x):
+    return np.where(x == 0, 0.0, np.sin(x) / x)   # removable hole at 0, patched to the limit 1... here patched wrong
+
+# the honest continuous extension patches f(0) = 1, not 0
+def f_cont(x):
+    return np.sinc(x / np.pi)                       # np.sinc(0) == 1
+assert f_cont(0.0) == 1.0
+```
+
+## The derivative
+
+`f'(a) = lim_{h -> 0} (f(a + h) - f(a)) / h` when that limit exists: the slope of the tangent at
+`a`, the instantaneous rate of change. Automatic differentiation computes exactly this quantity
+through the chain rule, without ever taking a numerical limit.
+
+Differentiability implies continuity (a function with a tangent cannot jump), but continuity does not
+imply differentiability: `|x|` is continuous everywhere and has no derivative at `0`, where the
+left slope is `-1` and the right slope is `+1`.
+
+```python
+def num_deriv(f, x, h=1e-6):
+    return (f(x + h) - f(x - h)) / (2 * h)
+
+assert abs(num_deriv(np.sin, 1.0) - np.cos(1.0)) < 1e-8
+# |x| has no derivative at 0: one-sided slopes disagree
+assert num_deriv(np.abs, 0.0) == 0.0            # the symmetric formula hides it; the true derivative does not exist
+```
+
+<Concept>
+
+The derivative rules you need on sight: power `(x^n)' = n x^{n-1}`, `(e^x)' = e^x`,
+`(ln x)' = 1/x`, product `(fg)' = f'g + fg'`, quotient, and the chain rule (its own lesson next).
+For activations: `sigmoid' = sigmoid(1 - sigmoid)`, `tanh' = 1 - tanh^2`, `relu' = 1_{x>0}`,
+`softplus' = sigmoid`.
+
+</Concept>
+
+## Smoothness classes
+
+`C^0` is continuous. `C^1` is continuously differentiable (the derivative exists and is itself
+continuous). `C^k` has `k` continuous derivatives; `C^infinity` (smooth) has all of them. Higher
+smoothness is what lets Taylor expansion be accurate to higher order.
+
+ReLU is `C^0` but not `C^1`: it has a kink at `0` where the derivative jumps from `0` to `1`. At
+such a point a **subgradient** — any slope between the left and right derivatives, here anything in
+`[0, 1]` — stands in for the derivative, and frameworks pick one (usually `0` or `1`). L1 penalties
+and `max` operations create the same kinks.
+
+```python
+def relu(x): return np.maximum(x, 0.0)
+# frameworks return a chosen subgradient at the kink; here 0
+assert relu(0.0) == 0.0
+```
+
+## Doing this in floating point
+
+The numeric derivative `(f(x+h) - f(x-h)) / (2h)` has truncation error `O(h^2)` and rounding error
+`O(eps/h)`, so there is a best `h` around `1e-6` in double precision; smaller is worse, not better,
+because of catastrophic cancellation (its own lesson, 13). Use a *relative* error when comparing to
+an analytic derivative.
+
+A function evaluated with rounding is not exactly the mathematical function, so its computed
+derivative inherits that error. This is why gradient checks use a tolerance and why exact autodiff
+is preferred over finite differences everywhere it is available.
+
+<ProductionNote>
+
+Treat finite differences as a *check* on an analytic or autodiff gradient, never as the production
+gradient. Sweep `h` over `1e-4` to `1e-8`, compare with a relative-error threshold near `1e-5`, and
+test away from kinks (do not gradient-check ReLU exactly at `0`).
+
+</ProductionNote>
+
+## Cost
+
+Evaluating a derivative analytically or by autodiff is a small constant times the cost of evaluating
+`f`. A one-sided finite difference costs two `f` evaluations; a symmetric one costs two and is an
+order more accurate. A full numerical Jacobian of `f: R^n -> R^m` costs `O(n)` evaluations of `f`,
+which is why reverse-mode autodiff (one pass for a scalar output) wins for training.
+
+## Exercises
+
+<Exercise id="la-calc-limits-forms" difficulty="easy">
+
+Evaluate `lim_{x -> 0} (1 - cos x) / x^2` and `lim_{x -> infinity} (3x^2 + 1) / (x^2 - x)`.
+
+<Solution>
+
+First limit is `0/0`. Use the known expansion `cos x ~ 1 - x^2/2 + x^4/24`, so
+`1 - cos x ~ x^2/2` and `(1 - cos x)/x^2 -> 1/2`. (L'Hopital twice gives the same: derivative of
+numerator `sin x`, of denominator `2x`, still `0/0`; again `cos x` over `2`, giving `1/2`.)
+
+Second limit is `inf/inf`. Divide top and bottom by `x^2`: `(3 + 1/x^2) / (1 - 1/x) -> 3/1 = 3`.
+The ratio of leading coefficients when the degrees match.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-calc-continuity-cases" difficulty="medium">
+
+For each function, classify the discontinuity at `x = 0`: (a) `f(x) = x / |x|`; (b)
+`g(x) = (x^2 - x) / x`; (c) `h(x) = 1 / x`.
+
+<Solution>
+
+(a) `x/|x|` is `-1` for `x < 0` and `+1` for `x > 0`. The one-sided limits are `-1` and `+1`, which
+disagree, so the two-sided limit does not exist: a **jump discontinuity**.
+
+(b) `g(x) = (x^2 - x)/x = x - 1` for `x != 0`, and `lim_{x -> 0} g(x) = -1`, but `g(0)` is undefined
+(division by zero). The limit exists, so it is a **removable discontinuity**: defining `g(0) = -1`
+makes it continuous.
+
+(c) `1/x -> +infinity` as `x -> 0^+` and `-> -infinity` as `x -> 0^-`. The function is unbounded
+near `0`: an **infinite (essential) discontinuity**.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-calc-diff-implies-cont" difficulty="hard">
+
+Prove that if `f` is differentiable at `a` then `f` is continuous at `a`, and give the standard
+counterexample to the converse.
+
+<Solution>
+
+Differentiability at `a` means `lim_{h -> 0} (f(a + h) - f(a)) / h = f'(a)` exists and is finite.
+Then
+
+`lim_{h -> 0} (f(a + h) - f(a)) = lim_{h -> 0} [ (f(a + h) - f(a)) / h ] * h = f'(a) * 0 = 0`.
+
+So `lim_{h -> 0} f(a + h) = f(a)`, which is exactly continuity at `a`.
+
+The converse fails: `f(x) = |x|` is continuous at `0` (`lim_{x -> 0} |x| = 0 = f(0)`) but not
+differentiable there, because `(|0 + h| - 0)/h = |h|/h` is `-1` for `h < 0` and `+1` for `h > 0`, so
+the defining limit does not exist. Continuity is necessary for differentiability, not sufficient.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-calc-interview-relu" difficulty="interview">
+
+In an interview: "ReLU is not differentiable at zero — how do gradient-based optimisers train
+networks that use it?"
+
+<Solution>
+
+ReLU is differentiable everywhere except the single point `x = 0`, where it has a kink: the left
+derivative is `0`, the right derivative is `1`. At that point the derivative does not exist, but a
+**subgradient** does — any value in `[0, 1]` is a valid subgradient — and frameworks simply pick
+one, conventionally `0` (PyTorch, TensorFlow) or sometimes `1`.
+
+In practice this is harmless. The set of inputs landing exactly on `x = 0` has measure zero, so with
+real-valued activations it essentially never happens; when it does, the chosen subgradient still
+gives a descent direction. The loss as a function of the parameters is continuous and differentiable
+almost everywhere, which is all that (sub)gradient descent needs for its convergence theory.
+
+The same reasoning covers L1 regularisation (kink at `0`, subgradient `[-1, 1]`), `max`-pooling, and
+hard attention: non-smooth at isolated points, handled by subgradients, fine in practice. If the
+non-smoothness were on a large set, or if it caused oscillation, you would switch to a smooth
+surrogate (softplus for ReLU, a smoothed L1).
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-calc-fd-stepsize-real-world" difficulty="real-world">
+
+You are gradient-checking a custom layer. The check passes at `h = 1e-3`, fails at `h = 1e-10`, and
+is borderline at `h = 1e-6`. Explain and give a robust checking procedure.
+
+<Solution>
+
+The symmetric finite difference has two error sources that trade off. Truncation error is `O(h^2)`
+and dominates at large `h`. Rounding error is `O(eps/h)` from cancellation in `f(x+h) - f(x-h)` and
+dominates at tiny `h`, so `1e-10` is meaningless. The sweet spot in double precision is around
+`1e-6`, which is why that check is borderline.
+
+Robust procedure: use the central difference, sweep `h` over `{1e-4, 1e-5, 1e-6, 1e-7}`, and per
+parameter take the estimate whose neighbouring-`h` values agree best. Compare to the analytic
+gradient with a *relative* error below about `1e-5`.
+
+Test at a random point where no activation sits on a kink. For analytic `f`, the complex-step
+derivative `imag(f(x + 1j*h)) / h` avoids cancellation and works down to `h = 1e-200`. Never ship
+the finite-difference gradient; it is only a check.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. What has to be true of the one-sided limits for `lim_{x -> a} f(x)` to exist?
+2. Name the three ways continuity can fail at a point, with an example of each.
+3. Write the limit definition of `f'(a)` and state which direction the implication between
+   differentiability and continuity goes.
+4. Why is ReLU `C^0` but not `C^1`, and what stands in for the derivative at its kink?
+5. Why is there a best step size for a finite-difference derivative rather than "smaller is better"?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="An indeterminate form like `0/0` means the limit is undefined.">
+
+No — it means the form alone does not determine the answer. `sin(x)/x -> 1`, `x/x -> 1`,
+`x^2/x -> 0`, `x/x^2 -> infinity`, all `0/0`. You have to do the work (algebra, known limits,
+L'Hopital).
+
+</Gotcha>
+
+<Gotcha question="My function is continuous, so it is differentiable.">
+
+Continuity is necessary, not sufficient. `|x|`, `max(0, x)`, and any function with a corner are
+continuous everywhere and non-differentiable at the corner. Differentiability does imply continuity,
+not the other way.
+
+</Gotcha>
+
+<Gotcha question="The symmetric difference gave `0` for the derivative of `|x|` at `0`, so the derivative is `0`.">
+
+The symmetric formula averages the `-1` and `+1` one-sided slopes to `0`, which is a subgradient,
+not the derivative. The derivative genuinely does not exist there. Do not gradient-check exactly at a
+kink.
+
+</Gotcha>
+
+<Gotcha question="Smaller `h` always makes a finite-difference derivative more accurate.">
+
+Only until rounding takes over. Below about `1e-8` in double precision, `f(x+h) - f(x-h)` loses its
+significant digits to cancellation and the estimate degrades. Around `1e-6` is the practical
+minimum.
+
+</Gotcha>
+
+<Gotcha question="L'Hopital's rule works on any limit that looks hard.">
+
+Only on `0/0` or `inf/inf` forms, and only when the limit of `f'/g'` actually exists. Applying it to
+other forms, or when `f'/g'` oscillates, gives wrong answers. Convert to a quotient of the right
+form first.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+A limit describes the value `f(x)` approaches; the two-sided limit needs the one-sided limits to
+agree, and indeterminate forms need extra work (algebra, known limits, L'Hopital). Continuity —
+limit exists and equals `f(a)` — fails as a jump, a removable hole, or a blow-up, and it underwrites
+the Intermediate and Extreme Value Theorems that optimisation relies on.
+
+The derivative is `lim_{h -> 0} (f(a + h) - f(a)) / h`, the tangent slope, and autodiff computes it
+exactly via the chain rule. Differentiability implies continuity but not conversely: `|x|` and ReLU
+have kinks where only a subgradient exists.
+
+Smoothness classes `C^0 ⊂ C^1 ⊂ ... ⊂ C^infinity` grade how many continuous derivatives a function
+has and how far Taylor expansion can go. Finite differences are a bounded-accuracy check with a
+best step size near `1e-6`, never the production gradient. The Practice, Debug, Interview, Test,
+Project, and Review tabs refresh limits, continuity, and the derivative through code.

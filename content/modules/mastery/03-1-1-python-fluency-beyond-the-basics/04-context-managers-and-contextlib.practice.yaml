@@ -1,6 +1,6 @@
 # Practice bank for roadmap topic 1.1 #4 — context managers and contextlib.
 #
-# Authored to the standard in AUTHORING_PATTERN.md. Ids are progress keys — never rename a shipped one.
+# Authored to the standard in CLAUDE.md. Ids are progress keys — never rename a shipped one.
 
 lessonId: "roadmap:phase-1-1.1:3"
 module: 1-1-python-fluency-beyond-the-basics

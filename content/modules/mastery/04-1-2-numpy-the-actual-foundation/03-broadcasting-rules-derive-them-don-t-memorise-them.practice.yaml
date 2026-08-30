@@ -1,0 +1,697 @@
+lessonId: "roadmap:phase-1-1.2:2"
+module: 1-2-numpy-the-actual-foundation
+lesson: 03-broadcasting-rules-derive-them-don-t-memorise-them
+title: "Broadcasting rules — derive them, don't memorise them"
+summary: Derive shape compatibility, express semantic axes explicitly, and prevent accidental or memory-heavy broadcasting.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: nbc-derive-two-shapes
+    tier: normal
+    kind: write-code
+    title: Implement one broadcast step
+    minutes: 12
+    requiredForMastery: true
+    concepts: [trailing-alignment, compatibility, result-shape]
+    prompt: |
+      Write `broadcast_pair(left, right)` for two positive axis sizes. It must return the output
+      size when the pair is compatible and raise `ValueError` otherwise.
+    hints:
+      - Equal sizes need no expansion; a one can repeat logically.
+      - The result is the larger compatible size, not always the left size.
+    solution: |
+      A pair is compatible exactly when the sizes match or either one is `1`. For a compatible
+      pair, `max(left, right)` is the result size. Reject every other pair because broadcasting
+      cannot search another axis or invent a reshape.
+    solutionCode: |
+      def broadcast_pair(left: int, right: int) -> int:
+          if left == right or left == 1 or right == 1:
+              return max(left, right)
+          raise ValueError(f"incompatible axis sizes: {left} and {right}")
+  - id: nbc-derive-result-shape
+    tier: normal
+    kind: predict-output
+    title: Derive a three-dimensional result
+    minutes: 10
+    requiredForMastery: true
+    concepts: [right-alignment, missing-axes, shape-derivation]
+    prompt: |
+      Derive the result of broadcasting `(4, 1, 7)` with `(3, 7)`. Show the left padding and
+      explain every aligned axis.
+    hints:
+      - Pad the shorter shape on the left with an implicit one.
+      - Compare `(4, 1, 7)` with `(1, 3, 7)` from right to left.
+    solution: |
+      The trailing sevens match. The next pair is one against three, producing three. The missing
+      leading axis behaves as one against four, producing four. The result is `(4, 3, 7)`.
+  - id: nbc-read-feature-bias
+    tier: normal
+    kind: code-reading
+    title: Read a feature-bias expression
+    minutes: 11
+    requiredForMastery: true
+    concepts: [feature-axis, one-dimensional-array, semantics]
+    prompt: |
+      `activations` has shape `(32, 128, 768)` and `bias` has shape `(768,)`. Explain why
+      `activations + bias` is compatible and identify the semantic axis receiving each bias value.
+    hints:
+      - A one-dimensional operand aligns with the final axis.
+      - Treat its missing batch and token axes as leading ones.
+    solution: |
+      Right alignment treats the bias as `(1, 1, 768)`. Its final size matches the feature width,
+      while both leading ones expand over batches and tokens. Each feature position receives its
+      corresponding bias for every token in every batch.
+  - id: nbc-explain-zero-stride
+    tier: normal
+    kind: explain
+    title: Explain logical repetition
+    minutes: 12
+    requiredForMastery: true
+    concepts: [zero-stride, broadcast-view, read-only]
+    prompt: |
+      Explain how a shape `(3,)` array can appear as `(1000, 3)` without storing one thousand
+      copies, and why `np.broadcast_to` normally returns a read-only view.
+    hints:
+      - A stride can say how far the pointer moves along an axis.
+      - Ask what happens when several logical indices refer to one stored element.
+    solution: |
+      The inserted leading axis can use stride zero, so moving between its rows returns to the same
+      three stored values. Writing would make independent-looking indices alias those same bytes.
+      NumPy therefore exposes the broadcast view as read-only to prevent ambiguous mutation.
+  - id: nbc-shape-example-weights
+    tier: intermediate
+    kind: write-code
+    title: Weight examples rather than tasks
+    minutes: 14
+    requiredForMastery: true
+    concepts: [singleton-axis, per-example, validation]
+    prompt: |
+      `losses` is `(batch, tasks)` and `weights` arrives as `(batch,)`. Write a boundary that
+      validates both inputs and returns one weighted value per loss without accidental task-axis
+      alignment.
+    hints:
+      - One value per example needs the semantic shape `(batch, 1)`.
+      - Validate before reshaping so a coincidentally equal task count cannot hide a defect.
+    solution: |
+      Check the expected ranks and exact batch length, then insert a trailing singleton axis on the
+      weights. This makes the intended row-wise repetition explicit and still behaves correctly
+      when the batch and task sizes happen to be equal.
+    solutionCode: |
+      def weight_losses(losses: np.ndarray, weights: np.ndarray) -> np.ndarray:
+          if losses.ndim != 2:
+              raise ValueError(f"expected rank-2 losses, got {losses.shape}")
+          if weights.shape != (losses.shape[0],):
+              raise ValueError("weights must contain one value per example")
+          return losses * weights[:, None]
+  - id: nbc-build-pairwise-distance
+    tier: intermediate
+    kind: write-code
+    title: Build pairwise squared distances
+    minutes: 18
+    requiredForMastery: true
+    concepts: [outer-operation, inserted-axis, pairwise-distance]
+    prompt: |
+      Given `left` with shape `(M, D)` and `right` with shape `(N, D)`, compute all squared
+      Euclidean distances with broadcasting. Name every intermediate shape.
+    hints:
+      - Turn the inputs into `(M, 1, D)` and `(1, N, D)`.
+      - Subtract first, then reduce only the feature axis.
+    solution: |
+      Insert an example axis into each operand so subtraction produces `(M, N, D)`, then sum the
+      squared differences over the final feature axis. This is clear but materializes a potentially
+      large intermediate, so production code must estimate `M * N * D * itemsize` or use blocks.
+    solutionCode: |
+      def squared_distances(left: np.ndarray, right: np.ndarray) -> np.ndarray:
+          if left.ndim != 2 or right.ndim != 2 or left.shape[1] != right.shape[1]:
+              raise ValueError("expected (M, D) and (N, D) with matching D")
+          delta = left[:, None, :] - right[None, :, :]
+          return np.sum(delta * delta, axis=-1)
+  - id: nbc-read-multi-operand
+    tier: intermediate
+    kind: code-reading
+    title: Fold three shapes together
+    minutes: 14
+    requiredForMastery: true
+    concepts: [multi-operand, fold, incompatibility]
+    prompt: |
+      Derive the result of operands shaped `(2, 1, 5)`, `(1, 4, 1)`, and `(3, 1)`. Explain why
+      pairwise folding produces the same result regardless of operand order.
+    hints:
+      - Pad all shapes to rank three before comparing each column.
+      - At each aligned axis, every size other than one must agree.
+    solution: |
+      The padded shapes are `(2, 1, 5)`, `(1, 4, 1)`, and `(1, 3, 1)`. The middle axis contains
+      non-one sizes four and three, so the operands are incompatible and no result exists. Folding
+      order cannot change that conflict because ones add no competing size.
+  - id: nbc-predict-inplace-rule
+    tier: intermediate
+    kind: predict-output
+    title: Predict an in-place rejection
+    minutes: 13
+    requiredForMastery: true
+    concepts: [in-place, destination-shape, allocation]
+    prompt: |
+      Explain why `x + y` works but `x += y` fails when `x.shape == (6, 1)` and
+      `y.shape == (6, 8)`.
+    hints:
+      - First derive the complete out-of-place result shape.
+      - An in-place operator cannot replace the left buffer with a differently shaped allocation.
+    solution: |
+      Broadcasting produces `(6, 8)`. The out-of-place expression may allocate that shape, but
+      `x += y` must write back into the existing `(6, 1)` destination. Since the destination cannot
+      hold the expanded result, NumPy rejects the operation.
+  - id: nbc-debug-square-batch
+    tier: tricky
+    kind: debug
+    title: Expose a square-batch bug
+    minutes: 18
+    requiredForMastery: true
+    concepts: [accidental-broadcast, equal-dimensions, regression-test]
+    prompt: |
+      The function passes tests only because both dimensions equal four. Diagnose it, repair it,
+      and design a regression case that proves the semantic axis.
+    code: |
+      def scale_rows(batch, scales):
+          # batch=(4, 4), scales=(4,)
+          return batch * scales
+    hints:
+      - A one-dimensional operand aligns with the final axis regardless of variable names.
+      - Use a non-square test and give scales a trailing singleton axis.
+    solution: |
+      The expression scales columns, not rows. Equal batch and feature sizes make the wrong
+      alignment mechanically valid. Validate one scale per row and use `scales[:, None]`; test a
+      `(3, 5)` batch with three distinct scales so the uncorrected expression fails.
+    solutionCode: |
+      def scale_rows(batch: np.ndarray, scales: np.ndarray) -> np.ndarray:
+          if batch.ndim != 2 or scales.shape != (batch.shape[0],):
+              raise ValueError("expected one scale per row")
+          return batch * scales[:, None]
+  - id: nbc-debug-channel-normalization
+    tier: tricky
+    kind: debug
+    title: Repair channel normalization
+    minutes: 20
+    requiredForMastery: true
+    concepts: [nchw, semantic-shape, normalization]
+    prompt: |
+      Repair normalization for an NCHW image batch and explain why the existing code can fail or
+      align with the wrong dimension.
+    code: |
+      def normalize(images, mean, std):
+          # images=(N, C, H, W), mean=(C,), std=(C,)
+          return (images - mean) / std
+    hints:
+      - Bare channel vectors align with the width axis, not with axis one.
+      - Express one value per channel as `(1, C, 1, 1)` after validation.
+    solution: |
+      Validate rank, channel count, finite statistics, and positive standard deviations. Reshape
+      both parameter vectors to `(1, C, 1, 1)`. Their singleton batch and spatial axes then expand
+      while the channel size matches the intended axis.
+    solutionCode: |
+      def normalize(images: np.ndarray, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
+          if images.ndim != 4 or mean.shape != (images.shape[1],) or std.shape != mean.shape:
+              raise ValueError("expected NCHW images and one mean/std per channel")
+          if not np.all(np.isfinite(mean)) or not np.all(np.isfinite(std)) or np.any(std <= 0):
+              raise ValueError("statistics must be finite and std must be positive")
+          params = (1, images.shape[1], 1, 1)
+          return (images - mean.reshape(params)) / std.reshape(params)
+  - id: nbc-debug-pairwise-memory
+    tier: tricky
+    kind: debug
+    title: Stop a pairwise memory explosion
+    minutes: 22
+    requiredForMastery: true
+    concepts: [result-size, temporaries, blocking]
+    prompt: |
+      The following nearest-neighbor code is killed on production-sized inputs. Diagnose every
+      large allocation and redesign it without changing the answer.
+    code: |
+      delta = queries[:, None, :] - corpus[None, :, :]
+      distances = (delta * delta).sum(axis=-1)
+      nearest = distances.argmin(axis=1)
+    hints:
+      - Compute the element counts for both `(Q, C, D)` intermediates and the `(Q, C)` result.
+      - Process corpus blocks and retain only each query's current best distance and index.
+    solution: |
+      Broadcasting avoids tiling inputs but still creates `delta`, its squared temporary, and the
+      distance matrix. Iterate over bounded corpus blocks, compute block distances, update each
+      query's best value and global index, then discard the block. Choose block size from a measured
+      memory budget and preserve deterministic tie policy.
+  - id: nbc-debug-batched-matmul
+    tier: tricky
+    kind: debug
+    title: Separate batch and core dimensions
+    minutes: 19
+    requiredForMastery: true
+    concepts: [matmul, core-dimensions, batch-broadcast]
+    prompt: |
+      Diagnose why the batched projection fails and state the corrected shape contract.
+    code: |
+      activations = np.ones((32, 10, 64))
+      weights = np.ones((32, 128, 64))
+      projected = activations @ weights
+    hints:
+      - For `matmul`, inspect the last two axes as matrices before broadcasting batch axes.
+      - The left core shape is `(10, 64)`; the right must begin its core with `64`.
+    solution: |
+      The weights use core shape `(128, 64)`, so the contraction dimensions are `64` and `128` and
+      do not match. Use weights shaped `(32, 64, 128)` for per-batch matrices or `(64, 128)` for one
+      shared matrix. Only their leading batch dimensions participate in broadcasting.
+  - id: nbc-implement-broadcast-shapes
+    tier: challenge
+    kind: write-code
+    title: Implement broadcasting from scratch
+    minutes: 30
+    requiredForMastery: false
+    concepts: [algorithm, variadic-shapes, error-reporting]
+    prompt: |
+      Implement `broadcast_shapes(*shapes)` without calling NumPy. Support any number of shapes,
+      treat missing leading axes as one, reject negative dimensions, and report the first aligned
+      conflict clearly.
+    hints:
+      - Iterate axis offsets from the right and use one for shapes that have no axis there.
+      - At one aligned position, collect all sizes other than one and require at most one unique size.
+    solution: |
+      Broadcasting is a column reduction over right-aligned shapes. Validate dimensions, inspect
+      each trailing offset, and choose the sole non-one value or one. More than one distinct
+      non-one size is a conflict. Reverse the collected output axes at the end.
+    solutionCode: |
+      def broadcast_shapes(*shapes: tuple[int, ...]) -> tuple[int, ...]:
+          if any(dim < 0 for shape in shapes for dim in shape):
+              raise ValueError("dimensions must be non-negative")
+          result_reversed: list[int] = []
+          for offset in range(1, max((len(shape) for shape in shapes), default=0) + 1):
+              sizes = [shape[-offset] if len(shape) >= offset else 1 for shape in shapes]
+              non_ones = {size for size in sizes if size != 1}
+              if len(non_ones) > 1:
+                  raise ValueError(f"conflict at axis -{offset}: {sizes}")
+              result_reversed.append(next(iter(non_ones), 1))
+          return tuple(reversed(result_reversed))
+  - id: nbc-design-memory-budget
+    tier: challenge
+    kind: performance
+    title: Budget a broadcast pipeline
+    minutes: 28
+    requiredForMastery: false
+    concepts: [peak-memory, benchmark, fusion]
+    prompt: |
+      Design an evidence-based review for `(x - mean) / std` on large tensors. Compare the direct
+      expression, a uniquely owned in-place output, and a compiled or fused alternative without
+      hiding allocation or transfer costs.
+    hints:
+      - Record input, output, and peak temporary bytes as well as wall time.
+      - Keep numerical tolerance, ownership, layout, dtype, warm-up, and synchronization identical.
+    solution: |
+      Derive every logical shape and expected byte count, then measure peak resident or allocator
+      memory around complete warmed pipelines. Validate equal results with dtype-appropriate
+      tolerances, include copies and device synchronization, randomize runs, and report distributions.
+      Reject an in-place option unless the buffer is explicitly owned and later consumers need no original.
+quizzes:
+  - id: nbc-checkpoint
+    title: Checkpoint — shape mechanics
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: nbc-cp-align
+        kind: mcq
+        prompt: From which side are operand shapes aligned?
+        options:
+          - {id: left, text: From the leading axis}
+          - {id: right, text: From the trailing axis}
+          - {id: matching, text: From any equal-sized axis}
+        answer: [right]
+        explanation: Broadcasting compares aligned trailing axes and treats missing leading axes as one.
+        concepts: [right-alignment]
+        points: 1
+      - id: nbc-cp-compatible
+        kind: multi
+        prompt: Which aligned axis pairs are compatible?
+        options:
+          - {id: same, text: 7 and 7}
+          - {id: left-one, text: 1 and 9}
+          - {id: right-one, text: 4 and 1}
+          - {id: conflict, text: 4 and 9}
+        answer: [same, left-one, right-one]
+        explanation: Sizes must match or one member of the pair must equal one.
+        concepts: [compatibility]
+        points: 2
+      - id: nbc-cp-view
+        kind: true-false
+        prompt: Broadcasting must materialize a tiled copy of each smaller operand.
+        options: [{id: "true", text: "True"}, {id: "false", text: "False"}]
+        answer: ["false"]
+        explanation: A zero-stride logical view can repeat stored values without input tiling.
+        concepts: [zero-stride]
+        points: 1
+      - id: nbc-cp-row
+        kind: complete-code
+        prompt: Give the shape expression that turns `(B,)` row weights into one value per row.
+        modelAnswer: Use `weights[:, None]` or `weights.reshape(B, 1)` to produce `(B, 1)`.
+        explanation: A trailing singleton axis lets the weight repeat across columns.
+        concepts: [singleton-axis]
+        points: 2
+  - id: nbc-assessment
+    title: Assessment — broadcasting contracts
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: nbc-as-shape-one
+        kind: mcq
+        prompt: What is the result shape of `(5, 1, 9)` and `(4, 9)`?
+        options:
+          - {id: s549, text: (5, 4, 9)}
+          - {id: s519, text: (5, 1, 9)}
+          - {id: incompatible, text: Incompatible}
+        answer: [s549]
+        explanation: Pad the second shape to `(1, 4, 9)` and reduce each aligned axis.
+        concepts: [shape-derivation]
+        points: 1
+      - id: nbc-as-shape-conflict
+        kind: mcq
+        prompt: Can `(8, 3, 5)` broadcast with `(8, 1)`?
+        options:
+          - {id: yes, text: Yes, because both contain eight}
+          - {id: no, text: No, because aligned sizes three and eight conflict}
+        answer: [no]
+        explanation: Equal sizes on unaligned axes do not help; shapes align from the right.
+        concepts: [right-alignment, conflict]
+        points: 1
+      - id: nbc-as-one-dim
+        kind: true-false
+        prompt: A `(B,)` vector applied to `(B, D)` always represents one value per batch example.
+        options: [{id: "true", text: "True"}, {id: "false", text: "False"}]
+        answer: ["false"]
+        explanation: The vector aligns with `D`; use `(B, 1)` for one value per example.
+        concepts: [semantic-axis]
+        points: 1
+      - id: nbc-as-broadcast-to
+        kind: mcq
+        prompt: Why is a `broadcast_to` result normally read-only?
+        options:
+          - {id: dtype, text: Broadcasting changes dtype}
+          - {id: alias, text: Several logical indices can share one stored value}
+          - {id: network, text: The array may live on another machine}
+        answer: [alias]
+        explanation: Zero-stride repetition creates aliasing that would make independent writes ambiguous.
+        concepts: [read-only, aliasing]
+        points: 1
+      - id: nbc-as-memory
+        kind: scenario
+        prompt: Explain why two small broadcastable inputs can still cause an out-of-memory failure.
+        modelAnswer: |
+          Input broadcasting may be metadata-only, but the result and compound-expression
+          intermediates are sized from the full broadcast shape. An outer operation can therefore
+          request billions of output elements without tiling either input.
+        explanation: Input view cost and output materialization cost are separate concerns.
+        concepts: [result-size, temporaries]
+        points: 2
+      - id: nbc-as-inplace
+        kind: find-bug
+        prompt: Why does `x += y` fail for shapes `(3, 1)` and `(3, 4)`?
+        modelAnswer: The broadcast result is `(3, 4)`, which cannot be stored back into the existing `(3, 1)` left-hand buffer.
+        explanation: In-place operations cannot expand or replace the destination shape.
+        concepts: [in-place]
+        points: 2
+      - id: nbc-as-outer
+        kind: complete-code
+        prompt: Complete the shapes needed for every pairwise difference between `(M,)` and `(N,)`.
+        modelAnswer: Use `x[:, None] - y[None, :]`, combining `(M, 1)` and `(1, N)` into `(M, N)`.
+        explanation: Each operand owns one non-singleton axis, producing the Cartesian combination.
+        concepts: [outer-operation]
+        points: 2
+      - id: nbc-as-matmul
+        kind: explain
+        prompt: Which dimensions of `matmul` broadcast, and which follow matrix rules?
+        modelAnswer: The final two dimensions are core matrix dimensions and must satisfy the contraction rule; leading dimensions broadcast as batch dimensions.
+        explanation: Matrix multiplication is not ordinary elementwise broadcasting across every axis.
+        concepts: [matmul, core-dimensions]
+        points: 2
+      - id: nbc-as-validation
+        kind: refactor
+        prompt: Refactor a function that accepts any broadcast-compatible weights for a per-example policy.
+        modelAnswer: Validate `weights.shape == (batch_size,)`, then reshape once to `(batch_size, 1)` before arithmetic. Do not accept generic compatibility as proof of meaning.
+        explanation: Semantic contracts prevent accidentally equal dimensions from hiding wrong alignment.
+        concepts: [validation, semantic-shape]
+        points: 2
+      - id: nbc-as-implementation
+        kind: write-function
+        prompt: State the core algorithm for a variadic `broadcast_shapes` implementation.
+        modelAnswer: Right-align all shapes, use one for missing axes, require at most one distinct non-one size at every aligned position, and collect that size or one into the result.
+        explanation: This derives compatibility without examples or memorized special cases.
+        concepts: [algorithm]
+        points: 2
+interview:
+  - id: nbc-iv-rule
+    level: basic
+    requiredForMastery: true
+    concepts: [broadcast-rule]
+    question: Derive NumPy's broadcasting rule.
+    shortAnswer: |
+      Align shapes from the trailing axis and treat missing leading axes as one. Each aligned pair
+      must match or contain a one; the result takes the non-one size. Any conflicting pair makes
+      the whole operation invalid.
+    fullAnswer: |
+      This is a positional algorithm, not a search for equal dimensions. For multiple operands,
+      every non-one size at an aligned axis must agree. Running the procedure on paper gives both
+      compatibility and the exact output shape.
+    commonWrongAnswer: |
+      NumPy repeats the smaller array until it fits. That hides alignment, cannot explain conflicts,
+      and incorrectly suggests eager tiling.
+    followUps: [How are missing dimensions handled?, How do three operands combine?]
+  - id: nbc-iv-memory
+    level: internals
+    requiredForMastery: true
+    concepts: [zero-stride, memory]
+    question: How can broadcasting repeat data without copying it?
+    shortAnswer: |
+      A logical broadcast view can use a zero stride on an expanded axis, so moving along that axis
+      reads the same stored value. The operand stays small even though it presents a larger shape.
+    fullAnswer: |
+      Shape and strides define address calculation. Setting an expanded axis stride to zero reuses
+      one address for many logical indices. The computed output and intermediates are separate and
+      may still allocate the full broadcast shape.
+    commonWrongAnswer: |
+      NumPy always creates a tiled temporary first. Usually the repetition is metadata-only, though
+      a later consumer may materialize values.
+    followUps: [Why is broadcast_to read-only?, Can the result still exhaust memory?]
+  - id: nbc-iv-silent-bug
+    level: tricky
+    requiredForMastery: true
+    concepts: [accidental-broadcast, testing]
+    question: Give an example where incorrect broadcasting succeeds silently.
+    shortAnswer: |
+      Multiplying `(B, D)` losses by a bare `(B,)` per-example vector is wrong because the vector
+      aligns with `D`. When `B == D`, it runs and weights columns, so a square test fixture hides
+      the defect.
+    fullAnswer: |
+      Fix it by validating one weight per example and reshaping to `(B, 1)`. Regression tests should
+      use deliberately unequal semantic dimensions and distinct values so wrong-axis application
+      becomes visible even if future dimensions coincide.
+    commonWrongAnswer: |
+      If NumPy accepts the shapes, they must express the intended operation. Compatibility has no
+      knowledge of semantic axis names.
+    followUps: [What production assertion would you add?, Why are square fixtures dangerous?]
+  - id: nbc-iv-newaxis
+    level: intermediate
+    requiredForMastery: false
+    concepts: [newaxis, outer-operation]
+    question: When and why do you insert singleton axes?
+    shortAnswer: |
+      I insert a singleton axis to state which semantic dimension should repeat, such as `(B, 1)`
+      for row weights or `(1, C, 1, 1)` for NCHW channel statistics. I derive the target shape first.
+    fullAnswer: |
+      `None`, `np.newaxis`, `expand_dims`, and reshape can create length-one dimensions without
+      copying when layout permits. Paired insertions also express outer operations, which requires
+      checking the potentially large Cartesian-product result.
+    commonWrongAnswer: |
+      Add new axes until the error disappears. That can turn a shape error into a silent semantic
+      bug or an enormous result.
+    followUps: [How would you express pairwise differences?, Which axis receives a `(D,)` bias?]
+  - id: nbc-iv-matmul
+    level: advanced
+    requiredForMastery: false
+    concepts: [matmul, batch-dimensions]
+    question: How does broadcasting interact with batched matrix multiplication?
+    shortAnswer: |
+      `matmul` reserves the last two axes as core matrix dimensions and checks their contraction.
+      Only the leading axes use broadcasting to combine batches.
+    fullAnswer: |
+      For shapes `(..., M, K)` and `(..., K, N)`, the `K` sizes must match and the output core is
+      `(M, N)`. The two leading shape prefixes then follow ordinary broadcasting. Shared weights
+      can omit a batch prefix; per-batch weights must provide a compatible one.
+    commonWrongAnswer: |
+      Every dimension follows the ordinary elementwise rule. That ignores the core contraction and
+      leads to confusing diagnoses of valid batch axes but invalid matrix axes.
+    followUps: [What shape has a shared projection matrix?, How do generalized ufuncs extend this idea?]
+  - id: nbc-iv-performance
+    level: scenario
+    requiredForMastery: false
+    concepts: [performance, allocation, blocking]
+    question: How would you review a broadcast-heavy expression for production?
+    shortAnswer: |
+      I derive every input, intermediate, and output shape, multiply by dtype size, and measure peak
+      memory plus end-to-end time. I also inspect strides, ownership, and whether a fused or blocked
+      formulation avoids full intermediates.
+    fullAnswer: |
+      Broadcasting usually removes Python loops and input tiling, but NumPy does not promise fusion.
+      I benchmark warmed complete pipelines with equal numerical checks, include copies and device
+      synchronization, and choose blocks from an explicit memory budget for pairwise work.
+    commonWrongAnswer: |
+      Broadcasting is vectorized, so it is automatically optimal and memory-free. Vectorization says
+      nothing about result cardinality, intermediates, or traversal order.
+    followUps: [When is in-place safe?, How would you preserve nearest-neighbor tie behavior?]
+projects:
+  - id: nbc-project-shape-contract-lab
+    kind: major
+    title: Build a shape-contract and broadcasting laboratory
+    minutes: 240
+    summary: Implement broadcasting mechanics, validate semantic axes, and measure real allocation behavior.
+    problem: |
+      Build a Python package that derives broadcast shapes without NumPy, explains conflicts by
+      aligned axis, validates named ML tensor contracts, and benchmarks broadcasted normalization
+      and pairwise-distance pipelines under an explicit memory budget.
+    requirements:
+      - Implement variadic broadcast-shape derivation without calling NumPy's broadcast helpers.
+      - Produce an aligned shape table and a useful conflict message for invalid operands.
+      - Add validators for per-feature bias, per-example weights, and NCHW channel statistics.
+      - Demonstrate zero-stride views and prove that broadcast inputs share memory where expected.
+      - Compare direct, owned in-place, and blocked formulations with numerical checks.
+      - Estimate result and peak intermediate bytes before each benchmark executes.
+      - Emit a machine-readable report containing shapes, strides, dtypes, timings, and memory.
+    constraints:
+      - Use unequal semantic dimensions in correctness tests and include one coincidentally equal case.
+      - Reject negative dimensions and invalid parameter statistics explicitly.
+      - Do not allocate a full pairwise matrix above the configured memory ceiling.
+      - Include conversion and copy costs in benchmark timing.
+    expectedBehaviour:
+      - Derived shapes match `np.broadcast_shapes` over generated valid and invalid cases.
+      - Semantic validators reject mechanically compatible but conceptually wrong parameters.
+      - The blocked nearest-neighbor result matches a small full-matrix reference.
+      - Reports distinguish logical broadcast views from allocated outputs and intermediates.
+    structure: |
+      broadcasting_lab/
+        shapes.py
+        contracts.py
+        kernels.py
+        benchmark.py
+        report.py
+      tests/
+        test_shapes.py
+        test_contracts.py
+        test_kernels.py
+    milestones:
+      - title: "1 — Mechanics"
+        detail: Implement shape alignment, conflict reporting, and property tests against NumPy.
+      - title: "2 — Meaning"
+        detail: Add semantic tensor contracts and regression tests for equal-dimension bugs.
+      - title: "3 — Evidence"
+        detail: Add memory-bounded kernels, benchmark methodology, and JSON reports.
+    testing:
+      - Generate shapes with zeros, ones, missing leading axes, matches, and conflicts.
+      - Compare every custom shape result or rejection with NumPy's behavior.
+      - Test row, feature, token, and channel policies using distinct axis sizes and values.
+      - Verify blocked and unblocked answers including deterministic nearest-neighbor ties.
+    failureCases:
+      - Searching for equal sizes instead of aligning axes from the right.
+      - Treating generic broadcast compatibility as semantic validation.
+      - Claiming no allocation after measuring only input views.
+      - Using square fixtures that allow the wrong axis to pass.
+    bonus:
+      - Render the aligned shape explanation as a terminal table.
+      - Add Array API compatible adapters for another tensor library.
+    architectureHints:
+      - Keep the pure shape algorithm independent from ndarray execution.
+      - Represent semantic axes with small immutable contract objects.
+      - Stream benchmark samples into the report rather than retaining every array.
+    referenceOutline: |
+      Reduce right-aligned axes into a result shape and an explanation trace. Build strict validators
+      that normalize parameters into canonical singleton shapes. Run small reference kernels, then
+      block large pairwise work while maintaining per-query best state. Record complete pipeline
+      timing, peak memory, configuration, and correctness evidence in JSON.
+  - id: nbc-final-nine-broadcast-defects
+    kind: final-challenge
+    title: Find nine broadcasting defects in an inference preprocessor
+    minutes: 75
+    summary: Diagnose nine shape, ownership, and allocation defects before changing the code.
+    problem: |
+      You receive one inference preprocessing module containing exactly nine defects. At least
+      three are silent on the provided square fixture. Produce a numbered defect inventory first,
+      then repair each defect with a regression test that fails against the original.
+    requirements:
+      - Identify exactly nine distinct defects and map each to a violated shape or memory contract.
+      - Include wrong-axis row weights, NCHW statistics, in-place expansion, and matmul core-shape defects.
+      - Include one pairwise operation that exceeds the configured memory ceiling.
+      - Prove every regression test fails on the original module for the intended reason.
+      - Record expected shapes at every public boundary.
+    constraints:
+      - Do not solve failures by inserting axes until execution succeeds.
+      - Do not weaken assertions to accept arbitrary broadcast-compatible inputs.
+      - Preserve numerical behavior and deterministic tie policy in corrected code.
+    expectedBehaviour:
+      - All nine original defects are independently observable.
+      - Corrected functions work for unequal and coincidentally equal dimensions.
+      - Peak memory stays within the declared ceiling.
+    milestones:
+      - title: "1 — Inventory"
+        detail: Derive shapes and write the nine-defect report without editing production code.
+      - title: "2 — Red tests"
+        detail: Add one focused failing regression test per defect.
+      - title: "3 — Repair"
+        detail: Implement narrow fixes and attach shape and memory evidence.
+    testing:
+      - Use non-square and square fixtures with distinct values along every semantic axis.
+      - Assert validation messages as well as numerical results.
+      - Measure the production-sized blocked path without constructing a full reference matrix.
+    failureCases:
+      - Counting one root cause as several cosmetic defects.
+      - Writing tests that already pass against the broken implementation.
+      - Fixing semantics by materializing unbounded intermediates.
+    bonus: [Add a static shape annotation document for every public function.]
+    architectureHints:
+      - Start with a table of actual shape, intended shape, aligned shape, and result shape.
+      - Use small full-matrix references only below the memory threshold.
+    referenceOutline: |
+      The nine defects span trailing-axis confusion, missing validation, ambiguous square tests,
+      writable broadcast assumptions, in-place destination expansion, uncontrolled outer results,
+      redundant temporaries, invalid matmul core dimensions, and misleading diagnostics. Each repair
+      should make the semantic contract more explicit rather than merely making NumPy accept it.
+resources:
+  - name: NumPy broadcasting user guide
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/user/basics.broadcasting.html"
+    usefulness: 5
+    why: It is the primary explanation of compatibility rules, examples, and broadcasting constraints.
+    covers: Trailing-axis comparison, scalar expansion, compatible shapes, and common examples.
+  - name: NumPy broadcast_to reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.broadcast_to.html"
+    usefulness: 5
+    why: It documents the read-only broadcast view and the possibility of shared memory locations.
+    covers: Target shapes, zero-copy views, writability, and repeated logical elements.
+  - name: NumPy broadcasting utility reference
+    type: docs
+    difficulty: deep
+    url: "https://numpy.org/doc/stable/reference/routines.array-manipulation.html#changing-number-of-dimensions"
+    usefulness: 4
+    why: It connects shape insertion and broadcast inspection to the exact array-manipulation APIs.
+    covers: expand_dims, squeeze, broadcast, broadcast_arrays, and broadcast_shapes.
+  - name: NumPy universal function basics
+    type: docs
+    difficulty: deep
+    url: "https://numpy.org/doc/stable/user/basics.ufuncs.html"
+    usefulness: 4
+    why: It places broadcasting inside ufunc execution and distinguishes core from ordinary dimensions.
+    covers: Elementwise loops, broadcasting, output behavior, and generalized ufunc signatures.
+  - name: Python Array API broadcasting specification
+    type: docs
+    difficulty: deep
+    url: "https://data-apis.org/array-api/latest/API_specification/broadcasting.html"
+    usefulness: 5
+    why: It gives a library-neutral normative algorithm for deriving broadcast-compatible result shapes.
+    covers: Dimension padding, per-axis constraints, output shapes, and in-place semantics.

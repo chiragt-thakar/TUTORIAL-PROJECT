@@ -1,0 +1,397 @@
+---
+id: "roadmap:phase-2-2.1:12"
+title: "Tensors: what they actually are vs. what PyTorch calls them"
+description: The mathematical tensor is a multilinear object with a transformation law; the "tensor" in a deep learning framework is an n-dimensional array with a dtype and a stride layout. Knowing which one you mean clarifies einsum, contraction, and tensor decompositions.
+module: 2-1-linear-algebra
+order: 13
+estimatedMinutes: 110
+prerequisites: []
+learningObjectives:
+  - Contrast the mathematical tensor (multilinear map with a change-of-basis law) with the framework tensor (typed strided array)
+  - Express batched matmul, attention, and bilinear layers as einsum contractions and reason about contraction order
+  - Describe an n-d array as a flat buffer plus shape and strides, and predict when permute and reshape copy
+  - Explain what CP, Tucker, and Kronecker factorisations generalise from the matrix SVD and where they are used
+---
+
+There are two things called "tensor". The mathematical one is a multilinear map that obeys a
+specific rule when you change coordinates — a genuine geometric object, like the metric tensor or a
+stress tensor. The framework one is an n-dimensional array with a dtype, a shape, a device, and an
+autograd history.
+
+For most ML work the array meaning is all you need, and the physics transformation law never comes
+up. But the operations that *do* carry real multilinear-algebra content — einsum contraction, outer
+and Kronecker products, and tensor decompositions — are where knowing the difference pays off.
+
+<TypeScriptComparison>
+
+- A framework tensor is a flat `TypedArray` (like `Float32Array`) plus a shape and a strides array; `permute` just reorders strides, `reshape` may or may not copy — exactly the NumPy model.
+- TypeScript has no n-d array type; libraries reimplement shape/stride bookkeeping over `Float32Array`, and get the same contiguity subtleties.
+- `einsum('bij,bjk->bik', A, B)` is batched matmul; writing it by hand in TypeScript means nested loops over the free and summed indices, which is what einsum compiles to.
+- Neither language's arrays carry a covariant/contravariant label; the mathematical distinction lives only in how you interpret the axes, never in the type.
+
+</TypeScriptComparison>
+
+## The mathematical tensor
+
+A tensor of order `k` is a multilinear map that takes `k` vectors (and/or covectors) and returns a
+scalar, linearly in each argument. Its components form a `k`-index array *in a chosen basis*, and
+under a change of basis those components transform by a fixed rule: each "upper" (contravariant)
+index by the inverse change matrix, each "lower" (covariant) index by the change matrix itself.
+
+That transformation law is the whole point. It guarantees the object it represents — a length, an
+angle, a physical stress — is the same regardless of coordinates. A random `3x3x3` array of numbers
+is not a tensor in this sense unless it transforms correctly.
+
+```python
+import numpy as np
+
+# The metric tensor components in one basis, and after a linear change of basis P
+g = np.eye(3)                              # standard metric
+P = np.array([[2.0, 0, 0], [0, 1, 0], [0, 0, 1]])   # stretch x by 2
+g_new = np.linalg.inv(P).T @ g @ np.linalg.inv(P)   # covariant transform of a (0,2) tensor
+# lengths measured with g_new in the new coords equal lengths with g in the old coords
+```
+
+## The framework tensor
+
+`torch.Tensor` and `np.ndarray` are containers: a 1-D memory buffer plus a `shape` and `strides`
+that say how multi-index access maps to buffer offsets, plus a `dtype`, a `device`, and (in a
+framework) an autograd graph link. There is no transformation law and no notion of covariance.
+
+Axes are just labelled positions — batch, channel, height, width — and code relies on those labels,
+not on any geometric meaning. Calling it a "tensor" is loose terminology that has stuck; "n-d array"
+is the accurate term for what it is.
+
+```python
+x = np.arange(24).reshape(2, 3, 4)
+assert x.strides == (96, 32, 8)            # row-major: last axis is contiguous
+y = x.transpose(2, 0, 1)                   # a view: strides reordered, no data moved
+assert y.base is x
+z = y.reshape(-1)                          # forces a copy, since y is not contiguous
+assert z.base is not x
+```
+
+<Concept>
+
+The framework tensor is a *strided view of a flat buffer*. `permute`/`transpose` are free (they
+reorder strides). `reshape` is free when the array is contiguous in the target layout and copies
+otherwise. `contiguous()` / `ascontiguousarray` forces the copy up front so later ops are fast.
+
+</Concept>
+
+## Einstein summation is the real tensor operation
+
+Einstein notation drops the sum sign: a repeated index is summed over. `c_ik = sum_j a_ij b_jk`
+becomes `c_ik = a_ij b_jk`, and in code `np.einsum('ij,jk->ik', a, b)`. Free indices (appearing in
+the output) are kept; summed indices (repeated, not in the output) are contracted.
+
+Most neural-network linear algebra is one einsum. Batched matmul is `'bij,bjk->bik'`. An attention
+score is `'bqd,bkd->bqk'`. A bilinear layer `y_r = x_i W_ijr z_j` is `'i,ijr,j->r'`. Writing the op
+this way makes the shape algebra explicit and the contraction order tunable.
+
+```python
+Q = np.random.default_rng(0).standard_normal((8, 16, 64))   # batch, seq, dim
+K = np.random.default_rng(1).standard_normal((8, 20, 64))
+scores = np.einsum('bqd,bkd->bqk', Q, K)
+assert scores.shape == (8, 16, 20)
+assert np.allclose(scores, Q @ K.transpose(0, 2, 1))        # same as batched matmul
+```
+
+## Contraction order is a matrix-chain problem
+
+A multi-factor einsum can be evaluated in many orders, and like a matrix chain the FLOP cost depends
+on the order — often by orders of magnitude. `np.einsum(..., optimize=True)` (or
+`opt_einsum`) runs a search for a good contraction path.
+
+The intuition is the same as `A @ (B @ v)` versus `(A @ B) @ v`: contract the indices that shrink
+the intermediate tensors first, and never form a large intermediate you do not need.
+
+```python
+a = np.random.default_rng(2).standard_normal((100, 100))
+b = np.random.default_rng(3).standard_normal((100, 100))
+v = np.random.default_rng(4).standard_normal(100)
+# 'ij,jk,k->i' : contracting b,v first avoids the 100x100 intermediate
+slow = np.einsum('ij,jk,k->i', a, b, v, optimize=False)
+fast = np.einsum('ij,jk,k->i', a, b, v, optimize=True)
+assert np.allclose(slow, fast)
+```
+
+## Tensor decompositions generalise the SVD
+
+The SVD writes a matrix as a sum of rank-1 terms `sum s_i u_i v_i.T`. For arrays with more than two
+axes there are analogues.
+
+The CP (canonical polyadic) decomposition writes an order-`k` tensor as a sum of rank-1 outer
+products `sum_r a_r (x) b_r (x) c_r`. The Tucker decomposition writes it as a small "core" tensor
+multiplied by a factor matrix along each axis. Tensor-train form chains small 3-index cores.
+
+These compress embedding tables, convolution kernels, and attention weights, and the Kronecker
+product `A (x) B` underlies K-FAC, which approximates a layer's curvature as a Kronecker product of
+two small matrices instead of one huge one.
+
+```python
+A = np.array([[1.0, 2.0], [3.0, 4.0]])
+B = np.array([[0.0, 5.0], [6.0, 7.0]])
+K = np.kron(A, B)
+assert K.shape == (4, 4)
+# (A kron B) @ vec(X) == vec(B @ X @ A.T)  -- the identity K-FAC exploits
+X = np.random.default_rng(5).standard_normal((2, 2))
+assert np.allclose(K @ X.reshape(-1), (B @ X @ A.T).reshape(-1))
+```
+
+<WhyItMatters>
+
+`einsum` is how attention, bilinear pooling, and many custom layers are written; `optimize=True` on
+a multi-term contraction is a free speedup. Tensor-train and Tucker factorisations shrink embedding
+and convolution layers. K-FAC's Kronecker structure makes a natural-gradient step affordable.
+Equivariant networks are the case where the physics transformation law does matter.
+
+</WhyItMatters>
+
+## When the physics meaning matters
+
+If your features are supposed to rotate with the input — force vectors, molecular coordinates,
+spherical harmonics — then they *are* tensors in the mathematical sense, and a layer must respect
+the transformation law to be equivariant. Geometric and equivariant deep learning is built exactly
+around enforcing that.
+
+Everywhere else, treating the array as a labelled container is correct and simpler. The mistake is
+importing physics intuition (raising/lowering indices, metric contractions) where there is no metric
+and no transformation law, or ignoring it where there genuinely is one.
+
+## Doing this in floating point
+
+Contraction accumulates a sum, so the same precision concerns as matmul apply: error grows with the
+contracted dimension, and mixed-precision einsum should accumulate in fp32 even when inputs are
+fp16/bf16. `optimize=True` changes the contraction order and therefore the last few bits — expected,
+not a bug.
+
+Reshape-after-permute is where silent copies and cache misses hide. Profile whether a hot op is
+memory-bound because it operates on a non-contiguous view; a well-placed `contiguous()` can be a
+large speedup even though it does no arithmetic.
+
+```python
+x = np.random.default_rng(6).standard_normal((256, 256)).astype(np.float16)
+naive = np.einsum('ij,jk->ik', x, x)                       # accumulates in fp16
+better = np.einsum('ij,jk->ik', x.astype(np.float32), x.astype(np.float32))
+assert np.linalg.norm(naive.astype(np.float32) - better) > 0
+```
+
+<ProductionNote>
+
+Use `einsum(..., optimize=True)` (or `opt_einsum`) for any contraction with three or more operands.
+For fp16/bf16 training, contract with fp32 accumulation. When a layer is unexpectedly slow, check
+whether it is working on a transposed non-contiguous view and insert `contiguous()` before the hot
+loop.
+
+</ProductionNote>
+
+## Cost
+
+A pairwise contraction of an `(a, b)` and a `(b, c)` tensor is `O(a*b*c)`, the same as matmul.
+A multi-operand einsum's cost is set entirely by the contraction path; a bad path can be
+`min(m, n)` times worse than the best. `optimize=True` finds a near-optimal path in negligible time
+relative to the contraction.
+
+`permute` is `O(1)`; `reshape` is `O(1)` or `O(size)` depending on contiguity; `kron(A, B)` for
+`(m, n)` and `(p, q)` produces an `(m*p, n*q)` array and costs that much to form — which is why
+K-FAC keeps `A` and `B` factored and never materialises the Kronecker product.
+
+## Exercises
+
+<Exercise id="la-tensor-array-vs-tensor" difficulty="easy">
+
+State two concrete differences between a mathematical tensor and a `torch.Tensor` / `np.ndarray`.
+
+<Solution>
+
+First, a transformation law. A mathematical tensor's components change under a basis change by a
+fixed covariant/contravariant rule so that the underlying geometric quantity is invariant. A
+framework array has no such law; its numbers do not change when you "change basis" because there is
+no basis attached.
+
+Second, what they are. A mathematical tensor is a multilinear map (takes `k` vectors, returns a
+scalar, linear in each). A framework array is a data container: a flat buffer plus shape, strides,
+dtype, and device. It supports tensor-algebra *operations* (contraction, outer product) but is not
+itself a multilinear map.
+
+A third, if asked: order/rank in maths means the number of indices; "rank" of a framework tensor
+often colloquially means the same (`ndim`), but "rank" of a matrix means something else entirely
+(number of independent rows).
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-tensor-einsum-attention" difficulty="medium">
+
+Write the attention score computation `scores[b, q, k] = sum_d Q[b, q, d] * K[b, k, d]` as an
+einsum, give the output shape, and say which indices are contracted and which are free.
+
+<Solution>
+
+`scores = np.einsum('bqd,bkd->bqk', Q, K)`.
+
+Free indices (in the output): `b` (batch), `q` (query position), `k` (key position). Contracted
+index (repeated in the inputs, absent from the output): `d` (feature dimension), which is summed
+over.
+
+Output shape: `(batch, n_queries, n_keys)`. This is a batched matmul, equal to
+`Q @ K.transpose(0, 2, 1)`, and the cost is `O(batch * n_queries * n_keys * d)`. The `b` index is a
+batch (broadcast) index — it appears in every operand and the output and is not summed.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-tensor-strides-copy" difficulty="hard">
+
+Given `x = np.arange(24).reshape(2, 3, 4)`, determine for each whether it is a view or a copy and
+why: `x.transpose(1, 0, 2)`, `x.reshape(6, 4)`, `x.transpose(1, 0, 2).reshape(6, 4)`.
+
+<Solution>
+
+`x` is C-contiguous with strides `(96, 32, 8)` bytes (row-major: last axis stride is the itemsize
+8).
+
+`x.transpose(1, 0, 2)`: a **view**. Transpose only permutes the shape and strides to `(3, 2, 4)`
+with strides `(32, 96, 8)`; no data moves. `.base` points at `x`.
+
+`x.reshape(6, 4)`: a **view**. `x` is contiguous and `(6, 4)` is just a re-grouping of the same
+row-major buffer (`2*3 = 6` rows of 4), so it can be expressed by new shape/strides `(32, 8)` over
+the same buffer.
+
+`x.transpose(1, 0, 2).reshape(6, 4)`: a **copy**. After the transpose the array has strides
+`(32, 96, 8)`, which is not contiguous, and flattening the first two axes into one of length 6
+cannot be expressed as a single stride over the existing buffer (the elements needed are not
+equally spaced). NumPy therefore materialises a contiguous copy.
+
+The rule: reshape returns a view only when the requested shape is compatible with the current
+strides; otherwise it copies.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-tensor-interview-name" difficulty="interview">
+
+In an interview: "Is a PyTorch tensor a tensor in the mathematical sense? Does it matter?"
+
+<Solution>
+
+Strictly, no. A PyTorch tensor is an n-dimensional array: a typed strided buffer with a shape, a
+device, and an autograd link. A mathematical tensor is a multilinear map whose components obey a
+change-of-basis transformation law (covariant and contravariant indices). The framework object has
+no transformation law and no metric; its axes are just labelled slots.
+
+Whether it matters depends on the domain. In mainstream deep learning it usually does not: we fix a
+coordinate system, label axes as batch/channel/spatial, and never do an arbitrary change of basis,
+so the container view is exactly right and simpler. The multilinear-algebra content shows up in the
+*operations* — einsum contraction, outer and Kronecker products, CP/Tucker decompositions — not in
+the data type.
+
+It does matter in geometric and equivariant deep learning: if a feature is a physical vector or a
+spherical-harmonic coefficient that must rotate with the input, then it genuinely is a tensor and
+the layer has to respect the transformation law to be equivariant. Importing "raise an index with
+the metric" intuition where there is no metric is the failure mode on the other side.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-tensor-einsum-path-real-world" difficulty="real-world">
+
+A model has a custom interaction layer computing `out[b, r] = sum_{i,j} x[b, i] * W[i, j, r] *
+y[b, j]` and it is a training bottleneck. Analyse and speed it up.
+
+<Solution>
+
+This is a bilinear layer, `np.einsum('bi,ijr,bj->br', x, W, y)`. With `x, y` of shape `(B, d)` and
+`W` of shape `(d, d, R)`, the naive all-at-once contraction can build a large intermediate.
+
+Pick the contraction order deliberately. Contract `x` with `W` first:
+`t = np.einsum('bi,ijr->bjr', x, W)` at `O(B * d * d * R)`, giving a `(B, d, R)` intermediate, then
+`out = np.einsum('bjr,bj->br', t, y)` at `O(B * d * R)`.
+
+The dominant cost is the first step, `B * d^2 * R`, which is unavoidable — `W` genuinely has that
+many entries — but no `d^2`-per-batch intermediate beyond the necessary one is built.
+
+Concrete speedups: pass `optimize=True` so the path is chosen automatically; keep `x`, `y`, `W`
+contiguous in the layout the contraction wants; use fp32 accumulation if inputs are fp16.
+
+If `W` is low multilinear rank, replace it with a Tucker or CP factorisation
+`W_ijr ~ sum_{pqs} G_pqs A_ip B_jq C_rs`, which turns the `d^2 R` cost into roughly `d * rank` per
+mode — the tensor-decomposition analogue of the LoRA trick. Validate on task metrics afterwards.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Give the defining property of a mathematical tensor that a `np.ndarray` lacks.
+2. Write batched matmul and an attention score as einsum strings, naming free and contracted
+   indices.
+3. Why is the contraction order of a multi-operand einsum a cost decision, and what turns it on in
+   NumPy?
+4. When does `reshape` return a view and when does it copy?
+5. What do CP and Tucker decompositions generalise from the matrix SVD?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="`permute` / `transpose` made my code slow even though it moves no data.">
+
+It moves no data, but it makes the array non-contiguous, so the *next* op reads memory with a bad
+stride pattern and stalls on cache misses. Insert `.contiguous()` / `np.ascontiguousarray` before a
+hot loop if profiling shows the op is memory-bound.
+
+</Gotcha>
+
+<Gotcha question="`reshape` sometimes returns a view and sometimes a copy — which is it?">
+
+A view when the target shape is compatible with the current strides (typically when the array is
+contiguous), a copy otherwise. `x.transpose(...).reshape(...)` usually copies. Use `.reshape` if you
+do not care, `.view` (PyTorch) if you require a view and want it to error when impossible.
+
+</Gotcha>
+
+<Gotcha question="My multi-term `einsum` is far slower than the equivalent matmul chain.">
+
+You left `optimize=False` (the default in older NumPy). A three-plus-operand contraction needs a
+path search; pass `optimize=True` or use `opt_einsum`. The path can change the cost by orders of
+magnitude.
+
+</Gotcha>
+
+<Gotcha question="My fp16 `einsum` lost accuracy compared to fp32.">
+
+Contraction accumulates a sum, and in fp16 that accumulation loses precision as the contracted
+dimension grows. Cast to fp32 for the contraction (or use an op that accumulates in fp32), then cast
+back.
+
+</Gotcha>
+
+<Gotcha question="I tried to raise an index of my feature tensor with the metric.">
+
+There is no metric unless your problem has one (a geometry, an equivariance requirement). For a
+plain feature array, covariant/contravariant and index raising are meaningless; the axes are just
+labels.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+The mathematical tensor is a multilinear map whose components transform under a change of basis by a
+fixed covariant/contravariant rule; it represents a basis-independent object. The framework tensor is
+an n-dimensional array — a flat buffer plus shape, strides, dtype, and device — with no
+transformation law. For most ML the array meaning is the right one.
+
+The multilinear-algebra content lives in the operations. Einsum makes contraction explicit: repeated
+indices are summed, free indices kept, and for three or more operands the contraction order is a
+matrix-chain cost decision that `optimize=True` handles. Batched matmul, attention, and bilinear
+layers are one einsum each.
+
+An n-d array is a strided view: permute is free, reshape may copy, and non-contiguous views slow the
+next op. CP, Tucker, and tensor-train decompositions extend low-rank approximation past two axes, and
+the Kronecker product structures K-FAC. The physics transformation law matters only in equivariant
+and geometric deep learning. The Practice, Debug, Interview, Test, Project, and Review tabs build
+einsum fluency and the layout model.

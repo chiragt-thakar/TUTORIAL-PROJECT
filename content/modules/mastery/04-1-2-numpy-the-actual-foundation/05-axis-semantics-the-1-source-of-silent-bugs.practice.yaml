@@ -1,0 +1,699 @@
+lessonId: "roadmap:phase-1-1.2:4"
+module: 1-2-numpy-the-actual-foundation
+lesson: 05-axis-semantics-the-1-source-of-silent-bugs
+title: "Axis semantics — the #1 source of silent bugs in ML code"
+summary: Derive axis-sensitive operations from named dimensions and expose silent layout bugs with adversarial shapes.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: nas-name-the-axes
+    tier: normal
+    kind: code-reading
+    title: Name every axis before executing
+    minutes: 10
+    requiredForMastery: true
+    concepts: [semantic-dimensions, negative-axes]
+    prompt: |
+      A tensor has shape `(8, 128, 768)` and contract `(batch, tokens, hidden)`. Map axes `0`, `1`,
+      `2`, `-1`, `-2`, and `-3` to meanings. Then predict which axis a layer-normalization over
+      hidden features should receive.
+    hints:
+      - Normalize a negative axis by adding the rank.
+      - The operation belongs to the hidden dimension, not to a memorized integer.
+    solution: |
+      Positive axes zero, one, and two are batch, tokens, and hidden. Negative axes `-1`, `-2`,
+      and `-3` map to hidden, tokens, and batch. Layer normalization over hidden features therefore
+      uses axis two or `-1`; the latter is appropriate only while hidden is contractually last.
+  - id: nas-normalize-axis
+    tier: normal
+    kind: write-code
+    title: Normalize and validate an axis
+    minutes: 12
+    requiredForMastery: true
+    concepts: [axis-normalization, validation]
+    prompt: |
+      Implement `normalize_axis(axis, ndim)` without calling a NumPy normalization helper. Reject
+      rank below one and axes outside the valid positive or negative interval.
+    hints:
+      - A rank-r array accepts axes from `-r` through `r - 1`.
+      - After validation, modulo converts the negative coordinate to a positive one.
+    solution: |
+      Validate rank first, then require `-ndim <= axis < ndim`. Return `axis % ndim`. This proves
+      that the coordinate exists, but callers still need a separate semantic-axis contract.
+    solutionCode: |
+      def normalize_axis(axis: int, ndim: int) -> int:
+          if ndim < 1:
+              raise ValueError("ndim must be positive")
+          if not -ndim <= axis < ndim:
+              raise ValueError(f"axis {axis} is invalid for rank {ndim}")
+          return axis % ndim
+  - id: nas-derive-layout-permutation
+    tier: normal
+    kind: predict-output
+    title: Derive NCHW to NHWC
+    minutes: 10
+    requiredForMastery: true
+    concepts: [transpose, layout]
+    prompt: |
+      An image batch has NCHW shape `(5, 3, 24, 40)`. Derive the complete transpose tuple, result
+      shape, and one coordinate equality that proves values moved with their meanings.
+    hints:
+      - The target names are N, H, W, C; find each name's old position.
+      - A useful equality mentions all four indices and swaps only their positions.
+    solution: |
+      Use `x.transpose(0, 2, 3, 1)`, producing `(5, 24, 40, 3)`. For example,
+      `out[4, 10, 20, 2] == x[4, 2, 10, 20]`. The transpose is normally a strided view.
+  - id: nas-insert-channel-axes
+    tier: normal
+    kind: write-code
+    title: Broadcast channel parameters intentionally
+    minutes: 12
+    requiredForMastery: true
+    concepts: [expand-dims, broadcasting, nchw]
+    prompt: |
+      Reshape channel means and standard deviations from `(C,)` so they normalize NCHW data. Add
+      validations that prevent a coincidental match against width.
+    hints:
+      - The semantic target shape is `(1, C, 1, 1)`.
+      - Validate rank four and parameter length against source axis one before arithmetic.
+    solution: |
+      Require NCHW rank four, identical one-dimensional parameter shapes, and length equal to the
+      channel dimension. Reshape both vectors to `(1, C, 1, 1)`, then subtract and divide.
+    solutionCode: |
+      def normalize_nchw(x, mean, std):
+          if x.ndim != 4 or mean.ndim != 1 or std.shape != mean.shape:
+              raise ValueError("expected NCHW plus matching channel vectors")
+          if mean.shape[0] != x.shape[1] or np.any(std == 0):
+              raise ValueError("invalid channel parameters")
+          return (x - mean[None, :, None, None]) / std[None, :, None, None]
+  - id: nas-stack-or-concatenate
+    tier: intermediate
+    kind: explain
+    title: Choose stack or concatenate
+    minutes: 14
+    requiredForMastery: true
+    concepts: [stack, concatenate, shape-algebra]
+    prompt: |
+      Choose and justify the operation for two jobs: append `(4, 16)` and `(7, 16)` example
+      batches; combine three `(4, 16)` validation runs while preserving the run identity.
+    hints:
+      - One job grows an existing batch axis.
+      - The other job introduces a new semantic dimension.
+    solution: |
+      Concatenate the batches on axis zero to get `(11, 16)`. Stack the three equal-shaped runs on
+      a new axis, commonly axis zero, to get `(3, 4, 16)` with contract `(run, batch, features)`.
+  - id: nas-layout-permutation-function
+    tier: intermediate
+    kind: write-code
+    title: Derive permutations from names
+    minutes: 18
+    requiredForMastery: true
+    concepts: [symbolic-layout, permutation]
+    prompt: |
+      Implement `layout_permutation(source, target)`. Layout strings must have equal rank, unique
+      names, and exactly the same name set. Return the tuple accepted by `transpose`.
+    hints:
+      - Each target name asks for its position in the source layout.
+      - Reject duplicates because a name-to-position mapping would be ambiguous.
+    solution: |
+      Validate the two layouts, then return source positions in target-name order. The result for
+      NCHW to NHWC is `(0, 2, 3, 1)`.
+    solutionCode: |
+      def layout_permutation(source: str, target: str) -> tuple[int, ...]:
+          if len(source) != len(target):
+              raise ValueError("layout ranks differ")
+          if len(set(source)) != len(source) or len(set(target)) != len(target):
+              raise ValueError("layout names must be unique")
+          if set(source) != set(target):
+              raise ValueError("layouts name different dimensions")
+          return tuple(source.index(name) for name in target)
+  - id: nas-axis-aware-softmax
+    tier: intermediate
+    kind: write-code
+    title: Implement axis-aware stable softmax
+    minutes: 18
+    requiredForMastery: true
+    concepts: [softmax, semantic-invariant, keepdims]
+    prompt: |
+      Implement stable softmax for a caller-supplied class axis. Validate the axis and prove the
+      result normalizes each competing class set without changing rank.
+    hints:
+      - Subtract the maximum along the same axis used by the denominator.
+      - Preserve the reduced dimension so both intermediates align with the original shape.
+    solution: |
+      Normalize the axis, subtract an axis-wise maximum with `keepdims=True`, exponentiate, and
+      divide by an axis-wise sum with `keepdims=True`. Assert output shape and sums along that axis.
+    solutionCode: |
+      def softmax(x, class_axis=-1):
+          axis = normalize_axis(class_axis, x.ndim)
+          shifted = x - np.max(x, axis=axis, keepdims=True)
+          exp = np.exp(shifted)
+          out = exp / np.sum(exp, axis=axis, keepdims=True)
+          np.testing.assert_allclose(out.sum(axis=axis), 1.0)
+          return out
+  - id: nas-round-trip-layout
+    tier: intermediate
+    kind: design
+    title: Design a layout round-trip test
+    minutes: 16
+    requiredForMastery: true
+    concepts: [testing, asymmetric-shapes, round-trip]
+    prompt: |
+      Design tests for an NCHW-to-NHWC adapter and its inverse. Explain why `(2, 2, 2, 2)` and
+      shape-only assertions are inadequate.
+    hints:
+      - Use distinct sizes and coordinate-encoded values.
+      - Test the mapping in both directions plus ownership and contiguity promises.
+    solution: |
+      Use a shape such as `(2, 3, 5, 7)` and `arange` values. Assert exact target shape, selected
+      coordinate equalities, and full round-trip equality. Then assert documented memory sharing or
+      contiguity. Equal sizes hide permutations, while shape-only checks cannot prove value meaning.
+  - id: nas-debug-bare-squeeze
+    tier: tricky
+    kind: debug
+    title: Stop batch rank from changing
+    minutes: 17
+    requiredForMastery: true
+    concepts: [squeeze, stable-rank, batch]
+    prompt: |
+      Diagnose an inference endpoint whose output rank changes for one request and one token.
+    code: |
+      def finish(logits):
+          # contract on entry is (N, T, C)
+          return np.squeeze(logits)
+    hints:
+      - Bare squeeze removes every size-one axis, regardless of meaning.
+      - Decide whether the public API should remove any semantic dimension at all.
+    solution: |
+      The implementation silently removes batch or token dimensions whenever their sizes equal
+      one. Return logits unchanged for a stable `(N,T,C)` contract. If a separate single-example
+      API must remove batch, validate `N == 1` and use `squeeze(axis=0)` explicitly.
+  - id: nas-debug-softmax-axis
+    tier: tricky
+    kind: debug
+    title: Find cross-user normalization
+    minutes: 18
+    requiredForMastery: true
+    concepts: [softmax, wrong-axis, invariants]
+    prompt: |
+      The function accepts class logits shaped `(N, C)` but makes probabilities for one user depend
+      on other users. Diagnose it and write an adversarial regression.
+    code: |
+      def probabilities(logits):
+          e = np.exp(logits - logits.max(axis=0, keepdims=True))
+          return e / e.sum(axis=0, keepdims=True)
+    hints:
+      - Classes compete within an example, not examples within a class column.
+      - Use an asymmetric `(2, 3)` fixture and assert row sums plus batch independence.
+    solution: |
+      Both operations use batch axis zero, so columns normalize across users. Use class axis one for
+      max and sum. Assert every row sums to one, and prove that adding a new batch row does not
+      change existing rows' probabilities.
+  - id: nas-debug-transpose-order
+    tier: tricky
+    kind: debug
+    title: Repair a mistaken transpose tuple
+    minutes: 18
+    requiredForMastery: true
+    concepts: [transpose, permutation, axis-order]
+    prompt: |
+      This adapter claims to convert NCHW to NHWC. Derive what it actually returns and repair it.
+    code: |
+      def to_nhwc(x):
+          return x.transpose(0, 3, 1, 2)
+    hints:
+      - Read the tuple as old axes listed in new order.
+      - Annotate old axis names zero through three before deriving the target.
+    solution: |
+      The code orders old names N, W, C, H and returns NWCH. NHWC requires old axes N, H, W, C,
+      so the tuple is `(0, 2, 3, 1)`. Test `(2,3,5,7)` and coordinate equality, not a square image.
+  - id: nas-debug-concatenate-class
+    tier: tricky
+    kind: debug
+    title: Preserve batch semantics in aggregation
+    minutes: 17
+    requiredForMastery: true
+    concepts: [concatenate, batch-axis, semantic-validation]
+    prompt: |
+      Two workers return logits `(N1, C)` and `(N2, C)`, but the merger uses axis one. Explain why
+      some fixtures pass and implement a contract-validating fix.
+    hints:
+      - Results from different workers add examples, not classes.
+      - Equal batch sizes make axis-one concatenation legal while producing the wrong meaning.
+    solution: |
+      Axis one joins class sets and requires equal batch sizes; it does not append requests. Validate
+      rank two and identical class counts, then concatenate on batch axis zero. Test different batch
+      sizes to ensure the original implementation fails mechanically.
+    solutionCode: |
+      def merge_batches(parts):
+          if not parts or any(x.ndim != 2 for x in parts):
+              raise ValueError("expected rank-two batches")
+          classes = parts[0].shape[1]
+          if any(x.shape[1] != classes for x in parts):
+              raise ValueError("class dimensions differ")
+          return np.concatenate(parts, axis=0)
+  - id: nas-build-layout-adapter
+    tier: challenge
+    kind: write-code
+    title: Build a canonical-layout boundary
+    minutes: 28
+    requiredForMastery: false
+    concepts: [api-boundary, layout, contiguity]
+    prompt: |
+      Implement a boundary that accepts explicit NCHW or NHWC input and returns a C-contiguous NCHW
+      array. Validate rank, channel count, spatial dimensions, dtype, and empty-batch policy.
+    hints:
+      - Normalize layout names before deriving the channel position and permutation.
+      - "`ascontiguousarray` avoids a copy only when the normalized view already satisfies the contract."
+    solution: |
+      Validate the declared layout rather than inferring it from sizes. Check the named channel and
+      spatial dimensions, transpose NHWC with `(0,3,1,2)`, and pass the result through
+      `ascontiguousarray`. Document fresh-versus-aliased behavior because already-contiguous NCHW may
+      be returned without copying.
+  - id: nas-axis-audit-benchmark
+    tier: challenge
+    kind: performance
+    title: Audit layout conversion cost
+    minutes: 26
+    requiredForMastery: false
+    concepts: [benchmark, contiguity, hidden-copy]
+    prompt: |
+      Design a benchmark that decides whether to keep NHWC, transpose per operation, or normalize
+      once to contiguous NCHW in an image pipeline.
+    hints:
+      - Include conversion, downstream kernels, repeated reuse, and peak live memory.
+      - Separate a cheap transpose view from any copy triggered by its consumer.
+    solution: |
+      Benchmark the complete pipeline with identical asymmetric inputs, warm-up, repeated trials,
+      synchronization where relevant, and correctness checks. Record strides, flags, conversion
+      time, kernel time, distributions, and peak memory. Compare one-time normalization reused by
+      all consumers against repeated implicit copies; choose from end-to-end evidence.
+quizzes:
+  - id: nas-checkpoint
+    title: Checkpoint — semantic dimensions
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: nas-cp-negative
+        kind: mcq
+        prompt: What does axis `-1` mean?
+        options:
+          - {id: last, text: The final axis in the current rank}
+          - {id: class, text: The class axis}
+          - {id: feature, text: The feature axis}
+        answer: [last]
+        explanation: A negative coordinate carries position, not domain meaning.
+        concepts: [negative-axes]
+        points: 1
+      - id: nas-cp-transpose
+        kind: mcq
+        prompt: Which tuple converts NCHW to NHWC?
+        options:
+          - {id: correct, text: "(0, 2, 3, 1)"}
+          - {id: wrong, text: "(0, 3, 1, 2)"}
+          - {id: reverse, text: "(3, 2, 1, 0)"}
+        answer: [correct]
+        explanation: The tuple lists old axes in the target order N, H, W, C.
+        concepts: [transpose]
+        points: 1
+      - id: nas-cp-stack
+        kind: mcq
+        prompt: Which operation creates a new run axis from equal-shaped results?
+        options:
+          - {id: stack, text: np.stack}
+          - {id: concat, text: np.concatenate}
+          - {id: squeeze, text: np.squeeze}
+        answer: [stack]
+        explanation: Stack inserts a new dimension; concatenate grows an existing one.
+        concepts: [stack]
+        points: 1
+      - id: nas-cp-tests
+        kind: multi
+        prompt: Which checks expose silent axis swaps?
+        options:
+          - {id: asym, text: Use unequal dimension sizes}
+          - {id: invariant, text: Assert semantic invariants}
+          - {id: square, text: Use square tensors only}
+          - {id: values, text: Assert coordinate-mapped values}
+        answer: [asym, invariant, values]
+        explanation: Shape asymmetry and value-level invariants reveal permutations that square fixtures hide.
+        concepts: [testing]
+        points: 1
+  - id: nas-assessment
+    title: Assessment — axis-safe ML arrays
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: nas-as-dimension
+        kind: mcq
+        prompt: Which statement is correct?
+        options:
+          - {id: semantic, text: An axis is a position; its meaning comes from a contract}
+          - {id: rows, text: Axis zero always means rows}
+          - {id: last, text: Axis minus one always means classes}
+        answer: [semantic]
+        explanation: NumPy stores positions and sizes, not domain names.
+        concepts: [semantic-dimensions]
+        points: 1
+      - id: nas-as-negative
+        kind: predict-output
+        prompt: Normalize axis `-2` for rank five.
+        modelAnswer: Axis `-2` normalizes to positive axis three.
+        explanation: Add the rank or use modulo after range validation.
+        concepts: [axis-normalization]
+        points: 1
+      - id: nas-as-moveaxis
+        kind: write-function
+        prompt: Move NHWC channels to NCHW with an operation that names one source and destination.
+        modelAnswer: Use `np.moveaxis(x, -1, 1)` after validating the NHWC contract.
+        explanation: Moveaxis preserves other dimensions' relative order.
+        concepts: [moveaxis]
+        points: 1
+      - id: nas-as-squeeze
+        kind: find-bug
+        prompt: Find the contract defect in returning `np.squeeze(batch_output)`.
+        modelAnswer: |
+          Every singleton dimension is removed, so rank depends on batch and data sizes. Preserve
+          rank or specify one validated semantic axis.
+        explanation: Size one does not mean semantically disposable.
+        concepts: [squeeze]
+        points: 1
+      - id: nas-as-concat
+        kind: scenario
+        prompt: Which axis appends two `(N, C)` batches and what must match?
+        modelAnswer: Concatenate on axis zero; class count, dtype policy, and all non-batch dimensions must match.
+        explanation: The operation grows the existing batch dimension.
+        concepts: [concatenate]
+        points: 1
+      - id: nas-as-softmax
+        kind: find-bug
+        prompt: Why is softmax over axis zero wrong for `(batch, classes)` classification logits?
+        modelAnswer: It makes examples compete within each class instead of classes competing within each example.
+        explanation: The mathematical set being normalized determines the axis.
+        concepts: [softmax]
+        points: 1
+      - id: nas-as-permutation
+        kind: predict-output
+        prompt: Give the old-axis order for NTC to TNC.
+        modelAnswer: The target T, N, C takes old axes `(1, 0, 2)`.
+        explanation: A transpose tuple lists old positions in new order.
+        concepts: [permutation]
+        points: 1
+      - id: nas-as-memory
+        kind: mcq
+        prompt: What is usually true immediately after transpose?
+        options:
+          - {id: view, text: It is a strided view and may be non-contiguous}
+          - {id: copy, text: It is always a contiguous copy}
+          - {id: same, text: Its strides never change}
+        answer: [view]
+        explanation: Permuting axes commonly changes strides without moving bytes.
+        concepts: [contiguity]
+        points: 1
+      - id: nas-as-testing
+        kind: scenario
+        prompt: State a minimal regression strategy for a layout conversion.
+        modelAnswer: |
+          Use unequal axis sizes and coordinate-encoded values; assert target shape, selected value
+          mappings, full round trip, and the documented ownership or contiguity contract.
+        explanation: Shape alone cannot prove semantic preservation.
+        concepts: [testing]
+        points: 1
+      - id: nas-as-refactor
+        kind: refactor
+        prompt: Refactor an unexplained `x.transpose(0, 2, 3, 1)` at an API boundary.
+        modelAnswer: |
+          Name source and target layouts, derive the permutation from those names, validate rank and
+          known dimensions, and document output layout plus contiguity.
+        explanation: Symbolic contracts make the axis intent reviewable.
+        concepts: [api-boundary]
+        points: 1
+interview:
+  - id: nas-iv-axis-meaning
+    level: basic
+    requiredForMastery: true
+    concepts: [semantic-dimensions]
+    question: What is the difference between a dimension and an axis?
+    shortAnswer: |
+      A semantic dimension is what values vary over, such as batch, token, or class. An axis is
+      that dimension's integer position in the current array layout. NumPy validates the position,
+      but application contracts must validate the meaning.
+    fullAnswer: |
+      Shape stores only sizes. The same `(32, 128)` can mean batch by features, tokens by hidden,
+      or height by width. Transformations move dimensions to different positions, so I annotate
+      named layouts and derive axis integers from them.
+    commonWrongAnswer: Axis zero is rows and axis one is columns.
+    followUps:
+      - When is axis minus one a good API default?
+      - How do you validate semantic meaning at runtime?
+  - id: nas-iv-transpose
+    level: intermediate
+    requiredForMastery: true
+    concepts: [transpose, moveaxis]
+    question: Compare transpose, moveaxis, and swapaxes.
+    shortAnswer: |
+      Transpose specifies the complete old-axis order. Moveaxis relocates named source axes while
+      preserving the others' order. Swapaxes exchanges exactly two. I choose the one that states
+      the semantic transformation most clearly.
+    fullAnswer: |
+      All commonly produce views by changing shape and strides. Transpose is ideal for full layout
+      conversion, moveaxis for moving channels or features, and swapaxes for a true pair exchange.
+      Downstream contiguity requirements remain a separate performance contract.
+    commonWrongAnswer: They always copy the array into the requested order.
+    followUps:
+      - How do you derive a transpose tuple?
+      - When might a downstream consumer copy the result?
+  - id: nas-iv-silent-bugs
+    level: advanced
+    requiredForMastery: true
+    concepts: [silent-bugs, testing]
+    question: Why are axis bugs especially dangerous in ML code?
+    shortAnswer: |
+      Wrong-axis operations often remain shape-compatible and numerical, so training continues with
+      the wrong semantics. Equal sizes can hide swaps. I test asymmetric shapes, coordinate values,
+      and invariants such as probability sums over the declared class axis.
+    fullAnswer: |
+      NumPy cannot distinguish batch from class. Broadcasting and reductions can therefore produce
+      plausible arrays after a semantic mistake. The strongest defense combines named boundary
+      contracts, one canonical layout, explicit transformations, and tests that fail when meanings
+      are exchanged even if code still runs.
+    commonWrongAnswer: NumPy raises whenever an axis is wrong.
+    followUps:
+      - Give an example that square fixtures hide.
+      - Which invariant detects cross-batch softmax?
+  - id: nas-iv-stack
+    level: tricky
+    requiredForMastery: true
+    concepts: [stack, concatenate]
+    question: When should you stack instead of concatenate?
+    shortAnswer: |
+      Stack when the inputs represent values along a new semantic dimension, such as run, fold, or
+      ensemble member. Concatenate when they extend an existing dimension such as batch or time.
+    fullAnswer: |
+      Stack requires equal input shapes and inserts a size equal to input count. Concatenate keeps
+      rank and joins one existing axis while requiring all other axes to match. Both can be
+      mechanically legal, so the output dimension names decide.
+    commonWrongAnswer: Stack and concatenate differ only in performance.
+    followUps:
+      - What are the output shapes for three `(N,C)` inputs?
+      - How can concatenation silently join classes instead of batches?
+  - id: nas-iv-boundary
+    level: scenario
+    requiredForMastery: true
+    concepts: [layout, api-boundary]
+    question: Design a safe boundary between NHWC input and an NCHW model.
+    shortAnswer: |
+      Require an explicit source layout, validate rank and channel position, derive the permutation,
+      normalize once to canonical NCHW, and state dtype, ownership, contiguity, and empty-batch
+      behavior. Test asymmetric round trips and coordinate equality.
+    fullAnswer: |
+      I avoid guessing from a channel size of three because spatial dimensions can also equal three.
+      The adapter owns normalization and any needed contiguous copy. Internal code then uses one
+      layout, and telemetry records rejected shapes and conversion cost.
+    commonWrongAnswer: Infer NHWC whenever the last dimension is three.
+    followUps:
+      - When can the adapter return an alias?
+      - What should be measured in production?
+  - id: nas-iv-performance
+    level: internals
+    requiredForMastery: true
+    concepts: [strides, hidden-copy]
+    question: Why can a metadata-only transpose still make a pipeline slower?
+    shortAnswer: |
+      The transpose itself may be a cheap view, but its new strides can reduce locality or violate a
+      kernel's contiguous-input requirement. The consumer may then create a hidden copy every call.
+    fullAnswer: |
+      I inspect strides and flags, then benchmark conversion plus downstream work. Repeated hidden
+      copies can make one explicit contiguous normalization at a boundary cheaper, especially when
+      the normalized array is reused.
+    commonWrongAnswer: A view is always free because it allocates no data buffer.
+    followUps:
+      - What memory measurements would you collect?
+      - When should you retain the source layout instead?
+projects:
+  - id: nas-project-axis-contract
+    kind: major
+    title: Build an axis-contract layer for model serving
+    minutes: 240
+    summary: Normalize image, sequence, and logits layouts through one validated NumPy boundary with proofs against silent axis bugs.
+    problem: |
+      A model-serving service receives NHWC or NCHW images, NTC or TNC sequences, and NC or NTC
+      logits from several adapters. Build a small library that validates named layouts, converts to
+      canonical internal forms, computes axis-safe softmax, merges batches, and returns requested
+      external layouts without guessing meaning from sizes.
+    requirements:
+      - Represent layouts explicitly and reject duplicate, missing, or extra dimension names.
+      - Normalize images to contiguous NCHW and sequences to contiguous NTC at ingress.
+      - Preserve stable batch dimensions, including batch size one and empty batches where allowed.
+      - Implement class-axis softmax with finite-value policy and semantic sum invariants.
+      - Separate stack-new-dimension operations from concatenate-existing-dimension operations.
+      - Return errors that name the failed semantic dimension and observed shape.
+      - Record conversion count, bytes copied, source layout, and normalized layout.
+    constraints:
+      - Use NumPy and the Python standard library only.
+      - Never infer a layout from coincidental dimension sizes.
+      - Do not use bare squeeze or unexplained transpose tuples in public functions.
+      - Avoid Python loops over individual array elements.
+    expectedBehaviour:
+      - Round trips preserve every value and documented dimension meaning.
+      - Adding another batch item cannot change existing per-example probabilities.
+      - Singleton and asymmetric shapes retain stable ranks.
+      - Copies occur only to meet a documented ownership or contiguity promise.
+      - Invalid layouts fail before expensive transformation.
+    structure: |
+      axis_contract/
+        __init__.py
+        layouts.py
+        validation.py
+        images.py
+        sequences.py
+        logits.py
+        metrics.py
+      tests/
+        test_layouts.py
+        test_images.py
+        test_sequences.py
+        test_logits.py
+    milestones:
+      - title: "1 — Define named contracts and adversarial fixtures"
+        detail: Write layout vocabulary, failure policy, asymmetric fixtures, coordinate values, and invariants first.
+      - title: "2 — Implement canonical normalization"
+        detail: Derive permutations from names and make ownership plus contiguity explicit.
+      - title: "3 — Add semantic operations"
+        detail: Implement softmax, batch merging, and new-axis stacking against named dimensions.
+      - title: "4 — Prove correctness and cost"
+        detail: Run round trips, property checks, timing, and peak-memory measurements.
+    testing:
+      - Use pairwise-distinct non-singleton sizes wherever possible.
+      - Assert coordinate mappings and full round trips, not only shapes.
+      - Cover batch one, token one, channel one, empty allowed dimensions, and invalid layouts.
+      - Assert per-example class probabilities sum to one and are batch-independent.
+      - Inspect memory sharing, strides, C-contiguity, and copied-byte metrics.
+    failureCases:
+      - Channel-size heuristics misclassify a spatial dimension of size three.
+      - Bare squeeze removes batch or token meaning.
+      - Square fixtures allow a wrong permutation to pass.
+      - Softmax normalizes across users.
+      - A transpose view triggers repeated hidden copies downstream.
+    bonus:
+      - Add property tests for every valid permutation of three and four unique names.
+      - Add a policy that rejects conversions exceeding a copied-byte budget.
+      - Compare normalization-once against per-consumer conversion.
+    architectureHints:
+      - Derive permutations as target names looked up in source names.
+      - Keep canonical layouts in small immutable contract objects.
+      - Centralize shape and layout validation before transformation.
+    referenceOutline: |
+      Build a validated layout parser and permutation function first. Each adapter validates named
+      sizes, transposes only when necessary, and applies `ascontiguousarray` at the canonical
+      boundary. Axis-aware operations receive a semantic name, resolve it through the contract,
+      and assert output invariants. Tests use asymmetric coordinate-encoded arrays.
+  - id: nas-final-axis-audit
+    kind: final-challenge
+    title: Find nine silent axis defects in an inference pipeline
+    minutes: 80
+    summary: Audit one plausible NumPy pipeline whose square fixtures hide layout, squeeze, join, and normalization defects.
+    problem: |
+      Before editing, identify exactly nine independent axis-contract defects in a pipeline that
+      ingests images, batches requests, normalizes logits, and exports predictions. Write one
+      regression per defect that fails against the original, then make the smallest repairs.
+    requirements:
+      - Submit a numbered nine-root-cause report before code changes.
+      - Include layout inference, wrong permutation, cross-batch softmax, bare squeeze, and wrong-axis concatenate defects.
+      - Include one negative-axis assumption, one hidden-copy cost, one incomplete validation, and one shape-only test defect.
+      - Preserve documented values, rank, dtype, ownership, and empty-input behavior.
+      - Prove all original regressions fail and all repaired tests pass.
+    constraints:
+      - Do not fix defects by changing the public contract silently.
+      - Do not replace vectorized operations with element loops.
+      - Do not use equal axis sizes in regression fixtures.
+    expectedBehaviour:
+      - Exactly nine independent causes are explained and repaired.
+      - Per-example results are independent of unrelated batch members.
+      - Layout round trips preserve coordinate values.
+      - Copy behavior matches a measurable declared policy.
+    milestones:
+      - title: "1 — Annotate semantic shapes"
+        detail: Name every dimension at every pipeline boundary and derive each transformation on paper.
+      - title: "2 — Expose all nine failures"
+        detail: Use asymmetric fixtures, coordinate values, and domain invariants against the original.
+      - title: "3 — Repair and measure"
+        detail: Apply narrow fixes, prove round trips, and record conversion cost.
+    testing:
+      - Retain evidence that every regression fails before repair.
+      - Assert values, semantic shapes, stable ranks, probability sums, and batch independence.
+      - Inspect strides and copied bytes around layout conversions.
+    failureCases:
+      - Listing multiple symptoms of the same wrong permutation as separate causes.
+      - Checking only final shape or probability range.
+      - Assuming a transpose view has no downstream cost.
+    bonus:
+      - Generate permutation round-trip tests from symbolic layouts.
+    architectureHints:
+      - Separate boundary normalization from model operations.
+      - Make semantic axis resolution a single tested helper.
+    referenceOutline: |
+      A complete audit finds unsafe layout guessing, an incorrect NCHW permutation, normalization
+      across batch, unrestricted squeeze, class-axis concatenation, stale `-1` meaning after a
+      transform, repeated hidden contiguity copies, missing semantic-size validation, and square
+      shape-only tests. Each receives one adversarial regression and one focused correction.
+resources:
+  - name: NumPy glossary — axis
+    type: docs
+    difficulty: intro
+    url: "https://numpy.org/doc/stable/glossary.html#term-axis"
+    usefulness: 5
+    why: It provides NumPy's authoritative definition of an axis and distinguishes dimensional positions from everyday row terminology.
+    covers: Axis numbering, dimensions, rank, and terminology used throughout the NumPy documentation.
+  - name: numpy.transpose reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.transpose.html"
+    usefulness: 5
+    why: It precisely defines the permutation argument, inverse permutation, returned view, and behavior when axes are omitted.
+    covers: Complete axis permutations, reversed defaults, views, inverse transformations, and examples.
+  - name: numpy.moveaxis reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.moveaxis.html"
+    usefulness: 5
+    why: It documents the clearest primitive for relocating named dimensions while preserving the order of all remaining axes.
+    covers: Source and destination axes, multiple-axis moves, result shape, and view semantics.
+  - name: numpy.expand_dims reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.expand_dims.html"
+    usefulness: 4
+    why: It specifies how explicit singleton dimensions are inserted and how negative insertion positions are interpreted.
+    covers: Singleton-axis insertion, axis tuples, output views, shapes, and bounds behavior.
+  - name: NumPy array manipulation routines
+    type: docs
+    difficulty: deep
+    url: "https://numpy.org/doc/stable/reference/routines.array-manipulation.html"
+    usefulness: 5
+    why: It is the primary map of operations that change axis order, rank, joining, splitting, and contiguity.
+    covers: Transpose-like operations, dimension changes, stack, concatenate, split, reshape, and memory layout.

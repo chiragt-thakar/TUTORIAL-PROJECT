@@ -1,0 +1,770 @@
+lessonId: "roadmap:phase-2-2.2:0"
+module: 2-2-calculus-optimisation
+lesson: 01-limits-continuity-derivatives-refresh-only
+title: "Limits, continuity, derivatives — refresh only"
+summary: Reload single-variable calculus — limits and indeterminate forms, the three ways continuity fails, the limit definition of the derivative, smoothness classes and subgradients — and the finite-difference check that underpins gradient testing.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lcl-read-num-deriv
+    tier: normal
+    kind: code-reading
+    title: Read a numeric-derivative helper
+    minutes: 10
+    requiredForMastery: true
+    concepts: [finite-difference, symmetric-difference, truncation-error]
+    prompt: |
+      Read this function and say what it approximates, why it uses `x + h` and `x - h` rather than
+      `x + h` and `x`, and the one place it silently misleads.
+      ```python
+      def d(f, x, h=1e-6):
+          return (f(x + h) - f(x - h)) / (2 * h)
+      ```
+    hints:
+      - The central difference cancels the first-order error term in the Taylor expansion.
+      - Think about what it returns at a kink like `abs(x)` at `x = 0`.
+    solution: |
+      It approximates `f'(x)` by a symmetric (central) finite difference. Using `x + h` and `x - h`
+      makes the truncation error `O(h**2)` instead of the `O(h)` of the one-sided `(f(x + h) -
+      f(x)) / h`, because the odd Taylor terms cancel. It misleads at a non-differentiable point:
+      for `f = abs` at `x = 0` it returns `(h - h) / (2h) = 0`, the average of the `-1` and `+1`
+      one-sided slopes, which is a subgradient, not a derivative — the derivative there does not
+      exist. It also degrades for very small `h` due to cancellation in the numerator.
+  - id: lcl-write-relative-check
+    tier: normal
+    kind: write-code
+    title: Relative-error gradient check
+    minutes: 12
+    requiredForMastery: true
+    concepts: [gradient-check, relative-error, step-size]
+    prompt: |
+      Write `check(f, fprime, x, hs=(1e-4, 1e-5, 1e-6, 1e-7))` that compares an analytic derivative
+      to a central difference at several step sizes and returns whether the best relative error is
+      below `1e-5`.
+    hints:
+      - For each `h`, compute the central difference and a relative error against `fprime(x)`.
+      - Relative error is `|a - n| / (|a| + |n| + tiny)`.
+    solution: |
+      For each `h` in `hs`, compute `n = (f(x + h) - f(x - h)) / (2 * h)` and
+      `rel = abs(fprime(x) - n) / (abs(fprime(x)) + abs(n) + 1e-12)`; return `min(rels) < 1e-5`.
+      Sweeping `h` and taking the best guards against both truncation error (large `h`) and
+      cancellation (tiny `h`), whose combined minimum sits near `h = 1e-6` in double precision. A
+      relative threshold rather than absolute keeps the test meaningful across gradient magnitudes.
+      The check should be run at a random `x` away from any kink of `f`.
+  - id: lcl-predict-limits
+    tier: normal
+    kind: predict-output
+    title: Evaluate limits
+    minutes: 10
+    requiredForMastery: true
+    concepts: [limits, indeterminate-forms, lhopital]
+    prompt: |
+      Give `lim_{x->0} (e^x - 1) / x`, `lim_{x->0} (1 - cos x) / x^2`, and
+      `lim_{x->inf} x * sin(1/x)`.
+    hints:
+      - All three are indeterminate forms; use a known expansion or L'Hopital.
+      - "`sin(1/x) ~ 1/x` for large `x`."
+    solution: |
+      `(e^x - 1)/x`: `0/0`. Expansion `e^x ~ 1 + x + x^2/2`, so `(e^x - 1)/x ~ 1 + x/2 -> 1`.
+      `(1 - cos x)/x^2`: `0/0`. Expansion `cos x ~ 1 - x^2/2`, so `(1 - cos x)/x^2 ~ 1/2`.
+      `x * sin(1/x)` as `x -> inf`: `inf * 0`. Substitute `t = 1/x -> 0`: it becomes
+      `sin(t) / t -> 1`. All three limits are finite: `1`, `1/2`, `1`.
+  - id: lcl-explain-diff-implies-cont
+    tier: normal
+    kind: explain
+    title: Differentiability and continuity
+    minutes: 10
+    requiredForMastery: true
+    concepts: [differentiability, continuity, counterexample]
+    prompt: |
+      Explain why differentiability at a point implies continuity there, and give the standard
+      counterexample to the converse.
+    hints:
+      - Multiply the difference quotient by `h` and take the limit.
+      - The absolute value function is the classic counterexample.
+    solution: |
+      If `f'(a) = lim_{h->0} (f(a + h) - f(a)) / h` exists and is finite, then
+      `lim_{h->0} (f(a + h) - f(a)) = lim_{h->0} [(f(a + h) - f(a)) / h] * h = f'(a) * 0 = 0`, so
+      `lim_{h->0} f(a + h) = f(a)`, which is continuity at `a`. The converse fails: `f(x) = |x|` is
+      continuous at `0` but the difference quotient `|h| / h` equals `-1` for `h < 0` and `+1` for
+      `h > 0`, so `f'(0)` does not exist. Continuity is necessary for differentiability, not
+      sufficient.
+  - id: lcl-activation-derivatives
+    tier: intermediate
+    kind: write-code
+    title: Derivatives of common activations
+    minutes: 14
+    requiredForMastery: true
+    concepts: [activation-derivatives, sigmoid, tanh, softplus]
+    prompt: |
+      Give closed-form derivatives (in terms of the activation's own output where possible) for
+      sigmoid, tanh, ReLU, and softplus, and note which is non-smooth.
+    hints:
+      - "`sigmoid'` and `tanh'` are expressible in the output value."
+      - "`softplus(x) = log(1 + e^x)` and its derivative is a familiar function."
+    solution: |
+      With `s = sigmoid(x)`: `sigmoid'(x) = s * (1 - s)`. With `t = tanh(x)`: `tanh'(x) = 1 - t**2`.
+      `relu'(x) = 1` for `x > 0`, `0` for `x < 0`, undefined at `x = 0` (subgradient in `[0, 1]`;
+      frameworks pick `0`). `softplus'(x) = e^x / (1 + e^x) = sigmoid(x)`. Sigmoid, tanh, and
+      softplus are `C^infinity` (smooth); ReLU is only `C^0` because of the kink at the origin. This
+      is why softplus is used as a smooth surrogate for ReLU when a smooth gradient is required.
+  - id: lcl-smoothness-classes
+    tier: intermediate
+    kind: predict-output
+    title: Classify by smoothness
+    minutes: 12
+    requiredForMastery: true
+    concepts: [smoothness-classes, c0, c1]
+    prompt: |
+      Classify each into the highest `C^k` it belongs to on all of R: `f(x) = |x|`;
+      `g(x) = x * |x|`; `h(x) = x^2 * sin(1/x)` extended by `h(0) = 0`.
+    hints:
+      - Differentiate once and check whether the result is continuous.
+      - "`g(x) = x * |x|` equals `x^2` for `x >= 0` and `-x^2` for `x < 0`."
+    solution: |
+      `|x|`: continuous everywhere but not differentiable at `0`, so `C^0` only.
+      `g(x) = x|x|`: equals `x^2` for `x >= 0` and `-x^2` for `x < 0`; `g'(x) = 2|x|`, which is
+      continuous, so `g` is `C^1`. But `g''(x) = 2 sign(x)` is discontinuous at `0`, so `g` is not
+      `C^2`. Highest class: `C^1`.
+      `h(x) = x^2 sin(1/x)` with `h(0) = 0`: `h` is differentiable everywhere, with `h'(0) = 0`, but
+      `h'(x) = 2x sin(1/x) - cos(1/x)` for `x != 0` does not have a limit as `x -> 0` (the
+      `cos(1/x)` term oscillates), so `h'` is not continuous at `0`. Highest class: differentiable
+      but not `C^1`.
+  - id: lcl-ivt-evt
+    tier: intermediate
+    kind: explain
+    title: Why continuity matters for optimisation
+    minutes: 12
+    requiredForMastery: true
+    concepts: [intermediate-value-theorem, extreme-value-theorem, guarantees]
+    prompt: |
+      State the Intermediate Value Theorem and the Extreme Value Theorem, and name one optimisation
+      fact each one underwrites.
+    hints:
+      - IVT is about a continuous function taking all intermediate values.
+      - EVT is about attaining a max and min on a closed bounded set.
+    solution: |
+      IVT: if `f` is continuous on `[a, b]` and `y` lies between `f(a)` and `f(b)`, then `f(c) = y`
+      for some `c` in `[a, b]`. It underwrites root-finding and line search: a continuous derivative
+      that changes sign over an interval has a zero in it, so a stationary point (or a step size
+      satisfying a Wolfe condition) can be bracketed and bisected. EVT: a continuous function on a
+      closed bounded set attains a maximum and a minimum. It underwrites the existence of a minimiser
+      for a continuous loss over a compact (e.g. bounded, closed) parameter set — without it, an
+      optimum might only be approached, never reached.
+  - id: lcl-lhopital-repeated
+    tier: intermediate
+    kind: predict-output
+    title: L'Hopital applied carefully
+    minutes: 12
+    requiredForMastery: true
+    concepts: [lhopital, indeterminate-forms, misuse]
+    prompt: |
+      Evaluate `lim_{x->0} (x - sin x) / x^3` with L'Hopital, and say why applying L'Hopital to
+      `lim_{x->inf} (x + sin x) / x` gives a wrong impression.
+    hints:
+      - The first is `0/0`; differentiate top and bottom until it resolves.
+      - For the second, check whether `f'/g'` actually has a limit.
+    solution: |
+      `(x - sin x)/x^3` is `0/0`. Derivatives: `(1 - cos x)/(3x^2)`, still `0/0`; `(sin x)/(6x)`,
+      still `0/0`; `(cos x)/6 -> 1/6`. So the limit is `1/6`. For `(x + sin x)/x` as `x -> inf`:
+      the direct answer is `1 + sin(x)/x -> 1`. But L'Hopital gives `(1 + cos x)/1`, which
+      oscillates and has no limit — L'Hopital does not apply because `f'/g'` does not converge, even
+      though the original limit exists. The rule requires the transformed limit to exist; a
+      non-existent `f'/g'` says nothing about `f/g`.
+  - id: lcl-debug-onesided-fd
+    tier: tricky
+    kind: debug
+    title: One-sided difference near a boundary
+    minutes: 14
+    requiredForMastery: true
+    concepts: [finite-difference, one-sided, truncation-error]
+    prompt: |
+      This gradient check uses a one-sided difference and fails with about 1% error even for a
+      smooth `f` and a correct analytic gradient. Fix it.
+    code: |
+      def check(f, fprime, x, h=1e-6):
+          num = (f(x + h) - f(x)) / h
+          return abs(num - fprime(x)) < 1e-9
+    solution: |
+      The one-sided difference `(f(x + h) - f(x)) / h` has truncation error `O(h)` — proportional to
+      `h * f''(x) / 2` — so at `h = 1e-6` the error is around `1e-6` times the curvature, easily
+      1% of a small gradient and always far above a `1e-9` absolute threshold. Switch to the central
+      difference `(f(x + h) - f(x - h)) / (2 * h)`, whose error is `O(h**2)`, and compare with a
+      relative tolerance near `1e-5`. Keep one-sided only when `x` is genuinely at a domain boundary
+      where `x - h` is invalid, and then use a higher-order one-sided stencil. Regression: check a
+      quadratic `f` where the one-sided error is exactly predictable and assert the central version
+      is orders of magnitude better.
+    hints:
+      - One-sided truncation error is `O(h)`, not `O(h**2)`.
+      - Use the central difference and a relative tolerance.
+  - id: lcl-debug-tiny-h
+    tier: tricky
+    kind: debug
+    title: Step size too small
+    minutes: 14
+    requiredForMastery: true
+    concepts: [catastrophic-cancellation, step-size, rounding-error]
+    prompt: |
+      This derivative estimate is accurate for `h = 1e-6` and returns noise for `h = 1e-13`. Explain
+      and fix the choice of `h`.
+    code: |
+      def d(f, x, h=1e-13):
+          return (f(x + h) - f(x - h)) / (2 * h)
+    solution: |
+      For `h = 1e-13`, `f(x + h)` and `f(x - h)` agree to about 13 digits, so their difference keeps
+      only about 3 significant digits (double precision has ~16); dividing that noisy difference by
+      `2h` amplifies the noise. This is catastrophic cancellation. The total error of the central
+      difference is roughly `C1 * h**2 + C2 * eps / h`, minimised near `h ~ eps**(1/3) ~ 6e-6`, so
+      use `h` around `1e-6`. For an analytic, complex-differentiable `f`, the complex-step estimate
+      `imag(f(x + 1j * h)) / h` has no subtraction and stays accurate for `h` as small as `1e-200`.
+      Regression: sweep `h` from `1e-3` to `1e-14` and assert the error curve is U-shaped with its
+      minimum near `1e-6`.
+    hints:
+      - Subtracting two nearly equal numbers loses significant digits.
+      - The optimal `h` for a central difference scales like the cube root of machine epsilon.
+  - id: lcl-debug-check-at-kink
+    tier: tricky
+    kind: debug
+    title: Gradient-checking exactly at a kink
+    minutes: 14
+    requiredForMastery: true
+    concepts: [subgradient, non-differentiable, gradient-check]
+    prompt: |
+      A gradient check for a ReLU layer fails intermittently. It evaluates the check at inputs
+      including exact zeros. Explain and fix.
+    code: |
+      def relu(x): return np.maximum(x, 0.0)
+      def relu_grad(x): return (x > 0).astype(float)
+      # check compares relu_grad(x) to a central difference of relu at x, for x including 0.0
+    solution: |
+      At `x = 0` ReLU has no derivative: the left slope is `0`, the right slope is `1`. The analytic
+      `relu_grad(0)` returns `0` (the chosen subgradient), but the central difference of `relu` at
+      `0` returns `(h - 0) / (2h) = 0.5`, the average of the one-sided slopes. Neither is "wrong";
+      they are different valid subgradients, so the check spuriously fails. Fix: exclude points
+      within a small tolerance of a kink from the gradient check (jitter inputs off `0`, or filter
+      `abs(x) > 1e-6`), and test differentiability only where the function is smooth. Document that
+      the layer is non-smooth at isolated points and that any subgradient is acceptable there.
+    hints:
+      - The analytic subgradient and the finite-difference average differ at a kink.
+      - Gradient-check only where the function is differentiable.
+  - id: lcl-perf-jacobian-cost
+    tier: tricky
+    kind: performance
+    title: Cost of a numerical Jacobian
+    minutes: 14
+    requiredForMastery: true
+    concepts: [numerical-jacobian, reverse-mode, cost]
+    prompt: |
+      For `f: R^n -> R^m`, give the number of `f` evaluations a full central-difference Jacobian
+      needs, and contrast with reverse-mode autodiff for a scalar output.
+    hints:
+      - Perturb one input coordinate at a time, plus and minus.
+      - Reverse mode propagates one vector backward per output.
+    solution: |
+      A central-difference Jacobian perturbs each of the `n` inputs by `+h` and `-h`, so it costs
+      `2n` evaluations of `f` (each returning an `m`-vector), i.e. `O(n)` forward passes regardless
+      of `m`. Reverse-mode autodiff for a scalar output (`m = 1`) computes the entire gradient in a
+      cost of a small constant times *one* forward pass, independent of `n` — which is why training,
+      with millions of parameters and one scalar loss, uses reverse mode. Forward-mode autodiff
+      costs `O(n)` like finite differences but is exact; it is used when `n` is small (few input
+      directions) or for Jacobian-vector products.
+  - id: lcl-design-gradcheck-harness
+    tier: challenge
+    kind: design
+    title: Design a finite-difference gradient checker
+    minutes: 26
+    requiredForMastery: false
+    concepts: [gradient-check, step-size-sweep, reporting]
+    prompt: |
+      Design `gradcheck(f, grad, x)` for scalar `f` that validates an analytic gradient against
+      central differences. State the method, the tolerances, kink handling, and what it must not do.
+    hints:
+      - Sweep `h`, use central differences, per-coordinate relative error, worst-offender report.
+      - Jitter or skip points on a non-differentiable kink.
+    solution: |
+      Inputs: `f` returning a scalar, an analytic `grad` of the same shape as `x`, an `h` list, and
+      a relative tolerance. For each coordinate, compute the central difference at each `h`, and keep
+      the estimate whose neighbouring-`h` values agree best (self-consistency). Compare to the
+      analytic value with `|a - n| / (|a| + |n| + eps)`. Report the max relative error and its
+      location, the fraction of coordinates failing, and the error distribution. It must not use an
+      absolute tolerance, must not test at a point on a kink (detect proximity and jitter, or skip
+      and report skipped coordinates), must sweep `h` rather than trust one value, and must not pass
+      silently when many coordinates sit just under the threshold. Golden cases: a smooth quadratic,
+      a ReLU-containing function tested away from `0`, and a deliberately wrong gradient.
+  - id: lcl-refactor-fd-to-autodiff
+    tier: challenge
+    kind: refactor
+    title: Replace a finite-difference gradient with autodiff
+    minutes: 24
+    requiredForMastery: false
+    concepts: [autodiff, finite-difference, accuracy, cost]
+    prompt: |
+      A training loop computes parameter gradients by central differences — `2 * n_params` forward
+      passes per step — and it is both slow and slightly inaccurate. Refactor to reverse-mode
+      autodiff, keeping the finite-difference code as a test.
+    hints:
+      - Reverse mode gets the whole gradient in one backward pass.
+      - Keep the old code as a gradient-check fixture, not the production path.
+    solution: |
+      Rewrite the loss so it is expressed in an autodiff framework (or a small tape), and obtain the
+      gradient with one reverse pass: cost drops from `O(n_params)` forward passes to a small
+      constant times one forward pass, and the gradient is exact up to floating-point rounding
+      rather than carrying `O(h**2)` truncation error. Move the central-difference routine into the
+      test suite as `gradcheck`, run it on random mini-inputs at start-up and in CI with a relative
+      tolerance near `1e-5`, testing away from kinks. Add a fail-before-fix benchmark recording the
+      old per-step wall time and the old gradient's error against a high-precision reference, and
+      assert the autodiff gradient is faster and closer.
+quizzes:
+  - id: lcl-checkpoint
+    title: Checkpoint — limits, continuity, derivatives
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lcl-cp-limit-exists
+        kind: mcq
+        prompt: For `lim_{x->a} f(x)` to exist, what must hold?
+        options:
+          - {id: onesided, text: The left and right one-sided limits both exist and are equal}
+          - {id: defined, text: "`f(a)` is defined"}
+          - {id: continuous, text: "`f` is continuous everywhere"}
+        answer: [onesided]
+        explanation: The limit is about approach from both sides; `f(a)` need not even be defined.
+        concepts: [limits]
+        points: 1
+      - id: lcl-cp-diff-cont
+        kind: mcq
+        prompt: Which implication is true in general?
+        options:
+          - {id: dtoc, text: Differentiable at `a` implies continuous at `a`}
+          - {id: ctod, text: Continuous at `a` implies differentiable at `a`}
+          - {id: neither, text: Neither implication holds}
+        answer: [dtoc]
+        explanation: "`|x|` at `0` is the standard continuous-but-not-differentiable example."
+        concepts: [differentiability, continuity]
+        points: 1
+      - id: lcl-cp-relu-class
+        kind: mcq
+        prompt: ReLU belongs to which highest smoothness class on all of R?
+        options:
+          - {id: c0, text: "`C^0` (continuous but not `C^1`)"}
+          - {id: c1, text: "`C^1`"}
+          - {id: cinf, text: "`C^infinity`"}
+        answer: [c0]
+        explanation: The kink at `0` makes the derivative discontinuous there.
+        concepts: [smoothness-classes]
+        points: 1
+      - id: lcl-cp-stepsize
+        kind: multi
+        prompt: Which are true about the step size in a central finite difference?
+        options:
+          - {id: truncation, text: Too large `h` gives truncation error `O(h**2)`}
+          - {id: rounding, text: Too small `h` gives cancellation error `O(eps/h)`}
+          - {id: optimal, text: The optimal `h` is around the cube root of machine epsilon}
+          - {id: smaller-better, text: Smaller `h` is always more accurate}
+        answer: [truncation, rounding, optimal]
+        explanation: The combined error is U-shaped with a minimum near `1e-6` in double precision.
+        concepts: [step-size, catastrophic-cancellation]
+        points: 1
+  - id: lcl-assessment
+    title: Assessment — limits, continuity, derivatives
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lcl-as-indeterminate
+        kind: explain
+        prompt: Why is `0/0` called indeterminate, and how do you resolve such a limit?
+        modelAnswer: |
+          Because the form alone does not fix the value: `sin(x)/x -> 1`, `x^2/x -> 0`, `x/x^2 ->
+          infinity` are all `0/0`. Resolve by algebraic simplification, a known limit or Taylor
+          expansion, or L'Hopital's rule (differentiate top and bottom) when the transformed limit
+          exists.
+        explanation: The value depends on the rates, not the form.
+        concepts: [indeterminate-forms]
+        points: 1
+      - id: lcl-as-continuity-cases
+        kind: scenario
+        prompt: Classify the discontinuity of `x / |x|`, `(x^2 - x)/x`, and `1/x` at `x = 0`.
+        modelAnswer: |
+          `x/|x|`: one-sided limits `-1` and `+1` disagree — jump discontinuity. `(x^2 - x)/x = x -
+          1` for `x != 0` with limit `-1`, but undefined at `0` — removable. `1/x` is unbounded near
+          `0` — infinite (essential) discontinuity.
+        explanation: Jump, removable, and infinite are the three failure modes.
+        concepts: [continuity]
+        points: 1
+      - id: lcl-as-diff-implies-cont
+        kind: write-function
+        prompt: Sketch the proof that differentiability at `a` implies continuity at `a`.
+        modelAnswer: |
+          `lim_{h->0}(f(a+h) - f(a)) = lim_{h->0} [(f(a+h) - f(a))/h] * h = f'(a) * 0 = 0`, so
+          `lim_{h->0} f(a+h) = f(a)`, which is continuity.
+        explanation: The bounded difference quotient times `h -> 0` forces the increment to zero.
+        concepts: [differentiability, continuity]
+        points: 1
+      - id: lcl-as-activation-derivs
+        kind: write-function
+        prompt: Give derivatives of sigmoid, tanh, and softplus in terms of familiar functions.
+        modelAnswer: |
+          `sigmoid'(x) = s(1 - s)` with `s = sigmoid(x)`. `tanh'(x) = 1 - tanh(x)^2`.
+          `softplus'(x) = sigmoid(x)`.
+        explanation: Each derivative is expressible via the sigmoid or the activation's own output.
+        concepts: [activation-derivatives]
+        points: 1
+      - id: lcl-as-subgradient
+        kind: scenario
+        prompt: ReLU is not differentiable at `0`. How do optimisers cope, and why is it harmless?
+        modelAnswer: |
+          They use a subgradient — any value in `[0, 1]` — and frameworks pick one (usually `0`).
+          The set of inputs landing exactly on `0` has measure zero, so with real activations it
+          essentially never occurs, and the chosen value is still a descent direction. The loss is
+          differentiable almost everywhere, which is all (sub)gradient descent needs.
+        explanation: Isolated non-smooth points are handled by subgradients.
+        concepts: [subgradient, non-differentiable]
+        points: 1
+      - id: lcl-as-stepsize
+        kind: scenario
+        prompt: A finite-difference derivative is worse at `h = 1e-12` than at `h = 1e-6`. Explain.
+        modelAnswer: |
+          The central-difference error is about `C1 h^2 + C2 eps / h`. At `h = 1e-6` the two terms
+          are near balance (minimum). At `h = 1e-12`, `f(x + h)` and `f(x - h)` agree to ~12 digits,
+          so their difference keeps ~4 significant digits, and dividing by `2h` amplifies that noise
+          — catastrophic cancellation dominates.
+        explanation: Rounding error grows as `h` shrinks; there is an optimal `h`.
+        concepts: [step-size, catastrophic-cancellation]
+        points: 1
+      - id: lcl-as-lhopital-misuse
+        kind: find-bug
+        prompt: Someone evaluates `lim_{x->inf} (x + sin x)/x` by L'Hopital and concludes the limit does not exist. What went wrong?
+        modelAnswer: |
+          L'Hopital gives `(1 + cos x)/1`, which oscillates and has no limit — but L'Hopital only
+          applies when the transformed limit *exists*. The original limit is `1 + sin(x)/x -> 1`.
+          A non-existent `f'/g'` says nothing about `f/g`.
+        explanation: L'Hopital is a one-way tool that needs the transformed limit to exist.
+        concepts: [lhopital]
+        points: 1
+      - id: lcl-as-ivt-evt
+        kind: scenario
+        prompt: Which theorem guarantees a continuous loss on a closed bounded parameter set has a minimiser, and why does continuity matter?
+        modelAnswer: |
+          The Extreme Value Theorem: a continuous function on a compact set attains its max and min.
+          Without continuity the infimum might only be approached and never attained (e.g. a function
+          with a downward jump), so no actual minimiser would exist.
+        explanation: EVT turns "the infimum exists" into "a minimiser exists".
+        concepts: [extreme-value-theorem]
+        points: 1
+      - id: lcl-as-jacobian-cost
+        kind: scenario
+        prompt: |
+          For a scalar function of 1000 inputs, compare the cost of a numerical gradient with
+          reverse-mode autodiff.
+        modelAnswer: |
+          Central differences cost `2 * 1000 = 2000` evaluations of `f`. Reverse-mode autodiff gets
+          the entire 1000-dimensional gradient in a small constant times one forward pass,
+          independent of the input dimension — orders of magnitude cheaper and exact.
+        explanation: Reverse mode scales with the number of outputs (here 1), not inputs.
+        concepts: [numerical-jacobian, reverse-mode]
+        points: 1
+      - id: lcl-as-smoothness
+        kind: mcq
+        prompt: A function is differentiable everywhere but its derivative is discontinuous at one point. Its highest smoothness class is what?
+        options:
+          - {id: diff-not-c1, text: Differentiable but not `C^1`}
+          - {id: c1, text: "`C^1`"}
+          - {id: c0, text: "`C^0`"}
+        answer: [diff-not-c1]
+        explanation: "`C^1` requires the derivative itself to be continuous."
+        concepts: [smoothness-classes]
+        points: 1
+interview:
+  - id: lcl-iv-derivative-definition
+    level: basic
+    requiredForMastery: true
+    concepts: [derivative, limit-definition, autodiff]
+    question: What is the derivative, from first principles, and how does autodiff relate to it?
+    shortAnswer: |
+      `f'(a) = lim_{h->0} (f(a + h) - f(a)) / h` — the slope of the tangent, the instantaneous rate
+      of change. Autodiff computes exactly this value through the chain rule, without taking a
+      numerical limit.
+    fullAnswer: |
+      The difference quotient `(f(a + h) - f(a)) / h` is the average rate of change over a step `h`;
+      its limit as `h -> 0`, when it exists, is the derivative. Geometrically it is the tangent
+      slope; physically, an instantaneous rate. Automatic differentiation does not approximate this
+      with a small `h` — it applies the exact derivative rules for each primitive operation and
+      composes them with the chain rule, so the result is correct to floating-point rounding.
+      Finite differences are only used as a check on autodiff, with a tolerance and a swept step
+      size.
+    commonWrongAnswer: The derivative is just `(f(x + h) - f(x)) / h` for a small `h`.
+    followUps:
+      - Why is a symmetric difference more accurate than a one-sided one?
+      - Where does differentiability fail for common activations?
+  - id: lcl-iv-continuity-optimisation
+    level: scenario
+    requiredForMastery: true
+    concepts: [continuity, intermediate-value-theorem, extreme-value-theorem]
+    question: Why does continuity of a loss matter for optimisation?
+    shortAnswer: |
+      Continuity underwrites the Extreme Value Theorem (a minimiser exists on a compact set) and the
+      Intermediate Value Theorem (a sign-changing derivative has a root you can bracket), and it
+      means small parameter changes give small loss changes, which gradient methods assume.
+    fullAnswer: |
+      A discontinuous loss can have an infimum that is never attained, so "the best value" may not
+      correspond to any parameter setting — EVT rules that out for a continuous loss on a closed
+      bounded set. IVT lets line searches and root-finders bracket a stationary point or a step size
+      meeting a Wolfe condition. And continuity is what makes a gradient locally predictive: without
+      it, an arbitrarily small step could change the loss by a jump, and descent guarantees break.
+      In practice losses are continuous and differentiable almost everywhere, with isolated kinks
+      handled by subgradients.
+    commonWrongAnswer: Continuity does not matter as long as you can compute a gradient.
+    followUps:
+      - What does the Extreme Value Theorem require of the parameter set?
+      - How is IVT used inside a line search?
+  - id: lcl-iv-subgradients
+    level: internals
+    requiredForMastery: true
+    concepts: [subgradient, non-differentiable, relu, l1]
+    question: What is a subgradient and where do subgradients appear in deep learning?
+    shortAnswer: |
+      At a non-differentiable point of a convex function, a subgradient is any slope of a line that
+      stays below the function. For ReLU at `0` it is any value in `[0, 1]`; for `|x|` at `0`, any
+      value in `[-1, 1]`. Frameworks pick one.
+    fullAnswer: |
+      Where a convex function has a kink, there is no unique tangent but a whole set of supporting
+      slopes — the subdifferential. Any element of it is a subgradient, and (sub)gradient descent
+      with a subgradient still converges under the usual step-size conditions. In deep learning this
+      covers ReLU and leaky-ReLU kinks, `max`-pooling, hard attention, L1 and group-lasso
+      penalties, and the hinge loss. Because the non-smooth points are isolated (measure zero for
+      real-valued inputs), the practical effect is nil; when non-smoothness genuinely causes
+      trouble, a smooth surrogate (softplus, smoothed L1, soft attention) is substituted.
+    commonWrongAnswer: A subgradient is just the finite-difference derivative at the kink.
+    followUps:
+      - Why is picking `0` versus `1` for ReLU's subgradient at `0` harmless?
+      - When would you switch to a smooth surrogate?
+  - id: lcl-iv-finite-difference
+    level: debugging
+    requiredForMastery: true
+    concepts: [finite-difference, step-size, gradient-check]
+    question: How do you gradient-check an analytic derivative, and what are the pitfalls?
+    shortAnswer: |
+      Compare it to a central difference `(f(x + h) - f(x - h)) / (2h)` with `h` around `1e-6`,
+      using a relative-error threshold near `1e-5`. Pitfalls: `h` too small (cancellation), `h` too
+      large (truncation), absolute tolerances, and checking at kinks.
+    fullAnswer: |
+      The central difference has `O(h^2)` truncation error and `O(eps/h)` rounding error; their sum
+      is minimised near `h = eps^(1/3) ~ 6e-6`, so sweep `h` over `1e-4` to `1e-7` and take the best
+      per coordinate. Compare with a relative error `|a - n| / (|a| + |n| + eps)`, since gradient
+      magnitudes vary. Test at a random point with no activation on a kink — ReLU at exactly `0`
+      gives a subgradient mismatch that is not a bug. For analytic functions the complex-step
+      derivative `imag(f(x + i h)) / h` avoids the subtraction entirely. And never use the
+      finite-difference value as the production gradient; it is a check only.
+    commonWrongAnswer: Use the smallest possible `h` for the most accurate check.
+    followUps:
+      - Why is there an optimal `h` rather than "smaller is better"?
+      - What is the complex-step derivative and when can you use it?
+  - id: lcl-iv-lhopital
+    level: output
+    requiredForMastery: true
+    concepts: [lhopital, indeterminate-forms, limits]
+    question: When does L'Hopital's rule apply, and when does it mislead?
+    shortAnswer: |
+      It applies to `0/0` and `inf/inf` forms, and only when `lim f'/g'` actually exists. If
+      `f'/g'` oscillates or diverges, the rule says nothing — the original limit may still exist.
+    fullAnswer: |
+      L'Hopital converts `lim f/g` (an indeterminate `0/0` or `inf/inf`) into `lim f'/g'` *provided
+      the latter exists*. Other indeterminate forms (`0 * inf`, `inf - inf`, `1^inf`) must first be
+      rewritten as a quotient of the right type. The classic misuse is `(x + sin x)/x` as
+      `x -> inf`: the true limit is `1`, but `f'/g' = 1 + cos x` has no limit, so L'Hopital is
+      inapplicable, not evidence of non-existence. Always confirm the transformed limit converges
+      before concluding.
+    commonWrongAnswer: L'Hopital works on any limit that is hard to evaluate directly.
+    followUps:
+      - How do you handle a `0 * inf` form before applying L'Hopital?
+      - Give a limit where L'Hopital loops forever without resolving.
+  - id: lcl-iv-smoothness
+    level: comparison
+    requiredForMastery: true
+    concepts: [smoothness-classes, taylor, activations]
+    question: Why do smoothness classes matter for optimisation and Taylor approximation?
+    shortAnswer: |
+      Each extra continuous derivative lets Taylor expansion be accurate to one higher order, which
+      is what second-order optimisers exploit. A `C^0`-but-not-`C^1` loss (from ReLU, `max`, L1) has
+      no continuous gradient field, so second-order methods and some convergence proofs need care.
+    fullAnswer: |
+      A `C^k` function has a Taylor polynomial of degree `k` with remainder `O(h^{k+1})`. Gradient
+      descent needs `C^1` (a Lipschitz gradient is the usual assumption); Newton and trust-region
+      methods use the `C^2` quadratic model. Networks with ReLU are only piecewise smooth — `C^0`
+      globally, `C^infinity` on each linear region — so the loss surface is a patchwork of smooth
+      pieces joined at kinks. First-order methods handle this fine via subgradients; second-order
+      methods either restrict to a region or use a smoothed model. Smooth activations (GELU,
+      softplus, SiLU) give a globally `C^infinity` loss, which is one reason they are sometimes
+      preferred.
+    commonWrongAnswer: Smoothness is a mathematical nicety with no practical effect.
+    followUps:
+      - What smoothness does plain gradient descent assume?
+      - Why might GELU be preferred over ReLU for a second-order method?
+projects:
+  - id: lcl-project-calculus-refresher-kit
+    kind: small
+    title: Build a single-variable calculus checker kit
+    minutes: 150
+    summary: Implement limit estimation with form detection, a continuity classifier, a smoothness-class probe, and a robust finite-difference derivative with step-size sweeping and complex-step fallback, all validated.
+    problem: |
+      Build a small toolkit that operationalises this refresher: `estimate_limit(f, a)` that
+      approaches `a` from both sides, detects the indeterminate form, and reports the estimated
+      value with a confidence flag; `classify_discontinuity(f, a)` returning jump / removable /
+      infinite / continuous; `smoothness_probe(f, a)` estimating how many derivatives are continuous
+      at `a`; and `derivative(f, x)` using a swept-`h` central difference with a complex-step option
+      and a relative-error self-check.
+    requirements:
+      - "`estimate_limit` samples geometric sequences approaching `a` from each side and flags when the one-sided estimates disagree."
+      - "`classify_discontinuity` distinguishes the three failure modes and the continuous case using one-sided limits and `f(a)`."
+      - "`smoothness_probe` estimates continuity of `f`, `f'`, `f''` at `a` by finite differences and reports the highest class it can confirm."
+      - "`derivative` sweeps `h`, picks the most self-consistent estimate, and offers `method='complex'` for analytic `f`."
+      - Every result carries the evidence (the sampled values, the chosen `h`, the residual).
+    constraints:
+      - NumPy and the standard library only.
+      - Never return a finite-difference derivative without a step-size sweep.
+      - Never classify a limit as existing when the one-sided estimates disagree beyond tolerance.
+      - Do not probe smoothness exactly at a suspected kink without also jittering.
+    expectedBehaviour:
+      - "`estimate_limit` gets `sin(x)/x -> 1`, `(1 - cos x)/x^2 -> 1/2`, and flags `x/|x|` at `0` as no limit."
+      - "`classify_discontinuity` labels `x/|x|`, `(x^2 - x)/x`, and `1/x` correctly at `0`."
+      - "`smoothness_probe` reports `C^0` for `|x|`, `C^1` for `x|x|`, and smooth for `tanh`."
+      - "`derivative` error versus analytic is below `1e-6` for smooth `f` and the swept `h` lands near `1e-6`."
+      - The complex-step derivative matches to near machine precision for analytic `f`.
+    structure: |
+      calc_kit/
+        __init__.py
+        limits.py
+        continuity.py
+        smoothness.py
+        derivative.py
+      tests/
+        test_limits.py
+        test_continuity.py
+        test_smoothness.py
+        test_derivative.py
+    milestones:
+      - title: "1 — Limits"
+        detail: Two-sided approach, form detection, disagreement flagging.
+      - title: "2 — Continuity"
+        detail: Jump / removable / infinite / continuous classification.
+      - title: "3 — Smoothness"
+        detail: Estimate continuity of successive derivatives and report the class.
+      - title: "4 — Derivative"
+        detail: Swept-`h` central difference, complex-step option, relative self-check.
+    testing:
+      - Known limits recovered within tolerance and non-existent ones flagged.
+      - Discontinuity labels correct on the three canonical examples.
+      - Smoothness classes correct for `|x|`, `x|x|`, `x^2 sin(1/x)`, and `tanh`.
+      - Derivative error U-shaped in `h` with the minimum near `1e-6`.
+      - Complex-step derivative accurate for analytic `f` at `h = 1e-100`.
+    failureCases:
+      - A one-sided-only limit sampler misses a jump and reports a value.
+      - The derivative uses a fixed tiny `h` and returns cancellation noise.
+      - Smoothness is probed at exactly a kink and misreports the class.
+      - A removable discontinuity is labelled continuous because `f(a)` was never checked.
+    bonus:
+      - Add L'Hopital-style symbolic resolution for polynomial and elementary forms.
+      - Add a tangent-line plotter that overlays the first-order Taylor polynomial.
+      - Emit a limit/continuity report as Markdown.
+    architectureHints:
+      - Keep the one-sided sampler in one place and reuse it for limits and continuity.
+      - Represent a derivative result as an object with `value`, `h`, `method`, `residual`.
+      - Make the smoothness probe compose the derivative routine rather than duplicating it.
+    referenceOutline: |
+      `limits.estimate` samples `a +/- r * q**k` for shrinking `q`, fits the trend, and compares
+      sides. `continuity.classify` compares one-sided limits and `f(a)`. `smoothness.probe`
+      finite-differences `f`, then `f'`, then `f''` and checks each for a limit at `a`.
+      `derivative.derivative` loops `h`, keeps the most self-consistent central difference, and
+      supports the complex step.
+  - id: lcl-final-gradcheck-audit
+    kind: final-challenge
+    title: Fix a broken gradient-checking setup
+    minutes: 75
+    summary: Given a gradient checker that uses a one-sided difference, a fixed tiny step, an absolute tolerance, and tests at ReLU kinks, correct each fault and prove it with fail-before-fix tests.
+    problem: |
+      A repo's `gradcheck` has four faults: it uses the one-sided difference `(f(x + h) - f(x)) / h`;
+      it hard-codes `h = 1e-11`; it compares with an absolute tolerance `1e-8`; and it runs on
+      random inputs that sometimes land exactly on a ReLU kink. It fails on correct gradients and
+      occasionally passes wrong ones. Produce an audit that: switches to the central difference;
+      sweeps `h` and selects the self-consistent estimate; compares with a relative-error threshold;
+      and excludes or jitters kink inputs. Back each change with a regression that fails before it.
+    requirements:
+      - Replace the one-sided difference with the central difference and show the truncation-error drop on a quadratic.
+      - Sweep `h` over at least four values and select per-coordinate; show the fixed-`h` version was in the cancellation regime.
+      - Replace the absolute tolerance with `|a - n| / (|a| + |n| + eps) < 1e-5`; show a small-gradient case the absolute test mishandled.
+      - Detect inputs within `1e-6` of a ReLU kink and jitter or skip them; show the spurious failure disappears.
+      - Provide one fail-before-fix test per fault and a clean end-to-end run.
+    constraints:
+      - Do not use the finite-difference value as a production gradient anywhere.
+      - Do not use an absolute tolerance.
+      - Do not test differentiability at a non-differentiable point.
+    expectedBehaviour:
+      - On a smooth quadratic, the central difference matches the analytic gradient far better than the one-sided one.
+      - The swept-`h` selection lands near `1e-6`, not `1e-11`.
+      - The relative-error test passes correct small gradients and rejects a deliberately wrong one.
+      - Kink inputs are handled and the intermittent failure is gone.
+      - Each fault has a regression that failed before its fix.
+    milestones:
+      - title: "1 — Difference scheme"
+        detail: Central difference replacing one-sided; truncation-error comparison.
+      - title: "2 — Step size and tolerance"
+        detail: Swept `h` with self-consistent selection; relative-error threshold.
+      - title: "3 — Kink handling"
+        detail: Detect and jitter/skip inputs near ReLU kinks; remove the spurious failure.
+    testing:
+      - Fail-before-fix tests for the one-sided scheme, the fixed tiny `h`, the absolute tolerance, and the kink case.
+      - A wrong-gradient fixture the fixed checker now rejects.
+      - A clean run on a ReLU MLP tested away from kinks.
+    failureCases:
+      - The central difference is added but the tolerance is still absolute.
+      - The `h` sweep is added but always picks the smallest (cancellation) value.
+      - Kink detection jitters the input but then compares against the un-jittered analytic gradient.
+    bonus:
+      - Add a complex-step path for the analytic sub-functions and compare accuracy.
+    architectureHints:
+      - Freeze the pre-fix failing checks and the wrong-gradient fixture first.
+      - Fix one fault per commit and re-run the regressions.
+    referenceOutline: |
+      `central = (f(x + h) - f(x - h)) / (2 * h)`; loop `h in [1e-4, 1e-5, 1e-6, 1e-7]`, keep the
+      estimate whose neighbours agree best; `rel = abs(a - n) / (abs(a) + abs(n) + 1e-12)`; skip
+      coordinates with `abs(pre_activation) < 1e-6`.
+resources:
+  - name: "MIT 18.01 Single Variable Calculus (OCW)"
+    type: university
+    difficulty: intro
+    url: "https://ocw.mit.edu/courses/18-01-single-variable-calculus-fall-2006/"
+    usefulness: 4
+    why: The standard first-course treatment of limits, continuity, the derivative definition, and the differentiation rules, at exactly the depth this refresher assumes you already have.
+    covers: Limits and continuity, the limit definition of the derivative, differentiation rules, higher derivatives, and applications.
+  - name: "3Blue1Brown — Essence of Calculus"
+    type: video
+    difficulty: intro
+    url: "https://www.3blue1brown.com/topics/calculus"
+    usefulness: 5
+    why: It builds the derivative as a limit of a difference quotient and the geometric picture of the tangent, which is the mental model the chain-rule and Taylor lessons extend.
+    covers: The derivative as a limit, the tangent slope, differentiation rules from first principles, and a first look at Taylor series.
+  - name: "Nocedal and Wright — Numerical Optimization (Chapter 8, finite differences)"
+    type: book
+    difficulty: deep
+    url: "https://link.springer.com/book/10.1007/978-0-387-40065-5"
+    usefulness: 4
+    why: Its finite-difference section derives the truncation-versus-rounding trade-off, the optimal step size, and why forward differences lose an order of accuracy — the numerical part of this lesson.
+    covers: Forward and central finite differences, error analysis, optimal step size, complex-step differentiation, and using finite differences to check derivatives.
+  - name: "Boyd and Vandenberghe — Convex Optimization (subgradients, Section 3.1 and Appendix)"
+    type: book
+    difficulty: deep
+    url: "https://web.stanford.edu/~boyd/cvxbook/"
+    usefulness: 4
+    why: It defines the subdifferential and subgradients rigorously and shows how non-smooth points like the L1 kink are handled, which is what lets ReLU and L1 losses be optimised.
+    covers: Subgradients and the subdifferential, non-differentiable convex functions, optimality conditions without differentiability, and subgradient methods.
+  - name: "numpy.gradient and finite-difference documentation"
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.gradient.html"
+    usefulness: 3
+    why: It documents the second-order central-difference scheme NumPy uses for numerical gradients on sampled data, including the one-sided stencils at boundaries relevant to gradient checking.
+    covers: Central and one-sided finite-difference stencils, spacing arguments, edge handling, and multi-dimensional gradients on grids.

@@ -1,0 +1,802 @@
+lessonId: "roadmap:phase-1-1.1:11"
+module: 1-1-python-fluency-beyond-the-basics
+lesson: 12-tooling-ruff-mypy-strict-mode-pre-commit
+title: "Tooling: ruff, mypy strict mode, pre-commit"
+summary: Make formatting, linting, typing, local hooks, and CI one explicit and reproducible quality contract.
+
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+
+exercises:
+  - id: tooling-map-checks
+    tier: normal
+    kind: explain
+    title: Separate quality guarantees
+    minutes: 9
+    requiredForMastery: true
+    concepts: [formatter, linter, type-checker, tests]
+    prompt: |
+      State the distinct question answered by Ruff formatting, Ruff linting, mypy, pytest,
+      pre-commit, and CI. Explain why no one result implies all the others.
+    hints:
+      - Separate code shape, static analysis, executed behavior, invocation timing, and acceptance.
+      - Pre-commit is a runner; CI is an authority boundary.
+    solution: |
+      Formatting standardizes layout; linting applies selected source rules; mypy checks static type
+      relationships; pytest executes specified behavior. Pre-commit runs chosen checks locally at
+      hook stages. CI independently enforces repository acceptance. Their evidence is complementary,
+      and each can pass while another kind of defect remains.
+
+  - id: tooling-ruff-config
+    tier: normal
+    kind: write-code
+    title: Configure a focused Ruff baseline
+    minutes: 13
+    requiredForMastery: true
+    concepts: [ruff, configuration, rules]
+    prompt: |
+      Write `pyproject.toml` sections that target Python 3.12, line length 100, lint `src` and
+      `tests` with `E4,E7,E9,F,I,B,UP`, and format with double quotes.
+    hints:
+      - Shared settings live under `tool.ruff`.
+      - Rule selection and formatter settings use nested tables.
+    solution: |
+      This is a reviewed baseline rather than an unexplained `ALL`. CI should execute both format
+      check and lint check because configuration in one file does not merge their responsibilities.
+    solutionCode: |
+      [tool.ruff]
+      target-version = "py312"
+      line-length = 100
+      src = ["src", "tests"]
+
+      [tool.ruff.lint]
+      select = ["E4", "E7", "E9", "F", "I", "B", "UP"]
+
+      [tool.ruff.format]
+      quote-style = "double"
+
+  - id: tooling-read-suppression
+    tier: normal
+    kind: code-reading
+    title: Review a broad suppression
+    minutes: 10
+    requiredForMastery: true
+    concepts: [noqa, suppressions, policy]
+    prompt: Explain what evidence is lost and how to narrow this line.
+    code: |
+      result = dangerous_call(user_value)  # noqa
+    hints:
+      - The comment disables every enabled Ruff diagnostic on that line.
+      - A suppression should identify one rule and retain a reason when non-obvious.
+    solution: |
+      Bare `noqa` can conceal unrelated current and future findings. Repair the code if possible;
+      otherwise use the exact code, such as `# noqa: S603`, and document why the boundary is safe.
+      Enable checks for unused suppressions so the exception disappears when no longer needed.
+
+  - id: tooling-format-lint-debug
+    tier: normal
+    kind: debug
+    title: Restore both Ruff checks
+    minutes: 11
+    requiredForMastery: true
+    concepts: [ruff-format, ruff-check, ci]
+    prompt: Fix the CI step whose name promises format and lint but executes only lint autofixes.
+    code: |
+      - name: Format and lint
+        run: uv run ruff check --fix .
+    hints:
+      - Lint fixes do not invoke the formatter.
+      - CI should report required changes without rewriting the checkout.
+    solution: |
+      Run formatter check and lint check as separate non-mutating commands. Developers may have a
+      separate repair command that runs formatting and reviewed safe fixes.
+    solutionCode: |
+      - name: Check formatting
+        run: uv run ruff format --check .
+      - name: Lint
+        run: uv run ruff check .
+
+  - id: tooling-mypy-strict-config
+    tier: intermediate
+    kind: write-code
+    title: Establish a strict mypy boundary
+    minutes: 14
+    requiredForMastery: true
+    concepts: [mypy, strict, error-codes]
+    prompt: |
+      Configure mypy for Python 3.12 strict checking of `src` and `tests`, visible error codes, and
+      unused configuration warnings. Add one narrow missing-stub override for `legacy_vendor.*`.
+    hints:
+      - Start with `strict = true`, then make the target scope explicit.
+      - Overrides are arrays of mypy tables with module patterns.
+    solution: |
+      The narrow override records one uncertain boundary while the rest stays strict. Pin mypy in
+      the development lock because the contents of strict mode and diagnostics evolve.
+    solutionCode: |
+      [tool.mypy]
+      python_version = "3.12"
+      strict = true
+      files = ["src", "tests"]
+      show_error_codes = true
+      warn_unused_configs = true
+
+      [[tool.mypy.overrides]]
+      module = ["legacy_vendor.*"]
+      ignore_missing_imports = true
+
+  - id: tooling-any-leak-debug
+    tier: intermediate
+    kind: debug
+    title: Stop Any at a JSON boundary
+    minutes: 15
+    requiredForMastery: true
+    concepts: [any, object, narrowing, runtime-validation]
+    prompt: Repair the static lie without using cast or ignore.
+    code: |
+      def load_payload(raw: str) -> Any:
+          return json.loads(raw)
+
+      def score(raw: str) -> float:
+          payload = load_payload(raw)
+          return sum(payload["scores"]) / len(payload["scores"])
+    hints:
+      - Unknown dynamic data should enter typed code as `object`, not `Any`.
+      - Runtime validation must establish mapping, key, collection, and numeric element shape.
+    solution: |
+      Return `object`, validate through a Pydantic DTO or explicit type guards, then compute from a
+      typed `list[float]`. `Any` merely silences every operation, while a cast would still perform no
+      runtime check on untrusted JSON.
+
+  - id: tooling-precommit-isolation
+    tier: intermediate
+    kind: explain
+    title: Explain hook environment isolation
+    minutes: 14
+    requiredForMastery: true
+    concepts: [pre-commit, isolated-environment, dependencies]
+    prompt: |
+      A mypy pre-commit hook cannot find stubs installed by `uv sync`, while `uv run mypy` succeeds.
+      Explain why and give three honest ownership options.
+    hints:
+      - Pre-commit normally creates a managed environment per hook repository and revision.
+      - Decide whether the hook or the locked project environment owns full-project checking.
+    solution: |
+      The hook does not automatically share `.venv`. Declare pinned `additional_dependencies` for
+      the hook, define a controlled local/system hook that runs the locked project command, or keep
+      the local hook narrow and make `uv run mypy` authoritative in CI. Whichever option is chosen
+      must use the same configuration and documented scope.
+
+  - id: tooling-files-scope
+    tier: intermediate
+    kind: design
+    title: Define repository file ownership
+    minutes: 16
+    requiredForMastery: true
+    concepts: [include, exclude, generated-code, migrations]
+    prompt: |
+      Design lint and type-check scope for `src`, tests, migrations, generated clients, notebooks,
+      and model binaries. Explain each exclusion instead of using one blanket directory ignore.
+    hints:
+      - Ask which source is hand-owned, generated, executable, or opaque binary data.
+      - Validate generators and generation drift even when generated files use different checks.
+    solution: |
+      Apply the main Python policy to owned source, tests, and executable migrations, with narrow
+      per-file exceptions. Exclude model binaries from source analysis. Give generated clients a
+      generator/version and clean-regeneration diff check plus compatible validation. Use dedicated
+      notebook checks or exported modules. Record every exclusion and owner.
+
+  - id: tooling-cast-debug
+    tier: tricky
+    kind: debug
+    title: Replace a cast with evidence
+    minutes: 16
+    requiredForMastery: true
+    concepts: [cast, typeguard, runtime-safety]
+    prompt: Diagnose why this strict-looking function can still crash and repair the boundary.
+    code: |
+      from typing import cast
+
+      def scores(payload: object) -> list[float]:
+          return cast(list[float], payload)
+    hints:
+      - "`cast` returns the original value unchanged."
+      - Validate the container and every element before narrowing.
+    solution: |
+      A cast only changes the checker's belief. Validate with a schema or an explicit predicate that
+      proves the list and numeric elements, then return a normalized list. Decide whether integers
+      are accepted and converted; note that `bool` is a subclass of `int` in runtime checks.
+
+  - id: tooling-hook-filenames-debug
+    tier: tricky
+    kind: debug
+    title: Stop duplicating filenames in a whole-repo hook
+    minutes: 14
+    requiredForMastery: true
+    concepts: [pre-commit, pass-filenames, command-scope]
+    prompt: Fix a local hook that runs `mypy src tests` but also receives changed filenames appended by pre-commit.
+    code: |
+      - repo: local
+        hooks:
+          - id: mypy-all
+            language: system
+            entry: uv run mypy src tests
+    hints:
+      - Pre-commit passes matched filenames unless told otherwise.
+      - This entry already owns its complete target set.
+    solution: |
+      Set `pass_filenames: false` because the command explicitly checks the whole repository. Also
+      define file triggering and document that the system hook depends on the locked environment.
+      If commit latency is unacceptable, move the whole-repo gate to pre-push or CI rather than
+      pretending it is file-local.
+    solutionCode: |
+      - repo: local
+        hooks:
+          - id: mypy-all
+            name: mypy all owned Python
+            language: system
+            entry: uv run mypy src tests
+            pass_filenames: false
+            types: [python]
+
+  - id: tooling-strict-ratchet
+    tier: tricky
+    kind: refactor
+    title: Replace a global typing escape hatch
+    minutes: 17
+    requiredForMastery: true
+    concepts: [strict-adoption, overrides, debt]
+    prompt: |
+      A repository sets `ignore_errors = true` globally and advertises strict typing. Design a
+      staged ratchet that improves evidence without blocking every feature for months.
+    hints:
+      - Make new and high-value modules strict first.
+      - Track remaining module exceptions as an explicit decreasing inventory.
+    solution: |
+      Remove the global escape, enable strict defaults for selected owned targets, and add narrow
+      module overrides for enumerated legacy areas. Baseline their count, forbid new exceptions,
+      prioritize boundaries that leak `Any`, and migrate modules incrementally. CI checks both strict
+      scope and the debt inventory so the claimed boundary expands monotonically.
+
+  - id: tooling-unsafe-fix-review
+    tier: tricky
+    kind: code-reading
+    title: Review an unsafe automated rewrite
+    minutes: 14
+    requiredForMastery: true
+    concepts: [ruff, unsafe-fixes, semantic-change]
+    prompt: |
+      A maintenance script runs `ruff check --fix --unsafe-fixes .` and commits automatically.
+      Explain the policy defect even if the command currently produces a passing test suite.
+    hints:
+      - Unsafe classification means a fix may alter runtime behavior or comments.
+      - Automated maintenance still needs scoped review and evidence.
+    solution: |
+      The workflow explicitly opts into semantic-risk rewrites and lands them without review. Use
+      safe fixes by default, isolate tool upgrades and formatting changes, inspect diffs, and enable
+      individual unsafe fixes only with a justified migration and relevant tests. A passing suite
+      covers only specified behaviors.
+
+  - id: tooling-ci-contract
+    tier: challenge
+    kind: design
+    title: Build one local and CI contract
+    minutes: 25
+    requiredForMastery: true
+    concepts: [ci, pre-commit, reproducibility, feedback]
+    prompt: |
+      Design a toolchain for a Python ML service so staged-file hooks finish quickly, contributors
+      have one full local command, and CI remains authoritative. Include versions, scopes, caches,
+      suppressions, output, and upgrades.
+    hints:
+      - Share config and locked versions even when local and CI invocation frequency differs.
+      - A cache miss may cost time but must not alter selected checks.
+    solution: |
+      Pin Ruff and mypy in the dev lock and hook revisions, centralize configuration, run file-local
+      format/lint hooks plus a justified typing subset, and expose one locked full-quality command.
+      CI runs non-mutating format, lint, strict typecheck, tests, and build over explicit scope.
+      Cache by lock, hook config, Python, and platform. Require coded suppressions, track overrides,
+      print repair commands, and upgrade tools in reviewed dedicated changes.
+
+  - id: tooling-nine-gap-audit
+    tier: challenge
+    kind: performance
+    title: Audit a slow quality pipeline
+    minutes: 24
+    requiredForMastery: true
+    concepts: [performance, hooks, ci, caching]
+    prompt: |
+      A commit hook takes six minutes because it recreates environments, scans generated models,
+      type-checks the entire monorepo twice, and runs integration tests. Redesign for sub-ten-second
+      edit feedback without weakening CI acceptance.
+    hints:
+      - Move checks by cost and whether they can operate correctly on selected files.
+      - Reuse environments and cache artifacts with semantic keys.
+    solution: |
+      Keep deterministic staged-file formatting and linting at commit, optionally a focused cached
+      type check. Exclude opaque generated artifacts by policy, not broad source paths. Put full
+      strict checking, tests, build, and integration in the documented local command and CI; use a
+      pre-push stage if valuable. Reuse pinned hook environments and lock-keyed caches, measure p95
+      duration, and preserve identical configs and authoritative CI scope.
+
+quizzes:
+  - id: tooling-checkpoint
+    title: Checkpoint — tools and authority
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: tooling-cp-ruff
+        kind: multi
+        prompt: Which commands belong in non-mutating Ruff CI checks?
+        options:
+          - id: a
+            text: ruff format --check .
+          - id: b
+            text: ruff check .
+          - id: c
+            text: ruff check --fix --unsafe-fixes .
+          - id: d
+            text: ruff format .
+        answer: [a, b]
+        explanation: CI reports drift; developer repair commands perform edits.
+        concepts: [ruff, ci]
+        points: 1
+      - id: tooling-cp-cast
+        kind: true-false
+        prompt: "`typing.cast` validates a dynamic value at runtime."
+        options:
+          - id: "true"
+            text: "True"
+          - id: "false"
+            text: "False"
+        answer: ["false"]
+        explanation: Cast changes static belief only and returns the original object.
+        concepts: [cast, runtime-validation]
+        points: 1
+      - id: tooling-cp-hooks
+        kind: mcq
+        prompt: Why must CI repeat checks configured as Git hooks?
+        options:
+          - id: a
+            text: Hooks can be absent or bypassed.
+          - id: b
+            text: Hooks cannot run Python.
+          - id: c
+            text: CI always uses different source files.
+          - id: d
+            text: Pre-commit never pins versions.
+        answer: [a]
+        explanation: Local hooks provide feedback, while CI owns acceptance.
+        concepts: [pre-commit, ci]
+        points: 1
+      - id: tooling-cp-any
+        kind: scenario
+        prompt: What type should unvalidated JSON enter strict domain code as, and what happens next?
+        modelAnswer: Treat it as `object`, validate or narrow the runtime structure, and convert it to a typed boundary or domain model before business operations.
+        explanation: This prevents Any from disabling checking downstream.
+        concepts: [any, object, validation]
+        points: 1
+
+  - id: tooling-assessment
+    title: Assessment — reproducible Python tooling
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: tooling-assess-formatter
+        kind: mcq
+        prompt: What does `ruff check --fix` not imply?
+        options:
+          - id: a
+            text: Selected lint fixes may be applied.
+          - id: b
+            text: The Ruff formatter ran.
+          - id: c
+            text: Lint diagnostics were evaluated.
+          - id: d
+            text: Safe fixes are the default class.
+        answer: [b]
+        explanation: Ruff's formatter is a separate command.
+        concepts: [ruff]
+        points: 1
+      - id: tooling-assess-rules
+        kind: explain
+        prompt: Why is selecting every lint rule without review a weak policy?
+        modelAnswer: Rule families may conflict, be inappropriate for the code category, or change stability. Select a coherent baseline, document narrow exceptions, and expand through reviewed changes with actionable failures.
+        explanation: More diagnostics are not automatically better evidence.
+        concepts: [lint-policy]
+        points: 1
+      - id: tooling-assess-strict
+        kind: multi
+        prompt: Which practices support credible strict typing?
+        options:
+          - id: a
+            text: Pin the mypy version.
+          - id: b
+            text: Show error codes and use coded ignores.
+          - id: c
+            text: Ignore every missing import globally.
+          - id: d
+            text: Track narrow legacy overrides downward.
+        answer: [a, b, d]
+        explanation: Broad ignored imports can inject Any across the checked program.
+        concepts: [mypy, strict]
+        points: 1
+      - id: tooling-assess-any
+        kind: find-bug
+        prompt: Why does annotating a third-party response as `Any` make later strict checks deceptively green?
+        modelAnswer: Operations on Any are accepted and usually produce more Any, so uncertainty propagates without diagnostics. Isolate the untyped call, expose object, and validate or adapt it into known types.
+        explanation: Any is an opt-out, not a representation of unknown data.
+        concepts: [any, boundary]
+        points: 1
+      - id: tooling-assess-pytyped
+        kind: scenario
+        prompt: A typed library works in its checkout but consumers see it as untyped. What packaging evidence should you inspect?
+        modelAnswer: Verify the built wheel includes the standard `py.typed` marker in the import package and that package discovery includes annotations and marker metadata.
+        explanation: Type distribution is an artifact contract.
+        concepts: [py-typed, packaging]
+        points: 1
+      - id: tooling-assess-hook-env
+        kind: mcq
+        prompt: Where do remote pre-commit hooks normally install dependencies?
+        options:
+          - id: a
+            text: In managed isolated environments for the hook
+          - id: b
+            text: Always in the project's active .venv
+          - id: c
+            text: Inside the Git object database
+          - id: d
+            text: Only in the CI image
+        answer: [a]
+        explanation: Isolation makes hook versions reproducible but requires explicit dependencies.
+        concepts: [pre-commit, isolation]
+        points: 1
+      - id: tooling-assess-filenames
+        kind: complete-code
+        prompt: Which pre-commit option should a hook use when its entry already checks the whole repository and must not receive changed paths?
+        modelAnswer: |
+          Set `pass_filenames: false` and make the entry's explicit scope authoritative.
+        explanation: Otherwise pre-commit appends selected paths to the command.
+        concepts: [pre-commit, pass-filenames]
+        points: 1
+      - id: tooling-assess-rev
+        kind: true-false
+        prompt: |
+          A floating `rev: main` is a reproducible pre-commit dependency pin.
+        options:
+          - id: "true"
+            text: "True"
+          - id: "false"
+            text: "False"
+        answer: ["false"]
+        explanation: Pin reviewed immutable release revisions.
+        concepts: [pre-commit, pinning]
+        points: 1
+      - id: tooling-assess-suppression
+        kind: refactor
+        prompt: |
+          Replace a bare `# type: ignore` policy with an auditable one.
+        modelAnswer: Fix the type issue where possible; otherwise use the narrow error code, explain non-obvious intent, enable unused-ignore warnings, and track any module-level override with an owner and removal criterion.
+        explanation: Suppressions are local reductions in evidence and should expire.
+        concepts: [type-ignore, debt]
+        points: 1
+      - id: tooling-assess-cache
+        kind: performance
+        prompt: Which inputs belong in quality-tool cache keys?
+        modelAnswer: Include dependency or tool locks, hook configuration, Python and platform details, and configuration files that alter scope or rules. A stale or missing cache must affect speed only, never selected checks.
+        explanation: Semantic inputs determine whether cached analysis is reusable.
+        concepts: [cache, reproducibility]
+        points: 1
+
+interview:
+  - id: tooling-iv-ruff
+    level: basic
+    requiredForMastery: true
+    concepts: [ruff, lint, format]
+    question: How do Ruff linting and formatting fit together?
+    shortAnswer: |
+      They are separate commands sharing configuration. Formatting enforces layout; linting applies
+      selected correctness and style rules, with safe fixes available separately. CI runs both in
+      non-mutating check mode, while developers review repair diffs.
+    fullAnswer: |
+      I align Ruff's target version and source roots with package and deployment metadata, choose a
+      coherent rule baseline, and use narrow coded exceptions. I do not enable every rule blindly.
+
+      `ruff format --check` and `ruff check` provide distinct evidence. Unsafe fixes require an
+      explicit reviewed migration because they can alter behavior.
+    commonWrongAnswer: Ruff check replaces linting, import sorting, formatting, typing, and tests in one command. Ruff has broad capabilities but the commands and guarantees remain distinct.
+    followUps:
+      - How do you adopt a new rule family?
+      - What makes a per-file ignore legitimate?
+
+  - id: tooling-iv-mypy
+    level: intermediate
+    requiredForMastery: true
+    concepts: [mypy, strict, any]
+    question: What does mypy strict mode guarantee?
+    shortAnswer: |
+      It enables a strong bundle of static checks for the analyzed scope and installed type
+      information. It does not validate runtime values, eliminate every `Any`, analyze excluded
+      files, or prove framework behavior. I pin the checker and make scope and overrides visible.
+    fullAnswer: |
+      Mypy checks whether declared type relationships compose. Dynamic input still needs runtime
+      validation, and untyped imports or broad ignores can inject `Any` that disables useful checks.
+
+      Strict settings evolve across releases, so version and configuration are part of the evidence.
+      I use narrow adapters, stubs, protocols, and coded suppressions rather than teaching the
+      checker false claims.
+    commonWrongAnswer: Strict mode makes Python statically typed and catches all type-related runtime failures. Runtime execution and unchecked boundaries still exist.
+    followUps:
+      - How does Any propagate?
+      - What does cast do at runtime?
+
+  - id: tooling-iv-adoption
+    level: advanced
+    requiredForMastery: true
+    concepts: [migration, ratchet, technical-debt]
+    question: How would you adopt strict typing in an existing untyped codebase?
+    shortAnswer: |
+      I measure the baseline, make new and high-value boundary modules strict, enumerate narrow
+      legacy overrides, and forbid new debt. Then I fix Any sources and move the boundary outward,
+      tracking exceptions downward in CI instead of hiding everything behind global ignore settings.
+    fullAnswer: |
+      Public interfaces, domain models, and untrusted input adapters give the highest early return.
+      Third-party uncertainty belongs in narrow wrappers with stubs or validation. Tests remain
+      necessary because types do not execute behavior.
+
+      Each migration should be reviewable and keep feature work possible. A ratchet is credible
+      because its checked scope and exceptions are measurable.
+    commonWrongAnswer: Enable strict globally and add ignores until CI passes. That labels hidden uncertainty as success and makes the ignores permanent.
+    followUps:
+      - Which modules would you prioritize?
+      - How do you prevent new debt?
+
+  - id: tooling-iv-precommit
+    level: comparison
+    requiredForMastery: true
+    concepts: [pre-commit, hooks, ci]
+    question: Compare pre-commit hooks with CI quality gates.
+    shortAnswer: |
+      Pre-commit gives early local feedback through pinned managed hooks, often on selected files.
+      It can be uninstalled or bypassed. CI runs the authoritative complete contract against the
+      committed state using locked versions and non-mutating commands.
+    fullAnswer: |
+      Hook environments are usually isolated from the project, so dependency-heavy checks need
+      explicit ownership. Some hooks correctly receive staged paths; whole-project checks should
+      disable filename passing and may belong at pre-push or CI for latency.
+
+      I share configuration and versions to avoid drift, document one full local command, and can
+      run `pre-commit run --all-files` in CI as a consistency check.
+    commonWrongAnswer: If hooks pass, CI can skip lint and types. Hooks are developer feedback, not an enforceable remote acceptance boundary.
+    followUps:
+      - What does pass_filenames control?
+      - How do hook dependencies get installed?
+
+  - id: tooling-iv-suppressions
+    level: tricky
+    requiredForMastery: true
+    concepts: [noqa, type-ignore, governance]
+    question: What is your policy for lint and type suppressions?
+    shortAnswer: |
+      Fix first. If an exception is necessary, suppress one diagnostic at the narrowest location,
+      explain non-obvious intent, and enable unused-suppression detection. Module overrides need an
+      owner, measured count, and removal criterion.
+    fullAnswer: |
+      A suppression is not merely a comment; it weakens the repository's executable policy. Bare
+      `noqa`, broad type ignores, and directory exclusions can conceal future unrelated errors.
+
+      I review suppressions like code, track legacy boundaries, and separate generated or vendor
+      ownership rather than letting difficult code disappear from all analysis.
+    commonWrongAnswer: Suppressions are harmless if tests pass. Tests cover specified executions and cannot replace the missing static evidence.
+    followUps:
+      - When is a per-file ignore better than inline?
+      - How do you remove stale suppressions?
+
+  - id: tooling-iv-incident
+    level: scenario
+    requiredForMastery: true
+    concepts: [tool-drift, ci, debugging]
+    question: Local tooling passes but CI reports different Ruff and mypy results. How do you investigate?
+    shortAnswer: |
+      I compare tool versions, lock and hook revisions, Python target and runtime, working directory,
+      discovered configuration, file scope, installed stubs and plugins, environment variables, and
+      cache keys. Then I reproduce through the documented locked command and remove duplicate policy.
+    fullAnswer: |
+      Ruff can discover a different root configuration or target a different file set. Mypy can see
+      different packages, stubs, plugins, or module paths. Pre-commit isolation adds another possible
+      dependency graph.
+
+      I print versions and effective commands in CI, invalidate only suspect caches, and make config
+      discovery explicit. The repair aligns semantic inputs rather than weakening the failing side.
+    commonWrongAnswer: Add CI-only ignores because CI is stricter. That preserves drift and discards the evidence that environments disagree.
+    followUps:
+      - Which facts would you print first?
+      - How do you prove a cache is only an optimization?
+
+projects:
+  - id: tooling-quality-contract-lab
+    kind: major
+    title: Build a measurable repository quality contract
+    minutes: 210
+    summary: Configure Ruff, strict mypy, pre-commit, and CI for a typed inference package with explicit scope, exceptions, and feedback budgets.
+    problem: |
+      Take a small Python inference repository containing source, tests, migrations, generated API
+      bindings, notebooks, and packaged type information. Create one quality contract that provides
+      sub-ten-second staged-file feedback, one complete local command, and authoritative locked CI.
+    requirements:
+      - Configure Ruff target version, source roots, format policy, reviewed lint families, and narrow per-file exceptions.
+      - Configure pinned strict mypy with explicit files, error codes, plugins or stubs where justified, and no global ignore_errors.
+      - Prevent unvalidated JSON and untyped third-party values from leaking Any into domain modules.
+      - Package and artifact-test a py.typed marker.
+      - Pin pre-commit hook revisions and document each hook's environment, filename behavior, and stage.
+      - Keep commit hooks within a measured latency budget while exposing one full locked local command.
+      - Run non-mutating complete gates in CI and print reproducible repair commands.
+      - Track every suppression and legacy module override in a shrinking machine-checked inventory.
+      - Define an upgrade procedure for tool versions and rules.
+    constraints:
+      - Do not use floating hook revisions.
+      - Do not exclude tests or migrations as a blanket convenience.
+      - Do not apply unsafe fixes automatically without review.
+      - Do not rely on hooks as the CI acceptance boundary.
+      - Do not let caches change versions, scope, or rule selection.
+    expectedBehaviour:
+      - Fresh contributors can install hooks and run the full contract from documented commands.
+      - Local and CI runs report the same diagnostic for an injected source defect.
+      - A missing stub is isolated at one adapter rather than becoming project-wide Any.
+      - Generated and opaque artifacts follow their documented alternative validation policy.
+      - Bypassing hooks still results in CI rejection.
+      - Removing a suppressed violation makes the stale suppression fail.
+    structure: |
+      pyproject.toml
+      uv.lock
+      .pre-commit-config.yaml
+      scripts/quality.sh
+      src/inference_service/
+        py.typed
+      tests/
+      migrations/
+      generated/
+      notebooks/
+      docs/quality-policy.md
+      quality-debt.json
+    milestones:
+      - title: "1 — Inventory ownership"
+        detail: Classify every path, current diagnostic, Any source, suppression, and runtime target.
+      - title: "2 — Establish shared policy"
+        detail: Configure pinned Ruff and strict mypy with explicit scope and narrow legacy boundaries.
+      - title: "3 — Design feedback stages"
+        detail: Add fast hooks, a complete local command, and authoritative non-mutating CI.
+      - title: "4 — Prove reproducibility"
+        detail: Test fresh installation, environment isolation, cache misses, and hook bypass.
+      - title: "5 — Operate the contract"
+        detail: Measure latency, trial an upgrade, delete stale suppressions, and ratchet debt downward.
+    testing:
+      - Inject one formatting, lint, type, test, and packaging defect and verify the owning gate catches it.
+      - Compare tool versions and file scope across local full command and CI.
+      - Run pre-commit against all files from a clean cache.
+      - Verify commit-hook p95 duration remains within the documented budget.
+      - Test the built wheel exposes inline typing to a consumer mypy run.
+      - Prove a cache miss changes duration but not diagnostics.
+    failureCases:
+      - Ruff formatting is assumed to run through lint fixes.
+      - Global missing-import suppression leaks Any into core code.
+      - Pre-commit mypy silently lacks project stubs.
+      - A whole-repository hook unexpectedly receives changed filenames.
+      - CI rewrites files instead of reporting drift.
+      - Generated code is invisible without an alternative validation owner.
+    bonus:
+      - Publish machine-readable quality timing and debt trends.
+      - Add a bot-driven tool upgrade proposal with release-note links and full validation.
+      - Validate notebook imports against the packaged production API.
+    architectureHints:
+      - Put semantic tool versions in the development lock and bridge hook isolation deliberately.
+      - Make `scripts/quality.sh` the readable composition of commands, not a second configuration source.
+      - Keep exceptions structured enough for CI to count and reject increases.
+    referenceOutline: |
+      Central pyproject configuration defines Ruff and mypy. The locked environment owns the full
+      command, while pre-commit pins fast formatter and linter hooks and invokes a scoped type check.
+      CI syncs exactly and runs checks without mutation. Path ownership maps generated and notebook
+      content to explicit validators. A debt file enumerates narrow overrides and a timing report
+      keeps feedback usable.
+
+  - id: tooling-final-nine-defects
+    kind: final-challenge
+    title: Repair nine toolchain policy defects
+    minutes: 90
+    summary: Diagnose nine ways a green local toolchain can disagree with CI or hide unchecked production code.
+    problem: |
+      You inherit a repository where Ruff lint is called “format,” unsafe fixes auto-commit, mypy
+      has global `ignore_errors`, JSON returns `Any`, every type suppression is bare, pre-commit uses
+      floating revisions, its mypy hook lacks project stubs, a whole-repo hook receives filenames,
+      and CI trusts hooks instead of running quality gates.
+
+      Identify exactly nine defects before editing. For each, give the missing guarantee, symptom,
+      narrow repair, and a deterministic check against the original configuration.
+    requirements:
+      - Identify exactly nine independent defects from the brief.
+      - Restore separate Ruff format and lint checks.
+      - Put unsafe changes behind explicit review.
+      - Replace global typing disablement with a strict ratchet.
+      - Validate dynamic JSON at one typed boundary and qualify suppressions.
+      - Pin hook revisions and resolve mypy environment ownership.
+      - Correct whole-repository filename behavior.
+      - Make CI independently authoritative.
+    constraints:
+      - Do not remove difficult directories from analysis without an ownership policy.
+      - Do not use a system hook whose dependency versions are undocumented.
+      - Do not make the commit hook run the entire slow integration suite.
+      - Do not solve drift with CI-only ignores.
+    expectedBehaviour:
+      - Formatting, linting, typing, and tests fail independently for their injected defects.
+      - Dynamic invalid input fails validation instead of flowing through Any.
+      - Fresh hook environments reproduce after cache deletion.
+      - Hook bypass cannot merge a violating change.
+      - Every remaining exception is coded, scoped, and counted.
+    milestones:
+      - title: "1 — Inventory nine policy gaps"
+        detail: Map each configuration symptom to a distinct missing quality guarantee.
+      - title: "2 — Align versions and scope"
+        detail: Pin tools, share configuration, repair environments, and establish strict boundaries.
+      - title: "3 — Prove local and CI behavior"
+        detail: Inject one defect per gate, bypass hooks, clear caches, and verify authoritative failure.
+    testing:
+      - Show all nine checks fail against the original defect or a representative mutation.
+      - Run pre-commit from an empty cache and the full command from a fresh locked environment.
+      - Compare effective versions, config roots, and file targets in local and CI logs.
+      - Verify stale suppressions and increased debt are rejected.
+    failureCases:
+      - Counting the same Ruff command mistake twice.
+      - Replacing global ignore_errors with global ignore_missing_imports.
+      - Pinning one tool path while another still floats.
+      - Making hooks authoritative without restoring CI checks.
+    bonus:
+      - Add a reversible upgrade drill with measured feedback times.
+    architectureHints:
+      - Write a matrix of tool, version owner, config owner, file scope, environment, and authority.
+      - Keep repair commands separate from non-mutating acceptance commands.
+      - Treat suppressions and excluded paths as data that CI can audit.
+    referenceOutline: |
+      Pinned Ruff and mypy execute from the project lock for the full contract. Pinned pre-commit
+      hooks provide fast local subsets with explicit isolated dependencies or a documented project
+      bridge. CI runs format check, lint, strict typecheck, tests, and artifact validation regardless
+      of hooks. Dynamic input is validated at adapters, and exception inventories can only shrink.
+
+resources:
+  - name: Ruff configuration
+    type: docs
+    difficulty: core
+    url: "https://docs.astral.sh/ruff/configuration/"
+    usefulness: 5
+    why: Defines configuration discovery, target versions, rule selection, formatting, exclusions, and pyproject namespaces from Ruff itself.
+    covers: pyproject.toml, ruff.toml, lint and format tables, target version, excludes, and defaults.
+  - name: Ruff linter
+    type: docs
+    difficulty: core
+    url: "https://docs.astral.sh/ruff/linter/"
+    usefulness: 5
+    why: Explains rule selection, fix safety, noqa handling, file-level exemptions, and exit behavior used in automation.
+    covers: Rule sets, safe and unsafe fixes, suppressions, preview, fix-only, and CI exit codes.
+  - name: mypy configuration file reference
+    type: docs
+    difficulty: core
+    url: "https://mypy.readthedocs.io/en/stable/config_file.html"
+    usefulness: 5
+    why: Provides the authoritative global and module-override syntax needed for strict, auditable adoption.
+    covers: pyproject configuration, strict flag, files, overrides, warnings, imports, and error reporting.
+  - name: mypy dynamic typing with Any
+    type: docs
+    difficulty: deep
+    url: "https://mypy.readthedocs.io/en/stable/dynamic_typing.html"
+    usefulness: 5
+    why: Shows exactly how Any differs from object and why unchecked values propagate through otherwise typed code.
+    covers: Any sources, propagation, object, annotations, casts, and dynamic boundaries.
+  - name: pre-commit documentation
+    type: docs
+    difficulty: core
+    url: "https://pre-commit.com/"
+    usefulness: 5
+    why: Defines hook repositories, pinned revisions, managed environments, stages, filename passing, installation, and all-files execution.
+    covers: Configuration, hook languages, rev, install, run, autoupdate, pass_filenames, and CI usage.

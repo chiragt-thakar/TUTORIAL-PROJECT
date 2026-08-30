@@ -1,0 +1,338 @@
+---
+id: "roadmap:phase-1-1.1:11"
+title: "Tooling: ruff, mypy strict mode, pre-commit"
+description: "Turn formatting, linting, static typing, and repository hooks into one reproducible quality contract that developers and CI execute identically."
+module: 1-1-python-fluency-beyond-the-basics
+order: 12
+estimatedMinutes: 115
+prerequisites: ["roadmap:phase-1-1.1:4", "roadmap:phase-1-1.1:9", "roadmap:phase-1-1.1:10"]
+learningObjectives:
+  - Configure Ruff linting and formatting as complementary checks with deliberate rule selection and safe fix policy
+  - Adopt mypy strictness without hiding uncertainty behind Any, broad ignores, or untyped package boundaries
+  - Configure pinned pre-commit hooks whose file scope, environments, stages, and CI behavior are explicit
+  - Design one fast local and authoritative CI quality pipeline with reproducible versions and actionable failures
+---
+
+Developer tooling is executable policy. Ruff decides which source patterns the repository accepts, mypy checks whether static claims compose, and pre-commit decides when selected checks run before history changes.
+
+None of those tools proves runtime correctness. Their job is to reject cheap defects early and make the remaining uncertainty explicit. A useful toolchain is fast enough to run continuously, pinned enough to reproduce, and authoritative in CI.
+
+Treat configuration, versions, exclusions, and suppressions as production code. A silently skipped directory is not clean; it is unmeasured.
+
+<TypeScriptComparison>
+
+- Ruff combines roles commonly split across ESLint, import sorting, and Prettier-like formatting, but linting and formatting remain separate commands and rule sets.
+- Mypy strict mode resembles a strict TypeScript configuration, while Python's untyped dependencies and runtime mutation create different `Any` escape routes.
+- `# type: ignore[code]` resembles a narrow `@ts-expect-error`; an unqualified ignore is closer to disabling the checker at the exact place evidence is needed.
+- Pre-commit manages isolated hook environments from pinned repository revisions; it is not Python's package manager and does not automatically use the project virtual environment.
+- As with JavaScript hooks, local checks improve feedback but CI must remain authoritative because hooks can be skipped.
+
+</TypeScriptComparison>
+
+## One contract, several different questions
+
+A formatter answers how code is laid out. A linter detects selected suspicious or inconsistent constructs. A type checker evaluates static relationships. Tests execute behavior. Security and dependency scanners answer still other questions.
+
+Do not make one tool impersonate another. Ruff formatting does not enable Ruff lint rules. Mypy passing does not validate a Pydantic payload at runtime. Pre-commit passing does not mean the full test suite ran.
+
+```text
+edit -> format -> lint -> typecheck -> focused tests
+                  |          |            |
+                  +----------+------------+--> authoritative CI
+```
+
+The fastest deterministic checks belong closest to the edit. Expensive integration tests belong in CI or an explicit pre-push workflow. Developers should still have one documented command that reproduces every required gate.
+
+## Ruff linting is an explicit rule policy
+
+Ruff discovers configuration through `pyproject.toml`, `ruff.toml`, or `.ruff.toml`. Put shared settings at the appropriate repository root and verify which files and configuration are being used.
+
+```toml title="pyproject.toml"
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "B", "UP", "SIM", "RUF"]
+ignore = []
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+docstring-code-format = true
+```
+
+Start from a reviewed rule set. Enabling `ALL` without an adoption policy can create contradictory or unstable requirements. Each ignored rule should have a reason, the narrowest scope, and an owner who can remove it.
+
+`ruff check` reports lint violations. `ruff format` checks or rewrites formatting. `ruff check --fix` applies fixes Ruff classifies as safe by default; unsafe fixes require explicit opt-in because they may change runtime behavior.
+
+```bash
+uv run ruff format --check .
+uv run ruff check .
+uv run ruff check --fix .
+```
+
+Run formatting before lint when formatting can remove lint noise. In CI use check modes that do not rewrite the checkout. In a developer repair command, apply fixes and review the diff.
+
+<CommonMistake>
+
+Running `ruff check --fix` and assuming formatting also occurred leaves a false contract. Lint fixes and the formatter are separate surfaces; call both intentionally.
+
+</CommonMistake>
+
+## Scope is as important as selected rules
+
+Include source, tests, scripts, and migration code according to a deliberate policy. Generated code, vendored code, notebooks, and build output may need exclusions, but an exclusion should follow ownership rather than convenience.
+
+Per-file ignores are useful when a category has a justified convention. Tests may use plain `assert`; package initializers may intentionally re-export names. Blanket exclusions such as `tests/**` from linting or type checking create a second, lower-quality language inside the repository.
+
+Use `noqa` with a specific code and a reason when the context is not obvious. Ruff can report unused suppressions when the corresponding rule is enabled, letting the repository delete exceptions after code changes.
+
+Target-version settings affect syntax upgrades and compatibility decisions. Align them with `project.requires-python`, CI interpreters, and production rather than whatever interpreter happens to run the editor.
+
+## Mypy checks relationships, not values
+
+Mypy treats annotations as claims and checks whether uses satisfy them. Strict mode enables a useful bundle of checks, but “strict” is a starting policy, not a proof and not a permanently fixed set across all mypy releases.
+
+```toml title="pyproject.toml"
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_unused_configs = true
+show_error_codes = true
+pretty = true
+files = ["src", "tests"]
+
+[[tool.mypy.overrides]]
+module = ["legacy_vendor.*"]
+ignore_missing_imports = true
+```
+
+Pin the mypy version in the development lock because diagnostics and strictness evolve. `warn_unused_configs` catches misspelled module patterns. Error codes make suppressions narrow and searchable.
+
+`Any` is a hole through which type checking stops. It commonly enters through untyped functions, missing stubs, unchecked JSON, decorators that erase signatures, and broad ignores. Convert uncertain boundary values to `object` or validate them into typed structures rather than letting `Any` spread through domain code.
+
+```python
+from typing import TypeGuard
+
+
+def is_score_list(value: object) -> TypeGuard[list[float]]:
+    return (
+        isinstance(value, list)
+        and all(isinstance(item, float) for item in value)
+    )
+```
+
+This guard performs a runtime check and gives mypy evidence. A `cast(list[float], payload)` performs no check; it only tells the checker to trust you.
+
+## Strict adoption is a boundary migration
+
+Turning on strict mode across a mature untyped repository can generate thousands of errors. The wrong response is a global `ignore_errors` or hundreds of bare ignores. Establish strictness for new modules, then move the boundary outward with explicit overrides and a decreasing debt count.
+
+Fix sources of `Any` before symptoms. Add annotations to public functions, type third-party boundaries with stubs or protocols, preserve decorator signatures, and validate dynamic input. Use `reveal_type` during diagnosis, then remove it.
+
+Published typed libraries should include a `py.typed` marker when they provide inline type information under the standard packaging convention. Test the built wheel contains that marker; a correct checkout can still publish an untyped artifact.
+
+Mypy usually analyzes imports by module name and configuration, not by executing code. Dynamic metaprogramming, runtime plugin behavior, and framework-generated attributes may require supported plugins, stubs, or narrow adapters. Do not teach the checker a lie merely to obtain green output.
+
+<ProductionNote>
+
+Track the number and location of temporary type-check overrides. A ratchet that forbids new untyped modules is more credible than announcing “strict” while a global exclusion covers the difficult half of the system.
+
+</ProductionNote>
+
+## Pre-commit is a reproducible hook runner
+
+The pre-commit framework reads `.pre-commit-config.yaml`, installs each hook in a managed environment, selects files, and invokes it at configured Git hook stages. Pin `rev` values to immutable tool releases and update them through review.
+
+```yaml title=".pre-commit-config.yaml"
+repos:
+  - repo: https://github.com/astral-sh/ruff-pre-commit
+    rev: v0.12.7
+    hooks:
+      - id: ruff-check
+        args: [--fix]
+      - id: ruff-format
+
+  - repo: https://github.com/pre-commit/mirrors-mypy
+    rev: v1.17.1
+    hooks:
+      - id: mypy
+        args: [--config-file=pyproject.toml]
+        additional_dependencies: []
+```
+
+The versions above illustrate pinning; use the versions resolved and reviewed by the current project. A hook's isolated environment may not contain application dependencies or type stubs. Either declare needed hook dependencies, use a controlled local/system hook, or run project-wide mypy through `uv run` in CI and keep the hook as a fast subset.
+
+Hooks normally receive changed filenames. Some checks need the whole repository and should set `pass_filenames: false` with an explicit command. Understand that trade-off: whole-repo checks are more authoritative and may be too slow for every commit.
+
+Install hooks explicitly with `pre-commit install`, and use `pre-commit run --all-files` when adopting or validating configuration. `pre-commit autoupdate` proposes newer revisions; it does not replace changelog review and CI verification.
+
+## Hooks improve feedback; CI owns acceptance
+
+Git hooks can be bypassed, may not be installed, and run on a developer's machine. CI must execute the authoritative commands using the committed lockfile and fail without mutating files.
+
+```bash title="ci/quality.sh"
+set -eu
+
+uv sync --locked --all-groups
+uv run ruff format --check .
+uv run ruff check .
+uv run mypy src tests
+uv run pytest
+```
+
+You may also run `pre-commit run --all-files` in CI to prove hook configuration. Decide whether it is the authoritative wrapper or an additional consistency check. Avoid two configurations that almost agree but use different versions or paths.
+
+Cache keys should include `uv.lock`, `.pre-commit-config.yaml`, interpreter details, and platform. A stale cache must affect speed only, never which checks or dependencies run.
+
+Order output for humans. Formatting failure should provide the repair command; lint and type errors should carry codes; tests should retain focused tracebacks. One opaque `quality failed` message turns an early-feedback system into friction.
+
+## Tooling needs an exception and upgrade policy
+
+Every suppression is a local weakening of the contract. Prefer `# noqa: B008` and `# type: ignore[arg-type]` over unqualified comments. Explain non-obvious cases and fail on unused suppressions so exceptions expire.
+
+Pin tools through the development lock and hook revisions, then upgrade deliberately. Review release notes, run the complete suite, separate automated formatting churn from semantic changes, and land configuration changes where failures remain explainable.
+
+Measure feedback time. If a commit hook becomes slow, shrink it to deterministic file-local checks and leave the full gate in CI or pre-push. Do not respond by asking developers to bypass all hooks.
+
+For generated ML artifacts and notebooks, define separate ownership. Export stable Python modules for production logic, validate notebook metadata with purpose-built hooks if needed, and keep generated model files outside source linters unless a check understands them.
+
+<WhyItMatters>
+
+AI repositories accumulate dynamic payloads, notebooks, native dependencies, generated code, and rapidly changing libraries. A narrow, reproducible quality contract prevents this flexibility from becoming an untyped, unreviewable deployment path.
+
+</WhyItMatters>
+
+## Exercises
+
+<Exercise id="tooling-separate-checks-easy" difficulty="easy">
+
+Why must CI run both `ruff format --check` and `ruff check`?
+
+<Solution>
+
+The formatter enforces layout while the linter evaluates selected rule violations. They are separate commands and neither implies the other. Check mode preserves the CI checkout and turns the required developer rewrite into a visible failure.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-any-boundary-medium" difficulty="medium">
+
+An untyped JSON helper returns `Any`, which spreads through model-serving code. Give a strict repair.
+
+<Solution>
+
+Change the uncertain boundary to return `object`, validate or narrow its runtime structure, and convert it into a typed DTO or domain object. If third-party stubs are missing, isolate that fact in one adapter. Do not scatter casts or ignores through downstream business logic.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-hook-environment-hard" difficulty="hard">
+
+A pre-commit mypy hook reports missing imports although `uv run mypy` passes. Diagnose the disagreement and make ownership explicit.
+
+<Solution>
+
+Pre-commit created an isolated hook environment that lacks project dependencies or stubs. Declare exact hook dependencies, use a controlled local hook that invokes the locked project environment, or keep project-wide mypy authoritative in CI and scope the local hook honestly. Ensure both paths use the same configuration and documented version policy.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-strict-adoption-interview" difficulty="interview">
+
+In an interview, explain how you would introduce strict mypy into a large untyped service.
+
+<Solution>
+
+I would establish a measured baseline, enable strict checking for new or high-value modules, and use narrow module overrides for remaining legacy areas. Then I would remove root sources of `Any`, migrate boundaries incrementally, forbid new debt, track exceptions downward, and keep runtime validation and tests because static checking is not execution.
+
+</Solution>
+</Exercise>
+
+<Exercise id="tooling-quality-pipeline-real-world" difficulty="real-world">
+
+Design local and CI quality gates for a Python inference repository containing `src`, tests, migrations, notebooks, and generated model artifacts.
+
+<Solution>
+
+Use fast Ruff format/lint hooks on owned Python and configuration files, a scoped type-check hook if fast enough, and explicit exclusions for generated artifacts. CI syncs the locked environment and runs non-mutating format, lint, strict mypy, tests, packaging, and any notebook checks. Pin versions, audit suppressions, document one reproduction command, and track legacy overrides as shrinking debt.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+State the different promises made by a formatter, linter, type checker, tests, hook runner, and CI. Explain why `ruff check --fix` is neither formatting nor a safe invitation to apply every possible fix.
+
+Describe three ways `Any` enters a strict project and how to stop each at its boundary. Then explain why `cast` and a broad ignore create evidence rather than runtime safety.
+
+Finally, explain pre-commit's isolated environments, filename passing, pinned revisions, hook stages, and why CI must repeat authoritative checks even when every developer installs hooks.
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Does ruff check also run the formatter?">
+
+No. Run `ruff format` and `ruff check` as separate explicit steps. Their configuration shares a file but their responsibilities differ.
+
+</Gotcha>
+
+<Gotcha question="Are all Ruff automatic fixes behavior-preserving?">
+
+No. Ruff distinguishes safe and unsafe fixes, and even safe automated edits deserve diff review. Unsafe fixes require explicit opt-in.
+
+</Gotcha>
+
+<Gotcha question="Does mypy strict mean there is no Any?">
+
+No. `Any` can enter through ignored imports, explicit annotations, untyped libraries, or suppressions. Strict settings reduce routes but cannot replace boundary discipline.
+
+</Gotcha>
+
+<Gotcha question="Does cast validate a runtime value?">
+
+No. `cast` returns the same object unchanged and only changes what the static checker believes.
+
+</Gotcha>
+
+<Gotcha question="Why can a pre-commit hook not import my project dependency?">
+
+Hooks normally run in isolated managed environments. Declare the dependency for the hook or intentionally invoke the project's locked environment.
+
+</Gotcha>
+
+<Gotcha question="Does pre-commit always check the entire repository?">
+
+No. Hooks commonly receive selected changed filenames. Run `--all-files` or configure a whole-repository hook when that is the intended contract.
+
+</Gotcha>
+
+<Gotcha question="Can CI trust that contributors ran Git hooks?">
+
+No. Hooks can be absent or skipped. CI independently enforces acceptance using committed configuration and versions.
+
+</Gotcha>
+
+<Gotcha question="Should generated code be excluded from every check?">
+
+Only when ownership justifies it. Validate the generator and regenerated diff, and apply any checks that understand the generated format rather than creating an invisible directory.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Ruff formatting and linting provide fast, distinct checks whose version, rules, target, fixes, and exclusions must be explicit. Narrow suppressions preserve the surrounding contract and can expire when no longer needed.
+
+Mypy strictness is a migration of uncertainty toward validated boundaries. Prevent `Any` from spreading, use runtime validation where values are dynamic, package inline types correctly, and track legacy overrides as debt rather than declaring victory through exclusions.
+
+Pre-commit gives reproducible local feedback through pinned isolated hooks. It can be skipped and may not share project dependencies, so CI remains the authoritative non-mutating execution of the locked quality contract.
+
+Use the Practice and Debug tabs to repair configuration gaps, the Interview tab to defend an adoption strategy, and the Project tab to build a measurable toolchain that a new contributor and CI can run identically.

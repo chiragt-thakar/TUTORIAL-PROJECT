@@ -1,0 +1,246 @@
+---
+id: "roadmap:phase-1-1.2:1"
+title: "dtype, precision, float32 vs float64 vs bfloat16 — and why it matters for training"
+description: "Choose numerical representations deliberately by connecting bits to range, precision, promotion, accumulation error, and mixed-precision training behavior."
+module: 1-2-numpy-the-actual-foundation
+order: 2
+estimatedMinutes: 115
+prerequisites: ["roadmap:phase-1-1.2:0"]
+learningObjectives:
+  - Explain how sign, exponent, and significand bits trade range against precision in common floating formats
+  - Predict NumPy promotion, casting, overflow, underflow, and accumulation behavior at dtype boundaries
+  - Choose storage, compute, and accumulator dtypes for training and inference from measured numerical risk
+  - Build precision checks that use tolerances, stable algorithms, scaling, and finite-value monitoring
+---
+
+A dtype is a storage and arithmetic contract, not a cosmetic label. It determines representable values, memory traffic, kernel selection, promotion, and the errors a computation can accumulate.
+
+Floating-point numbers trade exactness for enormous dynamic range. `float32` carries more precision than `bfloat16`; `bfloat16` preserves roughly the exponent range of `float32`. That trade is why reduced-precision training can work and why it still needs protected operations and accumulators.
+
+Numerical correctness means controlling error, not demanding exact equality from approximate representations.
+
+<TypeScriptComparison>
+
+- JavaScript `number` is normally IEEE 754 binary64. NumPy arrays can carry explicit integer, floating, complex, boolean, datetime, or structured dtypes.
+- JavaScript typed arrays convert on writes but arithmetic expressions still use `number`. NumPy ufuncs select loops and output dtypes from array operands.
+- TypeScript types do not express numeric width or overflow. NumPy dtype is runtime metadata that changes storage and computation.
+- Both ecosystems inherit binary floating-point surprises such as `0.1 + 0.2`, but NumPy makes precision policy part of each array boundary.
+
+</TypeScriptComparison>
+
+## Bits buy range or precision
+
+IEEE-style binary floating values have a sign, exponent, and significand. The exponent controls scale; the significand controls how finely adjacent values are spaced at that scale.
+
+`float32` uses 32 bits and offers about seven decimal digits of precision. IEEE `float16` has a small exponent range and roughly three decimal digits. `bfloat16` keeps an eight-bit exponent like `float32` but has only seven stored fraction bits, so it reaches large magnitudes while rounding more aggressively.
+
+```python
+import numpy as np
+
+for dtype in (np.float16, np.float32, np.float64):
+    info = np.finfo(dtype)
+    print(dtype, info.eps, info.tiny, info.max)
+```
+
+Machine epsilon is the gap from `1` to the next representable value for that dtype. Spacing grows with magnitude. Adding `1` to a sufficiently large float may make no change because no representable number lies between the operands at that scale.
+
+NumPy support for `bfloat16` depends on build and ecosystem; accelerator frameworks commonly expose it. Reason about the format even when a local NumPy build does not provide a native dtype.
+
+## Rounding, overflow, underflow, and cancellation
+
+Most decimal fractions have no finite binary representation. Each operation rounds to a representable result. A long reduction can accumulate those small errors, and addition order matters because floating arithmetic is not associative.
+
+```python
+x = np.array([1e8, 1.0, -1e8], dtype=np.float32)
+print((x[0] + x[1]) + x[2])
+print(x[0] + (x[1] + x[2]))
+```
+
+Overflow produces infinities for floating operations; underflow moves tiny values toward subnormal numbers and then zero. Catastrophic cancellation occurs when subtracting nearly equal values removes leading significant bits and exposes rounding noise.
+
+Stable algorithms reformulate the computation. Log-sum-exp subtracts a maximum before exponentiation. Variance algorithms avoid subtracting two large nearly equal totals. Training pipelines scale losses or retain sensitive reductions in higher precision.
+
+<CommonMistake>
+
+Changing every tensor to `float64` can hide one symptom while doubling memory and reducing accelerator throughput. Diagnose the unstable operation, its scale, and its accumulator before changing the whole model.
+
+</CommonMistake>
+
+## Promotion and casting are operational rules
+
+NumPy selects result dtypes from operand dtypes and scalar values according to its promotion rules. Never infer the result from the left operand alone. Inspect with `np.result_type` and make boundary casts explicit.
+
+```python
+a = np.array([1, 2], dtype=np.int16)
+b = np.array([0.5], dtype=np.float32)
+
+print(np.result_type(a, b))
+print((a + b).dtype)
+print(np.can_cast(np.float64, np.float32, casting="safe"))
+```
+
+Casting a large integer into a smaller integer dtype can wrap or fail depending on the operation and version. Casting floats to integers discards the fractional part and cannot represent NaN or infinity meaningfully. Validate ranges before narrowing.
+
+In-place operations are stricter because the result must fit the existing output array. `ints += 0.5` cannot silently replace an integer buffer with floats. Out-of-place `ints + 0.5` can allocate a promoted result.
+
+## Storage, compute, and accumulation can differ
+
+One dtype need not own the entire pipeline. Parameters may be stored in one format, matrix multiplication may run on specialized lower-precision hardware, and reductions may accumulate in `float32`.
+
+Mixed-precision training usually keeps higher-precision master state for numerically sensitive updates while using lower precision for eligible forward and backward kernels. Automatic mixed precision chooses operation policies; it does not make every operation safe.
+
+Gradient scaling protects small `float16` gradients from underflow by multiplying the loss before backpropagation and unscaling before the optimizer step. `bfloat16` often needs less scaling because its exponent range resembles `float32`, though its coarse significand still affects accuracy.
+
+Optimizers, normalization, softmax, loss reductions, and running statistics deserve special attention. Monitor non-finite values and compare convergence, not just one forward pass.
+
+## Accumulators and reductions
+
+Reduction error grows with count, magnitude spread, and summation order. NumPy may use improved pairwise summation in favorable layouts, but dtype remains part of the contract.
+
+```python
+x = np.full(2_000_000, 0.1, dtype=np.float32)
+
+s32 = x.sum(dtype=np.float32)
+s64 = x.sum(dtype=np.float64)
+print(s32, s64)
+```
+
+Explicit accumulator dtype can improve accuracy without storing the full input in `float64`. Integer reductions also need attention: fixed-width sums can overflow. Choose an accumulator that covers the worst-case total, not merely one element.
+
+Memory layout interacts with precision. Smaller dtypes reduce bandwidth and cache pressure, often making bandwidth-bound kernels faster. Conversion and temporary buffers can erase that gain, so profile end-to-end.
+
+## Comparisons need tolerances and invariants
+
+Exact equality is suitable for integers and for operations specified to be exact. Approximate floating results need absolute and relative tolerances based on scale and downstream impact.
+
+```python
+actual = np.array([1e-7, 1e4], dtype=np.float32)
+expected = np.array([0.0, 10000.01], dtype=np.float32)
+
+np.testing.assert_allclose(actual, expected, rtol=1e-5, atol=1e-6)
+```
+
+`atol` controls error near zero; `rtol` scales with the expected magnitude. Defaults are not universal truth. Validate finite values, acceptable ranges, monotonic loss trends, and task metrics alongside elementwise closeness.
+
+For model changes, compare a trusted higher-precision baseline over representative and adversarial inputs. Record hardware and kernel settings because reduced-precision results can vary across execution paths.
+
+<ProductionNote>
+
+Log dtype policy with model artifacts: parameter dtype, autocast policy, accumulator choices, loss scaling, hardware, and tolerance criteria. A checkpoint without its numerical contract is not fully reproducible.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="numpy-dtype-spacing-easy" difficulty="easy">
+
+Why can adding `1.0` to a large `float32` value leave it unchanged?
+
+<Solution>
+
+Representable floats become farther apart as the exponent grows. Once the local spacing exceeds one, the exact sum lies closer to the original representable value and rounds back to it.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-dtype-bfloat-medium" difficulty="medium">
+
+Explain why `bfloat16` usually overflows less readily than IEEE `float16` but rounds nearby values more aggressively.
+
+<Solution>
+
+`bfloat16` allocates eight exponent bits, preserving approximately the range of `float32`, but only seven stored fraction bits. IEEE `float16` gives more fraction bits but only five exponent bits, trading range for finer precision.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-dtype-reduction-hard" difficulty="hard">
+
+You store ten million sensor values as `float32`. Improve sum accuracy without doubling stored input memory.
+
+<Solution>
+
+Keep the input in `float32` and request a `float64` accumulator with `x.sum(dtype=np.float64)`. Also examine scaling and algorithm choice. This allocates a higher-precision accumulator/result rather than converting the entire stored array.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-dtype-interview" difficulty="interview">
+
+In an interview, describe a safe mixed-precision training rollout.
+
+<Solution>
+
+I would start from a reproducible `float32` baseline, enable framework autocast and scaling policies, retain sensitive state and reductions at higher precision, and monitor NaN, infinity, gradients, convergence, and task metrics. I would test representative extremes on target hardware and keep an automatic fallback or denylist for unstable operations.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-dtype-inference-real-world" difficulty="real-world">
+
+Design acceptance criteria for converting an inference pipeline from `float32` to a reduced-precision format.
+
+<Solution>
+
+Measure latency, throughput, memory, and conversion overhead on target hardware. Compare outputs and task metrics against a trusted baseline across normal and adversarial ranges, define operation-specific tolerances, reject non-finite outputs, and persist the dtype policy with the artifact. Roll back when either quality or operational thresholds fail.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Which floating-point field primarily controls range, and which controls local precision?
+2. Why is floating-point addition not associative?
+3. How do storage and accumulator dtypes differ?
+4. Why does mixed precision need protected operations and monitoring?
+5. When should a test use both relative and absolute tolerances?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why does 0.1 not stay exact in my array?">
+
+One tenth has no finite binary expansion, so the chosen binary floating dtype stores a rounded neighbor.
+
+</Gotcha>
+
+<Gotcha question="Why did my integer array overflow without becoming a float?">
+
+Fixed-width integer arithmetic remains fixed width unless promotion rules select a wider result. Choose and validate the output dtype explicitly.
+
+</Gotcha>
+
+<Gotcha question="Why does my in-place addition reject a float?">
+
+The existing integer buffer cannot change dtype. The floating result cannot satisfy the in-place casting rule.
+
+</Gotcha>
+
+<Gotcha question="Why did float16 training produce zeros in small gradients?">
+
+The values underflowed below the format's representable range. Loss scaling or a wider-exponent compute path may be required.
+
+</Gotcha>
+
+<Gotcha question="Why is bfloat16 not simply a worse float16?">
+
+It gives up significand precision to retain much more exponent range, a trade that often suits neural-network workloads.
+
+</Gotcha>
+
+<Gotcha question="Why does allclose pass values that look different near zero?">
+
+The absolute tolerance dominates near zero. Choose `atol` from the domain's meaningful floor rather than accepting a default blindly.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Dtype selects representable values, storage size, and arithmetic behavior. Exponent bits buy range; significand bits buy local precision. Every finite format rounds.
+
+Stable systems separate storage, compute, and accumulation policy. They promote and cast deliberately, protect sensitive reductions, and measure reduced precision on the hardware that will run it.
+
+Numerical testing needs tolerances, invariants, finite-value checks, and task-level acceptance. The Practice, Debug, Interview, Test, and Project tabs exercise those decisions under realistic failures.

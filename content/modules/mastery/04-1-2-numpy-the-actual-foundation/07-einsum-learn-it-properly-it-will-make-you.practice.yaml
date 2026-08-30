@@ -1,0 +1,717 @@
+lessonId: "roadmap:phase-1-1.2:6"
+module: 1-2-numpy-the-actual-foundation
+lesson: 07-einsum-learn-it-properly-it-will-make-you
+title: "einsum — learn it properly, it will make you read papers faster"
+summary: Derive tensor contractions from index roles, translate paper equations, and make shape, path, memory, and numerical contracts reviewable.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: nei-read-label-roles
+    tier: normal
+    kind: code-reading
+    title: Classify a batched projection
+    minutes: 10
+    requiredForMastery: true
+    concepts: [free-index, contracted-index, batch-index, shape-derivation]
+    prompt: |
+      Read `np.einsum("bti,io->bto", x, w)` for `x.shape == (3,5,7)` and
+      `w.shape == (7,11)`. Classify every label, derive the output shape, and state the scalar loop
+      equation for one output element.
+    hints:
+      - Labels after the arrow survive in exactly that order.
+      - The shared label missing from the output is the summation loop.
+    solution: |
+      `b` pairs corresponding batch slices and survives, `t` selects token positions and survives,
+      `o` selects output features and survives, and `i` contracts. The output shape is `(3,5,11)`.
+      One element is `y[b,t,o] = sum_i x[b,t,i] * w[i,o]`, with seven products in that sum.
+  - id: nei-write-core-patterns
+    tier: normal
+    kind: write-code
+    title: Express four core operations
+    minutes: 14
+    requiredForMastery: true
+    concepts: [outer-product, hadamard-product, reduction, transpose]
+    prompt: |
+      Write explicit-output einsums for a vector outer product, elementwise matrix product, total
+      matrix sum, and matrix transpose. Beside each expression, state which labels survive.
+    hints:
+      - Output labels determine whether an index survives or reduces.
+      - A transpose changes output label order without changing the input labels.
+    solution: |
+      Use `"i,j->ij"` for an outer product, `"ij,ij->ij"` for a Hadamard product,
+      `"ij->"` for a total sum, and `"ij->ji"` for transpose. The first two retain `i,j`, the sum
+      retains none, and the transpose retains both but reverses their output order.
+  - id: nei-derive-attention-shapes
+    tier: normal
+    kind: predict-output
+    title: Derive two attention contractions
+    minutes: 12
+    requiredForMastery: true
+    concepts: [attention, shape-derivation, index-role-change]
+    prompt: |
+      For `q=(B,T,H,D)`, `k=(B,S,H,D)`, `v=(B,S,H,V)`, derive the output shapes of
+      `"bthd,bshd->bhts"` and `"bhts,bshv->bthv"`. Explain how label `s` changes role.
+    hints:
+      - Read output sizes in the written order rather than operand order.
+      - A key-position label survives the score calculation but not value mixing.
+    solution: |
+      Scores have shape `(B,H,T,S)` because `d` contracts. The value mix has shape `(B,T,H,V)`
+      because `s` contracts. Label `s` is an output coordinate in the first expression so softmax
+      can assign a weight to each key; it becomes the summation coordinate in the second.
+  - id: nei-explain-diagonal-trace
+    tier: normal
+    kind: explain
+    title: Separate diagonal selection from contraction
+    minutes: 12
+    requiredForMastery: true
+    concepts: [diagonal, trace, repeated-label]
+    prompt: |
+      Explain the difference among `"ii->i"`, `"ii->"`, and `"ij->ij"` for one square matrix.
+      State the dimension constraint introduced by a repeated input label.
+    hints:
+      - Repetition within one operand means the coordinates must be equal.
+      - Whether that repeated label appears in the output decides if the diagonal is retained.
+    solution: |
+      `"ii->i"` selects and returns the diagonal, while `"ii->"` selects that diagonal and sums it
+      into the trace. `"ij->ij"` returns the full matrix unchanged. Repeating `i` requires the two
+      corresponding axes to have equal sizes; it is a diagonal constraint, not broadcasting.
+  - id: nei-translate-bilinear-paper
+    tier: intermediate
+    kind: write-code
+    title: Translate a bilinear paper equation
+    minutes: 20
+    requiredForMastery: true
+    concepts: [paper-equation, bilinear-form, validation]
+    prompt: |
+      Translate `score[b,c] = sum_i sum_j x[b,i] W[c,i,j] x[b,j]` into NumPy. Add rank and
+      shared-dimension validation, derive result shape and arithmetic scale, and name an independent
+      reference for tests.
+    hints:
+      - The two appearances of the batch label must select the same example.
+      - Only `b,c` occur on the equation's left side.
+    solution: |
+      Validate `x=(B,I)` and `W=(C,I,I)`, then use
+      `np.einsum("bi,cij,bj->bc", x, W, x, optimize="optimal")`. Output is `(B,C)` and work scales
+      as `B*C*I*I`. Test small asymmetric arrays against nested loops or compute each class matrix's
+      `x @ W[c]` followed by a row-wise dot with `x`.
+  - id: nei-use-ellipsis-batches
+    tier: intermediate
+    kind: write-code
+    title: Support arbitrary batch rank
+    minutes: 18
+    requiredForMastery: true
+    concepts: [ellipsis, batched-matmul, broadcasting]
+    prompt: |
+      Implement matrix multiplication for operands ending in `(I,J)` and `(J,K)` while accepting
+      broadcastable leading batch dimensions. Use einsum ellipsis and test one operand whose leading
+      batch shape contains a singleton.
+    hints:
+      - Ellipsis represents the leading dimensions on both operands and in the output.
+      - Keep `i,k`; contract `j`.
+    solution: |
+      Use `np.einsum("...ij,...jk->...ik", left, right)`. For shapes `(2,5,3,4)` and `(1,5,4,6)`,
+      leading dimensions broadcast to `(2,5)` and the result is `(2,5,3,6)`. Compare with `left @
+      right` and test incompatible batch and contracted sizes separately.
+  - id: nei-implement-tiny-engine
+    tier: intermediate
+    kind: write-code
+    title: Implement an explicit two-operand subset
+    minutes: 28
+    requiredForMastery: true
+    concepts: [loop-expansion, parser, contraction]
+    prompt: |
+      Implement a teaching subset that accepts two operands and an explicit expression without
+      ellipsis or repeated input labels. It must validate ranks and shared sizes, enumerate output
+      and contracted coordinates, and match NumPy on matrix multiply and outer product.
+    hints:
+      - Build one label-to-size table before allocating the output.
+      - Output loops surround contraction loops; an empty contraction set still has one iteration.
+    solution: |
+      Parse the two input label strings and output labels, reject duplicate labels in either input,
+      and merge axis sizes while checking equality. Allocate from output-label sizes. For each output
+      coordinate, enumerate all non-output label coordinates, map the environment back to operand
+      index tuples, multiply, and accumulate. Compare randomized small shapes against NumPy and test
+      rank, size, and unsupported-feature failures.
+  - id: nei-plan-three-operands
+    tier: intermediate
+    kind: performance
+    title: Compare contraction paths
+    minutes: 22
+    requiredForMastery: true
+    concepts: [contraction-path, intermediate-memory, benchmark]
+    prompt: |
+      For `"ij,jk,kl->il"` with `(32,64)`, `(64,128)`, `(128,16)`, compare the two natural first
+      contractions. Use `einsum_path`, then design a benchmark that distinguishes arithmetic,
+      temporary memory, and floating-point error.
+    hints:
+      - Calculate both intermediate shapes before reading NumPy's path report.
+      - Time repeated warmed runs and compare all results to one trusted reference.
+    solution: |
+      `(A@B)` creates `(32,128)` before multiplying by C; `(B@C)` creates `(64,16)` before A. The
+      second has a smaller intermediate and fewer scalar products for these dimensions. Inspect
+      greedy and optimal reports, record estimated FLOPs and largest temporary, then measure median
+      and tail latency plus peak memory. Compare errors against a float64 staged reference because
+      changed summation order may alter low bits.
+  - id: nei-debug-implicit-transpose
+    tier: tricky
+    kind: debug
+    title: Stop an implicit transpose
+    minutes: 16
+    requiredForMastery: true
+    concepts: [implicit-output, axis-order, regression]
+    prompt: |
+      This function claims to preserve `(jobs,features)` layout but returns a transposed view. Find
+      the rule responsible, repair the expression, and write an asymmetric regression.
+    code: |
+      def preserve_layout(x):
+          return np.einsum("jf", x)
+    hints:
+      - Implicit mode alphabetizes labels that occur once.
+      - State the intended output label order after an arrow.
+    solution: |
+      Input axes are named `j,f`, but implicit output alphabetizes them as `f,j`, transposing the
+      result. Use the explicit expression `jf->jf` to preserve `(jobs,features)`, validate rank, and
+      test shape `(2,3)` with distinct values. The explicit contract prevents a later label rename
+      from silently reordering axes.
+  - id: nei-debug-cross-batch-attention
+    tier: tricky
+    kind: debug
+    title: Prevent cross-example attention
+    minutes: 20
+    requiredForMastery: true
+    concepts: [batch-index, attention, semantic-invariant]
+    prompt: |
+      The expression produces finite scores but allows queries from one example to interact with
+      keys from every example. Diagnose the label mistake and prove the repair with batch isolation.
+    code: |
+      def scores(q, k):
+          return np.einsum("btd,cyd->bcty", q, k)
+    hints:
+      - Different labels create independent loops rather than pairing coordinates.
+      - The same batch label must appear in both operands and survive once.
+    solution: |
+      Labels `b` and `c` are independent, so output includes every query-batch/key-batch pair. If
+      the contract is per-example attention, use `"btd,byd->bty"`. Test that changing `k[1]` cannot
+      change output for batch zero, and use unequal batch and token sizes so a wrong label cannot
+      hide behind coincidentally equal dimensions.
+  - id: nei-debug-wrong-diagonal
+    tier: tricky
+    kind: debug
+    title: Recover a row reduction from a diagonal
+    minutes: 17
+    requiredForMastery: true
+    concepts: [repeated-label, reduction, shape-bug]
+    prompt: |
+      The function intends to sum every row of a square matrix but returns one scalar. Explain both
+      operations it accidentally requested and make the smallest explicit repair.
+    code: |
+      def row_totals(x):
+          return np.einsum("ii->", x)
+    hints:
+      - Repeating `i` within the operand first imposes equal coordinates.
+      - A row index must survive while the column index contracts.
+    solution: |
+      `ii` selects only diagonal entries, then omitting `i` from the output sums them into the trace.
+      Row totals need distinct input labels and a surviving row label: `np.einsum("ij->i", x)`.
+      Test a non-symmetric matrix whose diagonal sum and row totals cannot be confused.
+  - id: nei-debug-narrow-compute
+    tier: tricky
+    kind: debug
+    title: Widen before accumulation
+    minutes: 18
+    requiredForMastery: true
+    concepts: [dtype, overflow, output-buffer]
+    prompt: |
+      A dot product of int16 vectors is stored into int64 but still returns corrupted totals. Repair
+      the numerical contract and explain why the destination alone was insufficient.
+    code: |
+      def safe_dot(x, y):
+          out = np.empty((), dtype=np.int64)
+          np.einsum("i,i->", x, y, out=out)
+          return out.item()
+    hints:
+      - Output storage does not necessarily choose product and accumulator dtype.
+      - Bound the largest product sum, then request computation dtype explicitly.
+    solution: |
+      Select a computation dtype that represents both products and the maximum accumulated total,
+      such as `np.einsum("i,i->", x, y, dtype=np.int64, casting="safe")` for a validated int16
+      length bound. Derive and enforce that bound; int64 is not universally safe for arbitrary
+      lengths. Test maximum-magnitude values and prove the narrow implementation fails.
+  - id: nei-design-equation-compiler
+    tier: challenge
+    kind: design
+    title: Design a paper-equation review tool
+    minutes: 32
+    requiredForMastery: false
+    concepts: [static-analysis, equation-translation, cost-model]
+    prompt: |
+      Design a tool that accepts an explicit einsum expression plus named operand contracts and
+      produces a review report before execution. It must explain roles, output shape, mismatches,
+      estimated work, and dangerous intermediates without allocating full operands.
+    hints:
+      - Separate parsing, symbolic dimension unification, and contraction planning.
+      - Make semantic names metadata; single-letter labels alone cannot validate meaning.
+    solution: |
+      Parse labels and ellipses into an intermediate representation, attach each axis to a symbolic
+      semantic dimension and concrete extent, then unify repeated/shared labels with clear errors.
+      Classify output, contracted, batch, and diagonal roles. Derive output shape and naive loop
+      scale, invoke or reproduce path planning on zero-stride shape proxies, and report every
+      intermediate. Add policies for maximum temporary bytes, dtype growth, and forbidden batch
+      contraction, with golden reports for attention and bilinear equations.
+  - id: nei-audit-model-contractions
+    tier: challenge
+    kind: refactor
+    title: Audit a model's contraction boundary
+    minutes: 30
+    requiredForMastery: false
+    concepts: [api-design, invariants, performance-budget]
+    prompt: |
+      A model service contains six unexplained einsums copied from a paper. Define a migration that
+      makes them reviewable without blindly replacing every expression with matmul.
+    hints:
+      - Capture shape meanings and independent references before changing implementation.
+      - Optimize only after correctness and allocation budgets are observable.
+    solution: |
+      Inventory each equation with source, semantic axis table, explicit output, expected shape,
+      dtype, and size bounds. Add boundary validation plus small asymmetric reference tests using
+      loops, matmul, reductions, or transpose. Add batch-independence and numerical invariants.
+      Inspect contraction paths and benchmark representative production shapes with memory limits.
+      Keep einsums that communicate the domain equation best; replace only expressions whose simpler
+      primitive form improves clarity or reliably selects a better kernel.
+quizzes:
+  - id: nei-checkpoint
+    title: Checkpoint — read index roles
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: nei-cp-contracted
+        kind: mcq
+        prompt: In `"bti,io->bto"`, which label is contracted?
+        options:
+          - {id: input, text: The label i}
+          - {id: batch, text: The label b}
+          - {id: output, text: The label o}
+        answer: [input]
+        explanation: Label i appears on the input side but not in the explicit output.
+        concepts: [contracted-index]
+        points: 1
+      - id: nei-cp-diagonal
+        kind: mcq
+        prompt: What does `"ii->i"` do to a matrix?
+        options:
+          - {id: diagonal, text: Returns its diagonal}
+          - {id: sum, text: Sums each row}
+          - {id: unchanged, text: Returns the full matrix}
+        answer: [diagonal]
+        explanation: Repeating one label in an operand constrains those coordinates to be equal.
+        concepts: [diagonal]
+        points: 1
+      - id: nei-cp-hadamard
+        kind: mcq
+        prompt: Which expression performs elementwise multiplication without reduction?
+        options:
+          - {id: hadamard, text: "ij,ij->ij"}
+          - {id: inner, text: "ij,ij->"}
+          - {id: matmul, text: "ik,kj->ij"}
+        answer: [hadamard]
+        explanation: Both labels survive, so matching entries are multiplied and retained.
+        concepts: [hadamard-product]
+        points: 1
+      - id: nei-cp-path
+        kind: multi
+        prompt: What should a contraction-path review consider?
+        options:
+          - {id: flops, text: Estimated arithmetic work}
+          - {id: temporary, text: Largest intermediate allocation}
+          - {id: benchmark, text: Measured latency and peak memory}
+          - {id: letters, text: Whether labels are alphabetically attractive}
+        answer: [flops, temporary, benchmark]
+        explanation: Path choice affects work and memory; real measurements validate estimates.
+        concepts: [contraction-path]
+        points: 1
+  - id: nei-assessment
+    title: Assessment — tensor contraction reasoning
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: nei-as-role-rule
+        kind: explain
+        prompt: State the explicit-output rule for free and contracted labels.
+        modelAnswer: |
+          Labels listed after the arrow are output or free indices and survive in that exact order.
+          Any input-side label absent from the output is enumerated and reduced. A repeated label
+          within one operand additionally imposes equal coordinates before survival or reduction.
+        explanation: The arrow makes both survival and axis order explicit.
+        concepts: [free-index, contracted-index]
+        points: 1
+      - id: nei-as-shape
+        kind: predict-output
+        prompt: Derive the shape of `"bthd,bshd->bhts"` for `(2,7,4,16)` and `(2,9,4,16)`.
+        modelAnswer: The output follows b,h,t,s and therefore has shape `(2,4,7,9)`; d contracts.
+        explanation: Read output extents by label rather than by their positions in the first input.
+        concepts: [shape-derivation]
+        points: 1
+      - id: nei-as-implicit
+        kind: find-bug
+        prompt: Why is implicit output risky even when current values are correct?
+        modelAnswer: |
+          Implicit mode selects labels appearing once and alphabetizes them. Axis order can therefore
+          depend on label spelling, and a harmless-looking rename can transpose output. Explicit
+          output records the intended surviving set and order for review.
+        explanation: Correct current values do not make an implicit axis contract stable.
+        concepts: [implicit-output]
+        points: 1
+      - id: nei-as-outer
+        kind: write-function
+        prompt: Write an outer product and a full inner sum using explicit einsum notation.
+        modelAnswer: Use `"i,j->ij"` for the outer product and `"i,i->"` for the vector dot product.
+        explanation: Independent surviving labels form an outer product; a shared omitted label contracts.
+        concepts: [outer-product, contraction]
+        points: 1
+      - id: nei-as-ellipsis
+        kind: scenario
+        prompt: When is `"...ij,...jk->...ik"` preferable to fully named labels?
+        modelAnswer: |
+          Use it when the public contract deliberately accepts zero or more broadcastable leading
+          batch dimensions while the trailing matrix core is fixed. Use named labels when leading
+          dimensions have distinct meanings that should be reviewed explicitly.
+        explanation: Ellipsis expresses flexible batch rank, not missing semantic documentation.
+        concepts: [ellipsis]
+        points: 1
+      - id: nei-as-attention
+        kind: write-function
+        prompt: Give score and value-mixing expressions for multi-head attention.
+        modelAnswer: |
+          For q `(B,T,H,D)` and k `(B,S,H,D)`, use `"bthd,bshd->bhts"`. After softmax over s, mix
+          weights `(B,H,T,S)` with v `(B,S,H,V)` using `"bhts,bshv->bthv"`.
+        explanation: Head width contracts in scores; key position contracts when values are mixed.
+        concepts: [attention]
+        points: 1
+      - id: nei-as-batch-bug
+        kind: find-bug
+        prompt: What is wrong with `"btd,cyd->bcty"` for per-example attention?
+        modelAnswer: |
+          Different labels b and c make query and key batches independent, producing all cross-batch
+          pairs. Use the same batch label in both operands and retain it once, such as
+          `"btd,byd->bty"`.
+        explanation: Same-size axes do not pair unless they share a label.
+        concepts: [batch-index]
+        points: 1
+      - id: nei-as-path
+        kind: scenario
+        prompt: Why inspect a path for an expression with three or more operands?
+        modelAnswer: |
+          Different pairwise contraction orders can change arithmetic count and create radically
+          different intermediate shapes. Inspect estimated FLOPs and largest temporary, then
+          benchmark representative shapes because estimates do not include every kernel and layout cost.
+        explanation: Mathematical equivalence does not imply equivalent execution cost.
+        concepts: [contraction-path, performance]
+        points: 1
+      - id: nei-as-dtype
+        kind: true-false
+        prompt: Does passing an int64 output buffer always force int64 product and accumulation?
+        options:
+          - {id: "true", text: "True"}
+          - {id: "false", text: "False"}
+        answer: ["false"]
+        explanation: Destination storage and computation dtype are separate policies; request and validate computation dtype explicitly.
+        concepts: [dtype, overflow]
+        points: 1
+      - id: nei-as-tests
+        kind: refactor
+        prompt: Design an independent test strategy for a paper-derived einsum.
+        modelAnswer: |
+          Validate named shapes, use unequal dimension sizes, and compare small fixtures against
+          explicit loops or clearer primitives. Assert output shape, batch independence, numerical
+          invariants, dtype, and aliasing policy. Exercise non-contiguous and empty dimensions, then
+          compare optimization paths within a justified tolerance.
+        explanation: Repeating the same faulty label specification is not an independent oracle.
+        concepts: [testing, invariants]
+        points: 1
+interview:
+  - id: nei-iv-reading-method
+    level: basic
+    requiredForMastery: true
+    concepts: [index-roles, shape-derivation]
+    question: How do you read an einsum expression you have never seen?
+    shortAnswer: |
+      I map every label to an operand axis and size, then mark explicit output labels as surviving.
+      Labels absent from the output contract; repeated labels within one operand mean diagonal
+      selection. I derive output shape and loop scale before running it.
+    fullAnswer: |
+      Shared labels mean coordinates are paired, not automatically summed. The arrow decides which
+      labels remain. Output order decides axis order. I also annotate semantic names because letters
+      are local and cannot prove that an array really is batch-token-hidden. Finally I validate the
+      expression against a simple reference on asymmetric shapes.
+    commonWrongAnswer: Any label that appears twice is always summed.
+    followUps:
+      - How does a repeated label within one operand differ from one shared across operands?
+      - Why do you prefer explicit output?
+  - id: nei-iv-paper-translation
+    level: intermediate
+    requiredForMastery: true
+    concepts: [paper-equation, layout]
+    question: How do you translate an indexed paper equation into executable NumPy?
+    shortAnswer: |
+      I list each equation index with size and meaning, mark left-hand-side indices as output, and
+      mark right-only indices as contractions. Then I reorder each operand's labels to match its
+      actual memory layout and add boundary checks.
+    fullAnswer: |
+      Paper notation and stored tensors often use different axis orders, so copying letters without
+      an axis table is unsafe. I write an explicit output, derive shape and cost, and compare small
+      fixtures with loops or staged primitives. Nonlinear steps such as softmax remain separate
+      boundaries rather than being forced into one contraction.
+    commonWrongAnswer: Use the paper's letters in the same order and NumPy will infer tensor layout.
+    followUps:
+      - How do you detect a batch label that was accidentally contracted?
+      - Which reference would you use for a bilinear form?
+  - id: nei-iv-diagonal
+    level: tricky
+    requiredForMastery: true
+    concepts: [diagonal, repeated-label]
+    question: What does a repeated label inside one operand mean?
+    shortAnswer: |
+      It constrains those axes to equal coordinates, selecting a diagonal. The repeated axes must
+      have equal extents. Keeping the label in the output returns the diagonal; omitting it sums
+      that diagonal.
+    fullAnswer: |
+      `"ii->i"` is diagonal extraction and `"ii->"` is a trace. This is not broadcasting and it is
+      different from sharing a label across two operands, where corresponding coordinates are
+      paired for multiplication. I test diagonals with non-symmetric values so a row reduction
+      cannot look accidentally correct.
+    commonWrongAnswer: Repeated labels let differently sized axes broadcast to one another.
+    followUps:
+      - How would you express row sums instead?
+      - Can a single-operand diagonal result share memory?
+  - id: nei-iv-attention
+    level: advanced
+    requiredForMastery: true
+    concepts: [attention, semantic-axes]
+    question: Explain multi-head attention as index contractions.
+    shortAnswer: |
+      Scores preserve batch, head, query, and key positions while contracting head width. Softmax
+      normalizes the key axis. Value mixing then preserves batch, query, head, and value width while
+      contracting key position.
+    fullAnswer: |
+      With q `BTHD` and k `BSHD`, scores use `bthd,bshd->bhts`. After stable masked softmax on s,
+      weights and values `BSHV` use `bhts,bshv->bthv`. I validate batch isolation and per-query unit
+      probability sums because plausible output shapes alone cannot prove the axes are correct.
+    commonWrongAnswer: One einsum should include dot product, softmax, and value mixing together.
+    followUps:
+      - Why is softmax a separate boundary?
+      - How would grouped-query attention change the labels?
+  - id: nei-iv-path-planning
+    level: internals
+    requiredForMastery: true
+    concepts: [contraction-path, memory]
+    question: How do you evaluate a multi-operand contraction path?
+    shortAnswer: |
+      I compare pairwise intermediate shapes, estimated arithmetic, and largest temporary using
+      `einsum_path`. Then I benchmark warmed representative shapes for latency, peak memory, and
+      error against a trusted result.
+    fullAnswer: |
+      Greedy and optimal planning trade planning time against estimated execution. A lower FLOP path
+      can still lose because of layout, copying, or kernel selection. Shape distributions can also
+      change in production, so I make the chosen path and memory budget observable and re-evaluate
+      them when dimensions or library versions change.
+    commonWrongAnswer: "`optimize=True` guarantees the fastest and lowest-memory execution everywhere."
+    followUps:
+      - When can a cached path become inappropriate?
+      - Why might equivalent paths differ numerically?
+  - id: nei-iv-production-choice
+    level: scenario
+    requiredForMastery: true
+    concepts: [readability, validation, primitive-choice]
+    question: When would you keep einsum instead of rewriting it as matmul and transpose?
+    shortAnswer: |
+      I keep it when explicit index notation communicates the domain equation more directly and its
+      correctness and cost are covered by contracts, independent tests, and path measurements. I
+      choose simpler primitives when they make meaning or kernel behavior clearer.
+    fullAnswer: |
+      The decision is not brevity versus speed. Attention-like and bilinear equations can be easier
+      to audit as explicit labels, while ordinary matrix multiplication is often clearest as `@`.
+      I validate semantic shapes either way. For performance-sensitive code I benchmark the full
+      pipeline, including transposes and temporaries, instead of assuming one spelling wins.
+    commonWrongAnswer: Einsum is always faster because it fuses every operation into one kernel.
+    followUps:
+      - What evidence would you require in code review?
+      - When does ellipsis improve or damage readability?
+projects:
+  - id: nei-project-contraction-workbench
+    kind: major
+    title: Build an auditable tensor-contraction workbench
+    minutes: 280
+    summary: Parse, explain, validate, execute, and benchmark paper-style tensor contractions without hiding axis meaning or allocation risk.
+    problem: |
+      An ML platform team receives tensor equations from research papers and repeatedly ships axis
+      bugs while translating them. Build a NumPy workbench that accepts explicit einsum expressions,
+      semantic operand contracts, concrete shapes, and dtypes. It must generate a human-readable
+      derivation, validate inputs, compare execution paths, run trusted small references, and emit
+      evidence suitable for code review.
+    requirements:
+      - Parse explicit two-or-more-operand expressions, named labels, output order, and ellipsis.
+      - Classify output, contracted, shared-batch, and within-operand diagonal labels.
+      - Unify label extents and report rank, shared-size, diagonal, and output-contract failures clearly.
+      - Derive output shape, naive loop scale, and an explanation of one scalar output equation.
+      - Integrate greedy and optimal einsum-path reports and enforce a configurable temporary-byte budget.
+      - Execute with explicit dtype and casting policy and record result ownership expectations.
+      - Generate independent references for supported matmul, transpose, reduction, diagonal, and attention patterns.
+      - Include built-in audited examples for bilinear classification and multi-head attention.
+    constraints:
+      - Use NumPy and the Python standard library for the core implementation.
+      - Never allocate production-sized random operands merely to produce a static shape report.
+      - Never infer semantic axis names from single-letter labels alone.
+      - Do not treat successful broadcasting or finite output as proof of correctness.
+    expectedBehaviour:
+      - The same batch label pairs examples while distinct labels produce an explicit cross product.
+      - Asymmetric fixtures expose every output-axis permutation.
+      - Path reports flag a contraction that exceeds the configured intermediate-memory budget.
+      - Optimized and reference results agree within a dtype-specific tolerance.
+      - Invalid diagonal and contracted dimensions fail before execution with label-specific messages.
+    structure: |
+      contraction_workbench/
+        __init__.py
+        parser.py
+        dimensions.py
+        explain.py
+        paths.py
+        execute.py
+        references.py
+      examples/
+        attention.py
+        bilinear.py
+      tests/
+        test_parser.py
+        test_dimensions.py
+        test_references.py
+        test_paths.py
+        test_numerics.py
+    milestones:
+      - title: "1 — Parse and classify index roles"
+        detail: Produce a stable intermediate representation and golden human-readable derivations.
+      - title: "2 — Validate dimensions and references"
+        detail: Add semantic contracts, asymmetric fixtures, and independent loop or primitive oracles.
+      - title: "3 — Plan and execute safely"
+        detail: Add path reports, temporary budgets, dtype policy, and measured execution evidence.
+      - title: "4 — Audit real ML equations"
+        detail: Ship attention and bilinear examples with batch-isolation and numerical invariants.
+    testing:
+      - Property-test small explicit expressions against NumPy for the supported grammar.
+      - Use unequal prime-sized axes to expose output permutations and accidental pairing.
+      - Cover scalar outputs, empty contractions, diagonals, ellipses, non-contiguous operands, and invalid sizes.
+      - Compare greedy, optimal, and unoptimized results within justified dtype tolerances.
+      - Assert attention probability sums and independence between batch examples.
+    failureCases:
+      - Implicit output silently alphabetizes axes.
+      - Distinct labels create an unintended cross-batch dimension.
+      - Repeated labels are treated as broadcasting rather than a diagonal constraint.
+      - A low-FLOP path violates the intermediate-memory budget.
+      - A wide output buffer stores an already-overflowed narrow computation.
+    bonus:
+      - Export derivations as Markdown for pull-request descriptions.
+      - Cache paths by expression, concrete shapes, dtypes, and NumPy version.
+      - Add opt_einsum as an optional planner behind a clean adapter.
+    architectureHints:
+      - Keep syntax labels, semantic axis names, and concrete extents as separate fields.
+      - Make static analysis independent from array allocation and execution.
+      - Treat independent reference generation as a limited pattern library, not another einsum spelling.
+    referenceOutline: |
+      Parse into operands and explicit output, normalize ellipses, then unify label dimensions while
+      preserving semantic annotations. The explainer classifies roles and derives shape plus loop
+      cost. A planner adapter consumes lightweight shape proxies and enforces FLOP and temporary
+      budgets. Execution validates real arrays and dtype policy, while references use loops or
+      clearer NumPy primitives on bounded fixtures.
+  - id: nei-final-paper-audit
+    kind: final-challenge
+    title: Repair eight tensor-equation defects
+    minutes: 95
+    summary: Audit a paper-derived attention and bilinear implementation whose legal shapes hide label, path, and dtype failures.
+    problem: |
+      You inherit a compact model layer containing six einsums. Identify exactly eight independent
+      root causes before editing: an implicit transpose, a contracted batch, a cross-batch product,
+      a mistaken diagonal, a wrong output order, a catastrophic intermediate, narrow accumulation,
+      and a test that uses the same faulty einsum as its oracle. Add one fail-before-fix regression
+      per cause, then make focused repairs.
+    requirements:
+      - Submit an eight-row report with equation, intended semantics, actual semantics, and evidence.
+      - Derive label roles and concrete result shape for every original and repaired expression.
+      - Replace implicit outputs with explicit outputs without renaming stable public axes.
+      - Add batch-isolation, asymmetric-shape, diagonal, numerical-bound, and memory-budget tests.
+      - Use independent loops or clearer primitives as references for every repaired contraction.
+      - Inspect and constrain the path of the multi-operand expression.
+    constraints:
+      - Do not count multiple symptoms of one label error as separate causes.
+      - Do not replace all einsums blindly or change correct public semantics.
+      - Do not accept a repair solely because NumPy executes it without error.
+    expectedBehaviour:
+      - Exactly eight root causes are exposed before implementation changes.
+      - Changing one batch example cannot affect another example's result.
+      - All output axis meanings match the documented API order for unequal sizes.
+      - Integer and floating results stay inside declared numerical budgets.
+      - Largest contraction intermediate remains below the configured limit.
+    milestones:
+      - title: "1 — Annotate every equation"
+        detail: Build label tables, semantic shapes, costs, and independent expected behavior.
+      - title: "2 — Prove all eight defects"
+        detail: Retain failing asymmetric, isolation, diagonal, path, and dtype regressions.
+      - title: "3 — Repair and remeasure"
+        detail: Apply narrow changes, compare references, and capture final path evidence.
+    testing:
+      - Preserve fail-before-fix output for all eight cases.
+      - Use distinct prime sizes for batch, token, head, feature, and class dimensions.
+      - Test non-contiguous inputs and at least two optimization paths.
+      - Assert meaning and invariants in addition to shape and finite values.
+    failureCases:
+      - A corrected output shape still carries axes in the wrong semantic order.
+      - A reference repeats the production expression and shares its label defect.
+      - An output cast hides overflow that occurred during contraction.
+    bonus:
+      - Produce an automated Markdown equation-audit report.
+    architectureHints:
+      - Freeze expected semantic contracts before touching expressions.
+      - Separate correctness repairs from path and kernel tuning commits.
+    referenceOutline: |
+      First annotate every operand axis and explicit desired output. Use distinct batch labels to
+      expose cross-products and shared labels to prove isolation. Replace diagonal mistakes with
+      distinct row and column labels, derive output order, widen computation rather than storage,
+      and choose a bounded path. Reference each repair with loops, matmul, transpose, or reductions.
+resources:
+  - name: NumPy einsum reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.einsum.html"
+    usefulness: 5
+    why: It is the primary contract for explicit and implicit modes, ellipsis, diagonals, dtype, casting, output buffers, optimization, and writable views.
+    covers: Einstein notation, output rules, broadcasting, diagonals, contraction, dtype, order, out, and optimize.
+  - name: NumPy einsum_path reference
+    type: docs
+    difficulty: deep
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.einsum_path.html"
+    usefulness: 5
+    why: It explains how NumPy exposes contraction order, naive and optimized scaling, FLOP estimates, and largest intermediates for review.
+    covers: Greedy and optimal planning, path tuples, scaling, theoretical speedup, and intermediate size.
+  - name: NumPy matmul reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.matmul.html"
+    usefulness: 5
+    why: It provides the clearest primary reference operation for verifying matrix and batched-matrix einsums and understanding stack broadcasting.
+    covers: Matrix core dimensions, batched broadcasting, scalar exclusions, output behavior, and examples.
+  - name: NumPy tensordot reference
+    type: docs
+    difficulty: deep
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.tensordot.html"
+    usefulness: 4
+    why: It gives an axis-list formulation of contraction that is useful as an independent mental model and reference for selected einsum patterns.
+    covers: Contracted axis pairs, output-axis ordering, double contractions, and relation to dot products.
+  - name: NumPy diagonal reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.diagonal.html"
+    usefulness: 4
+    why: It isolates the semantics and view behavior behind repeated labels within one einsum operand, preventing diagonal selection from being confused with reduction.
+    covers: Selected axes, offsets, returned shape, view behavior, and multidimensional diagonals.

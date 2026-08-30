@@ -1,0 +1,970 @@
+# Practice bank for roadmap topic 1.1 #6 — dataclasses and Pydantic v2.
+# Ids are durable progress keys. Never rename a shipped id.
+
+lessonId: "roadmap:phase-1-1.1:5"
+module: 1-1-python-fluency-beyond-the-basics
+lesson: 06-dataclasses-vs-pydantic-v2-when-each-is-correct
+title: "dataclasses vs Pydantic v2 — when each is correct"
+summary: Choose and connect internal value objects and runtime-validated boundary models without duplicating responsibilities.
+
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+
+exercises:
+  - id: dvp-dataclass-policy
+    tier: normal
+    kind: write-code
+    title: Make an internal value object honest
+    minutes: 10
+    requiredForMastery: true
+    concepts: [dataclass, frozen, slots, kw-only]
+    prompt: |
+      Implement `ModelRevision` as a standard-library dataclass. Construction must use keywords,
+      ordinary field rebinding must fail, accidental attributes must fail, and equality must ignore
+      the diagnostic `loaded_at` timestamp.
+    hints:
+      - The dataclass decorator has three class-level switches for the construction, mutation, and storage rules.
+      - Use `field(compare=False)` for operational metadata that is not part of value identity.
+    solution: |
+      Use `kw_only=True`, `frozen=True`, and `slots=True` to state the object policy where readers
+      see the type. Excluding `loaded_at` from comparison means two revisions with identical domain
+      fields compare equal even if loaded at different times. That is correct only if the timestamp
+      is genuinely not part of identity.
+    solutionCode: |
+      from dataclasses import dataclass, field
+      from datetime import datetime
+
+
+      @dataclass(frozen=True, slots=True, kw_only=True)
+      class ModelRevision:
+          name: str
+          version: str
+          loaded_at: datetime = field(compare=False, repr=False)
+
+  - id: dvp-fresh-default
+    tier: normal
+    kind: predict-output
+    title: Predict when a factory runs
+    minutes: 8
+    requiredForMastery: true
+    concepts: [default-factory, class-execution]
+    prompt: |
+      Predict whether `a.tags is b.tags` is true or false and explain when `list` is called.
+    code: |
+      from dataclasses import dataclass, field
+
+      @dataclass
+      class Run:
+          tags: list[str] = field(default_factory=list)
+
+      a = Run()
+      b = Run()
+      print(a.tags is b.tags)
+    hints:
+      - A factory is stored as a callable, not evaluated in the class body.
+      - The generated initializer calls the factory for each omitted field value.
+    solution: |
+      It prints `False`. The class stores `list` itself as the factory, and the generated initializer
+      calls it once for each construction where `tags` is omitted. Each instance therefore owns a
+      distinct list, preventing mutations on one run from appearing on another.
+
+  - id: dvp-boundary-choice
+    tier: normal
+    kind: design
+    title: Put each representation at the right layer
+    minutes: 12
+    requiredForMastery: true
+    concepts: [trust-boundary, DTO, domain-model]
+    prompt: |
+      A FastAPI endpoint accepts an inference request, schedules a trusted job, and emits a response.
+      Name the representation you would use for all three values and the conversion points. Defend
+      any place where you deliberately reuse a type.
+    hints:
+      - Identify which values are controlled by an external caller and which are created by your code.
+      - Separate validation and serialization needs from internal value semantics.
+    solution: |
+      Use a Pydantic request model at the HTTP input and a Pydantic response model at output because
+      both boundaries need explicit schemas, validation or serialization. Convert the request into a
+      frozen domain dataclass before scheduling. Convert the result into the response DTO at the route
+      adapter. In a small service, reusing one Pydantic type is defensible only when the external and
+      domain contracts share vocabulary, units, invariants, and change together.
+
+  - id: dvp-read-coercion
+    tier: normal
+    kind: code-reading
+    title: Read a boundary model's actual policy
+    minutes: 10
+    requiredForMastery: true
+    concepts: [coercion, extra-fields, serialization]
+    prompt: |
+      Explain the result of each line. Identify one contract risk in the configuration.
+    code: |
+      from pydantic import BaseModel
+
+      class Request(BaseModel):
+          count: int
+
+      item = Request.model_validate({"count": "7", "coutn": 9})
+      print(item.count, type(item.count).__name__)
+      print(item.model_dump())
+    hints:
+      - Pydantic's default input policy includes selected conversions.
+      - Find the default policy for keys not declared as fields.
+    solution: |
+      Construction succeeds. It prints `7 int`, then `{'count': 7}`. The numeric string is coerced
+      and the misspelled extra key is ignored by default. The risk is silent client drift: `coutn`
+      looks meaningful but disappears. A public contract should normally decide explicitly between
+      `extra='forbid'`, strict inputs, or documented coercion.
+
+  - id: dvp-post-init-range
+    tier: intermediate
+    kind: write-code
+    title: Derive trusted state in post-init
+    minutes: 15
+    requiredForMastery: true
+    concepts: [post-init, derived-field, frozen]
+    prompt: |
+      Write a frozen dataclass `TokenSpan(start, stop)` with an `init=False` length. Reject negative
+      starts and stops that are not greater than starts. Explain why this does not make it a JSON parser.
+    hints:
+      - Frozen initialization of a derived field needs the base object's assignment mechanism.
+      - Post-init sees values after ordinary assignment, without type coercion.
+    solution: |
+      `__post_init__` is suitable for a domain invariant over values already expected to be integers.
+      It does not inspect or coerce arbitrary input shapes: a string start will fail accidentally in
+      comparison rather than produce a designed boundary error. Parse uncertain data before creating
+      this value.
+    solutionCode: |
+      from dataclasses import dataclass, field
+
+
+      @dataclass(frozen=True, slots=True)
+      class TokenSpan:
+          start: int
+          stop: int
+          length: int = field(init=False)
+
+          def __post_init__(self) -> None:
+              if self.start < 0 or self.stop <= self.start:
+                  raise ValueError("expected 0 <= start < stop")
+              object.__setattr__(self, "length", self.stop - self.start)
+
+  - id: dvp-strict-request
+    tier: intermediate
+    kind: write-code
+    title: State an input policy explicitly
+    minutes: 18
+    requiredForMastery: true
+    concepts: [strict-mode, constraints, extra-forbid]
+    prompt: |
+      Define a Pydantic v2 `EmbedRequest` that rejects unknown keys and coercion. It accepts a
+      non-empty model name and 1–128 non-empty texts. Show one valid call and two calls that fail for
+      different reasons.
+    hints:
+      - Put model-wide behavior in `ConfigDict` and collection limits in `Field`.
+      - Constrain both the list and its string elements with `Annotated`.
+    solution: |
+      Strictness prevents inputs such as tuples from being converted to lists, while `extra='forbid'`
+      catches misspelled fields. An annotated string type applies the non-empty rule to every item.
+      Tests should assert structured error locations, not brittle complete error messages.
+    solutionCode: |
+      from typing import Annotated
+
+      from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+      NonEmpty = Annotated[str, Field(min_length=1)]
+
+      class EmbedRequest(BaseModel):
+          model_config = ConfigDict(strict=True, extra="forbid")
+          model: NonEmpty
+          texts: list[NonEmpty] = Field(min_length=1, max_length=128)
+
+      EmbedRequest(model="e5", texts=["hello"])
+      for bad in (
+          {"model": "e5", "texts": ("hello",)},
+          {"model": "e5", "texts": ["hello"], "text": "typo"},
+      ):
+          try:
+              EmbedRequest.model_validate(bad)
+          except ValidationError as error:
+              print(error.errors())
+
+  - id: dvp-cross-field-validator
+    tier: intermediate
+    kind: write-code
+    title: Protect a relationship without doing I/O
+    minutes: 18
+    requiredForMastery: true
+    concepts: [model-validator, invariants, side-effects]
+    prompt: |
+      Add a Pydantic v2 after-model validator to `SliceRequest(start, stop, limit)` so `stop` is
+      greater than `start` and the span does not exceed `limit`. Explain why checking a user's quota
+      in the database does not belong in the same validator.
+    hints:
+      - An after-model validator receives a fully formed instance and returns it.
+      - Keep validation deterministic; current external state belongs to an application service.
+    solution: |
+      The ordering and span rules depend only on the candidate value, so the model validator can
+      enforce them deterministically. A quota lookup depends on I/O, authorization context, time,
+      and races. Put it in a service after parsing so retries and dependency ownership remain clear.
+    solutionCode: |
+      from typing import Self
+
+      from pydantic import BaseModel, Field, model_validator
+
+      class SliceRequest(BaseModel):
+          start: int = Field(ge=0)
+          stop: int
+          limit: int = Field(gt=0)
+
+          @model_validator(mode="after")
+          def valid_span(self) -> Self:
+              if self.stop <= self.start:
+                  raise ValueError("stop must be greater than start")
+              if self.stop - self.start > self.limit:
+                  raise ValueError("span exceeds limit")
+              return self
+
+  - id: dvp-adapter-list
+    tier: intermediate
+    kind: refactor
+    title: Validate a collection without a wrapper model
+    minutes: 14
+    requiredForMastery: false
+    concepts: [TypeAdapter, schema-reuse, boundary]
+    prompt: |
+      A worker invents `class Payloads(BaseModel): items: list[Payload]` solely to validate a decoded
+      JSON array. Refactor it with `TypeAdapter`, and state where the adapter should live in a hot path.
+    hints:
+      - TypeAdapter gives non-model types validation and serialization operations.
+      - Schema construction is reusable work; do not repeat it for every message.
+    solution: |
+      Create one module-level adapter for `list[Payload]` and call its JSON or Python validation
+      method at the worker boundary. This avoids a meaningless wrapper field and reuses the built
+      schema. The resulting values are still `Payload` instances with the same nested validation.
+    solutionCode: |
+      from pydantic import TypeAdapter
+
+      payloads_adapter = TypeAdapter(list[Payload])
+
+      def decode_message(raw: bytes) -> list[Payload]:
+          return payloads_adapter.validate_json(raw)
+
+  - id: dvp-debug-shared-time
+    tier: tricky
+    kind: debug
+    title: Fix a timestamp captured at import
+    minutes: 14
+    requiredForMastery: true
+    concepts: [default-factory, import-time, dataclass]
+    prompt: |
+      Both jobs receive nearly the same old timestamp. Find the lifecycle bug and repair it without
+      adding a custom initializer.
+    code: |
+      from dataclasses import dataclass
+      from datetime import datetime, timezone
+
+      @dataclass
+      class Job:
+          job_id: str
+          created_at: datetime = datetime.now(timezone.utc)
+    hints:
+      - The right-hand side runs while Python executes the class body.
+      - Store a callable in a dataclass field and let construction invoke it.
+    solution: |
+      The timestamp expression executes once at class definition, usually during import, so every
+      omitted value reuses the same datetime. Use `field(default_factory=...)` with a zero-argument
+      callable. The lambda delays the call until each `Job` is constructed.
+    solutionCode: |
+      from dataclasses import dataclass, field
+      from datetime import datetime, timezone
+
+      @dataclass
+      class Job:
+          job_id: str
+          created_at: datetime = field(
+              default_factory=lambda: datetime.now(timezone.utc)
+          )
+
+  - id: dvp-debug-extra-typo
+    tier: tricky
+    kind: debug
+    title: Stop silently dropping client intent
+    minutes: 12
+    requiredForMastery: true
+    concepts: [extra-fields, contract-drift, ConfigDict]
+    prompt: |
+      A client sends `batchSize`, but the model declares `batch_size`; production runs the default
+      batch of 8 without an error. Fix the model so unknown keys fail and deliberately support the
+      public camel-case name.
+    code: |
+      from pydantic import BaseModel
+
+      class Settings(BaseModel):
+          batch_size: int = 8
+
+      value = Settings.model_validate({"batchSize": 128})
+    hints:
+      - Treat unknown keys and external naming as two separate policies.
+      - Configure extras and attach a validation alias to the field.
+    solution: |
+      Forbid extras so future misspellings cannot disappear, then define `batchSize` as the accepted
+      input alias. If internal Python callers must also use `batch_size`, enable validation by field
+      name deliberately; do not broaden the contract accidentally.
+    solutionCode: |
+      from pydantic import BaseModel, ConfigDict, Field
+
+      class Settings(BaseModel):
+          model_config = ConfigDict(extra="forbid")
+          batch_size: int = Field(default=8, validation_alias="batchSize", ge=1)
+
+      value = Settings.model_validate({"batchSize": 128})
+
+  - id: dvp-debug-invalid-assignment
+    tier: tricky
+    kind: debug
+    title: Prevent post-construction invalid state
+    minutes: 14
+    requiredForMastery: true
+    concepts: [validate-assignment, immutability, state]
+    prompt: |
+      Construction rejects zero workers, but the second line succeeds. Offer two correct repairs and
+      explain when each is appropriate.
+    code: |
+      from pydantic import BaseModel, Field
+
+      class PoolConfig(BaseModel):
+          workers: int = Field(ge=1)
+
+      config = PoolConfig(workers=4)
+      config.workers = 0
+    hints:
+      - Construction validation and assignment validation are separate policies.
+      - Decide whether mutation belongs in the model's semantics at all.
+    solution: |
+      Prefer `ConfigDict(frozen=True)` for a configuration value and replace the object when settings
+      change. If live mutation is intentional, use `ConfigDict(validate_assignment=True)` so each
+      assignment rechecks the field constraint. Both are shallow policies; nested mutable objects
+      still require deliberate modeling.
+    solutionCode: |
+      from pydantic import BaseModel, ConfigDict, Field
+
+      class ImmutablePoolConfig(BaseModel):
+          model_config = ConfigDict(frozen=True)
+          workers: int = Field(ge=1)
+
+      class MutablePoolConfig(BaseModel):
+          model_config = ConfigDict(validate_assignment=True)
+          workers: int = Field(ge=1)
+
+  - id: dvp-debug-validator-io
+    tier: tricky
+    kind: debug
+    title: Remove I/O from validation
+    minutes: 20
+    requiredForMastery: true
+    concepts: [validators, side-effects, service-layer]
+    prompt: |
+      This request model sometimes creates duplicate reservations during retries. Diagnose the design
+      defect and move responsibilities to the correct layers.
+    code: |
+      class DeployRequest(BaseModel):
+          model: str
+
+          @model_validator(mode="after")
+          def reserve(self):
+              inventory.reserve_gpu(self.model)
+              audit.publish("reserved", self.model)
+              return self
+    hints:
+      - Validation may run whenever an adapter reconstructs or revalidates data.
+      - Parsing should prove shape; an application command should own I/O and idempotency.
+    solution: |
+      The validator hides two side effects inside object construction, so revalidation or retries can
+      reserve and publish more than once. Keep only local model invariants in validators. Let an
+      application service accept a validated request, perform an idempotent reservation through an
+      explicit dependency, then publish after the state transition according to a transaction or
+      outbox policy.
+    solutionCode: |
+      class DeployRequest(BaseModel):
+          model: str
+
+      class DeployService:
+          def __init__(self, inventory, events) -> None:
+              self.inventory = inventory
+              self.events = events
+
+          def deploy(self, request: DeployRequest, command_id: str) -> None:
+              changed = self.inventory.reserve_gpu(
+                  request.model, idempotency_key=command_id
+              )
+              if changed:
+                  self.events.publish("reserved", request.model)
+
+  - id: dvp-challenge-contract-map
+    tier: challenge
+    kind: design
+    title: Draw the contracts for an inference service
+    minutes: 30
+    requiredForMastery: false
+    concepts: [architecture, DTO, domain-model, serialization]
+    prompt: |
+      Design the model boundaries for HTTP input, an internal command, a database row, a queue event,
+      and HTTP output. For each, choose dataclass, Pydantic model, ORM model, or deliberate reuse.
+      Include units, aliases, mutation policy, validation ownership, and conversion tests.
+    hints:
+      - A type earns separation when it changes for a different consumer or represents a different unit.
+      - Put each serialization contract next to the adapter that owns it and keep the domain transport-neutral.
+    solution: |
+      A strong design uses Pydantic DTOs for HTTP and queue boundaries, a frozen dataclass for the
+      trusted command, and the project's ORM mapping for persistence. The API maps milliseconds and
+      camel-case aliases into domain seconds and vocabulary. The event gets its own versioned schema;
+      the response exposes only public fields. Contract tests validate bad external payloads, mapping
+      tests prove unit conversions, and round-trip tests cover each serializer. Reuse is acceptable
+      only when two edges have intentionally identical ownership and evolution.
+
+  - id: dvp-challenge-profile-boundary
+    tier: challenge
+    kind: performance
+    title: Measure validation instead of guessing
+    minutes: 35
+    requiredForMastery: false
+    concepts: [performance, TypeAdapter, parse-once]
+    prompt: |
+      Design a benchmark for one million small telemetry records comparing a slotted dataclass,
+      `BaseModel.model_validate`, a reused `TypeAdapter`, and repeated validation across three layers.
+      State what you will measure and what conclusions the benchmark cannot justify.
+    hints:
+      - Separate JSON decoding, validation, construction, serialization, peak memory, and invalid-input cost.
+      - Include the architecture that parses once, because call count can dominate per-call speed.
+    solution: |
+      Benchmark warm processes with representative nested payloads and fixed valid/invalid mixes.
+      Measure wall time, throughput, peak retained memory, and error-path cost separately for JSON
+      validation, Python-object validation, construction, and serialization. Reuse adapters and schemas.
+      Compare one boundary validation with three repeated validations. Report distributions across
+      runs, not one timing. The result applies only to those shapes and operations; it cannot prove
+      every dataclass or Pydantic workload is faster, nor justify bypassing required validation.
+
+quizzes:
+  - id: dvp-checkpoint
+    title: Checkpoint — promises and boundaries
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: dvp-cp-annotation
+        kind: true-false
+        prompt: A standard dataclass rejects a string passed to an int-annotated field.
+        options:
+          - id: "true"
+            text: "True"
+          - id: "false"
+            text: "False"
+        answer: ["false"]
+        explanation: Dataclass annotations do not add runtime type validation to the generated initializer.
+        concepts: [dataclass, annotations]
+        points: 1
+      - id: dvp-cp-boundary
+        kind: mcq
+        prompt: Which is the strongest default use for a Pydantic BaseModel?
+        options:
+          - id: loop-counter
+            text: A loop counter inside a numerical kernel
+          - id: http-input
+            text: An untrusted HTTP request body
+          - id: constant
+            text: A private module constant
+        answer: [http-input]
+        explanation: Boundary input benefits from parsing, structured errors, constraints, and schema generation.
+        concepts: [trust-boundary]
+        points: 1
+      - id: dvp-cp-frozen
+        kind: explain
+        prompt: Why does frozen not make a nested list immutable?
+        modelAnswer: Frozen blocks normal assignment to the field attribute; it does not change or wrap the mutable object referenced by that field.
+        explanation: Immutability is shallow in both dataclass and Pydantic frozen configurations.
+        concepts: [frozen, mutability]
+        points: 1
+      - id: dvp-cp-adapter
+        kind: mcq
+        prompt: What should validate a top-level `list[Event]` without inventing a wrapper field?
+        options:
+          - id: asdict
+            text: dataclasses.asdict
+          - id: adapter
+            text: Pydantic TypeAdapter
+          - id: post-init
+            text: A list subclass __post_init__
+        answer: [adapter]
+        explanation: TypeAdapter supplies validation and serialization for arbitrary supported types.
+        concepts: [TypeAdapter]
+        points: 1
+
+  - id: dvp-assessment
+    title: Assessment — choosing and connecting models
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: dvp-a-output-promise
+        kind: mcq
+        prompt: What does Pydantic validation primarily guarantee?
+        options:
+          - id: input-original
+            text: The original input already had every declared type
+          - id: output-valid
+            text: The resulting model conforms to declared types and constraints
+          - id: static-only
+            text: Only a static checker accepts the class
+        answer: [output-valid]
+        explanation: Parsing may transform input; the guarantee concerns the validated output object.
+        concepts: [validation, coercion]
+        points: 1
+      - id: dvp-a-factory
+        kind: find-bug
+        prompt: Find the lifecycle bug in `created_at=datetime.now()` as a dataclass default.
+        modelAnswer: The expression runs once during class definition, so instances reuse that datetime. Use field(default_factory=datetime.now), or a lambda when arguments are needed.
+        explanation: Factories defer evaluation to each construction.
+        concepts: [default-factory]
+        points: 1
+      - id: dvp-a-extra
+        kind: mcq
+        prompt: Which configuration makes an unknown input key fail?
+        options:
+          - id: allow
+            text: ConfigDict(extra="allow")
+          - id: ignore
+            text: ConfigDict(extra="ignore")
+          - id: forbid
+            text: ConfigDict(extra="forbid")
+        answer: [forbid]
+        explanation: Forbid turns unknown keys into validation errors instead of storing or discarding them.
+        concepts: [extra-fields]
+        points: 1
+      - id: dvp-a-strict
+        kind: scenario
+        prompt: An identifier `"0012"` must never become integer 12. What policy should the boundary use?
+        modelAnswer: Model the identifier as a constrained string. If the field truly is numeric but conversions are forbidden, enable strict validation for that field or model. Test the accepted inputs explicitly.
+        explanation: Type choice is more important than relying on coercion behavior to preserve identity.
+        concepts: [strict-mode, domain-modeling]
+        points: 1
+      - id: dvp-a-validator
+        kind: multi
+        prompt: Which operations belong in a deterministic model validator?
+        options:
+          - id: compare
+            text: Compare start and stop fields
+          - id: normalize
+            text: Normalize a local label string
+          - id: database
+            text: Query whether a username is unique
+          - id: publish
+            text: Publish a created event
+        answer: [compare, normalize]
+        explanation: Local deterministic transformations and invariants fit; database and event side effects belong in services.
+        concepts: [validators, side-effects]
+        points: 1
+      - id: dvp-a-dump
+        kind: mcq
+        prompt: Which operation is intended for recursive, configured Pydantic serialization?
+        options:
+          - id: vars
+            text: vars(model)
+          - id: dict-attr
+            text: model.__dict__
+          - id: model-dump
+            text: model.model_dump()
+        answer: [model-dump]
+        explanation: model_dump applies Pydantic's nested serialization, aliases, includes, excludes, and modes.
+        concepts: [serialization]
+        points: 1
+      - id: dvp-a-construct
+        kind: true-false
+        prompt: model_construct always improves performance and still validates nested values.
+        options:
+          - id: "true"
+            text: "True"
+          - id: "false"
+            text: "False"
+        answer: ["false"]
+        explanation: It skips validation and is not guaranteed faster for simple v2 models; profile before using it.
+        concepts: [model-construct, performance]
+        points: 1
+      - id: dvp-a-split
+        kind: explain
+        prompt: Give two reasons to split a request DTO from a domain dataclass and one reason not to.
+        modelAnswer: Split when transport aliases or units differ, or when boundary and domain contracts change independently. Avoid duplication when one small model has genuinely identical responsibilities and lifecycle.
+        explanation: Architectural separation should follow ownership, not a blanket rule.
+        concepts: [DTO, domain-model]
+        points: 1
+      - id: dvp-a-assignment
+        kind: scenario
+        prompt: A model is valid at construction but must stay valid while fields change. Name both major policy choices.
+        modelAnswer: Prefer a frozen model and replace it with a newly validated value, or enable validate_assignment when in-place mutation is an intentional part of the model.
+        explanation: The right answer depends on whether mutation belongs in the value's semantics.
+        concepts: [validate-assignment, frozen]
+        points: 1
+      - id: dvp-a-hot-path
+        kind: performance
+        prompt: A worker validates the same payload in consumer, service, and repository layers. What is the first optimization?
+        modelAnswer: Establish one trust boundary, validate once in the consumer, and pass a trusted typed value inward. Then profile representative parsing and serialization before lower-level tuning.
+        explanation: Removing redundant work also clarifies ownership and error handling.
+        concepts: [parse-once, performance]
+        points: 1
+
+interview:
+  - id: dvp-iv-core-difference
+    level: basic
+    requiredForMastery: true
+    concepts: [dataclass, BaseModel, validation]
+    question: What is the fundamental difference between a dataclass and a Pydantic model?
+    shortAnswer: A dataclass generates object boilerplate around declared fields but does not enforce their annotations. A Pydantic model builds a runtime schema that parses or rejects input and supplies structured serialization and errors. I choose based on whether I need an internal record or a trust boundary.
+    fullAnswer: |
+      The similar class syntax hides different promises. A standard dataclass generates methods such
+      as initialization, representation, and equality. Values are assigned normally, so annotations
+      remain primarily static contracts.
+
+      Pydantic inspects annotations to construct runtime validation and serialization machinery. It
+      guarantees the resulting model conforms to configured types and constraints, possibly after
+      coercion. That makes it appropriate at HTTP, queue, configuration, and LLM-output boundaries.
+    commonWrongAnswer: A Pydantic model is just a faster dataclass. Performance is not the defining distinction; runtime boundary guarantees are.
+    followUps:
+      - Would you ever use one Pydantic model throughout a service?
+      - What does coercion change about the validation promise?
+
+  - id: dvp-iv-both-layers
+    level: comparison
+    requiredForMastery: true
+    concepts: [DTO, domain-model, conversion]
+    question: When would you use both Pydantic and dataclasses for the same workflow?
+    shortAnswer: I use Pydantic to validate and serialize an external contract, then convert once into a frozen dataclass when the internal domain has different units, names, dependencies, or evolution. I avoid duplicating types when those contracts are genuinely identical.
+    fullAnswer: |
+      An API request may expose camel-case names and milliseconds while the domain uses Python names
+      and seconds. The Pydantic DTO owns aliases, coercion policy, constraints, and error paths. An
+      explicit mapper produces a trusted immutable domain value.
+
+      That prevents transport changes from spreading through scheduling or model-serving code. The
+      cost is mapping and duplicate tests, so separation must earn itself through different ownership.
+    commonWrongAnswer: Always create one Pydantic and one dataclass for every entity. Mechanical duplication adds drift without creating a meaningful boundary.
+    followUps:
+      - Where should the conversion function live?
+      - How would you test unit conversion at that seam?
+
+  - id: dvp-iv-strictness
+    level: tricky
+    requiredForMastery: true
+    concepts: [strict-mode, coercion, API-contract]
+    question: Is Pydantic coercion good or bad, and when do you use strict mode?
+    shortAnswer: Coercion is an input policy, not universally good or bad. It is useful for string-shaped sources such as query parameters and settings, but risky for identifiers or values where conversion loses meaning. I choose strictness per contract and test the accepted conversion table.
+    fullAnswer: |
+      Pydantic guarantees output types, so accepting `"12"` as an integer can be perfectly sound.
+      The product contract decides whether it is desirable. A query parameter is naturally text;
+      silently turning an identifier with leading zeros into an integer is data loss.
+
+      Strictness can be set per call, model, or field. I combine it with explicit types and extra-field
+      policy rather than assuming one global setting fits every source.
+    commonWrongAnswer: Strict mode is always safer. It can reject representations an interface intentionally accepts and push ad hoc parsing outside the model.
+    followUps:
+      - Why can Python-mode and JSON-mode strict validation differ?
+      - How do you prevent misspelled fields separately?
+
+  - id: dvp-iv-frozen-hash
+    level: advanced
+    requiredForMastery: false
+    concepts: [frozen, hash, shallow-immutability]
+    question: Does frozen make a dataclass or Pydantic model truly immutable and safe as a dictionary key?
+    shortAnswer: No. Frozen blocks normal attribute rebinding but does not recursively freeze referenced objects. Hashability also depends on generated policy and every participating field being hashable. I use immutable nested types and test value semantics before relying on keys.
+    fullAnswer: |
+      A frozen record can still reference a mutable list whose contents change. That can violate the
+      conceptual stability expected from a value even if direct assignment is blocked.
+
+      Standard dataclass hash generation follows its equality and frozen settings, but a tuple of
+      unhashable content still cannot be hashed. Pydantic's frozen policy is similarly faux
+      immutability rather than deep transformation.
+    commonWrongAnswer: Frozen recursively converts every list to a tuple and guarantees a stable hash. Neither tool makes that transformation automatically.
+    followUps:
+      - Why is unsafe_hash dangerous?
+      - How would you model an immutable collection field?
+
+  - id: dvp-iv-validator-side-effects
+    level: scenario
+    requiredForMastery: false
+    concepts: [validators, I/O, idempotency]
+    question: A validator queries the database and publishes an event. What is wrong with that design?
+    shortAnswer: Object parsing now hides I/O and side effects, and validation may be retried or invoked in more paths than expected. I keep validators deterministic and move current-state checks and commands into an application service with explicit dependencies, transactions, and idempotency.
+    fullAnswer: |
+      Schema validation should establish properties of the candidate data. Database uniqueness is a
+      current-state rule with a race, while publishing is an external state change. Neither belongs
+      in a constructor-like operation.
+
+      A service can accept the validated DTO, authorize, perform an atomic state change, and publish
+      through an outbox or other deliberate delivery policy. Tests can then isolate parsing from I/O.
+    commonWrongAnswer: It is fine as long as the validator is async. Execution style does not repair hidden ownership, races, or repeated side effects.
+    followUps:
+      - Where would a database-backed uniqueness rule live?
+      - What validators are safe to reuse?
+
+  - id: dvp-iv-type-adapter
+    level: intermediate
+    requiredForMastery: false
+    concepts: [TypeAdapter, pydantic-dataclass]
+    question: When would you use TypeAdapter or a Pydantic dataclass instead of BaseModel?
+    shortAnswer: I use TypeAdapter when the schema is naturally a type such as a list, union, TypedDict, or standard dataclass and a named wrapper adds no meaning. I use a Pydantic dataclass when an integration requires dataclass identity but the boundary still needs validation.
+    fullAnswer: |
+      TypeAdapter exposes validation, serialization, and schema generation for supported non-model
+      types. I construct and reuse it when the schema sits on a hot path.
+
+      A Pydantic dataclass preserves dataclass behavior with validation, but it does not become a
+      BaseModel or expose the full model API. If I need the conventional Pydantic DTO surface, I use
+      BaseModel instead.
+    commonWrongAnswer: Pydantic dataclasses and BaseModel have exactly the same API. They overlap in validation but remain different abstractions.
+    followUps:
+      - Where should a reused TypeAdapter be stored?
+      - How do you serialize a Pydantic dataclass?
+
+  - id: dvp-iv-performance
+    level: advanced
+    requiredForMastery: false
+    concepts: [performance, model-construct, profiling]
+    question: How do you reason about dataclass versus Pydantic performance?
+    shortAnswer: A dataclass usually does less construction work because it does not validate. Pydantic performs a stronger job, so I measure representative parsing, nested validation, serialization, and error paths. First I validate once at the boundary; I never assume model_construct is faster without profiling.
+    fullAnswer: |
+      Empty-object microbenchmarks omit the operations that dominate production: JSON decoding,
+      nested models, custom validators, aliases, error creation, and output serialization. I benchmark
+      the real payload distribution and memory profile in a warm process.
+
+      Architecture often wins first. Revalidating at three internal layers costs more and obscures
+      ownership. Pydantic v2 narrowed the gap between validated construction and model_construct for
+      simple cases, while the latter removes the guarantee entirely.
+    commonWrongAnswer: Dataclasses are always faster, so boundary validation should be removed from hot systems. The workload and required guarantee must both be measured.
+    followUps:
+      - What would your benchmark isolate?
+      - When is model_construct legitimate?
+
+  - id: dvp-iv-review-api
+    level: scenario
+    requiredForMastery: false
+    concepts: [architecture, aliases, extra-fields, serialization]
+    question: Review an API that returns model.__dict__ and ignores extra request fields by default.
+    shortAnswer: I would treat both as accidental contracts. For requests I would choose and document an extra-field policy, usually forbid for typo detection. For responses I would use model_dump with explicit mode and aliases so nested values and public naming follow the schema.
+    fullAnswer: |
+      Ignoring extras can preserve forward compatibility, but it can also erase misspelled client
+      intent. The team should choose deliberately per versioned interface and cover it with tests.
+
+      `__dict__` exposes implementation representation rather than the serializer contract. It may
+      retain nested model objects and bypass aliases or exclusions. Response DTOs should serialize
+      through Pydantic's supported API and expose only fields the consumer owns.
+    commonWrongAnswer: __dict__ and model_dump are equivalent dictionaries. They have different recursive and configured serialization behavior.
+    followUps:
+      - When might ignoring extras be intentional?
+      - What is the difference between Python and JSON dump modes?
+
+projects:
+  - id: dvp-project-inference-contracts
+    kind: major
+    title: Boundary-to-domain inference job pipeline
+    minutes: 210
+    summary: Build and test an HTTP-shaped input boundary, trusted domain model, queue contract, and public result without leaking transport policy inward.
+    problem: |
+      A model-serving service currently passes one mutable Pydantic object through request parsing,
+      scheduling, batching, persistence, and event publishing. Field aliases, milliseconds, database
+      identifiers, and internal state are mixed together. A misspelled option is silently ignored,
+      validators perform I/O, and three layers repeatedly validate the same object.
+
+      Redesign the model boundary as a small framework-independent package plus explicit adapters.
+      The deliverable is the implementation, focused contract tests, and an architecture note that
+      justifies every representation and conversion.
+    requirements:
+      - Define strict or deliberately coercive Pydantic v2 request and response models with explicit extra-field and alias policies.
+      - Convert the request once into frozen, slotted standard-library dataclasses using domain names, units, and immutable collections.
+      - Define a separate versioned queue-event model and map domain state into it explicitly.
+      - Validate a top-level batch of events through one reused TypeAdapter.
+      - Keep all validators deterministic and move authorization, database checks, reservations, and publishing into services.
+      - Serialize public output only through supported Pydantic methods with explicit JSON mode and aliases.
+      - Add structured validation-error tests that assert field locations and error kinds.
+      - Benchmark parse-once against the original repeated-validation path with representative payloads.
+    constraints:
+      - Domain modules may import only the Python standard library.
+      - No model may return __dict__ or dataclasses.asdict as an unreviewed public contract.
+      - Do not use model_construct in production code unless the benchmark and trust proof justify it.
+      - Every conversion involving names, units, or collection types needs a focused test.
+      - Nested domain collections must match the claimed mutation policy.
+    expectedBehaviour:
+      - Unknown request keys fail with a location the client can act on.
+      - Accepted coercions are documented and rejected coercions have tests.
+      - Internal scheduling receives only a validated domain command measured in domain units.
+      - Reconstructing or retrying validation never performs I/O.
+      - Queue JSON round-trips through its versioned event contract.
+      - Public responses use aliases and contain no internal persistence fields.
+      - The benchmark reports validation, serialization, invalid-input, and peak-memory results separately.
+    structure: |
+      inference_contracts/
+        domain/
+          jobs.py
+          results.py
+        api/
+          models.py
+          mapping.py
+        events/
+          models.py
+          mapping.py
+        application/
+          service.py
+        tests/
+          test_api_contract.py
+          test_mapping.py
+          test_event_contract.py
+          test_service.py
+        benchmarks/
+          bench_models.py
+        ARCHITECTURE.md
+    milestones:
+      - title: "1 — Inventory trust and ownership"
+        detail: Draw every source, representation, conversion, unit, and consumer before writing replacement classes.
+      - title: "2 — Freeze external contracts"
+        detail: Write failing request, response, and event contract tests including extras, coercion, aliases, and nested errors.
+      - title: "3 — Build the domain seam"
+        detail: Add immutable domain values and explicit mappers with unit and vocabulary conversions.
+      - title: "4 — Extract side effects"
+        detail: Move I/O from validators into an application service and test idempotent retry behavior.
+      - title: "5 — Measure and document"
+        detail: Benchmark representative flows and write the decision record for each chosen model type.
+    testing:
+      - Test valid, missing, extra, wrongly typed, and boundary-value request payloads.
+      - Assert ValidationError locations and types rather than complete rendered messages.
+      - Property-test milliseconds-to-seconds conversion across the accepted range.
+      - Prove every domain collection has the promised mutation behavior.
+      - Round-trip queue JSON and confirm schema version handling.
+      - Spy on dependencies to prove validation performs no I/O.
+      - Run benchmarks in warm repeated samples and report distributions.
+    failureCases:
+      - Copying the same fields into four types without identifying different ownership.
+      - Enabling global strictness without checking the intended string-shaped sources.
+      - Keeping database uniqueness checks inside model validators.
+      - Using frozen with nested lists and claiming deep immutability.
+      - Dumping internal models directly as public or event contracts.
+      - Rebuilding a TypeAdapter for every queue message.
+      - Calling model_construct merely because its name sounds faster.
+    bonus:
+      - Generate and snapshot the public JSON Schemas with an intentional review workflow.
+      - Add a compatibility test proving an older queue event remains readable.
+      - Compare standard and Pydantic dataclasses for an integration requiring is_dataclass.
+    architectureHints:
+      - Start from arrows between systems, because every arrow is a candidate trust boundary.
+      - Let external DTOs use consumer vocabulary and domain models use business vocabulary.
+      - Prefer a named mapper over clever automatic copying when units or meanings differ.
+      - Benchmark the complete parse-map-serialize path as well as isolated constructors.
+    referenceOutline: |
+      Define request and response BaseModels in the API adapter with ConfigDict policies and
+      constrained fields. Define frozen slotted domain dataclasses with tuples. Map input aliases and
+      milliseconds explicitly into a domain command. Let an application service own repository and
+      publisher dependencies. Define a versioned event BaseModel and a module-level list adapter.
+      Test each contract and mapper independently, then compare one-time boundary validation with the
+      frozen original's repeated path using representative valid and invalid payloads.
+
+  - id: dvp-final-nine-boundary-bugs
+    kind: final-challenge
+    title: Nine modeling defects in a job service
+    minutes: 80
+    summary: Diagnose exactly nine dataclass and Pydantic v2 defects before repairing a production-shaped request pipeline.
+    problem: |
+      You receive `broken_jobs.py` with exactly nine seeded defects: an import-time timestamp, shallow
+      frozen mutation, unsafe hash use, silent extra-field loss, unintended coercion, a before-validator
+      that assumes a dictionary, I/O in a model validator, `__dict__` response serialization, and
+      repeated validation in three layers.
+
+      Submit a numbered defect inventory before editing. For every defect, name the violated promise,
+      its visible or silent consequence, and the layer that should own the repair.
+    requirements:
+      - Identify exactly nine defects and classify each as dataclass, Pydantic, or architecture.
+      - Add one regression test per defect and record how it fails on the original.
+      - Repair each issue without weakening field types or deleting useful validation.
+      - Keep external field names source-compatible unless the original behavior silently discarded them.
+      - Write a final boundary diagram showing validation and serialization call counts.
+    constraints:
+      - Do not replace types with Any or suppress ValidationError.
+      - Do not add model_construct as a shortcut.
+      - Do not count formatting, naming taste, or missing comments as defects.
+      - Preserve deterministic unit tests with no real database or network.
+    expectedBehaviour:
+      - New jobs receive fresh timestamps and cannot mutate supposedly immutable nested state.
+      - Hash behavior agrees with equality and field mutability.
+      - Misspelled input fails while documented aliases remain accepted.
+      - Validators accept every possible raw input shape or run after typed parsing.
+      - Validation is side-effect free and occurs once per inbound message.
+      - Response serialization follows aliases, exclusions, and JSON mode.
+    milestones:
+      - title: "1 — Capture evidence"
+        detail: Run the original tests and record each surprising output before touching code.
+      - title: "2 — Build the defect inventory"
+        detail: Map all nine defects to promises, consequences, and owning layers.
+      - title: "3 — Prove regressions"
+        detail: Add focused tests that fail for the intended reason against the frozen original.
+      - title: "4 — Repair one seam at a time"
+        detail: Fix boundary, domain, service, and serialization defects without broad rewrites.
+    testing:
+      - Compare two independently constructed defaulted instances.
+      - Exercise mutation through both field assignment and nested references.
+      - Test unknown keys, aliases, coercible strings, and raw non-mapping inputs.
+      - Count database and publisher calls during validation and retry.
+      - Assert JSON-ready aliased output rather than internal dictionaries.
+      - Instrument the three layers to prove only one validation call remains.
+    failureCases:
+      - Editing implementation before submitting the nine-item inventory.
+      - Fixing frozen assignment while leaving a mutable nested list.
+      - Changing extra fields from ignore to allow instead of detecting the typo.
+      - Moving I/O from one validator to another validator.
+      - Accepting passing tests without measuring repeated validation.
+    bonus:
+      - Add a schema snapshot that fails only on reviewed public contract changes.
+      - Explain how the same nine bugs would present with TypeScript and Zod.
+    architectureHints:
+      - Trace class definition time, construction time, validation time, and serialization time separately.
+      - Mark the first point at which input becomes trusted, then reject later validation calls.
+      - Inspect nested field types whenever a class claims to be frozen or hashable.
+    referenceOutline: |
+      Freeze the original and first write lifecycle-focused tests. Replace eager defaults with
+      factories, immutable nested fields with tuples, and unsafe hashing with coherent value identity.
+      Configure aliases, extras, and strictness explicitly. Make raw validators defensive or move
+      them after parsing. Extract I/O into an idempotent service. Replace __dict__ with model_dump in
+      JSON mode. Finally pass the trusted domain command through internal layers and assert the
+      validation counter remains one.
+
+resources:
+  - name: Python dataclasses documentation
+    type: docs
+    difficulty: core
+    url: "https://docs.python.org/3/library/dataclasses.html"
+    usefulness: 5
+    why: It is the authoritative reference for generated methods, fields, factories, freezing, slots, inheritance, and conversion helpers.
+    covers: Decorator flags, field options, default_factory, InitVar, post-init, frozen instances, inheritance, fields, replace, and asdict.
+  - name: Pydantic v2 models documentation
+    type: docs
+    difficulty: core
+    url: "https://docs.pydantic.dev/latest/concepts/models/"
+    usefulness: 5
+    why: It defines the output-focused validation promise and the supported v2 model construction, validation, copying, schema, and serialization APIs.
+    covers: BaseModel, coercion, model_validate, model_validate_json, model_dump, extra fields, nested models, model_construct, and faux immutability.
+  - name: Pydantic strict mode documentation
+    type: docs
+    difficulty: core
+    url: "https://docs.pydantic.dev/latest/concepts/strict_mode/"
+    usefulness: 5
+    why: It shows where strictness can be configured and documents important differences between Python and JSON input modes.
+    covers: Per-call strictness, field strictness, model configuration, strict types, JSON behavior, and conversion policy.
+  - name: Pydantic dataclasses documentation
+    type: docs
+    difficulty: deep
+    url: "https://docs.pydantic.dev/latest/concepts/dataclasses/"
+    usefulness: 4
+    why: It explains the hybrid option precisely and prevents assuming a validated dataclass has the complete BaseModel API.
+    covers: Pydantic dataclass construction, validation, configuration, inheritance, validators, rebuilding schemas, and TypeAdapter usage.
+  - name: Pydantic TypeAdapter documentation
+    type: docs
+    difficulty: deep
+    url: "https://docs.pydantic.dev/latest/concepts/type_adapter/"
+    usefulness: 4
+    why: It provides the primary guide for validating and serializing arbitrary supported types without inventing meaningless wrapper models.
+    covers: validate_python, validate_json, dump_python, dump_json, JSON Schema, generics, reuse, and deferred schema building.

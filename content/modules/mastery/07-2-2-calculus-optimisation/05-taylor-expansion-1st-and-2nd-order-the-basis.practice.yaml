@@ -1,0 +1,800 @@
+lessonId: "roadmap:phase-2-2.2:4"
+module: 2-2-calculus-optimisation
+lesson: 05-taylor-expansion-1st-and-2nd-order-the-basis
+title: "Taylor expansion (1st and 2nd order) — the basis of every optimiser"
+summary: The linear and quadratic local models of a function with their remainder terms, the gradient step as minimising the linear model in a trust ball, the Newton step as minimising the quadratic model, and the descent lemma that turns the remainder into the learning-rate bound.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: ltay-read-backtracking
+    tier: normal
+    kind: code-reading
+    title: Read a backtracking line search
+    minutes: 10
+    requiredForMastery: true
+    concepts: [line-search, armijo, taylor-condition]
+    prompt: |
+      Read this and say what condition it enforces, what `slope` is, and why `c1` is small.
+      ```python
+      def backtracking(f, x, p, grad, c1=1e-4, rho=0.5, t=1.0):
+          f0, slope = f(x), grad @ p
+          while f(x + t * p) > f0 + c1 * t * slope:
+              t *= rho
+          return t
+      ```
+    hints:
+      - "`slope` is the directional derivative of `f` along `p` at `x`."
+      - The accepted step must achieve a fraction of the linear model's promised decrease.
+    solution: |
+      `slope = grad @ p` is `phi'(0)` where `phi(t) = f(x + t p)` — the directional derivative along
+      the search direction; it is negative for a descent direction. The loop shrinks `t` by `rho`
+      until the Armijo (sufficient-decrease) condition `f(x + t p) <= f(x) + c1 * t * slope` holds,
+      i.e. the actual decrease is at least a fraction `c1` of what the first-order model predicted
+      for that `t`. `c1` is small (like `1e-4`) so the test only rules out steps that barely
+      decrease `f` or increase it; a large `c1` would reject good steps. A curvature (Wolfe)
+      condition is usually added to also reject steps that are too short.
+  - id: ltay-write-quadratic-model
+    tier: normal
+    kind: write-code
+    title: Evaluate the quadratic model
+    minutes: 12
+    requiredForMastery: true
+    concepts: [quadratic-model, taylor-expansion, hessian]
+    prompt: |
+      Write `quad_model(f0, g, H, p)` returning `f0 + g @ p + 0.5 * p @ H @ p`, and describe how its
+      error against the true `f(x + p)` scales with `||p||` for a `C^3` function.
+    hints:
+      - This is the second-order Taylor polynomial evaluated at the step `p`.
+      - The remainder of a degree-2 model is third order.
+    solution: |
+      `return f0 + g @ p + 0.5 * p @ H @ p`. For a `C^3` function the difference `f(x + p) -
+      quad_model(...)` is `O(||p||^3)` — governed by the third derivative — so halving `||p||`
+      roughly divides the error by eight. The linear model's error is `O(||p||^2)`, so the quadratic
+      model is strictly better for small steps and exact when `f` is itself quadratic. It stops
+      being reliable when `||p||` is large or the third derivative is big (sharp ridges, plateaus
+      before cliffs), which is what a trust region detects.
+  - id: ltay-predict-error-scaling
+    tier: normal
+    kind: predict-output
+    title: How the model error shrinks
+    minutes: 10
+    requiredForMastery: true
+    concepts: [truncation-error, order-of-approximation]
+    prompt: |
+      A first-order model has error `4e-3` at step size `0.1`. Predict its error at step size `0.05`
+      and `0.01`. If a second-order model has error `2e-3` at step size `0.1`, predict its error at
+      step size `0.05`.
+    hints:
+      - First-order error scales like the square of the step.
+      - Second-order error scales like the cube of the step.
+    solution: |
+      First-order error is `O(h^2)`. Halving `h` to `0.05` divides the error by 4: about `1e-3`.
+      Taking `h = 0.01` (a tenth) divides by 100: about `4e-5`. Second-order error is `O(h^3)`;
+      halving `h` to `0.05` divides by 8: `2e-3 / 8 = 2.5e-4`. These are leading-order estimates;
+      rounding error eventually dominates for very small `h`.
+  - id: ltay-explain-linear-model-no-min
+    tier: normal
+    kind: explain
+    title: Why the linear model needs a trust ball
+    minutes: 10
+    requiredForMastery: true
+    concepts: [linear-model, trust-region, learning-rate]
+    prompt: |
+      Explain why minimising the first-order Taylor model alone gives no finite step, and how the
+      trust radius (or learning rate) fixes it.
+    hints:
+      - A nonzero linear function is unbounded below.
+      - Constrain `||p||` and minimise on the boundary.
+    solution: |
+      The first-order model `m1(p) = f(x) + grad f . p` is affine; along `p = -grad f` it decreases
+      without bound, so `argmin m1` does not exist. Adding `||p|| <= Delta` makes the feasible set
+      compact, and the minimiser sits on the boundary opposite the gradient: `p = -Delta * grad f /
+      ||grad f||`. Writing `eta = Delta / ||grad f||` recovers the gradient step `p = -eta grad f`.
+      So the learning rate is the size of the region where you trust the tangent plane; a constant
+      `eta` is a trust radius that scales with the gradient norm.
+  - id: ltay-newton-from-quadratic
+    tier: intermediate
+    kind: write-code
+    title: Newton step as the quadratic minimiser
+    minutes: 14
+    requiredForMastery: true
+    concepts: [newton-step, quadratic-model, damping]
+    prompt: |
+      Write `newton_step(g, H, tau=0.0)` returning the minimiser of `g @ p + 0.5 p @ (H + tau I) p`,
+      and explain what `tau > 0` does when `H` is indefinite.
+    hints:
+      - Set the gradient of the model to zero.
+      - Adding `tau I` shifts every eigenvalue of `H` up by `tau`.
+    solution: |
+      The model's gradient in `p` is `g + (H + tau I) p`; setting it to zero gives
+      `p = -np.linalg.solve(H + tau * np.eye(len(g)), g)`. With `tau = 0` this is the pure Newton
+      step, the minimiser only when `H` is positive definite. When `H` is indefinite the pure
+      quadratic model has no minimum (it goes to `-inf` along a negative-curvature direction);
+      adding `tau I` large enough that `H + tau I` is positive definite makes the model a genuine
+      bowl again, and the step interpolates between Newton (small `tau`) and a scaled gradient step
+      `-g / tau` (large `tau`). This is Levenberg-Marquardt / damped Newton, and `tau` is tied to a
+      trust radius.
+  - id: ltay-descent-lemma-eta
+    tier: intermediate
+    kind: predict-output
+    title: Learning rate from the descent lemma
+    minutes: 12
+    requiredForMastery: true
+    concepts: [descent-lemma, l-smoothness, learning-rate]
+    prompt: |
+      A loss has an `L`-Lipschitz gradient with `L = 40`. Give the range of learning rates for which
+      a gradient step is guaranteed to decrease the loss, the rate that maximises the guaranteed
+      decrease, and the guaranteed decrease at that rate in terms of `||grad f||`.
+    hints:
+      - The descent lemma gives `f(x - eta g) <= f(x) - eta(1 - L eta / 2)||g||^2`.
+      - The coefficient is a downward parabola in `eta`.
+    solution: |
+      The bound `f(x - eta g) <= f(x) - eta(1 - L eta / 2)||g||^2` decreases the loss while
+      `eta(1 - L eta / 2) > 0`, i.e. `0 < eta < 2/L = 2/40 = 0.05`. The coefficient is maximised at
+      `eta = 1/L = 0.025`, where it equals `1/(2L) = 1/80`, so the guaranteed decrease per step is
+      `||grad f||^2 / 80`. In practice `L ~ lambda_max(H)` and is estimated with margin, so a
+      chosen rate is somewhat below `1/L`.
+  - id: ltay-line-search-1d-taylor
+    tier: intermediate
+    kind: explain
+    title: The 1-D Taylor model in a line search
+    minutes: 12
+    requiredForMastery: true
+    concepts: [line-search, wolfe-conditions, curvature-condition]
+    prompt: |
+      Restricting `f` to a ray gives `phi(t) = f(x + t p)`. Write its Taylor expansion in `t`, and
+      explain what the Armijo and the curvature (Wolfe) conditions each control.
+    hints:
+      - "`phi'(0) = grad f . p` and `phi''(0) = p . H p`."
+      - Armijo bounds `phi(t)` from above; the curvature condition bounds `phi'(t)`.
+    solution: |
+      `phi(t) = f(x) + t (grad f . p) + 0.5 t^2 (p . H p) + O(t^3)`, so `phi'(0) = grad f . p`
+      (negative for a descent direction) and `phi''(0) = p . H p`. The Armijo condition
+      `phi(t) <= phi(0) + c1 t phi'(0)` forces the step to realise at least a fraction `c1` of the
+      first-order predicted decrease, ruling out steps that are too long (overshoot into higher
+      loss). The curvature condition `|phi'(t)| <= c2 |phi'(0)|` (with `c1 < c2 < 1`) forces the
+      slope to have flattened enough, ruling out steps that are too short. Together they are the
+      strong Wolfe conditions, which guarantee a well-behaved step for line-search methods including
+      L-BFGS.
+  - id: ltay-expm1-stability
+    tier: intermediate
+    kind: predict-output
+    title: Stable low-order expansion
+    minutes: 10
+    requiredForMastery: true
+    concepts: [expm1, catastrophic-cancellation, taylor-series]
+    prompt: |
+      For `x = 1e-9`, compare `np.exp(x) - 1` and `np.expm1(x)` against the true value `x + x^2/2 +
+      ...`. Roughly how many significant digits does each keep in float64?
+    hints:
+      - "`exp(1e-9)` rounds to `1.000000001` with limited digits after the leading 1."
+      - "`expm1` evaluates the series without forming `exp(x)` first."
+    solution: |
+      The true value is about `1.0000000005e-9`. `np.exp(1e-9)` is stored as approximately
+      `1 + 1e-9` but float64 has ~16 significant digits total, so only about 7 digits of the `1e-9`
+      part survive; subtracting `1` leaves roughly `1.0e-9` with ~7 correct digits and the rest
+      noise. `np.expm1(1e-9)` computes the `exp(x) - 1` series directly and returns
+      `~1.0000000005e-9` accurate to nearly full precision. The lesson: use `expm1`, `log1p`, and
+      log-sum-exp — the numerically stable forms of the low-order Taylor expansion — wherever the
+      naive expression subtracts nearly equal quantities.
+  - id: ltay-cauchy-point
+    tier: intermediate
+    kind: predict-output
+    title: The Cauchy point of the quadratic model
+    minutes: 12
+    requiredForMastery: true
+    concepts: [trust-region, cauchy-point, quadratic-model]
+    prompt: |
+      For the quadratic model `m(p) = g @ p + 0.5 p @ H p`, the Cauchy point is the minimiser along
+      the steepest-descent direction `-g` within `||p|| <= Delta`. For `g = (1, 0)`, `H = diag(2,
+      50)`, `Delta = 1`, give the Cauchy step.
+    hints:
+      - Restrict to `p = -alpha g` with `alpha >= 0` and `||p|| <= Delta`.
+      - Minimise the resulting scalar quadratic in `alpha`, then clip to the trust boundary.
+    solution: |
+      Along `p = -alpha g` the model is `m(-alpha g) = -alpha ||g||^2 + 0.5 alpha^2 (g @ H @ g)`.
+      Here `||g||^2 = 1` and `g @ H @ g = 2`, so `m = -alpha + alpha^2`, minimised at `alpha = 0.5`,
+      giving `p = -0.5 (1, 0) = (-0.5, 0)` with norm `0.5 <= Delta = 1`, so no clipping. The Cauchy
+      point is `(-0.5, 0)`. If the unconstrained `alpha` had produced `||p|| > Delta`, you would
+      clip to `alpha = Delta / ||g||`. Trust-region methods require at least the Cauchy decrease,
+      which guarantees global convergence; dogleg and CG-Steihaug do better by also using curvature.
+  - id: ltay-debug-lr-too-large
+    tier: tricky
+    kind: debug
+    title: Learning rate past the stability bound
+    minutes: 14
+    requiredForMastery: true
+    concepts: [learning-rate, descent-lemma, divergence]
+    prompt: |
+      Training was stable at `lr = 0.02` and diverges after someone set `lr = 0.1`. The loss is
+      roughly quadratic locally with top Hessian eigenvalue about `45`. Explain and give the fix.
+    code: |
+      optimizer = SGD(params, lr=0.1)
+    solution: |
+      For a locally quadratic loss with `lambda_max ~ 45`, gradient descent decreases the loss only
+      for `lr < 2 / lambda_max = 2/45 ~ 0.044`, and the fastest guaranteed decrease is at
+      `lr ~ 1/45 ~ 0.022` (consistent with the stable `0.02`). At `lr = 0.1` the per-step error
+      multiplier along the steep direction is `|1 - 0.1 * 45| = 3.5`, so that component grows by
+      3.5x per step and the loss explodes. Fix: set `lr` below `2/lambda_max` with margin (e.g.
+      `0.02`), or estimate `lambda_max` with a few power-iteration HVPs and set `lr ~ 1/lambda_max`;
+      add warmup so early large curvature does not trigger this; and clip gradients as a guard.
+      Regression: on the quadratic fixture, assert the iterate norm shrinks for `lr = 0.02` and
+      grows for `lr = 0.1`.
+    hints:
+      - Gradient descent on a quadratic diverges for `lr > 2 / lambda_max`.
+      - The stable `0.02` is close to `1 / lambda_max`.
+  - id: ltay-debug-newton-no-check
+    tier: tricky
+    kind: debug
+    title: Newton step accepted without a model check
+    minutes: 16
+    requiredForMastery: true
+    concepts: [newton-step, trust-region, trust-ratio]
+    prompt: |
+      This second-order optimiser occasionally increases the loss. Add Taylor-model-based step
+      acceptance.
+    code: |
+      def step(f, grad_f, hess_f, x, tau=1e-3):
+          g = grad_f(x); H = hess_f(x)
+          p = -np.linalg.solve(H + tau * np.eye(len(g)), g)
+          return x + p
+    solution: |
+      The damped Newton step minimises the quadratic model, which is only accurate in a
+      neighbourhood; far from the optimum or near a saddle the step leaves that neighbourhood and
+      `f(x + p)` can exceed `f(x)`. Wrap it in a trust-region acceptance loop: compute the predicted
+      decrease `pred = -(g @ p + 0.5 * p @ (H @ p))`, the actual decrease `act = f(x) - f(x + p)`,
+      and the ratio `rho = act / pred`. Accept `x + p` only if `rho > 0.1`; otherwise keep `x`.
+      Adapt: if `rho > 0.75` shrink `tau` (grow the trust radius), if `rho < 0.25` grow `tau`
+      (shrink it), and re-solve. This makes the loss monotone (rejected steps do nothing) and
+      self-tunes `tau` to where the quadratic model is valid. Regression: on a function with a sharp
+      ridge, assert the un-guarded step increases `f` and the guarded one never does.
+    hints:
+      - The quadratic model is local; a big step can leave its region of validity.
+      - Accept a step only when the actual/predicted decrease ratio is good, and adapt the damping.
+  - id: ltay-debug-armijo-only
+    tier: tricky
+    kind: debug
+    title: Line search with no curvature condition
+    minutes: 14
+    requiredForMastery: true
+    concepts: [line-search, wolfe-conditions, l-bfgs]
+    prompt: |
+      An L-BFGS implementation uses an Armijo-only backtracking line search and its
+      inverse-Hessian estimate slowly degrades. Explain and fix.
+    code: |
+      def line_search(f, x, p, grad, c1=1e-4, rho=0.5):
+          t = 1.0
+          while f(x + t * p) > f(x) + c1 * t * (grad @ p):
+              t *= rho
+          return t
+    solution: |
+      Armijo alone accepts steps that are *too short*: it only bounds `phi(t)` from above, so a
+      tiny `t` that barely decreases `f` passes. L-BFGS updates its curvature pairs `(s, y)` with
+      `s = t p` and `y = grad(x + t p) - grad(x)`; if `t` is consistently too small, `s . y` is
+      tiny and noisy, the curvature condition `s . y > 0` can fail, and the inverse-Hessian
+      approximation degrades or has to skip updates. Fix: add the strong Wolfe curvature condition
+      `|grad(x + t p) . p| <= c2 |grad @ p|` with `c1 < c2 < 1` (e.g. `c2 = 0.9`), and use a line
+      search that can also *increase* `t` (bracketing / zoom) rather than only backtracking, so it
+      finds a `t` satisfying both conditions. Regression: on a curved test function, assert the
+      Wolfe line search returns a larger `t` and that `s . y > 0` holds every step.
+    hints:
+      - Armijo bounds the step from above but not from below.
+      - Add the Wolfe curvature condition so steps are not too short.
+  - id: ltay-design-line-search
+    tier: challenge
+    kind: design
+    title: Design a Wolfe line search
+    minutes: 28
+    requiredForMastery: false
+    concepts: [line-search, strong-wolfe, bracketing]
+    prompt: |
+      Design `line_search(phi, phi_grad, phi0, dphi0)` for the 1-D restriction `phi(t) = f(x + t p)`
+      that returns a `t` satisfying the strong Wolfe conditions. State the phases, the parameters,
+      and what it must guarantee.
+    hints:
+      - Phase 1 brackets an acceptable interval by increasing `t`; phase 2 zooms in.
+      - Parameters `c1` (Armijo) and `c2` (curvature) with `0 < c1 < c2 < 1`.
+    solution: |
+      Inputs: `phi`, its derivative `phi_grad` (a directional derivative, one JVP), `phi0 =
+      phi(0)`, `dphi0 = phi'(0) < 0`, and `c1` (e.g. `1e-4`), `c2` (e.g. `0.9`), a max `t`, and an
+      iteration cap. Phase 1 (bracketing): try increasing `t` (e.g. double each time); stop when the
+      Armijo condition fails, or `phi(t) >= phi(t_prev)`, or `phi'(t) >= 0` — any of these brackets
+      a Wolfe point between `t_prev` and `t`. Phase 2 (zoom): repeatedly interpolate a trial point
+      in the bracket, shrink the bracket toward the side violating a condition, and return the first
+      `t` with `phi(t) <= phi0 + c1 t dphi0` and `|phi'(t)| <= c2 |dphi0|`. It must return a `t > 0`
+      satisfying both conditions (or report failure after the cap), must never call `phi` at
+      `t <= 0`, must handle a non-descent direction (`dphi0 >= 0`) by erroring, and must bound the
+      number of `phi` / `phi_grad` evaluations. Golden cases: a convex quadratic (unit step
+      accepted), a function where the unit step overshoots (backtracks), and one where it undershoots
+      (bracketing increases `t`).
+  - id: ltay-refactor-fixed-lr-to-linesearch
+    tier: challenge
+    kind: refactor
+    title: Replace a hand-tuned fixed step with a line search
+    minutes: 24
+    requiredForMastery: false
+    concepts: [line-search, descent-lemma, robustness]
+    prompt: |
+      A gradient-descent training loop uses a fixed `lr` found by trial and error; it diverges when
+      the data or model changes. Refactor it to use a backtracking Armijo line search with a
+      sensible initial step, keeping cost low, and add an `L` estimate as a fallback initial rate.
+    hints:
+      - Start each line search from the previous accepted step size (or `1.0`) and backtrack.
+      - Estimate `L` from consecutive gradients to set an initial rate near `1/L`.
+    solution: |
+      Replace `x -= lr * g` with: compute `g`, choose an initial `t` (the previous accepted `t`, or
+      `min(1.0, 1 / L_est)` where `L_est` is the largest observed `||grad(x_k) - grad(x_{k-1})|| /
+      ||x_k - x_{k-1}||`), then backtrack `t *= 0.5` until `f(x - t g) <= f(x) - c1 t ||g||^2` with
+      `c1 = 1e-4`. Cap the backtracks (e.g. 20) and, on failure, take the smallest `t` and log a
+      warning. This costs 1 to ~4 extra forward evaluations per step but is robust to model/data
+      changes because it adapts the step to the local `L` instead of assuming it. Add a
+      fail-before-fix test: a fixture where the old fixed `lr` diverges and the line-search version
+      converges with a bounded number of function evaluations per step.
+quizzes:
+  - id: ltay-checkpoint
+    title: Checkpoint — Taylor models and optimisers
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: ltay-cp-quadratic-model
+        kind: mcq
+        prompt: The second-order Taylor model of `f` at `x` is which expression?
+        options:
+          - {id: q, text: "`f(x) + grad f . p + 0.5 p . H p`"}
+          - {id: l, text: "`f(x) + grad f . p`"}
+          - {id: h, text: "`0.5 p . H p`"}
+        answer: [q]
+        explanation: Value plus linear term plus the quadratic curvature term.
+        concepts: [quadratic-model]
+        points: 1
+      - id: ltay-cp-gd-linear
+        kind: mcq
+        prompt: Gradient descent is what, in Taylor-model terms?
+        options:
+          - {id: linmin, text: The minimiser of the linear model over a trust ball `||p|| <= Delta`}
+          - {id: quadmin, text: The exact minimiser of the quadratic model}
+          - {id: random, text: A random descent direction}
+        answer: [linmin]
+        explanation: "`p = -Delta grad f / ||grad f||`, with `eta = Delta / ||grad f||`."
+        concepts: [linear-model, trust-region]
+        points: 1
+      - id: ltay-cp-descent-lemma
+        kind: mcq
+        prompt: If the gradient is `L`-Lipschitz, a gradient step decreases the loss for which learning rates?
+        options:
+          - {id: range, text: "`0 < eta < 2/L`, best at `eta = 1/L`"}
+          - {id: any, text: Any `eta > 0`}
+          - {id: tiny, text: Only `eta < 1e-6`}
+        answer: [range]
+        explanation: The descent-lemma coefficient `eta(1 - L eta / 2)` is positive on `(0, 2/L)`, maximal at `1/L`.
+        concepts: [descent-lemma]
+        points: 1
+      - id: ltay-cp-trust-ratio
+        kind: multi
+        prompt: The trust ratio `rho = actual decrease / predicted decrease` is used to do what?
+        options:
+          - {id: accept, text: Accept the step when `rho` is large enough}
+          - {id: grow, text: Grow the trust radius when `rho` is close to 1}
+          - {id: shrink, text: Shrink the trust radius when `rho` is small or negative}
+          - {id: lr, text: Directly set the global learning rate for SGD}
+        answer: [accept, grow, shrink]
+        explanation: "`rho` measures how well the local model predicted reality and drives the radius."
+        concepts: [trust-region]
+        points: 1
+  - id: ltay-assessment
+    title: Assessment — Taylor expansion and optimisation
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: ltay-as-expansion
+        kind: explain
+        prompt: Write the second-order multivariate Taylor expansion with remainder and give the error scaling of the linear and quadratic models.
+        modelAnswer: |
+          `f(x + p) = f(x) + grad f(x) . p + 0.5 p^T H(x) p + R(p)` with `R(p) = o(||p||^2)`, and
+          `O(||p||^3)` for a `C^3` function. The linear model (drop the quadratic term) has error
+          `O(||p||^2)`; the quadratic model has error `O(||p||^3)`.
+        explanation: Each extra term raises the order of the remainder by one.
+        concepts: [taylor-expansion]
+        points: 1
+      - id: ltay-as-gd-derivation
+        kind: write-function
+        prompt: Derive the gradient step from the linear model plus a trust constraint.
+        modelAnswer: |
+          Minimise `grad f . p` subject to `||p|| <= Delta`. Cauchy-Schwarz gives the minimum at
+          `p = -Delta grad f / ||grad f||`. Writing `eta = Delta / ||grad f||` gives `p = -eta grad
+          f`. The learning rate is the trust radius divided by the gradient norm.
+        explanation: The constrained linear minimiser is the steepest-descent step.
+        concepts: [linear-model, learning-rate]
+        points: 1
+      - id: ltay-as-newton-derivation
+        kind: write-function
+        prompt: Derive the Newton step from the quadratic model and say what to do if `H` is indefinite.
+        modelAnswer: |
+          Set the model gradient `grad f + H p` to zero: `p = -H^{-1} grad f`. If `H` is indefinite
+          the model has no minimum; add `tau I` so `H + tau I` is positive definite (damped Newton),
+          or minimise the model subject to `||p|| <= Delta` (trust region).
+        explanation: The unconstrained stationary point of a bowl is its minimum only when `H` is PD.
+        concepts: [newton-step, damping]
+        points: 1
+      - id: ltay-as-descent-lemma
+        kind: scenario
+        prompt: State the descent lemma and use it to justify `eta ~ 1/L`.
+        modelAnswer: |
+          If `grad f` is `L`-Lipschitz then `f(y) <= f(x) + grad f(x) . (y - x) + (L/2)||y - x||^2`.
+          Putting `y = x - eta grad f` gives `f(x - eta g) <= f(x) - eta(1 - L eta / 2)||g||^2`. The
+          coefficient is a downward parabola in `eta` maximised at `eta = 1/L`, and positive on
+          `(0, 2/L)`, so `eta ~ 1/L` gives the largest guaranteed decrease.
+        explanation: The remainder bound turns into a per-step decrease guarantee.
+        concepts: [descent-lemma, l-smoothness]
+        points: 1
+      - id: ltay-as-warmup
+        kind: scenario
+        prompt: Why does learning-rate warmup exist, in Taylor-model terms?
+        modelAnswer: |
+          `L` (roughly `lambda_max(H)`) is large and volatile early in training, so a full-size step
+          violates `eta < 2/L` and the linear model's remainder overwhelms the predicted decrease,
+          causing divergence. Ramping `eta` from near zero keeps steps inside the trust region until
+          the curvature settles; large-batch training needs longer warmup because less gradient noise
+          lets the curvature bite sooner.
+        explanation: Warmup respects a time-varying `L`.
+        concepts: [warmup, l-smoothness]
+        points: 1
+      - id: ltay-as-line-search
+        kind: scenario
+        prompt: What do the Armijo and curvature (Wolfe) conditions each guarantee about a line-search step?
+        modelAnswer: |
+          Armijo `phi(t) <= phi(0) + c1 t phi'(0)` guarantees the step is not too long — it achieves
+          at least a fraction `c1` of the first-order predicted decrease. The curvature condition
+          `|phi'(t)| <= c2 |phi'(0)|` guarantees it is not too short — the slope has flattened enough.
+          Together (strong Wolfe) they give a well-behaved step for methods like L-BFGS.
+        explanation: One bounds the value, the other the slope.
+        concepts: [line-search, wolfe-conditions]
+        points: 1
+      - id: ltay-as-trust-region
+        kind: scenario
+        prompt: A damped-Newton step increased the loss. How should step acceptance work?
+        modelAnswer: |
+          Compute the trust ratio `rho = (f(x) - f(x + p)) / (predicted decrease from the quadratic
+          model)`. Accept `x + p` only if `rho` exceeds a small threshold (e.g. 0.1); otherwise keep
+          `x`. Grow the trust radius (shrink `tau`) when `rho` is near 1, shrink it (grow `tau`) when
+          `rho` is small or negative, and re-solve.
+        explanation: Only trust the model where it has been predicting well.
+        concepts: [trust-region, trust-ratio]
+        points: 1
+      - id: ltay-as-error-scaling
+        kind: scenario
+        prompt: A first-order model has error `1e-2` at step `0.2`. Estimate the error at step `0.05`.
+        modelAnswer: |
+          First-order error is `O(h^2)`. Going from `0.2` to `0.05` is a factor of 4 in `h`, so the
+          error drops by `16`: about `6e-4`.
+        explanation: Quartering the step quarters the step squared four times... it divides by 16.
+        concepts: [truncation-error]
+        points: 1
+      - id: ltay-as-expm1
+        kind: find-bug
+        prompt: Why does `np.exp(x) - 1` lose accuracy for `x = 1e-10`, and what do you use instead?
+        modelAnswer: |
+          `exp(1e-10)` is stored as `1 + 1e-10`, but float64 has ~16 significant digits total so
+          only ~6 digits of the `1e-10` part survive; subtracting the exact `1` is catastrophic
+          cancellation, leaving mostly noise. Use `np.expm1(x)`, which evaluates the `exp(x) - 1`
+          series directly without forming `exp(x)`.
+        explanation: Subtracting nearly equal numbers destroys significance.
+        concepts: [expm1, catastrophic-cancellation]
+        points: 1
+      - id: ltay-as-linear-model-min
+        kind: true-false
+        prompt: The first-order Taylor model has a well-defined minimiser without any constraint.
+        options:
+          - {id: "true", text: "True"}
+          - {id: "false", text: "False"}
+        answer: ["false"]
+        explanation: An affine function with nonzero gradient is unbounded below; you need a trust constraint.
+        concepts: [linear-model]
+        points: 1
+interview:
+  - id: ltay-iv-optimisers-from-taylor
+    level: internals
+    requiredForMastery: true
+    concepts: [taylor-expansion, gradient-descent, newton-method]
+    question: In what sense is every optimiser built from a Taylor expansion?
+    shortAnswer: |
+      Each optimiser replaces the loss near the current point with a low-degree polynomial and steps
+      to (an approximate) minimiser of that. Gradient descent uses the linear model in a trust ball;
+      Newton and trust-region methods use the quadratic model. The remainder bounds the step.
+    fullAnswer: |
+      Write `f(x + p) = f(x) + grad f . p + 0.5 p^T H p + R(p)`. Drop `R` and everything after the
+      linear term: minimising over `||p|| <= Delta` gives `p = -eta grad f` — gradient descent, with
+      `eta` the trust radius over the gradient norm. Keep the quadratic term: its stationary point is
+      `p = -H^{-1} grad f` — Newton, damped or trust-constrained when `H` is indefinite. Line
+      searches enforce Taylor conditions (Armijo, Wolfe) on the 1-D restriction. Gauss-Newton and
+      natural gradient are the quadratic model with `H` replaced by a PSD surrogate. Cubic-regularised
+      Newton adds a model of the third-order term. The learning rate, the trust radius, and the
+      damping are all ways of respecting the remainder `R`.
+    commonWrongAnswer: Optimisers are separate algorithms with no common derivation.
+    followUps:
+      - Where does the learning rate come from in this picture?
+      - What changes when `H` is indefinite?
+  - id: ltay-iv-descent-lemma
+    level: scenario
+    requiredForMastery: true
+    concepts: [descent-lemma, l-smoothness, learning-rate]
+    question: Explain the descent lemma and how it sets the learning rate.
+    shortAnswer: |
+      If `grad f` is `L`-Lipschitz, `f(x - eta g) <= f(x) - eta(1 - L eta / 2)||g||^2`. The loss is
+      guaranteed to decrease for `eta` in `(0, 2/L)` and decreases most at `eta = 1/L`, so a good
+      target learning rate is about `1/L ~ 1/lambda_max(H)`.
+    fullAnswer: |
+      `L`-smoothness (a Lipschitz gradient) upper-bounds the true function by a quadratic with
+      curvature `L` in every direction: `f(y) <= f(x) + grad f(x) . (y - x) + (L/2)||y - x||^2`.
+      Plugging in the gradient step and simplifying gives the per-step decrease
+      `eta(1 - L eta / 2)||g||^2`, a downward parabola in `eta` with roots at 0 and `2/L` and vertex
+      at `1/L`. So any `eta < 2/L` is a descent step and `eta = 1/L` is the theoretically best fixed
+      rate. In practice you estimate `L` (a learning-rate range test, or power iteration on the
+      Hessian for `lambda_max`) and use margin; adaptive methods fold a per-coordinate scale into
+      the step; and warmup handles the fact that `L` is large and changing early on.
+    commonWrongAnswer: The learning rate is just a hyperparameter with no theory behind it.
+    followUps:
+      - How would you estimate `L` for a real model?
+      - Why does convergence to the minimum need more than the descent lemma?
+  - id: ltay-iv-line-search
+    level: comparison
+    requiredForMastery: true
+    concepts: [line-search, armijo, wolfe-conditions]
+    question: What does a line search do, and what are the Armijo and Wolfe conditions?
+    shortAnswer: |
+      It chooses the step length along a fixed direction by modelling the 1-D restriction `phi(t) =
+      f(x + t p)`. Armijo (sufficient decrease) stops steps that are too long; the Wolfe curvature
+      condition stops steps that are too short.
+    fullAnswer: |
+      Given a descent direction `p`, a line search picks `t` so that `f(x + t p)` decreases enough.
+      The Armijo condition `phi(t) <= phi(0) + c1 t phi'(0)` (small `c1`) requires the step to
+      realise a fraction of the first-order predicted decrease; a pure backtracking search halves
+      `t` until it holds. But Armijo alone accepts arbitrarily tiny steps, which starves
+      quasi-Newton curvature updates, so the strong Wolfe conditions add
+      `|phi'(t)| <= c2 |phi'(0)|` with `c1 < c2 < 1`, requiring the slope to have flattened. A Wolfe
+      line search brackets an acceptable interval (increasing `t` if needed) then zooms in. L-BFGS
+      and nonlinear CG rely on Wolfe steps for stability.
+    commonWrongAnswer: A line search just tries a few step sizes and picks the smallest loss.
+    followUps:
+      - Why does Armijo alone hurt L-BFGS?
+      - How does the bracketing phase decide it has found a Wolfe point?
+  - id: ltay-iv-trust-region
+    level: scenario
+    requiredForMastery: true
+    concepts: [trust-region, trust-ratio, quadratic-model]
+    question: How does a trust-region method decide how far to trust the quadratic model?
+    shortAnswer: |
+      It solves `min m2(p) s.t. ||p|| <= Delta`, takes the step, and computes the ratio `rho` of
+      actual to predicted decrease. `rho` near 1 means the model is good — accept and grow `Delta`;
+      `rho` small or negative means it overreached — reject and shrink `Delta`.
+    fullAnswer: |
+      The quadratic model is accurate only in a neighbourhood, so a trust-region method never trusts
+      it beyond a radius `Delta`. Each iteration: (1) approximately solve the constrained subproblem
+      `min f + g.p + 0.5 p^T H p` over `||p|| <= Delta` (dogleg, CG-Steihaug, or the exact
+      Levenberg-Marquardt solution); (2) evaluate `rho = (f(x) - f(x + p)) / (m2(0) - m2(p))`;
+      (3) accept `x + p` only if `rho` exceeds a small threshold, else keep `x`; (4) update `Delta`
+      — grow it (e.g. double) if `rho > 0.75` and the step hit the boundary, shrink it (e.g. quarter)
+      if `rho < 0.25`. This gives monotone decrease, handles indefinite `H` (the constrained problem
+      always has a solution, and negative-curvature directions are followed to the boundary), and
+      self-tunes the region to where the model predicts well.
+    commonWrongAnswer: The trust radius is a fixed hyperparameter.
+    followUps:
+      - What happens to the subproblem when `H` has a negative eigenvalue?
+      - How is the damping `tau` in Levenberg-Marquardt related to `Delta`?
+  - id: ltay-iv-quadratic-model-fails
+    level: debugging
+    requiredForMastery: true
+    concepts: [quadratic-model, third-derivative, cubic-regularisation]
+    question: When is the quadratic model a poor guide, and what do you do about it?
+    shortAnswer: |
+      When the step is large relative to where the third derivative is significant — far from the
+      optimum, near sharp ridges, or before a cliff. Fixes: a trust region, damping, a line search,
+      or cubic-regularised Newton that models the third-order term.
+    fullAnswer: |
+      The quadratic model's error is `O(||p||^3)` with a constant set by the third derivative, so it
+      is trustworthy in a ball that shrinks where `f` bends sharply. Symptoms: a Newton or
+      damped-Newton step that increases `f`, or oscillation. Remedies, roughly in order of cost: a
+      backtracking line search on the step (cheap, always works for a descent direction); a trust
+      region that rejects and shrinks when the trust ratio is bad; increasing the Levenberg-Marquardt
+      damping `tau`; and cubic-regularised Newton, which adds `(sigma/3)||p||^3` to the model so the
+      subproblem penalises long steps in a curvature-aware way and has global complexity guarantees.
+      In deep learning the practical version is just a conservative learning rate plus warmup plus
+      clipping.
+    commonWrongAnswer: The quadratic model is always better than the linear one, so just use Newton.
+    followUps:
+      - What does cubic regularisation add to the model?
+      - Why does a line search rescue a bad quadratic-model step?
+  - id: ltay-iv-stable-expansions
+    level: output
+    requiredForMastery: true
+    concepts: [expm1, log1p, log-sum-exp, catastrophic-cancellation]
+    question: Where do numerically stable low-order Taylor expansions matter in ML code?
+    shortAnswer: |
+      Anywhere a naive expression subtracts nearly equal numbers: `exp(x) - 1` (use `expm1`),
+      `log(1 + x)` (use `log1p`), and `log sum exp(x_i)` (use the log-sum-exp trick). These appear in
+      losses, log-likelihoods, and softmax.
+    fullAnswer: |
+      `expm1(x)` and `log1p(x)` evaluate the `exp(x) - 1` and `log(1 + x)` series directly for small
+      `x`, avoiding the cancellation of forming `exp(x)` or `1 + x` first. They matter in
+      cross-entropy and Poisson/Bernoulli log-likelihoods, in KL divergences, in the softplus
+      `log(1 + exp(x))` (which also needs a large-`x` branch), and in continuous-time survival
+      models. The log-sum-exp trick, `log sum exp(x_i) = m + log sum exp(x_i - m)` with `m = max
+      x_i`, keeps softmax and its log stable by preventing `exp` overflow and `0/0`. All are covered
+      in depth in the numerical-stability lesson; the point here is that they are the careful
+      implementations of low-order expansions.
+    commonWrongAnswer: These are micro-optimisations that never change results.
+    followUps:
+      - What is the large-`x` branch of softplus and why is it needed?
+      - How does the log-sum-exp shift by the max prevent overflow?
+projects:
+  - id: ltay-project-model-based-optimiser
+    kind: major
+    title: Build a model-based optimiser suite
+    minutes: 240
+    summary: Implement the linear and quadratic Taylor models, a gradient step with an L estimate, a strong-Wolfe line search, a damped-Newton step, and a trust-region loop with ratio-based radius adaptation, all validated on standard test functions.
+    problem: |
+      Build an optimisation suite that makes the Taylor-model derivation explicit: `models` (linear
+      and quadratic evaluation and their errors); `gd_step` (with an online `L` estimate and
+      `eta ~ 1/L`); `wolfe_line_search` (bracketing plus zoom, strong Wolfe); `damped_newton_step`;
+      and `trust_region` (constrained quadratic subproblem, trust ratio, radius adaptation,
+      negative-curvature handling). Validate on Rosenbrock, a badly conditioned quadratic, and a
+      function with a sharp ridge.
+    requirements:
+      - "`models.quadratic` error against the true function is `O(||p||^3)` on a `C^3` fixture; `models.linear` is `O(||p||^2)`."
+      - "`gd_step` estimates `L` from consecutive gradients and sets `eta` near `1/L`; it decreases the loss on an `L`-smooth fixture."
+      - "`wolfe_line_search` returns a `t` satisfying both strong Wolfe conditions or reports failure, with a bounded number of evaluations."
+      - "`damped_newton_step` interpolates between Newton and a scaled gradient step as `tau` grows."
+      - "`trust_region` produces a monotone-decreasing loss, adapts the radius by the trust ratio, and handles an indefinite Hessian."
+      - Every step returns diagnostics (predicted vs actual decrease, `rho`, `Delta` or `tau`, evaluation counts).
+    constraints:
+      - NumPy and the standard library only.
+      - Never step the linear model without a trust constraint.
+      - Never invert an indefinite Hessian in the Newton path; damp or constrain.
+      - The line search must never evaluate at `t <= 0` and must error on a non-descent direction.
+    expectedBehaviour:
+      - Model errors scale with the predicted powers of `||p||`.
+      - "`gd_step` is stable at `eta ~ 1/L` and diverges above `2/L` on the quadratic fixture."
+      - "`wolfe_line_search` accepts the unit step on a well-scaled quadratic and adapts otherwise."
+      - "`trust_region` converges on Rosenbrock and never increases the loss."
+      - Negative curvature in the subproblem is detected and followed to the boundary.
+    structure: |
+      modelopt/
+        __init__.py
+        models.py
+        gd.py
+        line_search.py
+        newton.py
+        trust_region.py
+      tests/
+        test_models.py
+        test_gd.py
+        test_line_search.py
+        test_newton.py
+        test_trust_region.py
+    milestones:
+      - title: "1 — Taylor models"
+        detail: Linear and quadratic evaluation and their measured error scaling.
+      - title: "2 — Gradient step with L estimate"
+        detail: Online `L` from gradient differences; `eta ~ 1/L`; stability boundary test.
+      - title: "3 — Wolfe line search"
+        detail: Bracketing plus zoom returning a strong-Wolfe step.
+      - title: "4 — Newton and trust region"
+        detail: Damped Newton step and a ratio-driven trust-region loop with negative-curvature handling.
+    testing:
+      - Model error versus `||p||` on a `C^3` function.
+      - GD stability across `eta` on a conditioned quadratic.
+      - Line search satisfies both Wolfe conditions on curved test functions.
+      - Trust-region monotone decrease and radius adaptation on Rosenbrock.
+      - "An indefinite-Hessian fixture keeps the subproblem well-defined and the step a descent step."
+    failureCases:
+      - The linear model is stepped without a trust constraint and the step is unbounded.
+      - The line search accepts a tiny Armijo-only step and quasi-Newton curvature pairs degrade.
+      - The Newton path solves with an indefinite Hessian and steps uphill.
+      - The trust radius grows on a bad step because the ratio was not checked.
+    bonus:
+      - Add cubic-regularised Newton and compare its steps near a saddle with damped Newton.
+      - Add a learning-rate range test that plots loss versus `eta`.
+      - Emit an optimiser trace as Markdown.
+    architectureHints:
+      - Keep predicted-decrease computation in one place and reuse it for the trust ratio.
+      - Represent a step result as an object with `x_new`, `accepted`, `rho`, `radius`, `evals`.
+      - Make the line search take `phi` and `phi_grad` closures so it is optimiser-agnostic.
+    referenceOutline: |
+      `models.linear/quadratic` evaluate the polynomials. `gd.step` maintains an `L` estimate from
+      `||g_k - g_{k-1}|| / ||x_k - x_{k-1}||`. `line_search.wolfe` runs a bracket-then-zoom loop.
+      `newton.damped_step` solves `(H + tau I) p = -g`. `trust_region.step` solves the constrained
+      subproblem (dogleg or CG-Steihaug), computes `rho`, and updates `Delta`.
+  - id: ltay-final-lr-schedule-audit
+    kind: final-challenge
+    title: Derive a learning-rate schedule from curvature
+    minutes: 90
+    summary: Given a training run that diverges at the target learning rate, estimate the gradient-Lipschitz constant over training, derive a warmup-plus-decay schedule from it, and validate that the schedule keeps every step inside the descent-lemma bound.
+    problem: |
+      A model diverges when trained at the paper's headline learning rate but is stable at a third
+      of it. Using Hessian-vector-product power iteration and consecutive-gradient ratios, produce an
+      audit that: estimates `L(t) ~ lambda_max(H)` at several points during a short stable run;
+      shows `L` is large early and settles; derives a warmup length and peak learning rate so that
+      `eta(t) < 2/L(t)` (with margin) throughout, plus a cosine decay for the main phase; and
+      validates on a full run that the loss decreases at essentially every step and reaches a better
+      final value than the fixed low rate, with a fail-before-fix comparison to the diverging run.
+    requirements:
+      - Estimate `lambda_max(H)` at 5 to 10 checkpoints of a short stable run via power-iteration HVPs, with a convergence proxy.
+      - Show the early `lambda_max` is several times the late value (justifying warmup).
+      - Choose peak `eta` and warmup steps so that `eta(t) <= alpha / lambda_max(t)` for a safety factor `alpha < 2` at every checkpoint.
+      - Add a cosine (or linear) decay for the post-warmup phase and justify its endpoint.
+      - "Validate on a full run that the per-step loss change is negative for a large fraction of steps and the final loss beats the fixed-low-rate baseline, comparing against the diverging fixed-high-rate run."
+    constraints:
+      - Do not use `A^T A` power iteration for `lambda_max` of the loss Hessian.
+      - Do not set `eta` above `2 / lambda_max(t)` at any checkpoint.
+      - Do not claim the schedule is optimal, only that it respects the descent-lemma bound.
+    expectedBehaviour:
+      - The `lambda_max` estimates converge or are flagged low-confidence.
+      - The derived schedule keeps `eta(t) * lambda_max(t)` below the safety factor at every checkpoint.
+      - The full run with the schedule decreases the loss at nearly every step.
+      - The scheduled run's final loss is lower than the fixed-low-rate baseline and it does not diverge like the fixed-high-rate run.
+      - Each claim has a measurement.
+    milestones:
+      - title: "1 — Curvature over training"
+        detail: "`lambda_max(H)` at several checkpoints via HVP power iteration, with uncertainty."
+      - title: "2 — Derive the schedule"
+        detail: Warmup length and peak `eta` from the early-vs-late curvature; decay for the main phase.
+      - title: "3 — Validate"
+        detail: Full run per-step loss change and final loss versus both baselines; fail-before-fix comparison.
+    testing:
+      - "A fail-before-fix fixture records the fixed-high-rate run divergence."
+      - A test that `eta(t) * lambda_max_estimate(t) < alpha` at every checkpoint.
+      - Power-iteration convergence check on a synthetic Hessian.
+    failureCases:
+      - "`lambda_max` power iteration has not converged but its value is used without a caveat."
+      - The schedule respects the bound at checkpoints but the peak is placed before curvature settles.
+      - The scheduled run also lowers other hyperparameters, confounding the comparison.
+    bonus:
+      - Add a per-layer `lambda_max` estimate and a per-layer learning-rate multiplier.
+    architectureHints:
+      - Freeze the diverging run and the fixed-low-rate baseline as fixtures first.
+      - Keep curvature estimation, schedule derivation, and validation in separate commits.
+    referenceOutline: |
+      Power iteration: `v <- hvp(v); v /= norm(v)`, Rayleigh quotient for `lambda_max`, at each
+      checkpoint. Warmup steps `w` so `eta` ramps to `peak` while `lambda_max` is still high; set
+      `peak = alpha / max_t lambda_max(t)` over the post-warmup checkpoints. Cosine decay from
+      `peak` to a small floor over the remaining steps.
+resources:
+  - name: "3Blue1Brown — Taylor series"
+    type: video
+    difficulty: intro
+    url: "https://www.3blue1brown.com/lessons/taylor-series"
+    usefulness: 4
+    why: It builds the polynomial-approximation idea from the tangent line up, including the remainder and why higher-order terms shrink faster, which is the foundation of the model-based view of optimisers here.
+    covers: The first- and second-order Taylor polynomial, the geometric meaning of each term, the remainder, and convergence of the series.
+  - name: "Nocedal and Wright — Numerical Optimization (Chapters 2, 3, 4)"
+    type: book
+    difficulty: deep
+    url: "https://link.springer.com/book/10.1007/978-0-387-40065-5"
+    usefulness: 5
+    why: It derives line-search and trust-region methods directly from the Taylor models, states the Wolfe conditions and the descent lemma, and analyses convergence rates — the core reference for this lesson.
+    covers: The linear and quadratic models, sufficient-decrease and curvature conditions, backtracking and Wolfe line searches, trust-region subproblems and radius updates, and convergence theory.
+  - name: "Bubeck — Convex Optimization: Algorithms and Complexity (Chapter 3)"
+    type: book
+    difficulty: deep
+    url: "https://arxiv.org/abs/1405.4980"
+    usefulness: 4
+    why: It gives the clean statement and proof of the descent lemma for `L`-smooth functions and the resulting `eta = 1/L` gradient-descent analysis, the theory behind the learning-rate bound.
+    covers: "`L`-smoothness, the descent lemma, gradient-descent convergence for smooth and smooth-strongly-convex functions, and the role of the condition number."
+  - name: "Smith — Cyclical Learning Rates / the learning-rate range test"
+    type: article
+    difficulty: core
+    url: "https://arxiv.org/abs/1506.01186"
+    usefulness: 3
+    why: It introduces the practical way to estimate a usable learning rate (sweep `eta` and watch the loss), which is how you approximate `1/L` for a real model without computing the Hessian.
+    covers: The learning-rate range test, cyclical schedules, and the empirical relationship between the loss-vs-eta curve and stable training.
+  - name: "Nesterov and Polyak — Cubic regularization of Newton method"
+    type: article
+    difficulty: deep
+    url: "https://link.springer.com/article/10.1007/s10107-006-0706-8"
+    usefulness: 3
+    why: It shows how adding a model of the third-order term (a cubic in the step) fixes the overreach of the plain quadratic model and gives global convergence guarantees, the principled version of trust-region damping.
+    covers: The cubic-regularised model, its subproblem, global complexity bounds, and behaviour near saddle points.

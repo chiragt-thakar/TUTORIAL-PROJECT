@@ -1,0 +1,749 @@
+lessonId: "roadmap:phase-1-1.2:5"
+module: 1-2-numpy-the-actual-foundation
+lesson: 06-reductions-keepdims-and-why-it-prevents-broadcasting-bugs
+title: "Reductions, keepdims, and why it prevents broadcasting bugs"
+summary: Derive reduction shapes, preserve semantic alignment, and define numerical and empty-group policies for production array code.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: nrk-read-reduction-shapes
+    tier: normal
+    kind: code-reading
+    title: Trace consumed and surviving axes
+    minutes: 10
+    requiredForMastery: true
+    concepts: [reduction-shape, semantic-axes, keepdims]
+    prompt: |
+      For `x.shape == (2, 3, 5, 7)` with contract `(batch, heads, tokens, features)`, derive the
+      shape and surviving meanings of each result without running the code.
+
+      - `x.sum(axis=2)`
+      - `x.mean(axis=(0, 2), keepdims=True)`
+      - `x.any(axis=-1)`
+    hints:
+      - Normalize `-1` to the last position, then mark every consumed axis.
+      - Deleted axes disappear; kept axes remain in the same position with size one.
+    solution: |
+      The token sum is `(2,3,7)` with batch, heads, and features surviving. Reducing batch and
+      tokens with kept dimensions gives `(1,3,1,7)`, preserving heads and features. Reducing the
+      final feature axis with `any` gives `(2,3,5)` with batch, heads, and tokens surviving.
+  - id: nrk-center-per-example
+    tier: normal
+    kind: write-code
+    title: Center every example safely
+    minutes: 12
+    requiredForMastery: true
+    concepts: [keepdims, broadcasting, invariants]
+    prompt: |
+      Implement row-wise centering for an `(N,C)` matrix. The code must remain correct when
+      `N == C`, preserve shape, and include a semantic invariant.
+    hints:
+      - Classes are consumed while batch survives.
+      - Keep the class position so the statistic has shape `(N,1)`.
+    solution: |
+      Reduce class axis one with `keepdims=True`, subtract the `(N,1)` result, and assert the mean
+      across axis one is approximately zero. Include both rectangular and square regression
+      fixtures because the square case makes the incorrect rank-one result broadcast legally.
+    solutionCode: |
+      def center_rows(x):
+          if x.ndim != 2:
+              raise ValueError("expected (batch, classes)")
+          out = x - x.mean(axis=1, keepdims=True)
+          np.testing.assert_allclose(out.mean(axis=1), 0.0, atol=1e-12)
+          return out
+  - id: nrk-derive-multi-axis
+    tier: normal
+    kind: predict-output
+    title: Derive a channel statistic shape
+    minutes: 10
+    requiredForMastery: true
+    concepts: [tuple-axis, nchw, keepdims]
+    prompt: |
+      NCHW images have shape `(8, 3, 16, 20)`. Predict the shapes of
+      `x.mean(axis=(0,2,3))` and `x.mean(axis=(0,2,3), keepdims=True)`. Explain which is safer for
+      immediate normalization.
+    hints:
+      - Batch, height, and width are consumed; channel survives.
+      - Ask which shape can subtract from NCHW without reconstructing axes.
+    solution: |
+      The rank-reduced result is `(3,)`. The kept result is `(1,3,1,1)`. Both contain one statistic
+      per channel, but the kept result is safer for immediate NCHW arithmetic because its singleton
+      positions encode exactly which axes were aggregated.
+  - id: nrk-select-accumulator
+    tier: normal
+    kind: explain
+    title: Choose an accumulator policy
+    minutes: 12
+    requiredForMastery: true
+    concepts: [dtype, overflow, precision]
+    prompt: |
+      A service sums up to ten million unsigned 16-bit sensor values and averages long float32 loss
+      vectors. State an accumulator policy and the tests that justify it.
+    hints:
+      - Bound the largest possible integer total before selecting a dtype.
+      - Storage precision and accumulation precision can be different decisions.
+    solution: |
+      The integer upper bound is `10_000_000 * 65_535`, so choose an unsigned or signed accumulator
+      that represents it with margin, such as uint64, and test zero plus the maximum-length maximum
+      input. Keep float32 storage if appropriate but accumulate means in float64 when the measured
+      error budget requires it; compare against a higher-precision reference on adversarial data.
+  - id: nrk-standardize-nchw
+    tier: intermediate
+    kind: write-code
+    title: Standardize channels with explicit axes
+    minutes: 18
+    requiredForMastery: true
+    concepts: [normalization, tuple-axis, variance]
+    prompt: |
+      Implement channel-wise standardization for NCHW data. Aggregate over batch and spatial
+      dimensions, preserve alignment, reject an empty group, and define a zero-variance policy.
+    hints:
+      - The consumed axis tuple is `(0,2,3)` and the result should be `(1,C,1,1)`.
+      - Check group size and add a documented epsilon before division.
+    solution: |
+      Validate rank and positive batch-spatial group size. Compute mean and squared-deviation mean
+      over `(0,2,3)` with kept dimensions and a deliberate accumulator dtype. Divide by the square
+      root of variance plus epsilon. Return stable shape and test per-channel zero mean, constant
+      channels, finite output, and asymmetric dimensions.
+    solutionCode: |
+      def standardize_nchw(x, eps=1e-6):
+          if x.ndim != 4 or x.shape[0] * x.shape[2] * x.shape[3] == 0:
+              raise ValueError("each channel needs observations")
+          axes = (0, 2, 3)
+          mean = x.mean(axis=axes, keepdims=True, dtype=np.float64)
+          var = np.mean((x - mean) ** 2, axis=axes, keepdims=True, dtype=np.float64)
+          return (x - mean) / np.sqrt(var + eps)
+  - id: nrk-masked-mean
+    tier: intermediate
+    kind: write-code
+    title: Compute a masked token mean
+    minutes: 20
+    requiredForMastery: true
+    concepts: [where, empty-groups, counts]
+    prompt: |
+      For values `(N,T,C)` and a validity mask `(N,T)`, compute per-example, per-channel token means
+      with result shape `(N,1,C)`. Return an explicit `(N,1,1)` flag for examples with no valid
+      tokens instead of hiding division by zero.
+    hints:
+      - Expand the mask to `(N,T,1)` and reduce token axis one.
+      - A mean is a masked sum divided by a masked count; keep both dimensions.
+    solution: |
+      Validate the leading shapes, expand the mask, compute a float64 masked sum and integer count
+      over token axis one, and divide only where count is positive. Return the mean, count, and
+      empty flag so downstream code cannot confuse a fill value with a real statistic.
+    solutionCode: |
+      def masked_token_mean(values, valid):
+          if values.ndim != 3 or valid.shape != values.shape[:2]:
+              raise ValueError("expected (N,T,C) values and (N,T) mask")
+          mask = valid[..., None]
+          total = np.sum(values, axis=1, where=mask, keepdims=True, dtype=np.float64)
+          count = np.sum(mask, axis=1, keepdims=True, dtype=np.int64)
+          mean = np.divide(total, count, out=np.zeros_like(total), where=count > 0)
+          return mean, count, count == 0
+  - id: nrk-stable-logsumexp
+    tier: intermediate
+    kind: write-code
+    title: Implement kept-rank log-sum-exp
+    minutes: 20
+    requiredForMastery: true
+    concepts: [logsumexp, stability, reduction-pipeline]
+    prompt: |
+      Implement `logsumexp(x, axis)` without SciPy. Keep the reduced axis and reject groups that
+      contain no finite candidate. Explain why maximum and sum must use the same axis.
+    hints:
+      - Subtract an axis-wise maximum before exponentiation.
+      - Preserve the maximum's shape so subtraction and the final addition align automatically.
+    solution: |
+      Compute a kept-rank maximum, validate it is finite under the chosen contract, sum
+      `exp(x - maximum)` over the same kept axis, and return `maximum + log(total)`. A mismatched
+      reduction axis would normalize a different set than the one stabilized and can still
+      broadcast into plausible output.
+    solutionCode: |
+      def logsumexp(x, axis=-1):
+          maximum = np.max(x, axis=axis, keepdims=True)
+          if not np.all(np.isfinite(maximum)):
+              raise ValueError("each reduction group needs a finite value")
+          total = np.sum(np.exp(x - maximum), axis=axis, keepdims=True)
+          return maximum + np.log(total)
+  - id: nrk-gather-argmax
+    tier: intermediate
+    kind: write-code
+    title: Gather winning scores without flattening
+    minutes: 16
+    requiredForMastery: true
+    concepts: [argmax, take-along-axis, index-shape]
+    prompt: |
+      For logits `(N,T,C)`, return winning class ids `(N,T)` and scores `(N,T,1)`. Do not flatten or
+      loop over examples and tokens.
+    hints:
+      - Reduce only the class axis with `argmax`.
+      - Reinsert the consumed class position before `take_along_axis`.
+    solution: |
+      Use `classes = np.argmax(logits, axis=2)`, then gather with
+      `np.take_along_axis(logits, classes[..., None], axis=2)`. The rank-one class position makes
+      the index array align with each batch-token group while retaining the gathered axis.
+    solutionCode: |
+      def winning_classes(logits):
+          if logits.ndim != 3:
+              raise ValueError("expected (N,T,C)")
+          classes = np.argmax(logits, axis=2)
+          scores = np.take_along_axis(logits, classes[..., None], axis=2)
+          return classes, scores
+  - id: nrk-debug-square-centering
+    tier: tricky
+    kind: debug
+    title: Expose square-shape centering corruption
+    minutes: 18
+    requiredForMastery: true
+    concepts: [broadcasting-bug, keepdims, adversarial-testing]
+    prompt: |
+      This code passes its `(4,4)` shape assertion but does not center examples. Diagnose the exact
+      alignment and write a regression that proves the repair.
+    code: |
+      def center_examples(x):
+          means = x.mean(axis=1)
+          out = x - means
+          assert out.shape == x.shape
+          return out
+    hints:
+      - A rank-one result aligns with the original array's trailing dimension.
+      - Test the semantic invariant per example, not merely the final shape.
+    solution: |
+      `means.shape == (N,)` aligns with class axis C when `N == C`, so column c receives example c's
+      mean. Compute with `keepdims=True` to obtain `(N,1)`. Assert every output row has mean zero on
+      both rectangular and square fixtures; the square regression specifically catches the silent
+      alignment.
+  - id: nrk-debug-shifting-axes
+    tier: tricky
+    kind: debug
+    title: Repair sequential axis renumbering
+    minutes: 18
+    requiredForMastery: true
+    concepts: [multi-axis, axis-renumbering]
+    prompt: |
+      The function intends to sum batch and token axes from `(N,T,C)`, leaving `(C,)`. Explain its
+      actual second reduction and fix the expression without relying on intermediate rank changes.
+    code: |
+      def total_by_class(x):
+          return x.sum(axis=0).sum(axis=2)
+    hints:
+      - After the first sum, the intermediate shape is `(T,C)`.
+      - Express both original axes in one tuple.
+    solution: |
+      After consuming original batch axis zero, the result has rank two, so axis two no longer
+      exists and the code raises. Reduce original axes `(0,1)` together with `x.sum(axis=(0,1))`.
+      Alternatively keep dimensions through staged work, but the tuple states the grouping more
+      clearly.
+  - id: nrk-debug-overflowing-total
+    tier: tricky
+    kind: debug
+    title: Stop a telemetry total from wrapping
+    minutes: 17
+    requiredForMastery: true
+    concepts: [integer-overflow, accumulator-dtype]
+    prompt: |
+      A platform must sum unsigned counter samples, but totals become smaller after a larger batch.
+      Diagnose the numerical contract and implement a bounded fix.
+    code: |
+      def total_counts(samples):
+          return np.add.reduce(samples, dtype=np.uint16)
+    hints:
+      - The explicitly requested accumulator wraps at the uint16 boundary.
+      - Derive the maximum total from sample range and group length.
+    solution: |
+      The reduction forces every partial total into uint16, so arithmetic wraps modulo 65,536.
+      Validate the input domain and maximum accepted length, prove their product fits, and reduce
+      with uint64 or a suitably bounded signed dtype. Add maximum-value boundary and oversize-input
+      tests instead of assuming the platform default is sufficient.
+    solutionCode: |
+      def total_counts(samples):
+          values = np.asarray(samples)
+          if values.dtype != np.uint16:
+              raise ValueError("expected uint16 counters")
+          return values.sum(dtype=np.uint64)
+  - id: nrk-debug-empty-masked-max
+    tier: tricky
+    kind: debug
+    title: Define an all-masked group
+    minutes: 20
+    requiredForMastery: true
+    concepts: [masked-reduction, initial, empty-groups]
+    prompt: |
+      The reducer crashes when one attention row has no allowed keys. Repair the mechanics, then
+      explain why returning only the repaired maximum is still an incomplete API.
+    code: |
+      def masked_row_max(scores, allowed):
+          return np.max(scores, axis=-1, where=allowed, keepdims=True)
+    hints:
+      - Maximum has no identity, so a group with no selected value needs an initial bound.
+      - A sentinel alone cannot tell the consumer whether any real value participated.
+    solution: |
+      Use a domain-appropriate initial value such as negative infinity and separately reduce
+      `allowed.any(axis=-1, keepdims=True)`. Return or validate that presence mask. Otherwise an
+      all-masked group is indistinguishable from a legitimate sentinel-valued maximum and can
+      poison later subtraction or softmax.
+  - id: nrk-design-streaming-metrics
+    tier: challenge
+    kind: design
+    title: Design mergeable reduction state
+    minutes: 28
+    requiredForMastery: false
+    concepts: [streaming-reduction, mergeability, variance]
+    prompt: |
+      Design a streaming metrics state for masked losses arriving in batches. It must merge worker
+      states, report global mean and variance, preserve valid counts, and avoid averaging averages.
+    hints:
+      - A mean alone loses the weight needed to merge groups correctly.
+      - Store count, mean, and a centered second-moment state, then define an associative merge.
+    solution: |
+      Keep valid count, running mean, and `M2`, the sum of squared deviations. Update each batch
+      with its own count, mean, and M2, then merge using the count-weighted mean delta formula.
+      Define empty-state and non-finite policies, use sufficient accumulator precision, and test
+      that every partitioning and merge order approximates a trusted one-shot result.
+  - id: nrk-benchmark-reduction-layout
+    tier: challenge
+    kind: performance
+    title: Measure reduction layout and precision cost
+    minutes: 26
+    requiredForMastery: false
+    concepts: [performance, strides, dtype]
+    prompt: |
+      Design a benchmark comparing reduction over contiguous and strided axes, float32 and float64
+      accumulation, and direct tuple versus staged reductions. It must distinguish speed from
+      numerical error and temporary memory.
+    hints:
+      - Record shapes, strides, axis tuple, output dtype, warm-up, and timing distributions.
+      - Compare every result against one high-precision reference and measure peak live memory.
+    solution: |
+      Use identical asymmetric data, control threads, warm each path, and run repeated trials.
+      Record median and tail latency, throughput, allocations, strides, and error against a float64
+      or higher-quality reference. Include whole-pipeline costs, because a transpose or staged
+      temporary may dominate the reducer. Select a policy from latency, memory, and error budgets.
+quizzes:
+  - id: nrk-checkpoint
+    title: Checkpoint — reduction shape algebra
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: nrk-cp-keepdims
+        kind: mcq
+        prompt: What does `keepdims=True` do to a consumed axis?
+        options:
+          - {id: singleton, text: It remains in its original position with size one}
+          - {id: unchanged, text: It keeps its original size and values}
+          - {id: trailing, text: It moves to the final position}
+        answer: [singleton]
+        explanation: The coordinates are aggregated, but the axis position remains as a singleton.
+        concepts: [keepdims]
+        points: 1
+      - id: nrk-cp-shape
+        kind: mcq
+        prompt: What is the shape of `(2,3,5).sum(axis=(0,2), keepdims=True)`?
+        options:
+          - {id: correct, text: "(1, 3, 1)"}
+          - {id: rankone, text: "(3,)"}
+          - {id: wrong, text: "(1, 1, 5)"}
+        answer: [correct]
+        explanation: Batch and the last axis are retained as singleton positions; axis one survives.
+        concepts: [reduction-shape]
+        points: 1
+      - id: nrk-cp-empty
+        kind: multi
+        prompt: Which reducers have familiar algebraic identities for empty groups?
+        options:
+          - {id: sum, text: Sum has identity zero}
+          - {id: product, text: Product has identity one}
+          - {id: mean, text: Mean always has identity zero}
+          - {id: maximum, text: Maximum always has a dtype-independent identity}
+        answer: [sum, product]
+        explanation: Mean needs a positive count, while extrema need an element or deliberate initial bound.
+        concepts: [empty-groups]
+        points: 1
+      - id: nrk-cp-square
+        kind: mcq
+        prompt: Why is an `(N,N)` fixture dangerous for row-wise centering tests?
+        options:
+          - {id: silent, text: A dropped `(N,)` result can broadcast against the wrong trailing axis}
+          - {id: impossible, text: NumPy does not support square reductions}
+          - {id: slow, text: Square arrays always force a copy}
+        answer: [silent]
+        explanation: Equal semantic sizes can make an incorrect alignment mechanically valid.
+        concepts: [broadcasting-bug]
+        points: 1
+  - id: nrk-assessment
+    title: Assessment — safe numerical reductions
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: nrk-as-complement
+        kind: explain
+        prompt: Derive a reduction output from consumed and surviving axes.
+        modelAnswer: |
+          Normalize the requested axes, mark them consumed, and retain all other dimensions in
+          original order. Delete consumed positions when keepdims is false; replace their sizes
+          with one when it is true.
+        explanation: Reduction shape is the complement of the consumed axis set.
+        concepts: [reduction-shape]
+        points: 1
+      - id: nrk-as-row-mean
+        kind: find-bug
+        prompt: Why is `x - x.mean(axis=1)` unsafe for `(N,C)` even if one test passes?
+        modelAnswer: |
+          The means have shape `(N,)` and align to trailing class axis C. The code raises when sizes
+          differ but silently subtracts example-indexed means by class when `N == C`. Keep axis one
+          to produce `(N,1)`.
+        explanation: Right-aligned broadcasting has no knowledge of batch or class meaning.
+        concepts: [keepdims, broadcasting-bug]
+        points: 1
+      - id: nrk-as-tuple
+        kind: predict-output
+        prompt: Give the output shape of `(4,6,8,10).mean(axis=(1,-1))`.
+        modelAnswer: Negative one is axis three, so axes one and three disappear and the result is `(4,8)`.
+        explanation: Surviving axes zero and two retain their original order.
+        concepts: [tuple-axis]
+        points: 1
+      - id: nrk-as-accumulator
+        kind: scenario
+        prompt: How do you select a safe integer sum dtype?
+        modelAnswer: |
+          Bound each input and the maximum group length, derive the largest magnitude total, choose
+          a dtype that represents it with margin, validate the input contract, and test the bound.
+        explanation: Input storage dtype alone does not prove aggregate safety.
+        concepts: [dtype, overflow]
+        points: 1
+      - id: nrk-as-mean-empty
+        kind: mcq
+        prompt: What is the best production response to an empty mean?
+        options:
+          - {id: contract, text: Apply an explicit reject, mask, or sentinel contract}
+          - {id: zero, text: Always replace it with zero silently}
+          - {id: ignore, text: Suppress the warning and accept any result}
+        answer: [contract]
+        explanation: There is no universal mean for zero observations; the domain must decide.
+        concepts: [empty-groups]
+        points: 1
+      - id: nrk-as-initial
+        kind: true-false
+        prompt: Is a reducer's `initial` value used only when a group is empty?
+        options:
+          - {id: yes, text: Yes}
+          - {id: no, text: No}
+        answer: [no]
+        explanation: Initial participates in every group, so it can change non-empty extrema too.
+        concepts: [initial]
+        points: 1
+      - id: nrk-as-softmax
+        kind: write-function
+        prompt: State the stable, axis-safe softmax pipeline.
+        modelAnswer: |
+          Reduce a maximum over the semantic class axis with kept dimensions, subtract it,
+          exponentiate, reduce the sum over the same kept axis, and divide. Validate finite or
+          all-masked group policy and assert sums equal one over that axis.
+        explanation: Kept dimensions make both stabilization and normalization align identically.
+        concepts: [softmax, stability]
+        points: 1
+      - id: nrk-as-argmax
+        kind: scenario
+        prompt: How do you gather winning scores from `(N,T,C)` logits?
+        modelAnswer: |
+          Compute class ids with argmax on axis two, producing `(N,T)`. Reinsert the class position
+          as `(N,T,1)` and pass it to take_along_axis on axis two.
+        explanation: The index result refers to the consumed class dimension.
+        concepts: [argmax, take-along-axis]
+        points: 1
+      - id: nrk-as-order
+        kind: true-false
+        prompt: Must two floating-point reductions with the same mathematical grouping be bit-identical?
+        options:
+          - {id: yes, text: Yes}
+          - {id: no, text: No}
+        answer: [no]
+        explanation: Different traversal or parallel trees can round at different points.
+        concepts: [floating-point, reproducibility]
+        points: 1
+      - id: nrk-as-tests
+        kind: refactor
+        prompt: Replace a shape-only reduction test with a semantic regression strategy.
+        modelAnswer: |
+          Use asymmetric and square adversarial shapes, assert output dtype and exact shape, then
+          assert a domain invariant such as zero centered means or unit softmax sums. Add singleton,
+          empty, masked, extreme-value, and long-axis cases plus independence across batch items.
+        explanation: Shape compatibility cannot prove that the intended groups were aggregated.
+        concepts: [testing, invariants]
+        points: 1
+interview:
+  - id: nrk-iv-shape-model
+    level: basic
+    requiredForMastery: true
+    concepts: [reduction-shape, semantic-axes]
+    question: How do you reason about the shape of a NumPy reduction?
+    shortAnswer: |
+      I name the input dimensions, normalize the requested axes, and split them into consumed and
+      surviving sets. Without keepdims, consumed positions disappear. With keepdims, they remain
+      size one while surviving dimensions keep their sizes and order.
+    fullAnswer: |
+      Each coordinate of the surviving dimensions identifies one reduction group. The reducer
+      combines all coordinates from the consumed dimensions inside that group. This model works for
+      sum, mean, extrema, boolean reductions, and arg reductions even though their value semantics
+      differ.
+    commonWrongAnswer: Axis zero means rows, so reducing it always returns column totals.
+    followUps:
+      - How do negative and tuple axes change the derivation?
+      - What does axis none consume?
+  - id: nrk-iv-keepdims
+    level: intermediate
+    requiredForMastery: true
+    concepts: [keepdims, broadcasting]
+    question: Why does keepdims prevent broadcasting bugs?
+    shortAnswer: |
+      It leaves every reduced dimension at its original position with size one. When the statistic
+      is combined with the source, broadcasting expands exactly those positions instead of aligning
+      a lower-rank result from the right.
+    fullAnswer: |
+      Without kept dimensions, semantic information is encoded only in convention. Equal batch and
+      class sizes can make an incorrect alignment legal. Keepdims does not validate that I chose the
+      correct axis, so I still use named contracts and invariants, but it preserves the chosen
+      axis's structural position.
+    commonWrongAnswer: Keepdims keeps the original elements so the reduction can be reversed.
+    followUps:
+      - Give a square-shape failure example.
+      - When would you deliberately squeeze the result?
+  - id: nrk-iv-numerics
+    level: advanced
+    requiredForMastery: true
+    concepts: [dtype, precision, reduction-order]
+    question: What numerical policies belong in a reduction API?
+    shortAnswer: |
+      I define accumulator and result dtype, overflow and precision budgets, non-finite handling,
+      empty-group behavior, mask semantics, and reproducibility tolerance. I derive choices from
+      group size and value bounds, then test against a trusted reference.
+    fullAnswer: |
+      Reductions amplify dtype decisions because many inputs feed one result. Integer totals can
+      overflow, and long float32 groups can lose contributions. Floating-point order may vary with
+      layout or parallelism, so exact equality is usually the wrong contract while bounded error
+      and domain invariants are appropriate.
+    commonWrongAnswer: NumPy always promotes every accumulator to the safest available dtype.
+    followUps:
+      - How would you bound an integer accumulator?
+      - Why can layout affect floating-point results?
+  - id: nrk-iv-empty-masks
+    level: tricky
+    requiredForMastery: true
+    concepts: [empty-groups, where, initial]
+    question: How do you design masked reductions when a group may select nothing?
+    shortAnswer: |
+      I define empty-group meaning explicitly and return a validity or count signal beside any
+      sentinel. Identity-free extrema need an initial bound mechanically, but that bound alone does
+      not prove a real value participated.
+    fullAnswer: |
+      For means I compute masked sums and counts, then divide only for positive counts. For maxima I
+      may use negative infinity as initial while also reducing `any` over the mask. Consumers must
+      branch on presence before using a sentinel in later arithmetic such as softmax.
+    commonWrongAnswer: Passing initial makes an empty group equivalent to a real observation.
+    followUps:
+      - Why does initial affect non-empty groups too?
+      - What policy should an all-masked attention row use?
+  - id: nrk-iv-softmax
+    level: debugging
+    requiredForMastery: true
+    concepts: [softmax, stability, axis-contract]
+    question: A softmax returns plausible values but rows do not sum to one. How do you debug it?
+    shortAnswer: |
+      I confirm the semantic class axis, then verify maximum subtraction and denominator sum use
+      that same axis with kept dimensions. I assert output shape, per-group unit sums, finite values,
+      and independence from unrelated batch rows.
+    fullAnswer: |
+      Plausible ranges are not sufficient because normalizing across batch also produces values
+      between zero and one. I use asymmetric fixtures and add a batch item to expose cross-example
+      coupling. I also test extreme logits and groups with no finite valid competitor.
+    commonWrongAnswer: If every output is between zero and one, the softmax axis is correct.
+    followUps:
+      - Why subtract the maximum?
+      - What happens for an all-negative-infinity group?
+  - id: nrk-iv-streaming
+    level: scenario
+    requiredForMastery: true
+    concepts: [streaming-reduction, mergeability, metrics]
+    question: How would you aggregate loss metrics across workers without averaging averages?
+    shortAnswer: |
+      Each worker returns sufficient state, at minimum valid count and sum for a mean. For variance
+      I use count, mean, and centered second moment with a tested merge formula. The coordinator
+      merges state, then finalizes once.
+    fullAnswer: |
+      Averaging worker means weights a tiny batch like a large one. Mergeable state preserves the
+      denominators and supports arbitrary partitioning. I define empty-worker behavior, dtype and
+      non-finite policy, then test all partitions and merge orders against a trusted one-shot result
+      within the numerical tolerance.
+    commonWrongAnswer: Take the arithmetic mean of all worker means because each worker computed the same metric.
+    followUps:
+      - What additional state is needed for variance?
+      - Which invariance makes a strong property test?
+projects:
+  - id: nrk-project-masked-metrics
+    kind: major
+    title: Build a reduction-safe ML metrics engine
+    minutes: 260
+    summary: Implement batch and streaming metrics whose axes, masks, dtypes, empty groups, and merge behavior are explicit and tested.
+    problem: |
+      An inference platform receives token losses `(N,T)`, logits `(N,T,C)`, validity masks, and
+      worker-partitioned batches. Build a NumPy metrics package that reports per-example and global
+      loss, accuracy, stable log-sum-exp, class predictions, counts, and streaming mean plus
+      variance without silent broadcasting or average-of-averages errors.
+    requirements:
+      - Define semantic shape contracts for every public input and output.
+      - Centralize positive, negative, and tuple-axis normalization with duplicate rejection.
+      - Preserve reduced positions throughout internal arithmetic and squeeze only at documented boundaries.
+      - Return counts or validity masks for every reduction that may receive an empty group.
+      - Select accumulator dtypes from stated range, length, and error budgets.
+      - Implement stable softmax or log-sum-exp with one shared semantic axis.
+      - Implement mergeable count, mean, and variance state for worker results.
+      - Record group sizes, masked counts, non-finite counts, and reduction latency without logging raw data.
+    constraints:
+      - Use NumPy and the Python standard library only.
+      - Do not average per-worker or per-example averages without their weights.
+      - Do not repair alignment by trial-and-error reshaping.
+      - Avoid Python loops over individual tensor elements.
+    expectedBehaviour:
+      - Rectangular and square fixtures produce identical semantic behavior.
+      - Adding an unrelated example cannot change another example's class probabilities.
+      - Empty and all-masked groups follow documented result and validity policies.
+      - Every partition and worker merge order agrees with a one-shot reference within tolerance.
+      - Long integer and floating groups remain within declared overflow and error budgets.
+    structure: |
+      reduction_metrics/
+        __init__.py
+        axes.py
+        masked.py
+        classification.py
+        streaming.py
+        contracts.py
+      tests/
+        test_axes.py
+        test_masked.py
+        test_classification.py
+        test_streaming.py
+        test_numerics.py
+    milestones:
+      - title: "1 — Write semantic contracts and adversarial fixtures"
+        detail: Name every dimension and define dtype, empty, mask, and non-finite behavior before implementation.
+      - title: "2 — Build kept-rank batch reducers"
+        detail: Implement masked losses, predictions, and stable normalization with invariant checks.
+      - title: "3 — Add mergeable streaming state"
+        detail: Implement weighted merge formulas and prove partition invariance.
+      - title: "4 — Measure numerical and runtime budgets"
+        detail: Benchmark layouts and dtypes while comparing error to a trusted reference.
+    testing:
+      - Use asymmetric shapes and dedicated equal-size fixtures that expose accidental broadcasting.
+      - Cover singleton, zero-length, all-masked, non-finite, extreme-value, and long-axis inputs.
+      - Assert shape, dtype, counts, invariants, and batch independence rather than value range alone.
+      - Generate random partitions and merge orders for comparison with one-shot metrics.
+      - Retain evidence that narrow accumulators fail the boundary tests.
+    failureCases:
+      - A dropped row statistic aligns with a same-sized class axis.
+      - A masked mean reports zero without revealing that its count is zero.
+      - Worker means are averaged without weighting by valid observations.
+      - Stable softmax uses different axes for maximum and denominator.
+      - A wider output cast occurs only after a narrow accumulator has overflowed.
+    bonus:
+      - Add property tests for reduction shape algebra across random ranks and axis tuples.
+      - Compare pairwise, naive, and compensated accumulation error on difficult sequences.
+      - Add a copied-byte and temporary-allocation budget to benchmarks.
+    architectureHints:
+      - Keep reduction state and finalized reports as separate immutable dataclasses.
+      - Make kept-rank arrays the internal representation for every broadcast-back operation.
+      - Carry counts beside values until the final reporting boundary.
+    referenceOutline: |
+      Start with axis normalization and a shape-contract layer. Implement each batch reducer as
+      validate, reduce with kept dimensions and deliberate dtype, assert invariants, then finalize
+      its public shape. Streaming state stores count, mean, and M2 and merges through weighted
+      deltas. Tests compare every partition to one-shot NumPy references.
+  - id: nrk-final-reduction-audit
+    kind: final-challenge
+    title: Find nine reduction defects in a model evaluator
+    minutes: 85
+    summary: Audit a plausible evaluator whose equal dimensions hide wrong broadcasts, unsafe accumulators, and invalid empty-group behavior.
+    problem: |
+      Before editing, identify exactly nine independent root causes in a model evaluator that
+      centers logits, computes masked losses, chooses predictions, merges worker metrics, and
+      reports variance. Write one regression per defect that fails against the original, then make
+      the smallest contract-preserving repairs.
+    requirements:
+      - Submit a numbered nine-cause report before changing implementation code.
+      - Include dropped-dimension broadcasting, wrong semantic axis, and sequential-axis-renumbering defects.
+      - Include narrow accumulator overflow, unstable exponentiation, and an all-masked group defect.
+      - Include average-of-averages, flattened argmax, and shape-only-test defects.
+      - Prove every regression fails against the original and passes after repair.
+    constraints:
+      - Do not change public semantics merely to match existing wrong output.
+      - Do not replace vectorized reductions with per-element loops.
+      - Do not count several symptoms from one root cause as separate defects.
+    expectedBehaviour:
+      - Exactly nine independent causes are explained and repaired.
+      - Per-example metrics remain independent of unrelated batch items.
+      - Empty-group and non-finite policies are observable in returned metadata.
+      - Worker partitioning does not change finalized metrics beyond tolerance.
+    milestones:
+      - title: "1 — Derive every reduction contract"
+        detail: Annotate consumed axes, surviving axes, kept shapes, dtype, and empty behavior.
+      - title: "2 — Expose nine failures"
+        detail: Use adversarial shapes, masks, bounds, partitions, and semantic invariants.
+      - title: "3 — Repair and prove"
+        detail: Apply narrow fixes and rerun one-shot, partitioned, and numerical-bound tests.
+    testing:
+      - Retain fail-before-fix evidence for all nine regressions.
+      - Include rectangular, equal-size, singleton, empty, all-masked, and extreme-value cases.
+      - Assert counts, dtype, stable rank, domain invariants, and partition independence.
+    failureCases:
+      - Treating a warning suppression as an empty-group policy.
+      - Widening the result only after overflow already occurred.
+      - Fixing a shape assertion without testing semantic values.
+    bonus:
+      - Add randomized partition-invariance tests for streaming state.
+    architectureHints:
+      - Separate aggregation state from presentation formatting.
+      - Keep reduced axes until the final public boundary.
+    referenceOutline: |
+      The nine causes are a dropped row mean, batch-axis normalization, stale sequential axis,
+      uint16 accumulation, direct exponential overflow, missing all-masked validity, unweighted
+      worker means, flattened argmax, and equal-size shape-only tests. Each gets one adversarial
+      regression and one focused repair.
+resources:
+  - name: NumPy sum reference
+    type: docs
+    difficulty: intro
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.sum.html"
+    usefulness: 5
+    why: It defines the canonical reduction parameters and documents accumulator dtype, identities, masks, and floating-point summation behavior.
+    covers: Axis tuples, dtype selection, keepdims, initial, where, empty sums, and numerical notes.
+  - name: NumPy ufunc reduce reference
+    type: docs
+    difficulty: deep
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.ufunc.reduce.html"
+    usefulness: 5
+    why: It exposes the generalized reduction mechanism beneath many familiar operations, including identity and multi-axis constraints.
+    covers: Ufunc reduction semantics, accumulator dtype, axis handling, keepdims, initial, and where.
+  - name: NumPy mean reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.mean.html"
+    usefulness: 5
+    why: It documents the precision behavior that makes storage dtype and reduction accumulator policy separate engineering decisions.
+    covers: Mean axes, output dtype, float32 accuracy, keepdims, where, and returned shape.
+  - name: NumPy broadcasting guide
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/user/basics.broadcasting.html"
+    usefulness: 5
+    why: It is the primary explanation of the right-alignment rules that make dropped reduction dimensions either fail loudly or corrupt silently.
+    covers: Trailing-axis comparison, singleton expansion, compatibility rules, and broadcasting examples.
+  - name: NumPy statistics routines
+    type: docs
+    difficulty: deep
+    url: "https://numpy.org/doc/stable/reference/routines.statistics.html"
+    usefulness: 4
+    why: It maps the related reducers needed to choose the correct statistical question instead of treating every aggregate as a sum.
+    covers: Means, variances, extrema, percentiles, correlations, histograms, and NaN-aware statistics.

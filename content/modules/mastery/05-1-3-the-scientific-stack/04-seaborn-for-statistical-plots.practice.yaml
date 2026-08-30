@@ -1,0 +1,392 @@
+lessonId: "roadmap:phase-1-1.3:3"
+module: 1-3-the-scientific-stack
+lesson: 04-seaborn-for-statistical-plots
+title: "seaborn for statistical plots"
+summary: Practise tidy semantic mappings, honest estimation, uncertainty, distributions, and faceting.
+mastery: {minAssessmentScore: 80, requireProject: true, requireInterview: true, requireDebug: true, revisitAfterDays: 21}
+
+exercises:
+  - id: sns-tidy-scatter
+    tier: normal
+    kind: write-code
+    title: Map tidy variables
+    minutes: 9
+    requiredForMastery: true
+    concepts: [tidy-data, semantics]
+    prompt: Plot bill against tip, mapping smoker to hue and meal to style on an existing Axes.
+    hints: [Choose the axes-level relational function., Pass column names rather than extracted arrays.]
+    solution: The tidy mapping lets seaborn group and encode two categories while the supplied Axes preserves layout ownership.
+    solutionCode: |
+      sns.scatterplot(data=df, x="bill", y="tip", hue="smoker", style="meal", ax=ax)
+
+  - id: sns-function-level
+    tier: normal
+    kind: code-reading
+    title: Classify plotting functions
+    minutes: 8
+    requiredForMastery: true
+    concepts: [axes-level, figure-level]
+    prompt: Explain why sns.relplot(..., col="site") returns a grid while sns.scatterplot(..., ax=ax) returns an Axes.
+    hints: [One function owns a Figure., The other draws into one panel.]
+    solution: relplot is figure-level and manages a FacetGrid across panels; scatterplot is axes-level and composes within the caller's Matplotlib Figure.
+
+  - id: sns-disable-estimator
+    tier: normal
+    kind: write-code
+    title: Show individual runs
+    minutes: 10
+    requiredForMastery: true
+    concepts: [lineplot, estimator, units]
+    prompt: Plot every run_id trajectory without averaging repeated minute values.
+    hints: [Disable the center estimator., Use units to identify trajectories.]
+    solution: Disabling aggregation reveals each observed run; hue can remain available for a meaningful grouping variable.
+    solutionCode: |
+      sns.lineplot(
+          data=df, x="minute", y="value", units="run_id",
+          estimator=None, errorbar=None, ax=ax,
+      )
+
+  - id: sns-category-order
+    tier: normal
+    kind: design
+    title: Set semantic order
+    minutes: 9
+    requiredForMastery: true
+    concepts: [categorical, order]
+    prompt: Ensure severity always appears as low, medium, high across plots and subsets.
+    hints: [Data appearance order is not a contract., Use an ordered dtype or an explicit function argument.]
+    solution: Define one canonical ordered categorical dtype or pass the same order and hue_order sequence so filtering does not reorder the semantic scale.
+
+  - id: sns-hist-ecdf
+    tier: intermediate
+    kind: write-code
+    title: Compare distribution views
+    minutes: 12
+    requiredForMastery: true
+    concepts: [histogram, ECDF, bins]
+    prompt: Draw a histogram and ECDF of latency in two supplied Axes.
+    hints: [Use axes-level distribution functions., Label latency units.]
+    solution: The histogram exposes binned shape while the ECDF shows cumulative proportions without bandwidth selection, providing complementary evidence.
+    solutionCode: |
+      sns.histplot(data=df, x="latency_ms", bins="auto", ax=axes[0])
+      sns.ecdfplot(data=df, x="latency_ms", ax=axes[1])
+      for ax in axes:
+          ax.set_xlabel("Latency (ms)")
+
+  - id: sns-errorbar-policy
+    tier: intermediate
+    kind: design
+    title: Specify uncertainty
+    minutes: 15
+    requiredForMastery: true
+    concepts: [errorbar, estimator, sampling-unit]
+    prompt: Define what an error band should mean for repeated measurements from 20 devices.
+    hints: [Rows within a device are not independent., Distinguish spread from uncertainty.]
+    solution: State the estimand and interval type, use device as the resampling or model cluster, report the number of devices and observations, and compute externally if the plotting API cannot honor the design.
+
+  - id: sns-raw-plus-summary
+    tier: intermediate
+    kind: design
+    title: Reveal a small distribution
+    minutes: 13
+    requiredForMastery: true
+    concepts: [boxplot, stripplot, sample-size]
+    prompt: Compare values across four groups with only 12 observations each.
+    hints: [A summary alone hides the sample., Layer observations with controlled jitter.]
+    solution: Combine a box or interval summary with a strip/swarm layer, show group counts, use transparent points, and avoid a violin whose smooth density overstates sparse evidence.
+
+  - id: sns-facet-scales
+    tier: intermediate
+    kind: explain
+    title: Choose facet axis sharing
+    minutes: 12
+    requiredForMastery: true
+    concepts: [facets, shared-scales]
+    prompt: Explain the tradeoff between shared and independent y scales across service facets.
+    hints: [One supports cross-panel magnitude comparison., The other emphasizes within-panel patterns.]
+    solution: Shared scales enable honest magnitude comparison but can flatten small services; independent scales reveal local shape but make equal visual slopes or heights incomparable and must be labelled clearly.
+
+  - id: sns-hidden-average-bug
+    tier: tricky
+    kind: debug
+    title: Find hidden aggregation
+    minutes: 15
+    requiredForMastery: true
+    concepts: [lineplot, estimator]
+    prompt: Ten experiment runs appear as one smooth line with a band. Diagnose the transformation.
+    hints: [Repeated x values trigger statistical estimation., Inspect estimator and interval defaults.]
+    solution: The line plot grouped observations at each x and estimated a center plus uncertainty. Set explicit estimator/errorbar semantics or disable them and identify individual runs.
+
+  - id: sns-figure-axes-bug
+    tier: tricky
+    kind: debug
+    title: Fix figure-level composition
+    minutes: 14
+    requiredForMastery: true
+    concepts: [relplot, FacetGrid, Axes]
+    prompt: sns.relplot(..., ax=axes[1]) creates an unexpected Figure and warning. Repair the API choice.
+    hints: [Figure-level functions own their Figure., Choose the underlying axes-level function.]
+    solution: Use sns.scatterplot or sns.lineplot with ax=axes[1], or let relplot own the complete FacetGrid and customize its returned object.
+
+  - id: sns-missingness-bug
+    tier: tricky
+    kind: debug
+    title: Expose silently absent rows
+    minutes: 15
+    requiredForMastery: true
+    concepts: [missing-data, denominator]
+    prompt: A chart looks healthy because failing measurements have null y values and never appear.
+    hints: [Plotting functions omit unusable observations., Report missingness before drawing.]
+    solution: Compute missing counts and rates by relevant group, visualize or annotate them separately, and define whether missingness itself signals failure rather than allowing silent row omission.
+
+  - id: sns-kde-boundary
+    tier: tricky
+    kind: explain
+    title: Critique a density plot
+    minutes: 16
+    requiredForMastery: false
+    concepts: [KDE, bandwidth, support]
+    prompt: A latency KDE extends below zero and shows two peaks in a small sample. Assess the evidence.
+    hints: [Kernels can extend beyond domain support., Peaks depend on bandwidth.]
+    solution: Enforce or display physical support, compare bandwidths, histogram and ECDF, show observations and count, and avoid claiming multimodality unless the feature is robust to reasonable choices.
+
+  - id: sns-regression-causality
+    tier: challenge
+    kind: design
+    title: Prevent a causal overclaim
+    minutes: 22
+    requiredForMastery: false
+    concepts: [regression, confounding, residuals]
+    prompt: A regression plot links load to failures. Design the evidence needed before making a causal claim.
+    hints: [A fitted association does not identify intervention effects., Look for confounding and sampling structure.]
+    solution: Define the causal estimand and design, inspect raw strata and time ordering, control justified confounders, validate model residuals and leverage, quantify uncertainty, and phrase the plot as association unless identification assumptions hold.
+
+  - id: sns-latency-dashboard
+    tier: challenge
+    kind: performance
+    title: Design a scalable distribution report
+    minutes: 26
+    requiredForMastery: false
+    concepts: [sampling, aggregation, rendering]
+    prompt: Visualize 100 million latency rows across 80 services without freezing rendering or hiding tails.
+    hints: [Prepare bounded plotting data outside seaborn., Tail quantiles and ECDF summaries may matter more than every mark.]
+    solution: Compute validated service-level distributions or deterministic samples in the data engine, retain counts and tail quantiles, facet only selected services, use ECDF/quantile summaries, and link the displayed sample to full-population diagnostics.
+
+quizzes:
+  - id: sns-checkpoint
+    title: seaborn checkpoint
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: sns-cp-level
+        kind: mcq
+        prompt: Which is axes-level?
+        options: [{id: sns-cp-level-scatter, text: scatterplot}, {id: sns-cp-level-rel, text: relplot}]
+        answer: [sns-cp-level-scatter]
+        explanation: Scatterplot draws on one Axes; relplot owns a grid.
+        concepts: [API]
+      - id: sns-cp-line
+        kind: true-false
+        prompt: A lineplot may aggregate repeated observations by default.
+        options: [{id: sns-cp-line-true, text: "true"}, {id: sns-cp-line-false, text: "false"}]
+        answer: [sns-cp-line-true]
+        explanation: Estimation must be inspected and configured.
+        concepts: [estimation]
+      - id: sns-cp-ecdf
+        kind: mcq
+        prompt: Which distribution view avoids bin and bandwidth choice?
+        options: [{id: sns-cp-ecdf-opt, text: ECDF}, {id: sns-cp-kde-opt, text: KDE}]
+        answer: [sns-cp-ecdf-opt]
+        explanation: ECDF directly plots cumulative empirical mass.
+        concepts: [distribution]
+      - id: sns-cp-causal
+        kind: true-false
+        prompt: A regression confidence band proves causality.
+        options: [{id: sns-cp-causal-true, text: "true"}, {id: sns-cp-causal-false, text: "false"}]
+        answer: [sns-cp-causal-false]
+        explanation: Association plus model uncertainty does not identify causal effects.
+        concepts: [regression]
+
+  - id: sns-assessment
+    title: seaborn mastery assessment
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: sns-as-tidy
+        kind: explain
+        prompt: What does one tidy row represent?
+        modelAnswer: One observational unit, with variables in columns and observation values in that row.
+        explanation: The observational unit must be stated before semantic mapping.
+        concepts: [tidy-data]
+      - id: sns-as-grid
+        kind: mcq
+        prompt: What does a figure-level function commonly return?
+        options: [{id: sns-as-grid-facet, text: FacetGrid-like object}, {id: sns-as-grid-series, text: pandas Series}]
+        answer: [sns-as-grid-facet]
+        explanation: Figure-level functions own a multi-panel layout object.
+        concepts: [API]
+      - id: sns-as-interval
+        kind: explain
+        prompt: Distinguish spread from uncertainty.
+        modelAnswer: Spread describes variation among observations; uncertainty describes how precisely an estimand has been learned and usually shrinks with more independent information.
+        explanation: Error bars must say which quantity they encode.
+        concepts: [uncertainty]
+      - id: sns-as-cluster
+        kind: scenario
+        prompt: What is the independent resampling unit for repeated rows per device?
+        modelAnswer: Usually the device or higher-level experimental unit, subject to the actual sampling design.
+        explanation: Resampling correlated rows independently overstates information.
+        concepts: [bootstrap]
+      - id: sns-as-hist
+        kind: mcq
+        prompt: Which choice can manufacture or hide histogram modes?
+        options: [{id: sns-as-hist-bin, text: bin width and origin}, {id: sns-as-hist-font, text: font family only}]
+        answer: [sns-as-hist-bin]
+        explanation: Histogram shape depends directly on bin construction.
+        concepts: [histogram]
+      - id: sns-as-violin
+        kind: scenario
+        prompt: Why overlay observations on a violin for small samples?
+        modelAnswer: The raw points reveal count, discreteness, gaps, and whether the smoothed density is supported by enough observations.
+        explanation: Smooth shapes can overstate evidence.
+        concepts: [distribution]
+      - id: sns-as-order
+        kind: explain
+        prompt: How do you keep category order stable?
+        modelAnswer: Use a canonical ordered categorical dtype or pass explicit order and hue_order consistently.
+        explanation: Subsetting should not rewrite semantic order.
+        concepts: [categorical]
+      - id: sns-as-missing
+        kind: find-bug
+        prompt: Why can dropping null y values bias the visible story?
+        modelAnswer: Missingness may depend on group or outcome, changing denominators and hiding failures; quantify and report it explicitly.
+        explanation: Omitted marks are not evidence of absent cases.
+        concepts: [missingness]
+      - id: sns-as-facet
+        kind: scenario
+        prompt: What warning accompanies independent facet scales?
+        modelAnswer: Equal visual heights or slopes across panels no longer represent equal magnitudes, so scales and labels must be explicit.
+        explanation: Free scales support local shape, not direct magnitude comparison.
+        concepts: [facets]
+      - id: sns-as-large
+        kind: performance
+        prompt: How should seaborn handle a data volume too large to render?
+        modelAnswer: Prepare validated aggregates or deterministic samples outside plotting, retain counts and tail evidence, and document the transformation.
+        explanation: Rendering every row is neither necessary nor automatically honest.
+        concepts: [performance]
+
+interview:
+  - id: sns-iv-levels
+    level: basic
+    question: Axes-level versus figure-level seaborn functions?
+    shortAnswer: Axes-level functions draw into one supplied Axes; figure-level functions create and manage a facet grid.
+    fullAnswer: Choose based on ownership. Axes-level calls compose in custom Matplotlib layouts, while figure-level calls simplify faceting and return grid-specific customization methods.
+    commonWrongAnswer: Figure-level functions only make larger images.
+    followUps: [Can you pass ax to relplot?]
+    concepts: [API]
+    requiredForMastery: true
+  - id: sns-iv-estimator
+    level: intermediate
+    question: What can seaborn calculate before drawing?
+    shortAnswer: Grouped estimators, intervals, bins, densities, regressions, and category layouts depending on the function.
+    fullAnswer: Plot calls can transform data statistically, so reviewers need explicit estimator, uncertainty, grouping, and parameter choices.
+    commonWrongAnswer: It only styles Matplotlib.
+    followUps: [How do you disable line aggregation?]
+    concepts: [estimation]
+    requiredForMastery: true
+  - id: sns-iv-errorbar
+    level: advanced
+    question: How do you explain an error bar?
+    shortAnswer: Name center, interval quantity and level, independent unit, method, and sample size.
+    fullAnswer: Distinguish descriptive spread from inferential uncertainty and ensure resampling or modeling respects clustered and repeated observations.
+    commonWrongAnswer: It shows standard error by definition.
+    followUps: [When would you compute intervals externally?]
+    concepts: [uncertainty]
+    requiredForMastery: true
+  - id: sns-iv-kde
+    level: tricky
+    question: What can go wrong with KDE?
+    shortAnswer: Bandwidth can hide or invent modes, kernels can cross boundaries, and sparse samples can look falsely smooth.
+    fullAnswer: Compare bandwidths and empirical views, respect domain support, display counts or points, and do not read every bump as a population feature.
+    commonWrongAnswer: KDE is always a more accurate histogram.
+    followUps: [Why use an ECDF?]
+    concepts: [KDE]
+    requiredForMastery: false
+  - id: sns-iv-causal
+    level: scenario
+    question: How do you stop a regression plot becoming a causal claim?
+    shortAnswer: Label it association unless design and identification assumptions justify causality.
+    fullAnswer: Expose raw data and groups, analyze confounding and time order, validate model assumptions, and communicate the actual estimand and limitations.
+    commonWrongAnswer: Add a confidence band.
+    followUps: [What is a confounder?]
+    concepts: [causality]
+    requiredForMastery: false
+  - id: sns-iv-choice
+    level: comparison
+    question: Box, violin, histogram, or ECDF?
+    shortAnswer: Choose from the question, sample size, support, comparison task, and smoothing tolerance.
+    fullAnswer: Box emphasizes robust summaries, violin adds bandwidth-dependent density, histogram uses bins, and ECDF shows cumulative empirical mass; combine views when weaknesses differ.
+    commonWrongAnswer: Violin is always best because it shows more.
+    followUps: [How do you show raw points?]
+    concepts: [distribution]
+    requiredForMastery: false
+
+projects:
+  - id: sns-project-experiment-report
+    kind: major
+    title: Repeated-measures experiment report
+    summary: Build an honest statistical visualization report for multi-service before/after experiments.
+    problem: Measurements repeat within hosts and runs, include missing failures, skewed latency, unequal group sizes, and tempting but unjustified causal narratives.
+    requirements: [Document observational and independent units, Show distributions and raw or sampled observations, Compute cluster-aware intervals, Report missingness and counts, Produce consistent accessible facets]
+    constraints: [No unexplained default estimator, No color-only critical encoding, No causal wording without identification evidence]
+    expectedBehaviour: [Group order remains stable, Missing failures remain visible, Intervals name their meaning, Extreme tails are not cropped silently]
+    milestones:
+      - title: Analysis table
+        detail: Define tidy rows, variables, clusters, missing policy, and validated derived measures.
+      - title: Visual grammar
+        detail: Select complementary plots, facets, semantics, estimators, and accessible encodings.
+      - title: Audit
+        detail: Compare parameter choices and test labels, counts, artists, and generated narrative.
+    testing: [All-null subgroup, one-observation group, outliers, unequal repeats, changed category order]
+    failureCases: [Row-wise bootstrap, hidden aggregation, misleading free scales, KDE beyond support]
+    bonus: [Interactive linked table, sensitivity appendix for bins and bandwidth]
+    architectureHints: [Compute inferential results outside the plotting call., Pass Axes into focused render helpers.]
+    referenceOutline: Separate preparation, estimands, intervals, plot specifications, renderers, and report assembly with fixture-based tests.
+    minutes: 280
+
+resources:
+  - name: seaborn Function overview
+    type: docs
+    difficulty: core
+    url: https://seaborn.pydata.org/tutorial/function_overview.html
+    why: The primary tutorial distinguishes relational, distributional, categorical, axes-level, and figure-level interfaces with compositional examples.
+    covers: Plot families and Figure versus Axes ownership.
+    usefulness: 5
+  - name: seaborn Data structures
+    type: docs
+    difficulty: core
+    url: https://seaborn.pydata.org/tutorial/data_structure.html
+    why: The official guide explains long-form and wide-form inputs and how variable roles control semantic mapping across functions.
+    covers: Tidy data and accepted input representations.
+    usefulness: 5
+  - name: seaborn Distribution tutorial
+    type: tutorial
+    difficulty: deep
+    url: https://seaborn.pydata.org/tutorial/distributions.html
+    why: The maintained tutorial compares histograms, KDEs, ECDFs, bivariate views, binning, bandwidth, and normalization tradeoffs.
+    covers: Distribution visualization choices and failure modes.
+    usefulness: 5
+  - name: seaborn Statistical estimation and error bars
+    type: tutorial
+    difficulty: deep
+    url: https://seaborn.pydata.org/tutorial/error_bars.html
+    why: The primary guide separates data spread from estimate uncertainty and explains parametric and nonparametric interval options.
+    covers: Estimators, intervals, confidence, and variability.
+    usefulness: 5
+  - name: seaborn Relational plots
+    type: tutorial
+    difficulty: core
+    url: https://seaborn.pydata.org/tutorial/relational.html
+    why: The official relational tutorial demonstrates semantic mappings, repeated measurements, aggregation, units, faceting, and line uncertainty.
+    covers: Scatter, line, hue, style, size, units, and facets.
+    usefulness: 5

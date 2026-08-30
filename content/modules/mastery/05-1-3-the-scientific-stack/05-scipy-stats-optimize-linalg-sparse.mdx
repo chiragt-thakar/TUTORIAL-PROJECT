@@ -1,0 +1,204 @@
+---
+id: "roadmap:phase-1-1.3:4"
+title: "scipy: stats, optimize, linalg, sparse"
+description: "Use SciPy's statistical, optimization, linear-algebra, and sparse tools by making mathematical assumptions and numerical failure modes explicit."
+module: 1-3-the-scientific-stack
+order: 5
+estimatedMinutes: 155
+prerequisites: ["roadmap:phase-1-1.2:7", "roadmap:phase-1-1.2:8", "roadmap:phase-1-1.3:0"]
+learningObjectives:
+  - Select statistical procedures from estimands, sampling designs, and assumptions
+  - Formulate optimization objectives, constraints, derivatives, scaling, and convergence checks
+  - Solve linear systems with factorizations rather than explicit matrix inversion
+  - Choose sparse formats and iterative solvers from access patterns and matrix structure
+---
+
+SciPy turns mathematical problems into tested numerical routines. Correct use starts before the function call: define the estimand or objective, encode assumptions, choose a representation, and decide what evidence counts as success.
+
+A returned array or `success=True` is not sufficient. Numerical scale, conditioning, constraints, sampling design, and solver diagnostics remain your responsibility.
+
+<TypeScriptComparison>
+
+SciPy functions resemble native numerical kernels behind a typed service boundary. Unlike ordinary JavaScript library calls, results are often approximations whose reliability depends on mathematical structure. Validate residuals and assumptions, not only exceptions.
+
+</TypeScriptComparison>
+
+## Statistics begins with the data-generating process
+
+`scipy.stats` provides distributions, descriptive statistics, hypothesis tests, resampling, and fitted parameters. Choose a procedure from the question and sampling design rather than searching for a function that returns a small p-value.
+
+```python
+import numpy as np
+from scipy import stats
+
+before = np.array([12.1, 11.8, 12.4, 13.0])
+after = np.array([11.7, 11.5, 12.0, 12.6])
+difference = after - before
+result = stats.ttest_1samp(difference, popmean=0.0)
+interval = stats.bootstrap((difference,), np.mean, confidence_level=0.95)
+```
+
+This paired analysis targets the mean within-pair difference. It is different from treating before and after as independent samples. Report effect size and interval alongside the test result.
+
+A p-value is the probability, under the null model and its assumptions, of a result at least as incompatible as the observation. It is not the probability that the null is true. Multiple testing, optional stopping, dependence, and selection can invalidate naive interpretation.
+
+## Random variables and fitting
+
+Distribution objects expose density or mass functions, cumulative probabilities, quantiles, random sampling, and fitting. Use survival functions for extreme upper tails when `1 - cdf(x)` loses precision.
+
+Fitted parameters do not prove the distribution is appropriate. Inspect diagnostics, domain support, censoring, dependence, and held-out predictive behavior.
+
+## Optimization is a model plus a stopping rule
+
+Write an objective with clear units and parameter domains. Scale variables so meaningful changes have comparable magnitude. Provide gradients or Jacobians when trustworthy, then verify them with finite differences on representative points.
+
+```python
+from scipy.optimize import minimize
+
+
+def objective(x: np.ndarray) -> float:
+    return float((x[0] - 3.0) ** 2 + 10.0 * (x[1] + 1.0) ** 2)
+
+
+fit = minimize(objective, x0=np.array([0.0, 0.0]), method="BFGS")
+if not fit.success or np.linalg.norm(fit.jac) > 1e-6:
+    raise RuntimeError(f"optimization failed: {fit.message}")
+```
+
+Local solvers can converge to different stationary points from different starts. A termination message may indicate a small step, small objective change, or exhausted budget rather than a globally good solution.
+
+For constrained problems, encode bounds and constraints explicitly. After solving, check feasibility, objective value, gradient/KKT-style conditions where applicable, and sensitivity to starts and tolerances.
+
+## Linear algebra: solve, do not invert
+
+For `Ax = b`, use `scipy.linalg.solve` or a factorization suited to matrix structure. Computing `inv(A) @ b` performs extra work and usually accumulates more error.
+
+```python
+from scipy import linalg
+
+A = np.array([[4.0, 1.0], [1.0, 3.0]])
+b = np.array([1.0, 2.0])
+x = linalg.solve(A, b, assume_a="pos")
+relative_residual = np.linalg.norm(A @ x - b) / np.linalg.norm(b)
+assert relative_residual < 1e-12
+```
+
+Exploit symmetry, positive definiteness, banded form, or triangular structure when verified. Reuse LU or Cholesky factors for many right-hand sides.
+
+Condition number measures sensitivity: a small residual can coexist with a large error in `x` when `A` is ill-conditioned. Scaling, regularization, higher precision, or a reformulated problem may be needed.
+
+## Sparse matrices encode stored structure
+
+Sparse storage is useful when most entries are zero and algorithms preserve that advantage. CSR is efficient for row slicing and matrix-vector products; CSC favors column access and many factorization workflows; COO is convenient for construction; LIL or DOK supports incremental assembly.
+
+```python
+from scipy import sparse
+from scipy.sparse import linalg as spla
+
+A_sparse = sparse.csr_matrix(
+    ([4.0, -1.0, -1.0, 4.0], ([0, 0, 1, 1], [0, 1, 0, 1])),
+    shape=(2, 2),
+)
+x = spla.spsolve(A_sparse, np.array([1.0, 2.0]))
+```
+
+Do not densify accidentally with `.toarray()` or an operation lacking sparse support. Sparse operations can also create fill-in, where factorizations store many entries that were originally zero.
+
+## Iterative solvers need structure and diagnostics
+
+Conjugate gradient is appropriate for symmetric positive-definite systems; GMRES handles broader nonsymmetric systems. Preconditioners transform the system so iterations converge faster.
+
+Always inspect the solver's status and compute a residual. Choose absolute and relative tolerances using problem scale. Track iterations because a solver that technically converges after a huge cost may be operationally unusable.
+
+## Precision, reproducibility, and boundaries
+
+Floating-point routines can vary slightly across BLAS/LAPACK implementations, platforms, thread counts, and library versions. Tests should use justified tolerances and invariants rather than exact decimal strings.
+
+Pass an explicit NumPy `Generator` or seed to stochastic procedures where supported. Record versions, inputs, solver method, tolerances, and diagnostics with the result.
+
+<ProductionNote>
+
+Wrap numerical calls in domain functions that validate shapes, finiteness, units, constraints, matrix structure, and outputs. Return diagnostics beside estimates so callers cannot accidentally discard convergence or uncertainty evidence.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="scipy-paired-easy" difficulty="easy">
+
+Why is a paired test appropriate for before/after measurements on the same devices?
+
+<Solution>
+
+The independent unit is the device, and the estimand concerns within-device change. Analyzing pairwise differences preserves that design instead of pretending the two samples are independent.
+
+</Solution>
+</Exercise>
+
+<Exercise id="scipy-solve-medium" difficulty="medium">
+
+Replace `np.linalg.inv(A) @ b` with a safer computation and validation.
+
+<Solution>
+
+Use `scipy.linalg.solve(A, b)` with a verified structure hint when available, then check `norm(A @ x - b) / norm(b)` and consider conditioning.
+
+</Solution>
+</Exercise>
+
+<Exercise id="scipy-optimizer-hard" difficulty="hard">
+
+An optimizer reports success but violates a business constraint. What went wrong?
+
+<Solution>
+
+The constraint may be absent, incorrectly signed/scaled, or satisfied only within an unsuitable tolerance. Encode it explicitly, evaluate feasibility after solving, inspect diagnostics, and test multiple starts and boundary cases.
+
+</Solution>
+</Exercise>
+
+<Exercise id="scipy-condition-interview" difficulty="interview">
+
+Can a linear solve have a tiny residual but an inaccurate solution?
+
+<Solution>
+
+Yes. In an ill-conditioned system, small perturbations in inputs or arithmetic can create large changes in the solution. Residual measures equation fit; conditioning connects that residual to forward error.
+
+</Solution>
+</Exercise>
+
+<Exercise id="scipy-sparse-real-world" difficulty="real-world">
+
+Design a solve path for a million-row sparse network system.
+
+<Solution>
+
+Preserve sparse construction, determine symmetry and definiteness, choose CSR/CSC from operations, use an appropriate iterative solver and preconditioner, track convergence and residuals, test memory/fill-in, and avoid dense intermediates.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+  <Gotcha question="Why is success=True not enough for an optimizer?">
+    It reports a stopping condition under one method. You must still check feasibility, gradient or stationarity evidence, objective quality, and sensitivity.
+  </Gotcha>
+  <Gotcha question="Why did a sparse computation run out of memory?">
+    An intermediate may have densified, or factorization fill-in destroyed sparsity. Inspect formats and peak memory throughout the plan.
+  </Gotcha>
+  <Gotcha question="Why is 1 - cdf inaccurate in an extreme tail?">
+    Subtraction loses precision when the CDF rounds near one. Use the distribution's survival function.
+  </Gotcha>
+</Gotchas>
+
+## Checkpoint
+
+You should be able to name an estimand, interpret a p-value, validate optimizer convergence, justify `solve` over inverse, choose a sparse format, and compute residuals with scale-aware tolerances.
+
+## Summary
+
+- Statistical procedures inherit assumptions from the sampling design.
+- Optimization needs explicit objectives, constraints, scaling, and post-solve checks.
+- Factorizations and solves are preferable to explicit inversion.
+- Sparse formats and solvers must match access patterns and matrix structure.
+- Diagnostics, residuals, uncertainty, versions, and tolerances are part of the result.

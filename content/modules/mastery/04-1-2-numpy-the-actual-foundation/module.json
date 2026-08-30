@@ -1,1 +1,197 @@
-{"slug":"1-2-numpy-the-actual-foundation","track":"mastery","number":4,"title":"1.2 NumPy — the actual foundation","description":"This is not \"a library.\" Every tensor operation you will ever write is a NumPy idea wearing a different name.","status":"planned","estimatedMinutes":450,"prerequisites":[],"learningOutcomes":["Take every topic in this section to pass 3 of the roadmap's rule: intuition, then derived on paper, then implemented from scratch."],"lessons":[{"id":"roadmap:phase-1-1.2:0","slug":"01-ndarray-memory-layout-strides-contiguity-views-vs-copies","title":"ndarray memory layout: strides, contiguity, views vs copies","order":1,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-1-1.2:1","slug":"02-dtype-precision-float32-vs-float64-vs-bfloat16-and","title":"dtype, precision, float32 vs float64 vs bfloat16 — and why it matters for training","order":2,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-1-1.2:2","slug":"03-broadcasting-rules-derive-them-don-t-memorise-them","title":"Broadcasting rules — derive them, don't memorise them","order":3,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-1-1.2:3","slug":"04-fancy-indexing-boolean-masking-np-where","title":"Fancy indexing, boolean masking, np.where","order":4,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-1-1.2:4","slug":"05-axis-semantics-the-1-source-of-silent-bugs","title":"Axis semantics — the #1 source of silent bugs in ML code","order":5,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-1-1.2:5","slug":"06-reductions-keepdims-and-why-it-prevents-broadcasting-bugs","title":"Reductions, keepdims, and why it prevents broadcasting bugs","order":6,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-1-1.2:6","slug":"07-einsum-learn-it-properly-it-will-make-you","title":"einsum — learn it properly, it will make you read papers faster","order":7,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-1-1.2:7","slug":"08-linear-algebra-ops-matmul-solve-inv-svd-eig","title":"Linear algebra ops: matmul, solve, inv, svd, eig","order":8,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-1-1.2:8","slug":"09-random-number-generation-and-seeding-for-reproducibility","title":"Random number generation and seeding for reproducibility","order":9,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-1-1.2:9","slug":"10-vectorisation-rewriting-loops-as-array-ops-and-measuring","title":"Vectorisation: rewriting loops as array ops, and measuring the speedup","order":10,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]}],"group":"phase-1","roadmapPhase":1,"roadmapGroup":"1.2","roadmapSectionId":"phase-1-1.2","roadmapRef":"1.2","tag":"CORE"}
+{
+  "slug": "1-2-numpy-the-actual-foundation",
+  "track": "mastery",
+  "number": 4,
+  "title": "1.2 NumPy — the actual foundation",
+  "description": "This is not \"a library.\" Every tensor operation you will ever write is a NumPy idea wearing a different name.",
+  "status": "available",
+  "estimatedMinutes": 1215,
+  "prerequisites": [],
+  "learningOutcomes": [
+    "Take every topic in this section to pass 3 of the roadmap's rule: intuition, then derived on paper, then implemented from scratch."
+  ],
+  "lessons": [
+    {
+      "id": "roadmap:phase-1-1.2:0",
+      "slug": "01-ndarray-memory-layout-strides-contiguity-views-vs-copies",
+      "title": "ndarray memory layout: strides, contiguity, views vs copies",
+      "order": 1,
+      "estimatedMinutes": 115,
+      "prerequisites": [],
+      "learningObjectives": [
+        "Derive an element address from shape, strides, item size, and an index tuple",
+        "Predict whether slicing, reshaping, transposing, and advanced indexing produce a view or a copy",
+        "Diagnose non-contiguous arrays and choose deliberately among reshape, ravel, flatten, ascontiguousarray, and copy",
+        "Design array boundaries that avoid accidental aliasing and unnecessary materialization"
+      ],
+      "status": "available",
+      "description": "Treat an ndarray as a typed view over a byte buffer, then reason from shape and strides to predict aliasing, contiguity, copies, and performance."
+    },
+    {
+      "id": "roadmap:phase-1-1.2:1",
+      "slug": "02-dtype-precision-float32-vs-float64-vs-bfloat16-and",
+      "title": "dtype, precision, float32 vs float64 vs bfloat16 — and why it matters for training",
+      "order": 2,
+      "estimatedMinutes": 115,
+      "prerequisites": ["roadmap:phase-1-1.2:0"],
+      "learningObjectives": [
+        "Explain how sign, exponent, and significand bits trade range against precision in common floating formats",
+        "Predict NumPy promotion, casting, overflow, underflow, and accumulation behavior at dtype boundaries",
+        "Choose storage, compute, and accumulator dtypes for training and inference from measured numerical risk",
+        "Build precision checks that use tolerances, stable algorithms, scaling, and finite-value monitoring"
+      ],
+      "status": "available",
+      "description": "Choose numerical representations deliberately by connecting bits to range, precision, promotion, accumulation error, and mixed-precision training behavior."
+    },
+    {
+      "id": "roadmap:phase-1-1.2:2",
+      "slug": "03-broadcasting-rules-derive-them-don-t-memorise-them",
+      "title": "Broadcasting rules — derive them, don't memorise them",
+      "order": 3,
+      "estimatedMinutes": 120,
+      "prerequisites": [
+        "roadmap:phase-1-1.2:0",
+        "roadmap:phase-1-1.2:1"
+      ],
+      "learningObjectives": [
+        "Derive broadcast compatibility and result shape by aligning operand shapes from the trailing axis",
+        "Use singleton axes deliberately to express per-feature, per-example, outer, and batched operations",
+        "Explain broadcasting as a zero-stride logical view and predict allocation and performance costs",
+        "Diagnose accidental broadcasting, in-place failures, and batch-versus-core dimension mistakes"
+      ],
+      "status": "available",
+      "description": "Derive NumPy broadcasting from trailing-axis alignment, then use explicit singleton dimensions to make vectorized ML code correct, readable, and memory-aware."
+    },
+    {
+      "id": "roadmap:phase-1-1.2:3",
+      "slug": "04-fancy-indexing-boolean-masking-np-where",
+      "title": "Fancy indexing, boolean masking, np.where",
+      "order": 4,
+      "estimatedMinutes": 110,
+      "prerequisites": [
+        "roadmap:phase-1-1.2:0",
+        "roadmap:phase-1-1.2:2"
+      ],
+      "learningObjectives": [
+        "Predict the shape, order, and copy behavior of integer-array and boolean indexing expressions",
+        "Choose deliberately among paired coordinate selection, Cartesian products, masks, take, and take_along_axis",
+        "Use np.where and ufunc where parameters without computing invalid or needlessly expensive branches",
+        "Design validated gather and scatter boundaries that handle repeated indices, memory costs, and semantic axes correctly"
+      ],
+      "status": "available",
+      "description": "Treat advanced indexing as an explicit gather or scatter program, then derive result shape, copy behavior, mask semantics, and conditional selection without relying on trial and error."
+    },
+    {
+      "id": "roadmap:phase-1-1.2:4",
+      "slug": "05-axis-semantics-the-1-source-of-silent-bugs",
+      "title": "Axis semantics — the #1 source of silent bugs in ML code",
+      "order": 5,
+      "estimatedMinutes": 120,
+      "prerequisites": [
+        "roadmap:phase-1-1.2:2",
+        "roadmap:phase-1-1.2:3"
+      ],
+      "learningObjectives": [
+        "Translate between semantic dimension names, positive axes, negative axes, and concrete shape transformations",
+        "Design and validate axis contracts for common ML layouts such as NC, NCHW, NHWC, and NTC",
+        "Use transpose, moveaxis, swapaxes, expand_dims, squeeze, stack, and concatenate without changing meaning accidentally",
+        "Diagnose silent axis bugs with asymmetric fixtures, invariants, and boundary normalization"
+      ],
+      "status": "available",
+      "description": "Make every dimension carry a named meaning, then derive axis-sensitive NumPy code from shape contracts instead of relying on coincidentally equal sizes."
+    },
+    {
+      "id": "roadmap:phase-1-1.2:5",
+      "slug": "06-reductions-keepdims-and-why-it-prevents-broadcasting-bugs",
+      "title": "Reductions, keepdims, and why it prevents broadcasting bugs",
+      "order": 6,
+      "estimatedMinutes": 125,
+      "prerequisites": [
+        "roadmap:phase-1-1.2:2",
+        "roadmap:phase-1-1.2:4"
+      ],
+      "learningObjectives": [
+        "Derive reduction output shapes from semantic axes, including tuples of axes and negative axes",
+        "Use keepdims to preserve broadcast alignment and prevent same-size dimensions from hiding semantic bugs",
+        "Choose accumulator dtype, initial values, masks, and empty-input policy deliberately",
+        "Implement and test stable ML reductions such as normalization, softmax, and log-sum-exp"
+      ],
+      "status": "available",
+      "description": "Treat a reduction as a shape transformation with an explicit numerical policy, then preserve reduced axes as singleton dimensions so later broadcasting cannot silently align with the wrong meaning."
+    },
+    {
+      "id": "roadmap:phase-1-1.2:6",
+      "slug": "07-einsum-learn-it-properly-it-will-make-you",
+      "title": "einsum — learn it properly, it will make you read papers faster",
+      "order": 7,
+      "estimatedMinutes": 130,
+      "prerequisites": [
+        "roadmap:phase-1-1.2:2",
+        "roadmap:phase-1-1.2:4",
+        "roadmap:phase-1-1.2:5"
+      ],
+      "learningObjectives": [
+        "Classify labels as output, contracted, batch, or diagonal indices and derive the result shape before executing an einsum",
+        "Translate matrix, batched, attention, and paper-style indexed equations into explicit NumPy einsum expressions",
+        "Distinguish contraction semantics from broadcasting, diagonal extraction, axis ordering, and ordinary elementwise multiplication",
+        "Inspect contraction paths and validate correctness, allocation, and numerical behavior against clearer reference operations"
+      ],
+      "status": "available",
+      "description": "Read einsum as a compact loop-and-reduction specification: derive which indices survive, which are summed, and what each contraction costs before translating paper equations into tested NumPy code."
+    },
+    {
+      "id": "roadmap:phase-1-1.2:7",
+      "slug": "08-linear-algebra-ops-matmul-solve-inv-svd-eig",
+      "title": "Linear algebra ops: matmul, solve, inv, svd, eig",
+      "order": 8,
+      "estimatedMinutes": 130,
+      "prerequisites": ["roadmap:phase-1-1.2:1", "roadmap:phase-1-1.2:4", "roadmap:phase-1-1.2:6"],
+      "learningObjectives": [
+        "Choose among matmul, solve, least-squares, inverse, SVD, and eigendecomposition from the mathematical question rather than API familiarity",
+        "Derive core and batched shapes and validate matrix orientation before calling NumPy linear algebra routines",
+        "Diagnose rank deficiency, ill-conditioning, symmetry assumptions, dtype limits, and misleading residual-only checks",
+        "Build tested linear algebra boundaries that report numerical evidence and avoid explicit inverses in solve paths"
+      ],
+      "status": "available",
+      "description": "Choose and validate linear algebra operations from the problem being solved, then use conditioning, residuals, rank, and decomposition structure to judge whether a numerical answer deserves trust."
+    },
+    {
+      "id": "roadmap:phase-1-1.2:8",
+      "slug": "09-random-number-generation-and-seeding-for-reproducibility",
+      "title": "Random number generation and seeding for reproducibility",
+      "order": 9,
+      "estimatedMinutes": 120,
+      "prerequisites": ["roadmap:phase-1-1.2:1", "roadmap:phase-1-1.2:3"],
+      "learningObjectives": [
+        "Use Generator, BitGenerator, and SeedSequence as separate state, algorithm, and stream-derivation responsibilities",
+        "Design reproducible serial and parallel sampling without shared global state or duplicated worker streams",
+        "Define what reproducibility promises across reruns, refactors, versions, distributions, and execution order",
+        "Test stochastic code through deterministic seams, statistical invariants, state capture, and failure replay"
+      ],
+      "status": "available",
+      "description": "Treat randomness as owned state with an explicit algorithm and stream topology, so experiments can be replayed without coupling every component to one fragile global call order."
+    },
+    {
+      "id": "roadmap:phase-1-1.2:9",
+      "slug": "10-vectorisation-rewriting-loops-as-array-ops-and-measuring",
+      "title": "Vectorisation: rewriting loops as array ops, and measuring the speedup",
+      "order": 10,
+      "estimatedMinutes": 130,
+      "prerequisites": ["roadmap:phase-1-1.2:0", "roadmap:phase-1-1.2:2", "roadmap:phase-1-1.2:5"],
+      "learningObjectives": [
+        "Rewrite element-wise and nested loops as ufunc, broadcasting, reduction, gather, or matrix operations while preserving semantics",
+        "Benchmark vectorized alternatives with warm-up, repeated trials, controlled threads, and correctness checks",
+        "Identify temporary arrays, memory-bandwidth limits, dtype changes, and cases where chunking or compiled loops beat whole-array vectorization",
+        "Report speedup honestly from end-to-end latency, peak memory, and numerical equivalence on representative workloads"
+      ],
+      "status": "available",
+      "description": "Vectorise by identifying array-level operations, then prove the rewrite is worthwhile with representative benchmarks that include correctness, temporary memory, dtype, and end-to-end cost."
+    }
+  ],
+  "group": "phase-1",
+  "roadmapPhase": 1,
+  "roadmapGroup": "1.2",
+  "roadmapSectionId": "phase-1-1.2",
+  "roadmapRef": "1.2",
+  "tag": "CORE"
+}

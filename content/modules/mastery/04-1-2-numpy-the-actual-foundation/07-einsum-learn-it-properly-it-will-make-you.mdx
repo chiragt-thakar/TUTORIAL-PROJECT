@@ -1,0 +1,478 @@
+---
+id: "roadmap:phase-1-1.2:6"
+title: "einsum — learn it properly, it will make you read papers faster"
+description: "Read einsum as a compact loop-and-reduction specification: derive which indices survive, which are summed, and what each contraction costs before translating paper equations into tested NumPy code."
+module: 1-2-numpy-the-actual-foundation
+order: 7
+estimatedMinutes: 130
+prerequisites: ["roadmap:phase-1-1.2:2", "roadmap:phase-1-1.2:4", "roadmap:phase-1-1.2:5"]
+learningObjectives:
+  - Classify labels as output, contracted, batch, or diagonal indices and derive the result shape before executing an einsum
+  - Translate matrix, batched, attention, and paper-style indexed equations into explicit NumPy einsum expressions
+  - Distinguish contraction semantics from broadcasting, diagonal extraction, axis ordering, and ordinary elementwise multiplication
+  - Inspect contraction paths and validate correctness, allocation, and numerical behavior against clearer reference operations
+---
+
+`einsum` is a loop specification written with index labels. The labels tell NumPy which axes refer
+to the same coordinate, which coordinates survive in the output, and which coordinates are summed.
+Once you classify those roles, the notation stops being a collection of magic strings.
+
+The same classification appears in papers as equations such as
+`Y[b,t,o] = sum_i X[b,t,i] W[i,o]`. NumPy writes that operation as
+`np.einsum("bti,io->bto", x, w)`. Reading the equation and writing the code are therefore one skill,
+provided you derive shapes and costs instead of guessing letters until the function runs.
+
+<TypeScriptComparison>
+
+- JavaScript has no built-in equivalent; nested loops expose indices procedurally, while `einsum` declares their relationships.
+- A TypeScript identifier like `batch` has semantic meaning. An einsum label is local and positional: `b` means batch only because you decide it does.
+- Array libraries in JS often offer `matMul`, `transpose`, and `sum` separately. `einsum` can fuse that intent into one contraction specification.
+- Neither TypeScript types nor NumPy labels prove axis meaning at runtime. Validate shapes at boundaries and test semantic invariants.
+
+</TypeScriptComparison>
+
+## Start from loops, not mnemonics
+
+Take matrix multiplication. For `A.shape == (m,k)` and `B.shape == (k,n)`, its scalar definition is
+`C[i,j] = sum_k A[i,k] * B[k,j]`. The output coordinates are `i,j`; `k` is visited but absent from
+the output, so it is contracted.
+
+```python
+import numpy as np
+
+a = np.arange(6.0).reshape(2, 3)       # i, k
+b = np.arange(12.0).reshape(3, 4)      # k, j
+
+c = np.einsum("ik,kj->ij", a, b)
+np.testing.assert_array_equal(c, a @ b)
+assert c.shape == (2, 4)
+```
+
+The arrow is worth writing. Its left side labels each operand axis. Its right side explicitly lists
+the surviving labels and their order. A label shared by operands is not automatically summed; it
+is summed only when it is absent from the explicit output.
+
+<Concept>
+
+For each label, ask two questions: which operand axes carry it, and does it appear after `->`?
+Output labels survive. Non-output labels are reduced. Repeated labels within one operand impose a
+diagonal constraint before any remaining reduction.
+
+</Concept>
+
+## Four index roles explain most equations
+
+An output index selects independent results. A contraction index is multiplied across operands and
+summed away. A batch index appears in multiple operands and survives, pairing corresponding batch
+slices. A diagonal index repeats within one operand, requiring those coordinates to be equal.
+
+```python
+x = np.empty((8, 32, 64))       # batch, token, input
+w = np.empty((64, 128))         # input, output
+y = np.einsum("bti,io->bto", x, w)
+assert y.shape == (8, 32, 128)
+
+matrices = np.empty((8, 5, 5))
+diagonals = np.einsum("bii->bi", matrices)
+traces = np.einsum("bii->b", matrices)
+```
+
+In `bti,io->bto`, `b` and `t` survive, `i` contracts, and `o` survives. In `bii->bi`, repeated `i`
+selects equal row and column positions and survives. In `bii->b`, that diagonal is then summed.
+Repeated axes in one operand must have equal sizes; this is different from broadcasting.
+
+## Derive shape mechanically
+
+Build a label-to-size table from every operand. A repeated label must have compatible dimensions
+under einsum's rules. Then read output sizes in the exact order written after the arrow. Finally,
+estimate work by multiplying the extents of all distinct labels involved in the scalar loop nest.
+
+For `bthd,bshd->bhts` with shapes `(B,T,H,D)` and `(B,S,H,D)`, the table is
+`b=B`, `t=T`, `s=S`, `h=H`, `d=D`. Output shape is `(B,H,T,S)`. Label `d` is absent from the output,
+so it contracts. The arithmetic scale is proportional to `B*H*T*S*D`.
+
+```python
+queries = np.empty((2, 7, 4, 16))  # B, T, H, D
+keys = np.empty((2, 9, 4, 16))     # B, S, H, D
+scores = np.einsum("bthd,bshd->bhts", queries, keys)
+assert scores.shape == (2, 4, 7, 9)
+```
+
+The output order is not inferred from physical layout. Writing `->bths` would create a different
+axis order even though it contains the same surviving labels. Shape contracts must name dimensions,
+because equal sizes can hide an order mistake.
+
+## Explicit output avoids surprising implicit rules
+
+NumPy accepts `np.einsum("ik,kj", a, b)` without an arrow. In implicit mode, labels appearing once
+are placed in alphabetical order, while repeated labels are contracted. Transposition can therefore
+occur because of spelling rather than intent.
+
+```python
+x = np.arange(6).reshape(2, 3)
+
+implicit = np.einsum("ji", x)
+explicit_same = np.einsum("ji->ji", x)
+explicit_transpose = np.einsum("ji->ij", x)
+
+assert implicit.shape == (3, 2)
+assert explicit_same.shape == (2, 3)
+assert explicit_transpose.shape == (3, 2)
+```
+
+Use explicit output in production and teaching code. It exposes both the surviving set and axis
+order during review. It also makes a paper-to-code derivation auditable line by line.
+
+<CommonMistake>
+
+Labels are not global axis names. The first label always describes operand axis zero, whatever
+letter you chose. A readable convention helps humans, but only input validation proves that the
+array actually follows the declared `(batch, token, hidden)` contract.
+
+</CommonMistake>
+
+## Hadamard products, outer products, and reductions
+
+Whether a shared label survives distinguishes elementwise multiplication from contraction.
+`ij,ij->ij` multiplies matching entries. `ij,ij->` multiplies matching entries and sums all of
+them, producing a Frobenius inner product. Labels that occur in separate operands without being
+shared create an outer product.
+
+```python
+u = np.array([1.0, 2.0, 3.0])  # i
+v = np.array([10.0, 20.0])     # j
+
+outer = np.einsum("i,j->ij", u, v)
+dot = np.einsum("i,i->", u, u)
+row_sums = np.einsum("ij->i", outer)
+
+np.testing.assert_array_equal(outer, np.outer(u, v))
+assert dot == np.dot(u, u)
+np.testing.assert_array_equal(row_sums, outer.sum(axis=1))
+```
+
+This is the central reading rule: a label's presence on the right controls survival. Do not infer
+the operation merely from how often a label appears on the left.
+
+## Ellipsis carries unnamed leading dimensions
+
+`...` represents zero or more broadcastable dimensions. It is useful when core dimensions are
+stable but batch rank varies. For arrays ending in `(I,J)` and `(J,K)`, `"...ij,...jk->...ik"`
+expresses batched matrix multiplication without naming every leading axis.
+
+```python
+left = np.empty((2, 5, 3, 4))
+right = np.empty((1, 5, 4, 6))
+result = np.einsum("...ij,...jk->...ik", left, right)
+assert result.shape == (2, 5, 3, 6)
+```
+
+The ellipsis dimensions broadcast; named labels do not behave like arbitrary singleton placeholders.
+Use ellipsis when the API genuinely accepts arbitrary batch rank. Use explicit labels when each
+dimension has a distinct semantic contract, as in multi-head attention.
+
+## Translate paper equations in three passes
+
+First, copy the equation's indices and annotate the size and meaning of each. Second, mark the
+left-hand-side indices as output and every right-only index as contracted. Third, order operand
+labels to match actual array layout, which may differ from the paper's convention.
+
+Consider a bilinear classifier:
+`score[b,c] = sum_i sum_j x[b,i] W[c,i,j] x[b,j]`.
+
+```python
+def bilinear_scores(x: np.ndarray, weights: np.ndarray) -> np.ndarray:
+    if x.ndim != 2 or weights.ndim != 3:
+        raise ValueError("expected x=(B,I), weights=(C,I,I)")
+    if weights.shape[1:] != (x.shape[1], x.shape[1]):
+        raise ValueError("feature dimensions do not match")
+    return np.einsum("bi,cij,bj->bc", x, weights, x, optimize="optimal")
+```
+
+`b,c` survive. Both `i` and `j` contract. The repeated batch label pairs each example with itself
+instead of forming cross-example combinations. A reference using staged `matmul` is valuable in
+tests even if the einsum is the clearest final implementation.
+
+<WhyItMatters>
+
+Attention, tensor factorizations, graph message passing, and probabilistic models are commonly
+specified with indexed sums. If you can classify free and contracted indices, a paper equation
+becomes executable pseudocode rather than decorative mathematics.
+
+</WhyItMatters>
+
+## Attention is two contractions with a nonlinear boundary
+
+Attention scores contract head dimension `d` while preserving batch, head, query token, and key
+token. Applying softmax is a separate nonlinear operation over key positions. The value mix then
+contracts that key-token index.
+
+```python
+def attention(q, k, v):
+    # q: B,T,H,D; k/v: B,S,H,D
+    if q.ndim != 4 or k.shape != v.shape:
+        raise ValueError("invalid attention shapes")
+    if q.shape[0] != k.shape[0] or q.shape[2:] != k.shape[2:]:
+        raise ValueError("batch, head, and head width must match")
+
+    scores = np.einsum("bthd,bshd->bhts", q, k) / np.sqrt(q.shape[-1])
+    scores -= scores.max(axis=-1, keepdims=True)
+    weights = np.exp(scores)
+    weights /= weights.sum(axis=-1, keepdims=True)
+    return np.einsum("bhts,bshd->bthd", weights, v)
+```
+
+Softmax cannot be folded into einsum because it is nonlinear. The two contractions can share
+labels in different roles: `s` survives in attention weights, then contracts when values are mixed.
+That role change is visible when each expression has an explicit output.
+
+## A valid expression can still be disastrously expensive
+
+For two operands, the contraction order is usually obvious. With three or more, different pairwise
+orders can create radically different intermediates. `optimize=True`, `"greedy"`, or `"optimal"`
+asks NumPy to choose a path; `np.einsum_path` explains the estimated scaling and largest temporary.
+
+```python
+a = np.empty((32, 64))
+b = np.empty((64, 128))
+c = np.empty((128, 16))
+
+path, report = np.einsum_path("ij,jk,kl->il", a, b, c, optimize="optimal")
+print(report)
+out = np.einsum("ij,jk,kl->il", a, b, c, optimize=path)
+```
+
+Contracting `a @ b` first builds `(32,128)`; contracting `b @ c` first builds `(64,16)`. Which is
+better depends on dimensions, layout, dtype, and the surrounding pipeline. Path estimates count
+arithmetic and intermediate sizes; benchmarks still decide wall time and peak memory.
+
+<ProductionNote>
+
+Treat a complex einsum like a query plan. Record the expression, operand shapes and dtypes, chosen
+path, largest estimated intermediate, measured latency, and peak memory. Recheck when dimensions
+or NumPy versions change.
+
+</ProductionNote>
+
+## Views, writes, dtype, and numerical order still matter
+
+Some single-operand expressions can return writable views, such as a diagonal or transpose.
+Multi-operand contractions normally produce results. Do not mutate an einsum result unless the API
+contract explicitly permits aliasing; use `np.shares_memory` in tests when ownership matters.
+
+`dtype`, `casting`, `order`, and `out` control computation and destination policy. A wider `out`
+array does not necessarily widen intermediate arithmetic. Select a computation dtype explicitly
+when precision or overflow matters, and compare optimized paths with tolerances because contraction
+order can change floating-point rounding.
+
+```python
+x = np.array([10_000, 10_000, 10_000], dtype=np.int16)
+y = np.array([10_000, 10_000, 10_000], dtype=np.int16)
+
+safe = np.einsum("i,i->", x, y, dtype=np.int64)
+assert safe == 300_000_000
+```
+
+## Implement a small subset from scratch
+
+A useful learning implementation need not parse every NumPy feature. Implement two-operand explicit
+expressions without ellipsis or repeated labels, then compare them against NumPy. The core algorithm
+enumerates every output coordinate, enumerates every contracted coordinate, maps labels to operand
+positions, multiplies, and accumulates.
+
+```python
+from itertools import product
+
+def tiny_einsum(spec, left, right):
+    inputs, output = spec.split("->")
+    left_labels, right_labels = inputs.split(",")
+    if len(set(left_labels)) != len(left_labels) or len(set(right_labels)) != len(right_labels):
+        raise NotImplementedError("diagonals are outside this teaching subset")
+
+    sizes = {}
+    for labels, shape in ((left_labels, left.shape), (right_labels, right.shape)):
+        if len(labels) != len(shape):
+            raise ValueError("label rank mismatch")
+        for label, size in zip(labels, shape):
+            if label in sizes and sizes[label] != size:
+                raise ValueError("named dimensions must match")
+            sizes[label] = size
+
+    contracted = [label for label in sizes if label not in output]
+    result = np.zeros(tuple(sizes[label] for label in output), dtype=np.result_type(left, right))
+    for out_index in product(*(range(sizes[label]) for label in output)):
+        env = dict(zip(output, out_index))
+        total = 0
+        for reduce_index in product(*(range(sizes[label]) for label in contracted)):
+            env.update(zip(contracted, reduce_index))
+            li = tuple(env[label] for label in left_labels)
+            ri = tuple(env[label] for label in right_labels)
+            total += left[li] * right[ri]
+        result[out_index] = total
+    return result
+```
+
+This implementation is intentionally slow and incomplete. Its value is conceptual: every einsum
+expands to output loops surrounding contraction loops. Production NumPy selects specialized loops,
+BLAS-backed paths, and optimized contraction order where possible.
+
+## Test semantics with independent references
+
+Test shape and values against a clearer operation such as `matmul`, `sum`, `transpose`, or explicit
+small loops. Use asymmetric dimension sizes so swapped axes cannot hide. Check batch independence,
+diagonal behavior, dtype, aliasing, non-contiguous inputs, empty contracted dimensions, and multiple
+optimization paths.
+
+Avoid validating only one einsum against another spelling of the same einsum. A shared label mistake
+can survive both. For attention, assert output shape, probability sums, and that changing one batch
+item cannot affect another.
+
+## Exercises
+
+<Exercise id="numpy-einsum-labels-easy" difficulty="easy">
+
+For `"bti,io->bto"`, classify every label and derive the result shape when operands have shapes
+`(4,7,16)` and `(16,32)`.
+
+<Solution>
+
+`b` and `t` appear in the output and select independent batch-token results. `o` appears in the
+weight and output. `i` is shared but absent from the output, so it contracts. The result shape is
+`(4,7,32)` in the written `b,t,o` order.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-einsum-outer-medium" difficulty="medium">
+
+Write explicit einsums for an outer product of vectors `u` and `v`, and for the sum of every entry
+in that outer product. Explain the one-character semantic difference.
+
+<Solution>
+
+Use `np.einsum("i,j->ij", u, v)` for the outer product and `np.einsum("i,j->", u, v)` for its total.
+The labels `i,j` survive in the first output and are both absent in the second, so both loops become
+reductions there.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-einsum-attention-hard" difficulty="hard">
+
+Given `q: (B,T,H,D)`, `k: (B,S,H,D)`, and `v: (B,S,H,V)`, derive explicit einsums for attention
+scores `(B,H,T,S)` and output `(B,T,H,V)`.
+
+<Solution>
+
+Scores are `np.einsum("bthd,bshd->bhts", q, k)`: head width `d` contracts. After softmax over
+`s`, mix values with `np.einsum("bhts,bshv->bthv", weights, v)`. Key position `s` survives the first
+contraction and is contracted by the second.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-einsum-interview" difficulty="interview">
+
+In an interview, explain how you read an unfamiliar einsum and how you decide whether to keep it in
+production code.
+
+<Solution>
+
+I build a label-to-axis table, mark explicit output labels as free, and treat every remaining label
+as contracted; repeated labels within one operand indicate a diagonal. I derive result shape and
+work before running it. I keep the expression when it matches the domain equation clearly, then add
+shape validation, an independent reference test, and path benchmarks for multi-operand contractions.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-einsum-paper-real-world" difficulty="real-world">
+
+A paper defines `Y[b,t,o] = sum_h sum_d A[b,h,t,d] W[h,d,o]`. Translate it, validate shapes, and
+state the cost and a reference strategy.
+
+<Solution>
+
+Use `np.einsum("bhtd,hdo->bto", a, w)`. Validate shared `h,d` sizes; output uses `b,t,o`. Work scales
+as `B*T*O*H*D`. Compare small asymmetric fixtures with explicit loops or a reshape-plus-matmul
+derivation, and inspect the contraction path before accepting production dimensions.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. What makes a label free, contracted, batched, or diagonal?
+2. Why is an explicit `->output` safer than implicit mode?
+3. How do `"ij,ij->ij"` and `"ij,ij->"` differ?
+4. What does ellipsis mean, and when should semantic labels replace it?
+5. Why can two equivalent multi-operand expressions have very different runtime and memory cost?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why did my shared label not get summed?">
+
+It also appears in the explicit output. A shared label is paired across operands, but only a label
+absent from the output is contracted.
+
+</Gotcha>
+
+<Gotcha question="Why did einsum transpose my single input?">
+
+Implicit output labels are alphabetized. Write an explicit output, such as `"ji->ji"`, when axis
+order must stay unchanged.
+
+</Gotcha>
+
+<Gotcha question="Why does repeating a label inside one operand fail?">
+
+It requests a diagonal, so the repeated axes must have equal sizes. Repetition is not singleton
+broadcasting.
+
+</Gotcha>
+
+<Gotcha question="Why does my valid three-operand contraction allocate huge memory?">
+
+The chosen pairwise path formed a large intermediate. Inspect `np.einsum_path`, set an optimization
+strategy, and benchmark peak memory with real shapes.
+
+</Gotcha>
+
+<Gotcha question="Why do optimized and unoptimized results differ slightly?">
+
+They can sum products in different orders. Floating-point arithmetic is not associative, so compare
+within a justified tolerance and assert domain invariants.
+
+</Gotcha>
+
+<Gotcha question="Why did a wider out array not prevent overflow?">
+
+Destination dtype and computation dtype are separate. Pass an appropriate `dtype` and `casting`
+policy so products and accumulation are wide enough before the result is stored.
+
+</Gotcha>
+
+<Gotcha question="Why did my attention einsum mix different examples?">
+
+You omitted the batch label from an operand or contracted it away. Batch labels must appear in the
+relevant operands and survive in the output.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+An einsum is a declarative loop nest. Labels after the arrow select the output coordinates; every
+other label is reduced. Shared surviving labels create batch-like pairing, while repeated labels
+inside one operand impose a diagonal constraint.
+
+Derive a label table, result shape, and arithmetic scale before execution. Use explicit output,
+semantic shape validation, and independent reference operations so equal dimensions cannot hide a
+wrong axis or contraction.
+
+Multi-operand contractions also need a path and memory review. The Practice, Debug, Interview,
+Test, Project, and Review tabs build that discipline by translating paper equations, repairing
+plausible label bugs, and delivering an auditable tensor-contraction tool.

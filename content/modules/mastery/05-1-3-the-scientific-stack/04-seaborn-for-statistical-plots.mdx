@@ -1,0 +1,205 @@
+---
+id: "roadmap:phase-1-1.3:3"
+title: "seaborn for statistical plots"
+description: "Use seaborn's semantic mappings and statistical estimators without hiding aggregation, uncertainty, sampling, or distribution shape."
+module: 1-3-the-scientific-stack
+order: 4
+estimatedMinutes: 105
+prerequisites: ["roadmap:phase-1-1.3:0", "roadmap:phase-1-1.3:2"]
+learningObjectives:
+  - Distinguish axes-level and figure-level seaborn functions and compose them with Matplotlib
+  - Map tidy variables to visual semantics while controlling aggregation and uncertainty
+  - Choose plots that reveal distributions, relationships, and repeated observations honestly
+  - Separate data preparation, statistical assumptions, and rendering
+---
+
+seaborn is a statistical visualization layer built on Matplotlib. It maps variables in tidy data to position, color, style, size, facets, and statistical summaries.
+
+That convenience can conceal important computation. Before accepting a plot, identify its observational unit, estimator, uncertainty method, category order, missing-data policy, and any aggregation performed on your behalf.
+
+<TypeScriptComparison>
+
+seaborn is closer to a declarative chart grammar than imperative canvas drawing. You map column names to semantics, while seaborn groups and renders. The returned Matplotlib objects still matter when you need exact composition, accessibility, or export control.
+
+</TypeScriptComparison>
+
+## Tidy data drives semantic mapping
+
+Tidy data places each variable in a column and each observation in a row. This lets one call map variables consistently across hue, style, size, rows, and columns.
+
+```python
+import seaborn as sns
+import matplotlib.pyplot as plt
+
+tips = sns.load_dataset("tips")
+fig, ax = plt.subplots(layout="constrained")
+sns.scatterplot(
+    data=tips,
+    x="total_bill",
+    y="tip",
+    hue="smoker",
+    style="time",
+    ax=ax,
+)
+ax.set(xlabel="Bill (USD)", ylabel="Tip (USD)")
+```
+
+Use redundant encodings when categories must remain distinguishable without color. Avoid mapping too many variables merely because the API allows it.
+
+## Axes-level versus figure-level functions
+
+Axes-level functions such as `scatterplot`, `histplot`, `boxplot`, and `lineplot` draw on a supplied Axes. Figure-level functions such as `relplot`, `displot`, and `catplot` create and manage a grid of subplots.
+
+Use axes-level functions inside an existing Matplotlib layout. Use figure-level functions when faceting is the main structure and accept their returned grid object. Passing `ax=` to a figure-level function is a category error.
+
+```python
+grid = sns.relplot(
+    data=tips,
+    x="total_bill",
+    y="tip",
+    col="time",
+    hue="smoker",
+    kind="scatter",
+)
+grid.set_axis_labels("Bill (USD)", "Tip (USD)")
+```
+
+## Estimators change the data you see
+
+`lineplot` and `barplot` commonly aggregate multiple observations at each x or category. Error bars may represent confidence intervals, standard errors, standard deviations, or percentile intervals depending on configuration.
+
+Always state the estimator and uncertainty meaning. Disable aggregation when each row is already an aggregate or when individual trajectories matter.
+
+```python
+sns.lineplot(
+    data=measurements,
+    x="minute",
+    y="temperature",
+    hue="device",
+    estimator=None,
+    units="run_id",
+    errorbar=None,
+    ax=ax,
+)
+```
+
+Repeated measurements are not independent samples. A bootstrap that resamples rows can understate uncertainty when rows share a device or person. Use the appropriate sampling unit or compute a domain-valid interval outside the plotting layer.
+
+## Show distributions, not only summaries
+
+Box plots emphasize quartiles and whiskers; violin plots add a kernel density estimate; strip and swarm plots show observations; ECDF plots show cumulative mass without bandwidth selection.
+
+Violin shape depends on bandwidth and can imply density beyond observed support. Box plots can hide multimodality. Overlay raw points when sample size permits and show group counts.
+
+Histograms depend on bin edges. KDEs depend on bandwidth and boundary assumptions. Compare plausible parameters before interpreting bumps as structure.
+
+```python
+fig, axes = plt.subplots(1, 2, figsize=(9, 4), layout="constrained")
+sns.histplot(data=tips, x="tip", bins="auto", ax=axes[0])
+sns.ecdfplot(data=tips, x="tip", hue="time", ax=axes[1])
+```
+
+## Relationships are not causal claims
+
+Regression plots summarize association under a fitted model. A line and confidence band do not prove causality, validate residual assumptions, or protect against confounding.
+
+Inspect raw observations, subgroup structure, leverage points, transformations, and residual diagnostics. Fit serious models with a statistical library where model results and assumptions are explicit, then visualize the validated outputs.
+
+## Ordering, missing data, and categories
+
+Category ordering changes the story. Use an ordered categorical dtype or explicit `order` and `hue_order`. Otherwise ordering may follow data appearance, sorting, or library defaults.
+
+Most plotting functions omit missing observations needed for their mapped variables. Measure missingness before plotting; absence from a chart is not evidence that missing rows never existed.
+
+## Facets need comparable scales
+
+Faceting supports small-multiple comparison. Shared axes help comparisons when units and ranges match; independent axes reveal within-panel shape but can exaggerate cross-panel similarity.
+
+Keep facet counts manageable and labels readable. If a legend forces constant eye travel, direct labels or a table may communicate better.
+
+<ProductionNote>
+
+Create a tested plotting table with one documented observational unit. Store estimator, interval, ordering, palette, and seed choices in code. Return Figure/Grid objects and verify key artist counts or labels in tests.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="sns-levels-easy" difficulty="easy">
+
+When should you use `scatterplot` instead of `relplot`?
+
+<Solution>
+
+Use axes-level `scatterplot` when composing into an existing Axes. Use figure-level `relplot` when seaborn should own a faceted grid and its Figure.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sns-estimator-medium" difficulty="medium">
+
+A line plot shows one line although ten runs exist. Diagnose it.
+
+<Solution>
+
+The function likely aggregated y at each x using its estimator. Set `estimator=None`, identify trajectories with `units`, and choose whether `hue` should distinguish them.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sns-repeated-hard" difficulty="hard">
+
+Why can row-wise bootstrap intervals be too narrow for repeated device samples?
+
+<Solution>
+
+Rows within a device are correlated, so resampling rows pretends to have more independent units than exist. Resample at the device/run unit or calculate a model-based interval that respects clustering.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sns-uncertainty-interview" difficulty="interview">
+
+What must accompany an error bar in a statistical plot?
+
+<Solution>
+
+State the center estimator, interval type and level, sampling unit, resampling/model method, and sample size. Otherwise viewers cannot distinguish variability from estimation uncertainty.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sns-experiment-real-world" difficulty="real-world">
+
+Design a plot set comparing latency before and after a deployment across services.
+
+<Solution>
+
+Preserve request-level or time-window units, show distributions or ECDFs by service, facet consistently, report counts and missingness, pair comparable windows, and compute clustered uncertainty outside seaborn. Avoid reducing everything to one mean bar.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+  <Gotcha question="Why did my line plot silently average rows?">
+    Many statistical functions estimate a central value for repeated x coordinates. Set and document `estimator` and `errorbar` explicitly.
+  </Gotcha>
+  <Gotcha question="Why can a beautiful violin be misleading?">
+    Kernel density bandwidth and boundary extension can invent smooth shapes unsupported by sparse observations. Show points and counts.
+  </Gotcha>
+  <Gotcha question="Why did ax= fail with relplot?">
+    `relplot` is figure-level and creates its own grid. Use `scatterplot` or `lineplot` to draw on an existing Axes.
+  </Gotcha>
+</Gotchas>
+
+## Checkpoint
+
+You are ready when you can identify the observational unit, choose axes- or figure-level APIs, state aggregation and uncertainty semantics, and defend a distribution plot against alternative bins or bandwidths.
+
+## Summary
+
+- seaborn maps tidy variables to visual and statistical semantics.
+- Axes-level functions compose; figure-level functions own facet grids.
+- Estimation and uncertainty must be explicit and respect sampling units.
+- Distribution plots depend on bins, bandwidths, support, and sample size.
+- Statistical graphics support reasoning but do not establish causality.

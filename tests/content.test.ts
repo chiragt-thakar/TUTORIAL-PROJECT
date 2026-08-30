@@ -88,7 +88,7 @@ test("fully authored normal lessons contain three focused exercises", async () =
 });
 
 test("modules built under the content depth standard have five-tier exercises and a gotchas section", async () => {
-  // The python-backend track predates this standard (see CONTENT_GUIDE.md) and is exempt.
+  // The python-backend track predates the current standard (see CLAUDE.md) and is exempt.
   // Every other track's lessons must have all five exercise difficulty tiers and a gotchas section.
   const files = (await readdir(root, { recursive: true }))
     .filter((file) => /^\d{2}-.*\.mdx$/.test(path.basename(file)))

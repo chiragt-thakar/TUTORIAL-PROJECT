@@ -1,0 +1,836 @@
+lessonId: "roadmap:phase-2-2.2:5"
+module: 2-2-calculus-optimisation
+lesson: 06-critical-points-saddle-points-local-vs-global-minima
+title: "Critical points, saddle points, local vs global minima"
+summary: Classify critical points with the gradient and Hessian, understand why a local minimum need not be global, see why saddles dominate critical points in high dimensions, and know how noisy first-order methods escape strict saddles.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lcpt-read-classifier
+    tier: normal
+    kind: code-reading
+    title: Read a critical-point classifier
+    minutes: 10
+    requiredForMastery: true
+    concepts: [critical-point, hessian, definiteness]
+    prompt: |
+      Read this and say what each branch means, why it symmetrises `H`, and what `"degenerate"`
+      indicates.
+      ```python
+      def classify(H, tol=1e-10):
+          w = np.linalg.eigvalsh(0.5 * (H + H.T))
+          if w.min() > tol:  return "min"
+          if w.max() < -tol: return "max"
+          if w.min() < -tol < tol < w.max(): return "saddle"
+          return "degenerate"
+      ```
+    hints:
+      - The eigenvalues are the curvatures at the critical point.
+      - A near-zero smallest eigenvalue means the second-order test is silent along that direction.
+    solution: |
+      Given `grad f = 0` at the point, `w` are the Hessian's curvatures. All clearly positive
+      (`w.min() > tol`) is a strict local minimum; all clearly negative is a strict local maximum;
+      curvatures of both signs is a saddle. `"degenerate"` is returned when the smallest curvature
+      is within `tol` of zero without a clear negative one — the second-order test is inconclusive
+      along that direction and higher-order terms decide. `H` is symmetrised because a
+      finite-difference or autodiff-assembled Hessian is only approximately symmetric, and
+      `eigvalsh` needs a symmetric input to return real, sorted eigenvalues.
+  - id: lcpt-write-find-critical
+    tier: normal
+    kind: write-code
+    title: Find and classify critical points of a 2-D function
+    minutes: 12
+    requiredForMastery: true
+    concepts: [critical-point, gradient, classification]
+    prompt: |
+      For `f(x, y) = x^2 - y^2 + x y`, solve `grad f = 0` for the critical point and classify it with
+      the Hessian.
+    hints:
+      - "`grad f = (2x + y, -2y + x)`; solve the linear system."
+      - The Hessian is constant for a quadratic.
+    solution: |
+      `grad f = (2x + y, x - 2y) = 0`. From the second equation `x = 2y`; substituting,
+      `2(2y) + y = 5y = 0`, so `y = 0`, `x = 0`. The only critical point is the origin. The Hessian
+      is `H = [[2, 1], [1, -2]]`, constant. Its eigenvalues are `+-sqrt(4 + 1) = +-sqrt(5)`, one
+      positive and one negative, so `H` is indefinite and the origin is a **saddle point**. The
+      function is unbounded above and below, so it has neither a global minimum nor a global maximum.
+  - id: lcpt-predict-classification
+    tier: normal
+    kind: predict-output
+    title: Classify from Hessian eigenvalues
+    minutes: 10
+    requiredForMastery: true
+    concepts: [second-order-test, definiteness, degenerate]
+    prompt: |
+      At four critical points the Hessian eigenvalue sets are `{3, 1}`, `{-2, -0.5}`, `{4, -1, 2}`,
+      and `{2, 0}`. Classify each and say which one the second-order test cannot resolve.
+    hints:
+      - Mixed signs is a saddle; all one sign is a min or max.
+      - A zero eigenvalue is the inconclusive case.
+    solution: |
+      `{3, 1}`: positive definite — strict local minimum. `{-2, -0.5}`: negative definite — strict
+      local maximum. `{4, -1, 2}`: indefinite — saddle point (one negative curvature direction).
+      `{2, 0}`: positive semidefinite and singular — the second-order test is inconclusive along the
+      zero-eigenvalue direction; whether it is a minimum, a ridge, or a degenerate flat valley is
+      decided by third- and higher-order terms.
+  - id: lcpt-explain-local-not-global
+    tier: normal
+    kind: explain
+    title: Why local is not global
+    minutes: 10
+    requiredForMastery: true
+    concepts: [local-minimum, global-minimum, convexity]
+    prompt: |
+      Explain why `grad f = 0` and `lambda_min(H) > 0` do not certify a global minimum, and name the
+      structural conditions that would.
+    hints:
+      - These conditions only compare the point to its immediate neighbourhood.
+      - Convexity and gradient-dominance are the standard structural guarantees.
+    solution: |
+      `grad f = 0` and `lambda_min(H) > 0` say the point beats every point in a small ball around it
+      — a strict local minimum. They say nothing about far-away regions, which could contain a lower
+      value; a function can have many local minima at different heights. Globality requires extra
+      structure: **convexity** (every local minimum is global, and the set of minimisers is convex);
+      a **Polyak-Lojasiewicz / gradient-dominance** condition `0.5 ||grad f||^2 >= mu (f - f*)`
+      (which makes gradient descent converge to the global value even without convexity); or, for a
+      discrete problem, exhaustive enumeration. General smooth non-convex functions have none of
+      these, and certifying a global minimum is NP-hard.
+  - id: lcpt-saddle-fraction-experiment
+    tier: intermediate
+    kind: write-code
+    title: Fraction of random critical points that are minima
+    minutes: 14
+    requiredForMastery: true
+    concepts: [random-matrix, saddle-prevalence, dimension]
+    prompt: |
+      Write `frac_minima(n, trials)` that samples random symmetric `n x n` matrices and returns the
+      fraction with all eigenvalues positive, and describe how the result behaves as `n` grows.
+    hints:
+      - Symmetrise a random Gaussian matrix.
+      - "`np.linalg.eigvalsh(A).min() > 0` is the all-positive test."
+    solution: |
+      Draw `A = rng.standard_normal((n, n)); A = 0.5 * (A + A.T)` and count how often
+      `np.linalg.eigvalsh(A).min() > 0`, over `trials`. The fraction falls off fast: for the
+      Gaussian orthogonal ensemble the probability that all `n` eigenvalues are positive decays
+      roughly like `exp(-c n^2)` (a large-deviation rate), so it is already tiny by `n = 6` and
+      effectively zero for `n` in the tens. This is the toy version of "in high dimensions almost
+      every critical point is a saddle": a local minimum needs every curvature to be positive, and
+      that is exponentially unlikely for a generic Hessian.
+  - id: lcpt-strict-saddle-escape
+    tier: intermediate
+    kind: write-code
+    title: Perturbed gradient descent step
+    minutes: 14
+    requiredForMastery: true
+    concepts: [strict-saddle, perturbed-gd, sgd-noise]
+    prompt: |
+      Write `perturbed_step(x, grad_f, eta, radius, grad_tol, rng)` that adds a small random
+      perturbation when the gradient norm is below `grad_tol`, then takes a gradient step. Explain
+      why this escapes a strict saddle.
+    hints:
+      - Near a critical point the deterministic step barely moves.
+      - A random kick has a component along the negative-curvature direction.
+    solution: |
+      `g = grad_f(x); if np.linalg.norm(g) < grad_tol: x = x + rng.standard_normal(x.shape) *
+      radius; g = grad_f(x)`; then `return x - eta * g`. At a strict saddle `grad f` is near zero so
+      the plain step stalls, but the Hessian has a direction of strict negative curvature. A random
+      perturbation almost surely has a nonzero component along that direction; once the iterate is
+      off the flat centre, the gradient along the negative-curvature direction points *away* from
+      the saddle and grows, so subsequent gradient steps accelerate down it. SGD gets this for free:
+      mini-batch noise continually injects a component along every direction, so strict saddles are
+      not stable fixed points of SGD.
+  - id: lcpt-manifold-of-minima
+    tier: intermediate
+    kind: explain
+    title: Degenerate minima and manifolds
+    minutes: 12
+    requiredForMastery: true
+    concepts: [degenerate-minimum, manifold-of-minima, overparameterisation]
+    prompt: |
+      Explain what it means for an over-parameterised network to have a manifold of minima rather
+      than an isolated one, and what the Hessian looks like there.
+    hints:
+      - More parameters than needed to fit the data.
+      - Directions along the manifold do not change the loss.
+    solution: |
+      With more parameters than constraints, many distinct parameter vectors achieve (near-)zero
+      training loss, and they form a connected set — a manifold — rather than isolated points. Moving
+      along the manifold changes the parameters but not the loss, so the loss is flat in those
+      directions. The Hessian at such a point is positive *semi*definite with a null space whose
+      dimension is (at least) the manifold's dimension: zero curvature along the manifold, positive
+      curvature transverse to it. It is a degenerate minimum, not a strict one, and the "width" of
+      the valley in the transverse directions relates to flatness and generalisation.
+  - id: lcpt-symmetry-multiplicity
+    tier: intermediate
+    kind: predict-output
+    title: Symmetry-induced multiplicity of optima
+    minutes: 12
+    requiredForMastery: true
+    concepts: [permutation-symmetry, rescaling-symmetry, mode-connectivity]
+    prompt: |
+      A one-hidden-layer network has `h` hidden units. Ignoring rescaling, how many distinct
+      parameter vectors compute the exact same function as a given optimum via hidden-unit
+      permutation? What other continuous symmetry exists for a ReLU network?
+    hints:
+      - Permuting hidden units permutes the rows of the first weight matrix and columns of the second.
+      - ReLU is positive homogeneous.
+    solution: |
+      Permuting the `h` hidden units (and correspondingly permuting the rows of `W1`/`b1` and the
+      columns of `W2`) leaves the function unchanged, giving `h!` distinct parameter vectors for the
+      same function and loss — a combinatorially large set of equivalent global minima. The
+      continuous symmetry for ReLU (positive homogeneity, `ReLU(c z) = c ReLU(z)` for `c > 0`) is
+      rescaling: `W1 -> c W1`, `b1 -> c b1`, `W2 -> W2 / c` for any `c > 0` per hidden unit leaves
+      the function unchanged, so each optimum sits on a continuous orbit. After quotienting out
+      permutation symmetry, many optima are connected by low-loss paths (linear mode connectivity),
+      which is why interpolating between two independently trained solutions can stay near-optimal
+      once one is permuted to align with the other.
+  - id: lcpt-2d-determinant-test
+    tier: intermediate
+    kind: predict-output
+    title: The 2-D second-derivative test
+    minutes: 12
+    requiredForMastery: true
+    concepts: [second-order-test, hessian-determinant, two-variable]
+    prompt: |
+      The classic 2-variable test uses `D = f_xx f_yy - f_xy^2` at a critical point. State the
+      verdict for each case: `D > 0` and `f_xx > 0`; `D > 0` and `f_xx < 0`; `D < 0`; `D = 0`. Why
+      does `D` capture the Hessian eigenvalue signs?
+    hints:
+      - "`D` is the determinant of the 2x2 Hessian, i.e. the product of its eigenvalues."
+      - "`f_xx` has the sign of the eigenvalue nearest the `x` direction."
+    solution: |
+      `D` is `det(H)` = product of the two Hessian eigenvalues, and `trace(H) = f_xx + f_yy` is their
+      sum. `D > 0` means the eigenvalues have the same sign; then `f_xx > 0` forces both positive —
+      **local minimum**; `f_xx < 0` forces both negative — **local maximum**. `D < 0` means the
+      eigenvalues have opposite signs — **saddle point**. `D = 0` means at least one eigenvalue is
+      zero — the test is **inconclusive** and higher-order terms decide. So the determinant test is
+      just the `n = 2` special case of "read the Hessian eigenvalue signs", packaged so you never
+      compute the eigenvalues explicitly.
+  - id: lcpt-debug-gradnorm-stop
+    tier: tricky
+    kind: debug
+    title: Stopping on gradient norm alone
+    minutes: 14
+    requiredForMastery: true
+    concepts: [stopping-criterion, saddle-point, certification]
+    prompt: |
+      This optimiser stops and reports "converged to a minimum" whenever the gradient norm is small.
+      It sometimes stops at a saddle. Fix the stopping criterion.
+    code: |
+      def optimise(f, grad_f, x, eta, tol=1e-5, max_iter=100000):
+          for _ in range(max_iter):
+              g = grad_f(x)
+              if np.linalg.norm(g) < tol:
+                  return x, "converged to a minimum"
+              x = x - eta * g
+          return x, "max iterations"
+    solution: |
+      A small gradient norm holds at every critical point — minima, maxima, and saddles — and across
+      a whole plateau, so it does not certify a minimum. Add a curvature check: when the gradient
+      norm drops below `tol`, estimate `lambda_min(H)` (a few Lanczos or inverse-power iterations on
+      Hessian-vector products) and classify. Return `"minimum"` only if `lambda_min > tol`;
+      `"saddle"` if `lambda_min < -tol` (and then take a negative-curvature step or a random
+      perturbation and continue); `"degenerate/flat"` if `lambda_min ~ 0`. Also prefer a
+      loss-plateau criterion (no improvement on a held-out metric over `k` steps) for the practical
+      stop. Regression: on `f(x, y) = x^2 - y^2`, assert the old code stops at the origin claiming a
+      minimum and the new code labels it a saddle.
+    hints:
+      - "`grad f = 0` is necessary for a saddle too."
+      - Check the smallest Hessian eigenvalue before claiming a minimum.
+  - id: lcpt-debug-newton-to-saddle
+    tier: tricky
+    kind: debug
+    title: Newton converging to a saddle
+    minutes: 16
+    requiredForMastery: true
+    concepts: [newton-method, saddle-point, saddle-free-newton]
+    prompt: |
+      This Newton optimiser reliably reaches a stationary point but on some starts it is a saddle,
+      not a minimum. Fix it.
+    code: |
+      def newton_optimise(grad_f, hess_f, x, iters=50):
+          for _ in range(iters):
+              g = grad_f(x); H = hess_f(x)
+              x = x - np.linalg.solve(H, g)
+          return x
+    solution: |
+      Newton's method solves `grad f = 0`, so it converges to whatever stationary point is nearby —
+      a saddle or a maximum included — because near a saddle `-H^{-1} g` still points toward the
+      point where the quadratic model's gradient is zero, which is the saddle. Fixes: (1)
+      **saddle-free Newton** — replace `H` with `|H| = Q |Lambda| Q^T` (absolute eigenvalues), so
+      the step is `-(Q |Lambda|^{-1} Q^T) g`, which descends along negative-curvature directions
+      instead of climbing toward them; (2) a **trust-region** method that detects negative curvature
+      in the subproblem and follows it to the boundary; (3) add a **negative-curvature step**: if
+      `lambda_min(H) < 0`, move along its eigenvector in the downhill direction. Any of these turns
+      a saddle from an attractor into a repeller. Regression: on `f = x^2 - y^2` from a start on the
+      `x`-axis, assert plain Newton reaches the origin (a saddle) and saddle-free Newton escapes
+      along `y`.
+    hints:
+      - Newton drives the gradient to zero, and saddles have zero gradient.
+      - Replace `H` with `|H|`, or add a negative-curvature step.
+  - id: lcpt-debug-symmetry-not-distinct
+    tier: tricky
+    kind: debug
+    title: Counting symmetric copies as distinct optima
+    minutes: 14
+    requiredForMastery: true
+    concepts: [permutation-symmetry, rescaling-symmetry, model-comparison]
+    prompt: |
+      A study trains a small network from many seeds, clusters the final weight vectors by Euclidean
+      distance, and reports "dozens of distinct local optima". The conclusion is likely inflated.
+      Explain and fix the analysis.
+    code: |
+      def count_optima(weight_vectors, thresh):
+          # naive: cluster raw weight vectors by L2 distance
+          ...
+    solution: |
+      Two networks that compute the *same function* with the *same loss* can have very different raw
+      weight vectors because of symmetries: permuting hidden units (`h!` copies) and, for ReLU,
+      per-unit positive rescaling (a continuous orbit). Euclidean clustering of raw weights counts
+      these as distinct, inflating the count. Fix: before comparing, **canonicalise** — align hidden
+      units across networks by solving an assignment problem (e.g. match units to minimise weight
+      distance, a linear assignment / Hungarian algorithm on the first-layer weights), and normalise
+      the rescaling (fix each hidden unit's incoming weight norm to 1, absorbing the scale into the
+      outgoing weights). Then cluster, or better, compare in *function space* (predictions on a probe
+      set) rather than parameter space. Also check for low-loss connecting paths (mode connectivity)
+      between the remaining clusters. Regression: generate one optimum, produce a permuted and
+      rescaled copy, and assert the fixed analysis reports one optimum, not two.
+    hints:
+      - Different weights can be the same function under permutation and rescaling.
+      - Canonicalise (align units, normalise scale) or compare in function space.
+  - id: lcpt-design-minimum-certifier
+    tier: challenge
+    kind: design
+    title: Design a minimum-certification routine
+    minutes: 26
+    requiredForMastery: false
+    concepts: [certification, lanczos, negative-curvature, stopping]
+    prompt: |
+      Design `certify(grad, hvp, x, tol)` that decides whether `x` is (numerically) a local minimum,
+      a strict saddle, or a degenerate point, using only gradient and Hessian-vector-product access.
+      State the checks, the tolerances, and what it must not do.
+    hints:
+      - First check the gradient norm; then estimate the smallest Hessian eigenvalue.
+      - Lanczos or inverse power iteration on the HVP operator gives `lambda_min`.
+    solution: |
+      Inputs: `grad(x)` and an `hvp(v)` closure, the point `x`, a relative tolerance, and iteration
+      budgets. Step 1: if `||grad(x)|| > g_tol` (scaled by a typical gradient norm), return
+      "not a critical point". Step 2: estimate `lambda_min(H)` — run `k`-step Lanczos on `hvp` and
+      take the smallest Ritz value, or inverse power iteration if a solve is available; also estimate
+      `lambda_max` for a scale. Step 3: classify with a *relative* tolerance `tau = tol *
+      max(|lambda_max|, 1)`: `lambda_min > tau` -> "local minimum" with a confidence from the
+      Lanczos residual; `lambda_min < -tau` -> "strict saddle", and return the approximate
+      negative-curvature eigenvector; `|lambda_min| <= tau` -> "degenerate / flat", inconclusive.
+      It must not use an absolute eigenvalue tolerance (scale-dependent), must not claim a minimum
+      from the gradient norm alone, must report the Lanczos convergence proxy so a non-converged
+      estimate is flagged, and must not run a dense eigendecomposition. Golden cases: a strict
+      minimum, `x^2 - y^2` at the origin (saddle, returns the `y` direction), and a flat direction
+      fixture.
+  - id: lcpt-refactor-add-saddle-escape
+    tier: challenge
+    kind: refactor
+    title: Add saddle escape to a plain gradient-descent loop
+    minutes: 24
+    requiredForMastery: false
+    concepts: [perturbed-gd, negative-curvature, plateau, momentum]
+    prompt: |
+      A full-batch gradient-descent training loop stalls for long stretches on saddle plateaus.
+      Refactor it to detect stalls and escape, without changing the objective, and compare
+      iteration counts.
+    hints:
+      - Detect a stall by a small gradient norm plus a flat loss over a window.
+      - Escape with a random perturbation or a Lanczos-estimated negative-curvature step.
+    solution: |
+      Add a stall detector: track the gradient norm and the loss over a sliding window; a stall is
+      `||g|| < g_tol` and loss improvement below `eps` for `W` steps. On a stall, first cheaply try
+      a bounded random perturbation `x += radius * unit_gaussian` and resume (perturbed GD). If the
+      stall persists after a few perturbations, run a short Lanczos on Hessian-vector products to
+      estimate the smallest eigenvalue and its eigenvector `v`; if `lambda_min < 0`, step
+      `x -= sign(g @ v) * alpha * v` to move downhill along the negative-curvature direction, then
+      resume. Also raise the momentum coefficient during plateaus so accumulated velocity carries
+      through flat regions. Keep the objective and the base learning rate unchanged. Add a
+      fail-before-fix benchmark: on a function with a known saddle plateau, record the plain loop's
+      iterations-to-target and assert the refactor reaches the target in substantially fewer.
+quizzes:
+  - id: lcpt-checkpoint
+    title: Checkpoint — critical points and saddles
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lcpt-cp-conditions
+        kind: mcq
+        prompt: The conditions for a strict local minimum at `x*` are what?
+        options:
+          - {id: both, text: "`grad f(x*) = 0` and the Hessian is positive definite"}
+          - {id: gradonly, text: "`grad f(x*) = 0` alone"}
+          - {id: convexonly, text: The function is convex somewhere}
+        answer: [both]
+        explanation: Zero gradient is necessary; positive definite Hessian makes it a strict minimum.
+        concepts: [second-order-test]
+        points: 1
+      - id: lcpt-cp-global
+        kind: mcq
+        prompt: What certifies that a local minimum is also global?
+        options:
+          - {id: structure, text: Extra structure such as convexity or a Polyak-Lojasiewicz condition}
+          - {id: hessian, text: A positive definite Hessian at the point}
+          - {id: gradzero, text: A zero gradient at the point}
+        answer: [structure]
+        explanation: Local conditions never rule out a lower value elsewhere.
+        concepts: [global-minimum, convexity]
+        points: 1
+      - id: lcpt-cp-saddles
+        kind: mcq
+        prompt: In high-dimensional non-convex optimisation, most critical points a gradient method meets are what?
+        options:
+          - {id: saddles, text: Saddle points}
+          - {id: badminima, text: Bad local minima far above the global value}
+          - {id: maxima, text: Local maxima}
+        answer: [saddles]
+        explanation: A local minimum needs every Hessian eigenvalue positive, which is exponentially unlikely in high dimension.
+        concepts: [saddle-prevalence]
+        points: 1
+      - id: lcpt-cp-escape
+        kind: multi
+        prompt: Which help a first-order method escape or pass through a strict saddle plateau?
+        options:
+          - {id: noise, text: A random perturbation when the gradient is tiny (perturbed GD)}
+          - {id: sgd, text: SGD mini-batch noise}
+          - {id: momentum, text: Momentum carrying velocity through the flat region}
+          - {id: lower-lr, text: Lowering the learning rate}
+        answer: [noise, sgd, momentum]
+        explanation: Noise finds the negative-curvature direction; momentum sustains motion; lowering the LR lengthens the plateau.
+        concepts: [strict-saddle, plateau]
+        points: 1
+  - id: lcpt-assessment
+    title: Assessment — critical points, saddles, minima
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lcpt-as-conditions
+        kind: explain
+        prompt: State the first- and second-order conditions for a local minimum and what each rules out.
+        modelAnswer: |
+          First order: `grad f(x*) = 0` — necessary; rules out any direction with a nonzero slope.
+          Second order: the Hessian `H(x*)` is positive semidefinite (necessary) and, for a *strict*
+          local minimum, positive definite (sufficient with the first-order condition) — rules out
+          directions of negative curvature. A zero eigenvalue leaves the test inconclusive along
+          that direction.
+        explanation: Gradient handles the linear term, Hessian the quadratic.
+        concepts: [second-order-test]
+        points: 1
+      - id: lcpt-as-global
+        kind: explain
+        prompt: Why do the local conditions not certify a global minimum, and what would?
+        modelAnswer: |
+          They only compare `x*` to a small neighbourhood; a lower value can exist elsewhere.
+          Globality needs convexity (every local min is global), a gradient-dominance / PL condition
+          (`0.5||grad f||^2 >= mu(f - f*)`), or exhaustive search. General non-convex functions have
+          none, and certifying globality is NP-hard.
+        explanation: Local optimality is a neighbourhood statement.
+        concepts: [global-minimum]
+        points: 1
+      - id: lcpt-as-saddle-prevalence
+        kind: scenario
+        prompt: Give the random-matrix argument for why minima are rare among high-dimensional critical points.
+        modelAnswer: |
+          Model the Hessian at a critical point as a random symmetric matrix with a roughly
+          sign-symmetric eigenvalue distribution. A local minimum needs all `n` eigenvalues positive;
+          treating signs as roughly independent, that probability is about `p^n`, decaying
+          exponentially in `n`. So almost all critical points are saddles, and higher-loss ones have
+          more negative (escape) directions.
+        explanation: All-positive is exponentially unlikely for a generic Hessian.
+        concepts: [random-matrix, saddle-prevalence]
+        points: 1
+      - id: lcpt-as-escape
+        kind: scenario
+        prompt: What is a strict saddle and how do noisy first-order methods escape one?
+        modelAnswer: |
+          A strict saddle has `lambda_min(H) < 0` — a direction of strict negative curvature. A
+          random perturbation (perturbed GD, or SGD noise) almost surely has a component along that
+          direction; once off the flat centre the gradient along it points away from the saddle and
+          grows, so gradient steps accelerate down it. The cost is time on the surrounding plateau.
+        explanation: Negative curvature makes the saddle unstable under noise.
+        concepts: [strict-saddle, perturbed-gd]
+        points: 1
+      - id: lcpt-as-newton-saddle
+        kind: find-bug
+        prompt: Why can Newton's method converge to a saddle, and how do you prevent it?
+        modelAnswer: |
+          Newton solves `grad f = 0`, and saddles have zero gradient, so `-H^{-1} g` can point
+          toward a saddle. Prevent it with saddle-free Newton (use `|H|`, absolute eigenvalues), a
+          trust region that follows negative curvature, or an explicit negative-curvature step when
+          `lambda_min(H) < 0`.
+        explanation: Newton targets any stationary point, not specifically a minimum.
+        concepts: [newton-method, saddle-free-newton]
+        points: 1
+      - id: lcpt-as-manifold
+        kind: scenario
+        prompt: What does the loss landscape of an over-parameterised network look like near a solution?
+        modelAnswer: |
+          Not an isolated well but a connected manifold of parameter vectors with (near-)zero
+          training loss. The Hessian there is positive semidefinite with a large null space — zero
+          curvature along the manifold, positive transverse to it — so it is a degenerate minimum.
+          The transverse "width" relates to flatness and generalisation.
+        explanation: Over-parameterisation gives a valley floor, not a point.
+        concepts: [manifold-of-minima, degenerate-minimum]
+        points: 1
+      - id: lcpt-as-symmetry
+        kind: scenario
+        prompt: A network trained from two seeds ends at very different weights. Are these two distinct optima?
+        modelAnswer: |
+          Not necessarily. Permuting hidden units (`h!` copies) and, for ReLU, per-unit positive
+          rescaling produce different weight vectors computing the same function with the same loss.
+          Align the units (assignment problem) and normalise the scale, or compare predictions on a
+          probe set, before concluding they are distinct.
+        explanation: Symmetry makes many parameter vectors the same solution.
+        concepts: [permutation-symmetry, rescaling-symmetry]
+        points: 1
+      - id: lcpt-as-stopping
+        kind: find-bug
+        prompt: Why is "gradient norm below tol" a poor stopping criterion for claiming a minimum?
+        modelAnswer: |
+          The gradient is small at maxima and saddles too, and near-zero across whole plateaus, so a
+          small norm does not distinguish a minimum. Add a curvature check — `lambda_min(H) > 0` via
+          Lanczos on HVPs — or use a held-out loss plateau as the practical stop.
+        explanation: "`grad f = 0` is necessary for all critical points."
+        concepts: [stopping-criterion, certification]
+        points: 1
+      - id: lcpt-as-monkey-saddle
+        kind: scenario
+        prompt: At the origin of `f = x^3 - 3 x y^2` the Hessian is the zero matrix. What is this point?
+        modelAnswer: |
+          A monkey saddle. The second-order test is silent (both eigenvalues zero). The cubic terms
+          decide: in polar form `f = r^3 cos(3 theta)`, so the function alternates up and down three
+          times around the origin — three ascending ridges and three descending valleys. It is
+          neither a minimum, a maximum, nor an ordinary two-way saddle.
+        explanation: A zero Hessian means higher-order terms determine the shape.
+        concepts: [degenerate, monkey-saddle]
+        points: 1
+      - id: lcpt-as-plateau
+        kind: scenario
+        prompt: Loss is flat for thousands of steps with a small nonzero gradient, then drops sharply. What happened, and should you intervene?
+        modelAnswer: |
+          A saddle plateau: the optimiser crossed a region of small gradient and near-zero curvature,
+          slowly aligning with a negative-curvature escape direction, then the loss fell once it left
+          the flat centre. If budget allows, no intervention is needed — plateaus are normal. To
+          shorten them: increase momentum, raise the LR within the stable range, add a perturbation
+          when the gradient is tiny, or take a negative-curvature step. Do not lower the LR.
+        explanation: Plateaus around saddles are a normal feature of the landscape.
+        concepts: [plateau, saddle-point]
+        points: 1
+interview:
+  - id: lcpt-iv-classify
+    level: basic
+    requiredForMastery: true
+    concepts: [critical-point, second-order-test]
+    question: How do you classify a critical point?
+    shortAnswer: |
+      Confirm `grad f = 0`, then look at the Hessian's eigenvalues: all positive is a strict local
+      minimum, all negative a maximum, mixed signs a saddle, a zero eigenvalue makes the test
+      inconclusive along that direction.
+    fullAnswer: |
+      The first-order condition `grad f(x*) = 0` is necessary for any local extremum. The
+      second-order test uses `H = nabla^2 f(x*)`: positive definite gives a strict local minimum,
+      negative definite a strict local maximum, indefinite a saddle (curving up in some directions
+      and down in others). A positive semidefinite but singular Hessian is degenerate — the
+      zero-eigenvalue direction is flat to second order and higher-order terms decide. On real models
+      you estimate `lambda_min(H)` with a few Lanczos iterations on Hessian-vector products rather
+      than a dense eigendecomposition.
+    commonWrongAnswer: A zero gradient is enough to call it a minimum.
+    followUps:
+      - What does a zero Hessian eigenvalue at a critical point tell you?
+      - How do you estimate the smallest Hessian eigenvalue without forming the Hessian?
+  - id: lcpt-iv-local-global
+    level: comparison
+    requiredForMastery: true
+    concepts: [local-minimum, global-minimum, convexity]
+    question: What is the difference between a local and a global minimum, and when can you guarantee they coincide?
+    shortAnswer: |
+      A local minimum beats its neighbourhood; a global minimum beats everything. They coincide when
+      the function is convex, or satisfies a Polyak-Lojasiewicz / gradient-dominance condition, or
+      the domain is finite and enumerated. General smooth non-convex functions give no such
+      guarantee.
+    fullAnswer: |
+      The local conditions (`grad f = 0`, `H` positive (semi)definite) only compare a point to a
+      small ball around it, so a strictly lower value can exist elsewhere. Convexity is the strongest
+      guarantee: every local minimum is global and the minimiser set is convex. Weaker but still
+      sufficient for reaching the global *value* is the PL inequality
+      `0.5||grad f||^2 >= mu(f - f*)`, under which gradient descent converges linearly even without
+      convexity — and some over-parameterised network regimes provably satisfy a local PL condition.
+      Absent structure, certifying a global minimum is NP-hard, and deep learning simply relies on
+      the empirical landscape: saddles rather than bad minima, and low-loss minima near the bottom.
+    commonWrongAnswer: If the Hessian is positive definite it is the global minimum.
+    followUps:
+      - What is the Polyak-Lojasiewicz condition and why is it useful?
+      - Why does deep-net training reach low loss without convexity?
+  - id: lcpt-iv-saddle-prevalence
+    level: internals
+    requiredForMastery: true
+    concepts: [saddle-prevalence, random-matrix, high-dimension]
+    question: Why do people say the problem in deep learning is saddles, not local minima?
+    shortAnswer: |
+      In high dimensions a local minimum needs every one of the many Hessian eigenvalues to be
+      positive, which random-matrix arguments and experiments say is exponentially unlikely, so
+      almost every critical point is a saddle. The minima that exist tend to sit at low loss.
+    fullAnswer: |
+      Modelling the Hessian at a critical point as a random symmetric matrix, its eigenvalues are
+      roughly sign-symmetric, so an all-positive spectrum (a local minimum) has probability decaying
+      exponentially with dimension. Refining with the loss level: higher-loss critical points have
+      the spectrum shifted negative (more downhill escape directions), and the rare all-positive ones
+      cluster near the global minimum. Empirical Hessian-spectrum studies of trained nets match this
+      — a near-zero bulk plus a few outliers, and negative eigenvalues away from convergence. The
+      practical consequence is that the obstacles are saddle plateaus (small gradient everywhere,
+      slow escape) and ill-conditioning, not getting trapped at a high-loss local minimum; and SGD
+      noise, momentum, and negative-curvature awareness are what get you past them.
+    commonWrongAnswer: Deep nets have many terrible local minima you must avoid.
+    followUps:
+      - What does the empirical Hessian spectrum of a trained net look like?
+      - How does the loss level of a critical point relate to its number of negative eigenvalues?
+  - id: lcpt-iv-escape
+    level: scenario
+    requiredForMastery: true
+    concepts: [strict-saddle, perturbed-gd, sgd-noise, momentum]
+    question: How do first-order methods get past saddle points?
+    shortAnswer: |
+      Through noise. A strict saddle has a negative-curvature direction; a random perturbation
+      (perturbed GD) or SGD's mini-batch noise puts a component along it, and once off the flat
+      centre the gradient there grows and steps accelerate away. Momentum carries velocity through
+      the surrounding plateau.
+    fullAnswer: |
+      At a strict saddle the deterministic gradient step stalls (gradient near zero) but the surface
+      curves down along at least one eigenvector. Perturbed gradient descent monitors the gradient
+      norm and injects a bounded random kick when it is small; the kick almost surely has a nonzero
+      component along the escape direction, and the exponential instability of the saddle in that
+      direction does the rest, with a polynomial-in-dimension number of extra steps. Plain SGD gets
+      this for free because the gradient noise is present every step. Momentum reduces the plateau
+      time by accumulating velocity through the low-gradient region, and a well-scaled learning rate
+      avoids wasting the small signal. Second-order and negative-curvature-aware methods (saddle-free
+      Newton, trust region, a Lanczos eigenvector step) escape deterministically and faster but cost
+      more per step.
+    commonWrongAnswer: You lower the learning rate until it works its way out.
+    followUps:
+      - Why does lowering the learning rate make a saddle plateau worse?
+      - What does a negative-curvature step look like?
+  - id: lcpt-iv-symmetry
+    level: advanced
+    requiredForMastery: true
+    concepts: [permutation-symmetry, rescaling-symmetry, mode-connectivity]
+    question: How many global minima does a neural network have, and why does it matter?
+    shortAnswer: |
+      Combinatorially many. Permuting `h` hidden units gives `h!` equivalent parameter vectors per
+      layer, and ReLU rescaling gives a continuous orbit around each. After quotienting permutation
+      symmetry, many are connected by low-loss paths (mode connectivity).
+    fullAnswer: |
+      Any function-preserving transformation of the parameters maps one global minimum to another
+      with identical loss. The discrete one is permutation of hidden units (and the corresponding
+      rows/columns of adjacent weight matrices), giving `h!` copies per hidden layer. The continuous
+      one, for positively-homogeneous activations like ReLU, is per-unit rescaling `W1 -> c W1`,
+      `W2 -> W2/c`. So the set of optima is a union of many symmetry orbits. This matters for
+      analysis: comparing two trained networks in raw parameter space is meaningless without first
+      aligning units (a linear assignment problem) and normalising scale; loss-landscape studies of
+      "barriers" between solutions largely vanish once permutations are matched (linear mode
+      connectivity); and averaging or interpolating models (model soups, weight averaging) works
+      only after such alignment.
+    commonWrongAnswer: A network has essentially one global minimum.
+    followUps:
+      - How would you align the hidden units of two trained networks?
+      - What is linear mode connectivity?
+  - id: lcpt-iv-certify
+    level: debugging
+    requiredForMastery: true
+    concepts: [certification, lanczos, stopping-criterion]
+    question: How do you certify that an optimiser has actually reached a minimum, not a saddle?
+    shortAnswer: |
+      Check both conditions. The gradient norm must be small, and the smallest Hessian eigenvalue —
+      estimated by a few Lanczos iterations on Hessian-vector products — must be clearly positive. A
+      negative `lambda_min` means a strict saddle; near zero means degenerate.
+    fullAnswer: |
+      A small gradient norm alone is ambiguous — it holds at saddles and across plateaus. To claim a
+      local minimum you also need `lambda_min(H) > 0`. Since you cannot form `H` for a large model,
+      run `k`-step Lanczos (or inverse power iteration) on the HVP operator and take the smallest
+      Ritz value, with the Lanczos residual as a confidence measure. Classify with a *relative*
+      tolerance against `lambda_max`: clearly positive is a minimum, clearly negative is a strict
+      saddle (return the eigenvector for a negative-curvature step), near zero is degenerate /
+      inconclusive. In training practice the pragmatic stop is a plateau in a held-out metric rather
+      than a curvature certificate, which is expensive; the certificate is for analysis and for
+      deciding whether a stall is a saddle to escape or a solution to accept.
+    commonWrongAnswer: If the loss stops changing, it is a minimum.
+    followUps:
+      - Why use a relative rather than absolute tolerance on the smallest eigenvalue?
+      - What is the Lanczos residual telling you?
+projects:
+  - id: lcpt-project-landscape-lab
+    kind: small
+    title: Build a critical-point and saddle-escape lab
+    minutes: 160
+    summary: Implement a critical-point classifier, a random-Hessian saddle-fraction experiment, a minimum certifier from HVPs, perturbed gradient descent, and a symmetry-aware model comparison, validated on standard test functions.
+    problem: |
+      Build a lab that makes this lesson concrete: `classify(H)` (min / max / saddle / degenerate
+      with a relative tolerance); `saddle_fraction(n, trials)` (fraction of random symmetric matrices
+      that are positive definite, as a function of `n`); `certify(grad, hvp, x)` (Lanczos-based
+      `lambda_min` classification with a confidence proxy); `perturbed_gd(f, grad_f, x0)` (gradient
+      descent with a random kick when the gradient is small, escaping strict saddles); and
+      `align_and_compare(net_a, net_b, probe)` (permutation-align and scale-normalise two small
+      networks, then compare in function space).
+    requirements:
+      - "`classify` uses `eigvalsh` on the symmetrised Hessian and a relative tolerance for the zero-eigenvalue case."
+      - "`saddle_fraction` shows a rapidly decreasing fraction as `n` grows, matching a large-deviation trend."
+      - "`certify` estimates `lambda_min` from `k`-step Lanczos on HVPs and returns a label plus a residual-based confidence; it never claims a minimum from the gradient norm alone."
+      - "`perturbed_gd` escapes `x^2 - y^2` from a start on the `x`-axis, where plain GD stalls at the origin."
+      - "`align_and_compare` reports one solution when given a network and a permuted-and-rescaled copy of it."
+    constraints:
+      - NumPy and the standard library only; a small autodiff or a framework for the HVP.
+      - Never certify a minimum without a curvature check.
+      - Never use an absolute eigenvalue tolerance in the classifier or certifier.
+      - Compare networks in function space or after canonicalisation, not raw weights.
+    expectedBehaviour:
+      - "`classify` labels constructed min / max / saddle / degenerate Hessians correctly."
+      - "`saddle_fraction(2) > saddle_fraction(6) > saddle_fraction(12)` and the last is near zero."
+      - "`certify` labels `x^2 - y^2` at the origin a saddle and returns the escape direction."
+      - "`perturbed_gd` reaches a lower loss than plain GD on a saddle-plateau fixture in fewer effective steps."
+      - "`align_and_compare` collapses symmetric copies to one."
+    structure: |
+      landscapelab/
+        __init__.py
+        classify.py
+        random_hessian.py
+        certify.py
+        perturbed_gd.py
+        symmetry.py
+      tests/
+        test_classify.py
+        test_random_hessian.py
+        test_certify.py
+        test_perturbed_gd.py
+        test_symmetry.py
+    milestones:
+      - title: "1 — Classifier and saddle fraction"
+        detail: Relative-tolerance classifier and the random-Hessian experiment.
+      - title: "2 — Minimum certifier"
+        detail: Lanczos `lambda_min` classification with a confidence proxy.
+      - title: "3 — Perturbed GD"
+        detail: Gradient descent with a stall-triggered random kick that escapes strict saddles.
+      - title: "4 — Symmetry-aware comparison"
+        detail: Permutation alignment and scale normalisation, then function-space comparison.
+    testing:
+      - Classifier correctness on constructed Hessians.
+      - Saddle fraction decreasing with dimension.
+      - Certifier label and escape direction on `x^2 - y^2`.
+      - Perturbed GD versus plain GD on a saddle-plateau function.
+      - Symmetry comparison collapsing a permuted/rescaled copy to one solution.
+    failureCases:
+      - The classifier uses an absolute tolerance and mislabels a scaled Hessian.
+      - The certifier claims a minimum from a small gradient norm alone.
+      - Perturbed GD's kick is too small (never escapes) or too large (random walk).
+      - The model comparison clusters raw weights and inflates the optimum count.
+    bonus:
+      - Add saddle-free Newton and compare its saddle behaviour with plain Newton.
+      - Add a mode-connectivity check that searches for a low-loss path between two aligned solutions.
+      - Emit a landscape report as Markdown.
+    architectureHints:
+      - Share one symmetrise-and-`eigvalsh` helper between the classifier and the certifier.
+      - Represent a certification result as an object with `label`, `lambda_min`, `confidence`, `escape_direction`.
+      - Make `perturbed_gd` take a stall detector callback so the trigger is configurable.
+    referenceOutline: |
+      `classify` symmetrises and reads `eigvalsh` extremes against a relative tolerance.
+      `random_hessian.saddle_fraction` samples GOE-like matrices and counts positive definite ones.
+      `certify` runs Lanczos on `hvp` for the smallest Ritz value. `perturbed_gd` adds
+      `radius * unit_gaussian` when `||g|| < tol`. `symmetry.align` solves a linear assignment on
+      first-layer weights and normalises per-unit scale.
+  - id: lcpt-final-plateau-audit
+    kind: final-challenge
+    title: Diagnose and shorten a training plateau
+    minutes: 90
+    summary: Given a training run that stalls for a long stretch, determine whether it is a saddle plateau or a degenerate minimum using HVP-based curvature estimates, apply an escape strategy if it is a saddle, and show the plateau shortens, with fail-before-fix measurements.
+    problem: |
+      A full-batch (or large-batch) training run's loss is flat for thousands of steps with a small
+      but nonzero gradient. You are given a Hessian-vector-product operator and the training loss.
+      Produce an audit that: at a plateau checkpoint estimates `lambda_min(H)` and `lambda_max(H)`
+      via Lanczos with a convergence proxy; classifies the stall as a strict saddle
+      (`lambda_min < 0`), a degenerate minimum (`lambda_min ~ 0` and no further descent), or genuine
+      slow progress; if it is a saddle, applies an escape (perturbation, negative-curvature step, or
+      increased momentum) and shows the loss resumes decreasing sooner; and compares iterations-to-
+      target with and without the escape, plus a fail-before-fix measurement of the original plateau
+      length.
+    requirements:
+      - Estimate `lambda_min` and `lambda_max` at the plateau via `k`-step Lanczos on HVPs, reporting the residual-based confidence.
+      - Classify the stall with a relative tolerance against `lambda_max`.
+      - If a strict saddle, apply at least one escape method and measure the reduction in plateau length.
+      - If a degenerate minimum, argue that no escape is warranted and the run has effectively converged.
+      - Provide a fail-before-fix measurement (original plateau length / iterations-to-target) and a post-fix comparison.
+    constraints:
+      - Do not use `A^T A` power iteration for a curvature eigenvalue.
+      - Do not lower the learning rate as the escape strategy.
+      - Do not claim a minimum from the gradient norm alone.
+    expectedBehaviour:
+      - The Lanczos estimates converge or are flagged low-confidence.
+      - The stall is classified with a stated relative tolerance.
+      - For a genuine saddle, the escape method measurably shortens the plateau.
+      - For a degenerate minimum, the audit correctly recommends stopping.
+      - Each claim has a measurement, and the escape has a fail-before-fix comparison.
+    milestones:
+      - title: "1 — Curvature at the plateau"
+        detail: Lanczos `lambda_min` / `lambda_max` with confidence; classify the stall.
+      - title: "2 — Escape (if a saddle)"
+        detail: Apply perturbation / negative-curvature step / momentum increase; measure plateau length.
+      - title: "3 — Compare"
+        detail: Iterations-to-target with and without the escape; fail-before-fix on the original plateau.
+    testing:
+      - Fail-before-fix fixture recording the original plateau length and iterations-to-target.
+      - Lanczos convergence check on a synthetic Hessian.
+      - A test that the classifier uses a relative tolerance.
+    failureCases:
+      - The Lanczos estimate is not converged but is used without a caveat.
+      - A degenerate minimum is misclassified as a saddle and a pointless escape is applied.
+      - The escape lowers the learning rate, confounding the comparison.
+    bonus:
+      - Add a Lanczos spectral-density sketch at the plateau and interpret the bulk-plus-outliers shape.
+    architectureHints:
+      - Freeze the original plateau length and iterations-to-target as fixtures first.
+      - Keep curvature estimation, classification, and escape in separate commits.
+    referenceOutline: |
+      Lanczos: `k`-step tridiagonalisation from HVPs, smallest and largest Ritz values, residual for
+      confidence. Classify: `lambda_min < -tau` saddle, `|lambda_min| <= tau` degenerate, else slow.
+      Escape: `x += radius * unit_gaussian` on stall, or step along the smallest-eigenvalue
+      eigenvector in the downhill direction, or raise the momentum coefficient.
+resources:
+  - name: "Dauphin, Pascanu, Gulcehre, Cho, Ganguli, Bengio — Identifying and attacking the saddle point problem"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1406.2572"
+    usefulness: 5
+    why: It makes the case, with random-matrix theory and experiments, that high-dimensional non-convex optimisation is dominated by saddles rather than bad local minima, and introduces saddle-free Newton — the core references for this lesson.
+    covers: Random-matrix statistics of critical points, the loss-level dependence of negative-eigenvalue fraction, why Newton is drawn to saddles, and the saddle-free Newton method.
+  - name: "Jin, Ge, Netrapalli, Kakade, Jordan — How to Escape Saddle Points Efficiently"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1703.00887"
+    usefulness: 4
+    why: It proves that perturbed gradient descent escapes strict saddles in almost the same iteration complexity as reaching a first-order stationary point, formalising why noise-driven first-order methods work.
+    covers: The strict-saddle property, perturbed gradient descent, escape-time analysis, and second-order stationary points.
+  - name: "Choromanska, Henaff, Mathieu, Ben Arous, LeCun — The Loss Surfaces of Multilayer Networks"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1412.0233"
+    usefulness: 4
+    why: It connects the deep-net loss surface to spin-glass models, predicting that low-loss critical points are minima concentrated near the global value and high-loss ones are saddles — the landscape picture this lesson describes.
+    covers: The spin-glass analogy, the band of low-loss minima, the loss-level to critical-point-index relationship, and implications for training.
+  - name: "Garipov, Izmailov, Podoprikhin, Vetrov, Wilson — Loss Surfaces, Mode Connectivity, and Fast Ensembling"
+    type: article
+    difficulty: core
+    url: "https://arxiv.org/abs/1802.10026"
+    usefulness: 4
+    why: It shows that independently trained solutions are connected by simple low-loss paths, evidence that deep-net optima form connected structures rather than isolated wells, which this lesson references.
+    covers: Mode connectivity, curve-finding between minima, the role of symmetry, and using connected minima for ensembling.
+  - name: "MIT 18.02 / any multivariable calculus text — second derivative test and Lagrange multipliers intro"
+    type: university
+    difficulty: intro
+    url: "https://ocw.mit.edu/courses/18-02sc-multivariable-calculus-fall-2010/"
+    usefulness: 3
+    why: It covers the classical second-derivative test for critical points of functions of several variables — the deterministic classification this lesson builds on before the high-dimensional statistics.
+    covers: Critical points, the Hessian determinant test in two variables, classification into min / max / saddle, and constrained critical points.

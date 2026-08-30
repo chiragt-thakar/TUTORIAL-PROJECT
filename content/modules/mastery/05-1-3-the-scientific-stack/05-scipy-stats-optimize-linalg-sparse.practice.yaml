@@ -1,0 +1,387 @@
+lessonId: "roadmap:phase-1-1.3:4"
+module: 1-3-the-scientific-stack
+lesson: 05-scipy-stats-optimize-linalg-sparse
+title: "scipy: stats, optimize, linalg, sparse"
+summary: Practise assumption-aware statistics and diagnostic-driven numerical computing.
+mastery: {minAssessmentScore: 80, requireProject: true, requireInterview: true, requireDebug: true, revisitAfterDays: 21}
+
+exercises:
+  - id: scipy-paired-difference
+    tier: normal
+    kind: write-code
+    title: Preserve paired design
+    minutes: 10
+    requiredForMastery: true
+    concepts: [paired-test, estimand]
+    prompt: Test whether the mean after-minus-before difference across the same devices is zero.
+    hints: [Reduce each pair to one difference., Test that one sample against zero.]
+    solution: Pairing makes the device the independent unit and targets the mean within-device change.
+    solutionCode: |
+      difference = after - before
+      result = scipy.stats.ttest_1samp(difference, popmean=0.0)
+
+  - id: scipy-pvalue-reading
+    tier: normal
+    kind: explain
+    title: Interpret a p-value
+    minutes: 9
+    requiredForMastery: true
+    concepts: [p-value, null-model]
+    prompt: Explain a p-value of 0.03 without saying the null has a 3% probability.
+    hints: [Condition on the null model., Refer to results at least as incompatible as observed.]
+    solution: Under the null model and its assumptions, results at least as incompatible with it as the observation would occur with probability 0.03; this does not assign probability to the null.
+
+  - id: scipy-tail-probability
+    tier: normal
+    kind: code-reading
+    title: Read a stable tail calculation
+    minutes: 8
+    requiredForMastery: true
+    concepts: [distribution, survival-function, precision]
+    prompt: Why prefer dist.sf(x) over 1 - dist.cdf(x) in an extreme upper tail?
+    hints: [The CDF may round near one., Subtracting close floats loses significant digits.]
+    solution: The survival function is implemented to compute upper-tail probability directly and avoids cancellation after the CDF becomes numerically indistinguishable from one.
+
+  - id: scipy-linear-solve
+    tier: normal
+    kind: write-code
+    title: Solve without inversion
+    minutes: 10
+    requiredForMastery: true
+    concepts: [solve, residual]
+    prompt: Solve Ax=b and compute a relative residual.
+    hints: [Call the linear solve routine., Normalize equation error by the right-hand-side norm.]
+    solution: Direct solving avoids explicit inverse work, while a scale-aware residual verifies the returned vector satisfies the equations numerically.
+    solutionCode: |
+      x = scipy.linalg.solve(A, b)
+      residual = np.linalg.norm(A @ x - b) / np.linalg.norm(b)
+
+  - id: scipy-bootstrap-seed
+    tier: intermediate
+    kind: design
+    title: Reproduce a bootstrap interval
+    minutes: 13
+    requiredForMastery: true
+    concepts: [bootstrap, RNG, sampling-unit]
+    prompt: Design a reproducible bootstrap for clustered device results.
+    hints: [Seed through an explicit generator., Resample independent units rather than correlated rows.]
+    solution: Use a recorded NumPy Generator, resample devices or experimental units, recompute the estimand per replicate, define interval method and confidence level, and retain sample counts and version metadata.
+
+  - id: scipy-gradient-check
+    tier: intermediate
+    kind: design
+    title: Validate an analytic gradient
+    minutes: 14
+    requiredForMastery: true
+    concepts: [gradient, finite-difference, optimization]
+    prompt: Before trusting a custom Jacobian, define a numerical check.
+    hints: [Compare directional or coordinate derivatives., Test more than one well-scaled point.]
+    solution: Compare the analytic derivative with carefully stepped finite differences at representative interior points, scale error relative to derivative magnitude, and investigate nonsmooth boundaries separately.
+
+  - id: scipy-multiple-rhs
+    tier: intermediate
+    kind: performance
+    title: Reuse a factorization
+    minutes: 13
+    requiredForMastery: true
+    concepts: [factorization, LU, Cholesky]
+    prompt: The same matrix is solved against 10,000 right-hand sides. Improve the algorithm.
+    hints: [The expensive decomposition depends on A., Reuse structure-specific factors.]
+    solution: Factor A once using LU or verified Cholesky and solve each or batched right-hand side from the stored factors, checking residuals and conditioning.
+
+  - id: scipy-sparse-format
+    tier: intermediate
+    kind: design
+    title: Choose sparse representations
+    minutes: 13
+    requiredForMastery: true
+    concepts: [COO, CSR, CSC]
+    prompt: Assemble coordinate triples, then perform repeated matrix-vector products. Choose format transitions.
+    hints: [Construction and multiplication have different access patterns., Canonicalize duplicates before computation.]
+    solution: Build in COO from triples, sum duplicates and canonicalize, convert once to CSR for efficient row-oriented matrix-vector multiplication, then avoid repeated format churn.
+
+  - id: scipy-success-flag-bug
+    tier: tricky
+    kind: debug
+    title: Challenge optimizer success
+    minutes: 17
+    requiredForMastery: true
+    concepts: [convergence, feasibility, stationarity]
+    prompt: result.success is true, but the solution is commercially impossible. Diagnose the validation gap.
+    hints: [A stopping condition is not domain validation., Re-evaluate constraints and derivatives at the result.]
+    solution: Verify bounds and constraint signs, compute feasibility and stationarity evidence, inspect the message and tolerances, compare objective quality and starts, and reject any domain-invalid result despite the flag.
+
+  - id: scipy-ill-conditioned-bug
+    tier: tricky
+    kind: debug
+    title: Explain unstable coefficients
+    minutes: 18
+    requiredForMastery: true
+    concepts: [condition-number, residual, forward-error]
+    prompt: Tiny input noise changes x drastically although A @ x closely matches b. Diagnose it.
+    hints: [Residual and solution sensitivity are different., Estimate conditioning or singular values.]
+    solution: A is ill-conditioned, so a small backward error can imply large forward error. Rescale or reformulate, regularize if justified, improve precision, and report sensitivity rather than trusting coefficients.
+
+  - id: scipy-densification-bug
+    tier: tricky
+    kind: debug
+    title: Find sparse memory explosion
+    minutes: 16
+    requiredForMastery: true
+    concepts: [sparse, densification, fill-in]
+    prompt: A sparse pipeline suddenly allocates terabytes during a helper call. Find likely causes.
+    hints: [Inspect intermediate types and shapes., Sparse factorization can store new nonzeros.]
+    solution: Look for .toarray, dense broadcasting, unsupported operations, and factorization fill-in; preserve sparse-aware APIs, estimate memory before conversion, and choose ordering, iterative methods, or preconditioning.
+
+  - id: scipy-iterative-solver
+    tier: tricky
+    kind: design
+    title: Select an iterative solver
+    minutes: 18
+    requiredForMastery: false
+    concepts: [CG, GMRES, preconditioner]
+    prompt: Choose between conjugate gradient and GMRES and define acceptance evidence.
+    hints: [Matrix symmetry and definiteness matter., Solver status must accompany a residual.]
+    solution: Use CG only for verified symmetric positive-definite systems; use GMRES for broader nonsymmetric cases, add a suitable preconditioner, track iterations/status, and compute scaled residual and domain checks.
+
+  - id: scipy-constrained-fit
+    tier: challenge
+    kind: design
+    title: Formulate a constrained calibration
+    minutes: 25
+    requiredForMastery: false
+    concepts: [objective, constraints, scaling]
+    prompt: Fit nonnegative calibration gains whose weighted sum must equal one.
+    hints: [Encode domain restrictions directly., Scale objective components and inspect multiple starts.]
+    solution: Define a weighted residual objective, nonnegative bounds, an equality constraint, scaled parameters, checked derivatives, multiple valid starts, and post-solve feasibility, stationarity, sensitivity, and residual diagnostics.
+
+  - id: scipy-sparse-network
+    tier: challenge
+    kind: performance
+    title: Design a million-node solve
+    minutes: 30
+    requiredForMastery: false
+    concepts: [sparse-system, memory, preconditioning]
+    prompt: Design the numerical path for a million-node network Laplacian with boundary conditions.
+    hints: [Use structure before choosing the solver., A singular unconstrained Laplacian needs a reference condition.]
+    solution: Assemble sparsely, apply boundary/reference constraints, verify symmetry and definiteness, choose CSR plus CG and a measured preconditioner, track residuals/iterations, estimate memory and fill-in, and validate on smaller known systems.
+
+quizzes:
+  - id: scipy-checkpoint
+    title: SciPy checkpoint
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: scipy-cp-pvalue
+        kind: mcq
+        prompt: Does a p-value give P(null is true)?
+        options: [{id: scipy-cp-pvalue-yes, text: "yes"}, {id: scipy-cp-pvalue-no, text: "no"}]
+        answer: [scipy-cp-pvalue-no]
+        explanation: It is conditional on a null model, not a posterior probability.
+        concepts: [statistics]
+      - id: scipy-cp-solve
+        kind: mcq
+        prompt: Preferred computation for Ax=b?
+        options: [{id: scipy-cp-solve-direct, text: solve}, {id: scipy-cp-solve-inv, text: inverse then multiply}]
+        answer: [scipy-cp-solve-direct]
+        explanation: Solve is more direct and normally more stable.
+        concepts: [linalg]
+      - id: scipy-cp-cg
+        kind: mcq
+        prompt: CG requires which structure?
+        options: [{id: scipy-cp-cg-spd, text: symmetric positive definite}, {id: scipy-cp-cg-any, text: any rectangular matrix}]
+        answer: [scipy-cp-cg-spd]
+        explanation: Classical conjugate gradient depends on SPD structure.
+        concepts: [sparse]
+      - id: scipy-cp-success
+        kind: true-false
+        prompt: Optimizer success proves global optimality.
+        options: [{id: scipy-cp-success-true, text: "true"}, {id: scipy-cp-success-false, text: "false"}]
+        answer: [scipy-cp-success-false]
+        explanation: It reports a method-specific stopping condition.
+        concepts: [optimize]
+
+  - id: scipy-assessment
+    title: SciPy mastery assessment
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: scipy-as-estimand
+        kind: explain
+        prompt: What is an estimand?
+        modelAnswer: The population quantity or effect the analysis is intended to estimate under a stated data-generating and sampling design.
+        explanation: Procedure choice follows the target quantity.
+        concepts: [statistics]
+      - id: scipy-as-paired
+        kind: scenario
+        prompt: Why not treat repeated before/after samples as independent?
+        modelAnswer: Measurements share the same unit, so pairing captures within-unit change and the true independent sample size.
+        explanation: Ignoring dependence misstates variance and the question.
+        concepts: [paired]
+      - id: scipy-as-multiple
+        kind: explain
+        prompt: What is the multiple-testing problem?
+        modelAnswer: Repeated opportunities to reject increase false discoveries unless the family, selection, and error-control procedure are defined.
+        explanation: One threshold cannot be interpreted outside the testing process.
+        concepts: [statistics]
+      - id: scipy-as-gradient
+        kind: mcq
+        prompt: What checks an analytic gradient approximately?
+        options: [{id: scipy-as-gradient-fd, text: finite differences}, {id: scipy-as-gradient-font, text: output formatting}]
+        answer: [scipy-as-gradient-fd]
+        explanation: Numerical perturbations provide independent derivative evidence.
+        concepts: [optimize]
+      - id: scipy-as-constraint
+        kind: scenario
+        prompt: What must be checked after constrained optimization?
+        modelAnswer: Feasibility, objective value, stationarity or KKT-style evidence, solver diagnostics, starts, tolerances, and domain validity.
+        explanation: Stopping is not final acceptance.
+        concepts: [optimize]
+      - id: scipy-as-residual
+        kind: explain
+        prompt: Define a relative linear-system residual.
+        modelAnswer: A scale-aware form is norm(Ax-b) divided by norm(b), with a defined policy when b is zero.
+        explanation: Residual measures equation satisfaction.
+        concepts: [linalg]
+      - id: scipy-as-condition
+        kind: true-false
+        prompt: Tiny residual guarantees tiny solution error.
+        options: [{id: scipy-as-condition-true, text: "true"}, {id: scipy-as-condition-false, text: "false"}]
+        answer: [scipy-as-condition-false]
+        explanation: Ill-conditioning can amplify small perturbations.
+        concepts: [conditioning]
+      - id: scipy-as-csr
+        kind: mcq
+        prompt: Which format commonly suits repeated row-oriented matrix-vector products?
+        options: [{id: scipy-as-csr-opt, text: CSR}, {id: scipy-as-coo-opt, text: raw coordinate construction forever}]
+        answer: [scipy-as-csr-opt]
+        explanation: CSR supports efficient row access and matvec kernels.
+        concepts: [sparse]
+      - id: scipy-as-fill
+        kind: explain
+        prompt: What is sparse factorization fill-in?
+        modelAnswer: Factorization creates stored nonzeros where the original matrix had implicit zeros, potentially dominating memory and runtime.
+        explanation: Sparse input does not guarantee sparse factors.
+        concepts: [sparse]
+      - id: scipy-as-repro
+        kind: scenario
+        prompt: What belongs beside a numerical result?
+        modelAnswer: Inputs and units, method, versions, seeds, tolerances, status, iterations, residuals, feasibility, uncertainty, and relevant conditioning diagnostics.
+        explanation: Diagnostics are part of the evidence, not optional logs.
+        concepts: [reproducibility]
+
+interview:
+  - id: scipy-iv-pvalue
+    level: basic
+    question: Interpret a p-value correctly.
+    shortAnswer: Under the null assumptions, it measures how often results at least this incompatible would occur.
+    fullAnswer: It is not the probability the null is true, an effect size, or evidence immune to selection, optional stopping, dependence, and multiple testing.
+    commonWrongAnswer: There is a p percent chance the result is random.
+    followUps: [What else would you report?]
+    concepts: [statistics]
+    requiredForMastery: true
+  - id: scipy-iv-optimize
+    level: advanced
+    question: How do you validate an optimizer result?
+    shortAnswer: Check feasibility, stationarity, objective, diagnostics, starts, sensitivity, and domain constraints.
+    fullAnswer: Method success is one stopping report. Independent residual, derivative, boundary, scaling, and alternative-start checks establish whether the result is useful.
+    commonWrongAnswer: Trust success and the minimum value.
+    followUps: [How do you detect local minima?]
+    concepts: [optimization]
+    requiredForMastery: true
+  - id: scipy-iv-inverse
+    level: intermediate
+    question: Why avoid explicit inverse for Ax=b?
+    shortAnswer: A solve uses less work, less storage, and normally less accumulated error.
+    fullAnswer: Factorization-based solves exploit matrix structure and can reuse factors; explicit inverse computes unnecessary entries and still needs multiplication.
+    commonWrongAnswer: Inverse is mathematically invalid.
+    followUps: [When might an inverse-like quantity be needed?]
+    concepts: [linalg]
+    requiredForMastery: true
+  - id: scipy-iv-conditioning
+    level: internals
+    question: Residual versus condition number?
+    shortAnswer: Residual measures equation fit; conditioning measures sensitivity of the solution to perturbations.
+    fullAnswer: Backward stability plus a condition estimate connects computed residuals to possible forward error; a tiny residual alone can be misleading.
+    commonWrongAnswer: They are two names for error.
+    followUps: [How can scaling help?]
+    concepts: [conditioning]
+    requiredForMastery: false
+  - id: scipy-iv-sparse
+    level: comparison
+    question: Compare COO, CSR, and CSC.
+    shortAnswer: COO is convenient to build, CSR favors rows and matvec, and CSC favors columns and some factorizations.
+    fullAnswer: Convert at deliberate phase boundaries, canonicalize duplicates, and choose from actual access and solver requirements rather than storage size alone.
+    commonWrongAnswer: All sparse formats perform identically.
+    followUps: [What is canonical form?]
+    concepts: [sparse]
+    requiredForMastery: false
+  - id: scipy-iv-iterative
+    level: scenario
+    question: What makes an iterative solve production-ready?
+    shortAnswer: Correct solver structure, preconditioning, tolerances, status, residual, iteration budget, and fallback policy.
+    fullAnswer: Test representative conditioning and scale, report convergence evidence, avoid treating iteration exhaustion as a usable vector, and validate against smaller direct solves.
+    commonWrongAnswer: A returned vector means convergence.
+    followUps: [What does a preconditioner do?]
+    concepts: [iterative-solver]
+    requiredForMastery: false
+
+projects:
+  - id: scipy-project-calibration-engine
+    kind: major
+    title: Constrained sensor calibration engine
+    summary: Build a numerical service that estimates calibration parameters and returns auditable diagnostics.
+    problem: Fit gains and offsets from paired reference measurements with bounds, correlated uncertainty, occasional outliers, and both dense and sparse model variants.
+    requirements: [Define estimands and objective units, Validate analytic derivatives numerically, Enforce and verify constraints, Solve dense and sparse subproblems appropriately, Return uncertainty and diagnostics with parameters]
+    constraints: [No explicit inverse for system solves, No success flag accepted without independent checks, Seed every resampling procedure]
+    expectedBehaviour: [Known synthetic parameters recover within tolerance, Infeasible inputs fail clearly, Ill-conditioned designs warn or reject, Sparse and dense small cases agree]
+    milestones:
+      - title: Mathematical contract
+        detail: Specify objective, assumptions, constraints, scales, identifiability, and acceptance evidence.
+      - title: Solver adapters
+        detail: Implement statistics, optimization, dense, and sparse boundaries with shared diagnostics.
+      - title: Validation
+        detail: Add synthetic recovery, perturbation, gradient, residual, and performance tests.
+    testing: [Rank deficiency, boundary optimum, bad gradient, correlated pairs, sparse fill-in risk]
+    failureCases: [Non-finite input, infeasible constraints, optimizer exhaustion, unacceptable residual]
+    bonus: [Bootstrap confidence intervals by device, preconditioned large sparse solve]
+    architectureHints: [Represent result and diagnostics in one immutable type., Keep domain validation outside raw SciPy calls.]
+    referenceOutline: Modules for models, stats, objectives, dense and sparse solvers, diagnostics, result schemas, and CLI.
+    minutes: 340
+
+resources:
+  - name: SciPy Statistics tutorial
+    type: tutorial
+    difficulty: core
+    url: https://docs.scipy.org/doc/scipy/tutorial/stats.html
+    why: The primary tutorial covers distributions, moments, hypothesis tests, estimation, sampling, and current statistical APIs in one maintained guide.
+    covers: scipy.stats distributions, tests, and inference.
+    usefulness: 5
+  - name: SciPy Optimization tutorial
+    type: tutorial
+    difficulty: deep
+    url: https://docs.scipy.org/doc/scipy/tutorial/optimize.html
+    why: The official tutorial compares scalar, multivariate, constrained, least-squares, root-finding, and global optimization methods with diagnostics.
+    covers: Objectives, derivatives, constraints, roots, and convergence.
+    usefulness: 5
+  - name: SciPy Linear Algebra tutorial
+    type: tutorial
+    difficulty: deep
+    url: https://docs.scipy.org/doc/scipy/tutorial/linalg.html
+    why: The primary guide demonstrates structured solves, decompositions, norms, determinants, and matrix functions using SciPy's LAPACK-backed routines.
+    covers: Dense linear algebra and factorizations.
+    usefulness: 5
+  - name: SciPy Sparse arrays tutorial
+    type: tutorial
+    difficulty: core
+    url: https://docs.scipy.org/doc/scipy/tutorial/sparse.html
+    why: The official sparse guide explains compressed representations, canonical forms, construction, format tradeoffs, operations, and stored values.
+    covers: Sparse formats, canonicalization, and array behavior.
+    usefulness: 5
+  - name: SciPy Sparse linear algebra reference
+    type: docs
+    difficulty: deep
+    url: https://docs.scipy.org/doc/scipy/reference/sparse.linalg.html
+    why: The maintained API reference documents direct and iterative solvers, eigenproblems, matrix functions, norms, and solver status contracts.
+    covers: Sparse solves, eigensolvers, and linear operators.
+    usefulness: 5

@@ -1,0 +1,528 @@
+---
+id: "roadmap:phase-1-1.1:5"
+title: "dataclasses vs Pydantic v2 — when each is correct"
+description: Choose dataclasses for trusted internal state and Pydantic v2 for untrusted boundaries, then design an explicit conversion point between them.
+module: 1-1-python-fluency-beyond-the-basics
+order: 6
+estimatedMinutes: 105
+prerequisites: ["roadmap:phase-1-1.1:0", "roadmap:phase-1-1.1:4"]
+learningObjectives:
+  - Explain why type annotations generate methods in a dataclass but drive runtime validation in a Pydantic model
+  - Choose the correct model for trusted domain state, untrusted input, serialization, and JSON Schema generation
+  - Configure coercion, strictness, extra fields, immutability, aliases, and validators deliberately in Pydantic v2
+  - Keep validation at system boundaries and convert validated DTOs into dependency-light domain dataclasses
+---
+
+A dataclass and a Pydantic model can look almost identical while promising fundamentally different things. A dataclass removes class boilerplate. A Pydantic model turns uncertain input into a typed result or a structured error.
+
+That distinction decides where each belongs. Use dataclasses when your program already owns and trusts the values. Use Pydantic at boundaries where JSON, environment variables, queues, forms, or model output can lie.
+
+The useful design is often not “pick one.” It is a boundary model that validates and a domain model that expresses trusted state.
+
+<TypeScriptComparison>
+
+- A Python dataclass resembles a TypeScript interface plus generated constructor, equality, and representation methods; neither validates input types by itself.
+- A Pydantic model is closer to a runtime schema library such as Zod, but the schema starts from Python annotations.
+- TypeScript types disappear at runtime. Dataclass annotations also do not guard runtime assignments.
+- Pydantic preserves a runtime schema and can emit JSON Schema, structured errors, and serialized output.
+- Both ecosystems work best when parsing happens once at an untrusted boundary instead of throughout business logic.
+
+</TypeScriptComparison>
+
+## Start with the promise, not the syntax
+
+These two classes have similar declarations:
+
+```python
+from dataclasses import dataclass
+
+from pydantic import BaseModel
+
+
+@dataclass
+class Batch:
+    size: int
+
+
+class BatchInput(BaseModel):
+    size: int
+
+
+domain = Batch(size="32")
+boundary = BatchInput(size="32")
+
+print(domain.size, type(domain.size))      # 32 <class 'str'>
+print(boundary.size, type(boundary.size))  # 32 <class 'int'>
+```
+
+The dataclass decorator reads declared fields to synthesize methods such as `__init__`, `__repr__`, and `__eq__`. Its generated initializer performs ordinary assignments. The annotation remains useful to a static checker, but Python does not enforce it.
+
+`BaseModel` builds a runtime core schema from annotations. Construction validates the input, may coerce it, and either returns a conforming object or raises `ValidationError`. Pydantic guarantees the output shape, not that the original input already had that shape.
+
+<Concept>
+
+Ask one question first: **do I need a convenient class, or do I need a trust boundary?** Boilerplate reduction points to `dataclass`. Parsing, validation, structured errors, serialization, or JSON Schema point to Pydantic.
+
+</Concept>
+
+## Dataclasses make honest internal records
+
+Use a dataclass for values created by trusted application code: optimizer settings after validation, an internal training event, a repository result, or a command passed between domain services.
+
+```python
+from dataclasses import dataclass, field
+from datetime import datetime, timezone
+
+
+@dataclass(frozen=True, slots=True, kw_only=True)
+class TrainingRun:
+    run_id: str
+    learning_rate: float
+    tags: tuple[str, ...] = ()
+    created_at: datetime = field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        compare=False,
+    )
+```
+
+`kw_only=True` protects callers from argument-order mistakes. `slots=True` removes the instance `__dict__` and can reduce memory for many small records. `frozen=True` prevents normal rebinding and lets the generated equality/hash policy treat the object as value-like when its fields are hashable.
+
+Frozen is shallow. A frozen object containing a list still contains a mutable list. Prefer immutable field types such as tuples when immutability is part of the contract.
+
+Use `default_factory` for a fresh list, dictionary, set, timestamp, or identifier per instance. A factory is called at construction; `default=datetime.now(...)` would evaluate once when the class body executes.
+
+`field(compare=False, repr=False)` controls generated behavior. Exclude secrets from `repr`. Exclude operational metadata from equality only when two records with different metadata genuinely represent the same value.
+
+<CommonMistake>
+
+`asdict()` recursively walks nested dataclasses and deep-copies other objects. It is convenient, not a free shallow view. On a hot path or a record containing tensors, database handles, or other expensive objects, write the explicit projection you actually need.
+
+</CommonMistake>
+
+## Post-init checks are not a parsing framework
+
+`__post_init__` runs after the generated initializer. It is useful for invariants over already-trusted values and for derived fields.
+
+```python
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True)
+class ShardRange:
+    start: int
+    stop: int
+    length: int = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.start < 0 or self.stop <= self.start:
+            raise ValueError("expected 0 <= start < stop")
+        object.__setattr__(self, "length", self.stop - self.start)
+```
+
+This is appropriate because callers already provide integers. If `start` came from JSON as `"10"`, the dataclass would not parse it before comparing it with zero. Rebuilding coercion, nested error locations, aliases, and schema generation in `__post_init__` is a sign that the object is sitting at the wrong layer.
+
+`InitVar` can accept construction-only information and pass it to `__post_init__`, but it is not stored as a field. Use it sparingly. A factory or service is usually clearer when construction needs a database, clock, or network client.
+
+## Pydantic v2 owns uncertain input
+
+A boundary model should state its input policy, not inherit Pydantic defaults accidentally.
+
+```python
+from typing import Annotated, Literal
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class TrainRequest(BaseModel):
+    model_config = ConfigDict(
+        extra="forbid",
+        str_strip_whitespace=True,
+    )
+
+    model_name: str = Field(min_length=1, max_length=80)
+    epochs: Annotated[int, Field(ge=1, le=10_000)]
+    accelerator: Literal["cpu", "cuda", "mps"] = "cpu"
+```
+
+`extra="forbid"` catches misspelled client fields. The default is to ignore extras, which can turn `epoch: 10` into a silently discarded value when the real field is `epochs`.
+
+Pydantic is coercive by default where conversion is considered sensible. That is useful for query strings and environment variables, but dangerous when `"1"` and `1` must mean different things. Enable strictness globally with `ConfigDict(strict=True)`, per field with strict types or `Field(strict=True)`, or per validation call.
+
+```python
+from pydantic import ValidationError
+
+
+request = TrainRequest.model_validate(
+    {"model_name": "  encoder-v3 ", "epochs": "12"}
+)
+assert request.epochs == 12
+assert request.model_name == "encoder-v3"
+
+try:
+    TrainRequest.model_validate(
+        {"model_name": "encoder", "epochs": "12"},
+        strict=True,
+    )
+except ValidationError as exc:
+    print(exc.errors())
+```
+
+<ProductionNote>
+
+Treat coercion as an API decision. Test the accepted conversion table for identifiers, booleans, dates, and numbers. “Pydantic accepts it” is not the same as “our contract should accept it.”
+
+</ProductionNote>
+
+## Validators should protect invariants, not perform work
+
+Field constraints describe local rules. Validators handle normalization or relationships that annotations cannot express.
+
+```python
+from typing import Self
+
+from pydantic import BaseModel, field_validator, model_validator
+
+
+class WindowInput(BaseModel):
+    start: int
+    stop: int
+    labels: list[str]
+
+    @field_validator("labels")
+    @classmethod
+    def unique_labels(cls, value: list[str]) -> list[str]:
+        cleaned = [item.strip() for item in value]
+        if len(cleaned) != len(set(cleaned)):
+            raise ValueError("labels must be unique")
+        return cleaned
+
+    @model_validator(mode="after")
+    def ordered_window(self) -> Self:
+        if self.stop <= self.start:
+            raise ValueError("stop must be greater than start")
+        return self
+```
+
+Keep validators deterministic and side-effect free. Do not query a database, call an API, publish an event, or read ambient time inside them. Validation may occur more often than expected, and retries become unsafe when parsing secretly performs I/O.
+
+Field validators can run before or after Pydantic's field processing. Before validators receive raw input and therefore must handle every possible shape. After validators receive the declared type and are usually easier to reason about.
+
+Model validators express cross-field invariants. A model validator is not the right place for authorization or a uniqueness check against current database state; those belong in an application service where dependencies and race conditions are explicit.
+
+## Serialization is part of the boundary contract
+
+Pydantic v2 separates Python-mode and JSON-mode output. `model_dump()` returns Python values by default. `model_dump(mode="json")` converts values such as datetimes into JSON-compatible forms, while `model_dump_json()` produces encoded JSON text.
+
+Aliases let external names differ from Python attribute names. Make the direction explicit: validation aliases affect input, serialization aliases affect output, and configuration controls whether field names are accepted or emitted.
+
+```python
+from datetime import datetime
+
+from pydantic import BaseModel, Field
+
+
+class PredictionResponse(BaseModel):
+    request_id: str = Field(serialization_alias="requestId")
+    score: float
+    created_at: datetime = Field(serialization_alias="createdAt")
+
+
+payload = PredictionResponse(
+    request_id="req-7",
+    score=0.91,
+    created_at=datetime(2026, 8, 27),
+).model_dump(mode="json", by_alias=True)
+```
+
+The serializer is explicit and recursive. By contrast, `dataclasses.asdict()` knows dataclass structure but has no built-in API alias, exclusion, JSON-mode, or JSON Schema contract.
+
+Never return `model.__dict__` as public output. It bypasses the serialization rules and may contain nested model objects or internal state in forms a consumer cannot use.
+
+## TypeAdapter validates without inventing a model
+
+Not every boundary value deserves a named `BaseModel`. Pydantic v2's `TypeAdapter` can validate and serialize a type such as `list[Prediction]`, a union, or a standard dataclass.
+
+```python
+from dataclasses import dataclass
+
+from pydantic import TypeAdapter
+
+
+@dataclass(frozen=True)
+class LabelScore:
+    label: str
+    score: float
+
+
+scores = TypeAdapter(list[LabelScore]).validate_python(
+    [{"label": "safe", "score": "0.98"}]
+)
+```
+
+Reuse an adapter instead of rebuilding it in a hot loop. The adapter carries the compiled validation and serialization machinery for that type.
+
+Pydantic also offers its own `@pydantic.dataclasses.dataclass`. It adds validation to dataclass-shaped types, but it does not acquire the entire `BaseModel` API. Reach for it when an integration requires a real dataclass. Otherwise, a boundary `BaseModel` plus a standard domain dataclass makes ownership clearer.
+
+## Convert once at the trust boundary
+
+Separate input DTOs from domain values when the models change for different reasons.
+
+```python
+from dataclasses import dataclass
+
+from pydantic import BaseModel, ConfigDict, Field
+
+
+@dataclass(frozen=True, slots=True)
+class BatchSpec:
+    model_name: str
+    size: int
+    timeout_seconds: float
+
+
+class BatchRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model: str = Field(min_length=1)
+    batch_size: int = Field(ge=1, le=512)
+    timeout_ms: int = Field(ge=100, le=120_000)
+
+    def to_domain(self) -> BatchSpec:
+        return BatchSpec(
+            model_name=self.model,
+            size=self.batch_size,
+            timeout_seconds=self.timeout_ms / 1000,
+        )
+```
+
+The transport speaks milliseconds and external field names. The domain speaks seconds and its own vocabulary. The conversion prevents HTTP choices from leaking through training, scheduling, and repository code.
+
+Do not automatically duplicate every class. A small internal tool may use one Pydantic model throughout. Split models when the boundary and domain genuinely have different contracts, dependencies, lifecycles, or change rates.
+
+<WhyItMatters>
+
+FastAPI already treats Pydantic models as request and response boundaries. Your services do not need to become Pydantic-aware. Accept a validated model or convert it immediately, then keep core ML and domain code testable without HTTP or validation dependencies.
+
+</WhyItMatters>
+
+## Mutation, copying, and nested trust
+
+Both dataclasses and Pydantic models are mutable by default. `frozen=True` and `ConfigDict(frozen=True)` prevent normal attribute rebinding, but neither recursively freezes a nested list.
+
+Pydantic validates at construction. Assignment is not revalidated unless `validate_assignment=True` is configured. An initially valid model can otherwise become invalid:
+
+```python
+from pydantic import BaseModel, ConfigDict, Field
+
+
+class LiveConfig(BaseModel):
+    model_config = ConfigDict(validate_assignment=True)
+    workers: int = Field(ge=1)
+
+
+config = LiveConfig(workers=4)
+config.workers = 0  # raises ValidationError
+```
+
+Prefer immutable replacement for configuration and value objects. It makes concurrency and cache behavior easier to understand. When mutation is the real domain operation, model it deliberately rather than enabling assignment validation everywhere.
+
+Be careful with `model_construct()`. It bypasses validation and can create an invalid model. Pydantic v2 narrowed the performance gap enough that skipping validation is not automatically faster for simple models; profile before trading away the boundary guarantee.
+
+## Performance and dependency placement
+
+A dataclass constructor is ordinary generated Python and is usually cheaper than runtime validation. Pydantic v2 delegates core validation to compiled machinery, but it still does more work because it provides more guarantees.
+
+Measure the operation you actually perform: nested validation, JSON parsing, validators, serialization, and error construction. Do not benchmark an empty model and generalize that number to an inference request.
+
+Parse once. Revalidating the same object across route, service, repository, and worker layers adds cost and blurs which boundary owns malformed input. For repeated non-model types, build one `TypeAdapter` at module scope.
+
+Choose dependencies by architecture too. A core domain package can use standard-library dataclasses without pulling in Pydantic. The API package can depend on Pydantic and translate at its edge.
+
+## A practical decision table
+
+| Situation | Default choice | Reason |
+|---|---|---|
+| HTTP request or response | Pydantic `BaseModel` | Validation, errors, serialization, JSON Schema |
+| Environment or config input | Pydantic model/settings | Strings need parsing and constraints |
+| LLM structured output | Pydantic `BaseModel` | Output is untrusted even when schema-guided |
+| Internal immutable value | frozen dataclass | Cheap, explicit, dependency-light |
+| Hot-path record already typed | slotted dataclass | No repeated parsing is required |
+| Validate `list[T]` or a union | `TypeAdapter` | A wrapper model adds no domain meaning |
+| Library requires a dataclass | Pydantic dataclass if validation is needed | Preserves dataclass compatibility |
+
+The table is a starting point, not a law. A Pydantic model can be a fine internal value in a small FastAPI service. A dataclass can sit near JSON if a separate decoder validates first. State the promise and place validation once.
+
+## Exercises
+
+<Exercise id="models-choice-easy" difficulty="easy">
+
+An application receives `{"epochs": "20"}` from HTTP and later stores a trusted training command. Which representation belongs at each point, and why?
+
+<Solution>
+
+Use a Pydantic boundary model for the HTTP payload because the value is untrusted and needs a deliberate coercion or strictness policy. Convert the validated result into a dataclass for the internal training command if the domain benefits from a dependency-light immutable record. The conversion marks the point after which `epochs` is trusted to be an integer satisfying its constraints.
+
+</Solution>
+</Exercise>
+
+<Exercise id="models-choice-medium" difficulty="medium">
+
+Write a frozen, keyword-only dataclass `RetryPolicy` with `attempts`, `delays`, and a derived `total_delay`. Each instance must own its delays and `attempts` must be positive.
+
+<Solution>
+
+Use an immutable tuple instead of a list, validate the trusted-domain invariant in `__post_init__`, and assign the derived non-init field through `object.__setattr__`.
+
+```python
+from dataclasses import dataclass, field
+
+
+@dataclass(frozen=True, kw_only=True)
+class RetryPolicy:
+    attempts: int
+    delays: tuple[float, ...] = ()
+    total_delay: float = field(init=False)
+
+    def __post_init__(self) -> None:
+        if self.attempts < 1:
+            raise ValueError("attempts must be positive")
+        object.__setattr__(self, "total_delay", sum(self.delays))
+```
+
+</Solution>
+</Exercise>
+
+<Exercise id="models-choice-hard" difficulty="hard">
+
+Design a strict Pydantic v2 request model for a batch inference endpoint. It must reject unknown keys, accept only 1–256 items, and require every threshold to be between zero and one. Show how it becomes a frozen domain dataclass.
+
+<Solution>
+
+Put input-shape constraints in Pydantic, keep the domain type free of transport concerns, and convert explicitly.
+
+```python
+from dataclasses import dataclass
+from typing import Annotated
+
+from pydantic import BaseModel, ConfigDict, Field
+
+Probability = Annotated[float, Field(ge=0, le=1)]
+
+
+@dataclass(frozen=True, slots=True)
+class InferenceBatch:
+    texts: tuple[str, ...]
+    thresholds: tuple[float, ...]
+
+
+class InferenceRequest(BaseModel):
+    model_config = ConfigDict(strict=True, extra="forbid")
+    texts: list[str] = Field(min_length=1, max_length=256)
+    thresholds: list[Probability]
+
+    def to_domain(self) -> InferenceBatch:
+        return InferenceBatch(tuple(self.texts), tuple(self.thresholds))
+```
+
+Add a model validator if the two lists must have equal length. Strict mode prevents string numbers from silently entering the contract.
+
+</Solution>
+</Exercise>
+
+<Exercise id="models-choice-interview" difficulty="interview">
+
+“Why not use Pydantic models everywhere if they do everything dataclasses do and more?” Answer as you would in the room.
+
+<Solution>
+
+Pydantic and dataclasses advertise different guarantees. Pydantic is valuable where runtime parsing, structured errors, serialization, or schema generation justify the dependency and work. A dataclass is a smaller standard-library tool for state the program already trusts.
+
+Using Pydantic everywhere can couple the domain to transport policies, encourage repeated validation, and expose serialization methods where they do not belong. I often validate with Pydantic at the edge and convert to frozen dataclasses inside, but I avoid duplicate types when a service is small and both contracts truly evolve together.
+
+</Solution>
+</Exercise>
+
+<Exercise id="models-choice-real-world" difficulty="real-world">
+
+A queue consumer receives JSON inference jobs. The current code passes one `BaseModel` through deserialization, scheduling, GPU batching, and persistence, then calls `model_dump()` in three places. Propose a refactor that makes ownership and serialization explicit.
+
+<Solution>
+
+Keep a `JobMessage` Pydantic model at the queue adapter. Validate the decoded payload once with `model_validate_json`, reject extras, and map it to a frozen `InferenceJob` dataclass using domain units and immutable collections.
+
+Let scheduling and batching depend only on the dataclass. Give the persistence adapter an explicit projection rather than allowing arbitrary layers to dump the boundary model. If an outbound event needs another contract, define an `InferenceCompleted` Pydantic model there. Tests should prove malformed input stops at the consumer and trusted code never revalidates it.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. What runtime promise does a dataclass annotation make by itself?
+2. Why can coercion be useful and still need an explicit policy?
+3. When is `__post_init__` appropriate, and when is it a home-grown parser?
+4. What is the difference between `model_dump()`, JSON-mode dumping, and `__dict__`?
+5. Where should a FastAPI request model become a domain value?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why did my dataclass accept a string for an int field?">
+
+Annotations guide static tools; the generated initializer performs normal assignments. Validate before construction or use a runtime validation tool at the boundary.
+
+</Gotcha>
+
+<Gotcha question="Why did Pydantic silently ignore my misspelled field?">
+
+Extra input is ignored by default. Use `ConfigDict(extra="forbid")` when misspellings and contract drift should fail loudly.
+
+</Gotcha>
+
+<Gotcha question="Why did my frozen object still change?">
+
+Freezing blocks attribute rebinding, not mutation inside a referenced list or dictionary. Use immutable nested values when the whole value must remain stable.
+
+</Gotcha>
+
+<Gotcha question="Why does my Pydantic model become invalid after assignment?">
+
+Construction validates, but assignment is not revalidated by default. Use immutability or enable `validate_assignment` when mutable fields are intentional.
+
+</Gotcha>
+
+<Gotcha question="Why did my default timestamp repeat across instances?">
+
+The class-body expression ran once. Pass a zero-argument callable to `default_factory` so construction computes a fresh value.
+
+</Gotcha>
+
+<Gotcha question="Why did model_construct create an impossible model?">
+
+It deliberately bypasses validation. Reserve it for data whose validity is already guaranteed, and profile before assuming it improves performance.
+
+</Gotcha>
+
+<Gotcha question="Why did asdict copy much more data than expected?">
+
+`dataclasses.asdict` recursively processes dataclasses and deep-copies other values. Write a targeted projection for large tensors, handles, or hot paths.
+
+</Gotcha>
+
+<Gotcha question="Why does my Pydantic dataclass not have model_dump?">
+
+Pydantic dataclasses gain validation but are not `BaseModel` subclasses. Wrap the type with `TypeAdapter` when you need its validation, schema, or serialization operations.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Dataclasses generate useful object mechanics around annotations, but they do not validate types. They are excellent for trusted internal records, especially with deliberate keyword-only, frozen, slotted, and factory choices.
+
+Pydantic v2 is boundary machinery. It builds runtime schemas, parses or rejects uncertain data, reports structured errors, serializes nested values, and emits JSON Schema. Its coercion, extra-field, mutation, alias, and strictness policies are contract decisions.
+
+Many production systems need both: Pydantic outside, dataclasses inside, and one explicit conversion between them. Do not create duplicate types mechanically; split them when the boundary and domain have genuinely different responsibilities.
+
+Use the Practice and Debug tabs to make the choice under pressure, the Interview tab to defend it, and the Project tab to build a boundary-to-domain pipeline with tests.

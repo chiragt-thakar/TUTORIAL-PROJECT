@@ -1,0 +1,371 @@
+---
+id: "roadmap:phase-2-2.1:7"
+title: "Eigenvalues, eigenvectors, eigendecomposition, diagonalisation"
+description: The directions a matrix only stretches, the factors it stretches them by, and the change of basis A = V Λ V⁻¹ that turns matrix powers, stability questions, and PCA into scalar arithmetic.
+module: 2-1-linear-algebra
+order: 8
+estimatedMinutes: 120
+prerequisites: []
+learningObjectives:
+  - Define an eigenpair and read A = V Λ V⁻¹ as "change to the eigenbasis, scale, change back"
+  - Use the eigendecomposition to compute matrix powers, decide A^k convergence, and read trace and determinant
+  - Distinguish diagonalisable from defective matrices and algebraic from geometric multiplicity
+  - Explain why the characteristic polynomial is the wrong numerical route and when to use eig versus eigh
+---
+
+An eigenvector of `A` is a nonzero direction that `A` does not rotate, only scales; the scale factor
+is its eigenvalue. If a matrix has a full set of these directions, working in that basis turns the
+matrix into a diagonal one, and hard questions — matrix powers, long-run behaviour, principal
+components — become scalar arithmetic.
+
+That change of basis is the eigendecomposition `A = V Lambda V_inv`. Not every matrix has one, the
+characteristic polynomial is the wrong way to find it numerically, and symmetric matrices are the
+well-behaved special case the next lesson builds on.
+
+<TypeScriptComparison>
+
+- JavaScript has no eigenvalue routine; for `2x2` you solve the quadratic `lambda^2 - trace*lambda + det = 0` by hand.
+- Power iteration — repeatedly multiply a vector by `A` and renormalise — is a few lines in any language and finds the dominant eigenvector; it is what PageRank runs.
+- `np.linalg.eig` returns complex arrays even for a real matrix, because real matrices can have complex-conjugate eigenvalue pairs (rotations); TypeScript code would need an explicit complex type.
+- `np.linalg.eigh` is the symmetric-matrix version: real eigenvalues, orthonormal eigenvectors, faster and more accurate — always use it when you know the matrix is symmetric.
+
+</TypeScriptComparison>
+
+## The defining equation
+
+`A v = lambda v` with `v != 0`. The vector `v` keeps its direction under `A` and is scaled by the
+scalar `lambda`. Rearranged, `(A - lambda*I) v = 0`, so `v` is a nonzero null-space vector of
+`A - lambda*I`, which forces `det(A - lambda*I) = 0`.
+
+That determinant is the characteristic polynomial, a degree-`n` polynomial in `lambda`. Its roots
+are the eigenvalues; for each, the null space of `A - lambda*I` is the eigenspace. An eigenvalue's
+multiplicity as a root is its algebraic multiplicity; the dimension of its eigenspace is its
+geometric multiplicity, and the second never exceeds the first.
+
+```python
+import numpy as np
+
+A = np.array([[2.0, 1.0],
+              [1.0, 2.0]])
+vals, vecs = np.linalg.eig(A)
+assert np.allclose(sorted(vals), [1.0, 3.0])
+for i in range(2):
+    assert np.allclose(A @ vecs[:, i], vals[i] * vecs[:, i])   # A v = lambda v
+```
+
+## Diagonalisation is a change to the eigenbasis
+
+If `A` has `n` linearly independent eigenvectors, stack them as the columns of `V` and the
+eigenvalues on the diagonal of `Lambda`. Then `A V = V Lambda`, so `A = V Lambda V_inv`. Reading
+right to left: `V_inv` rewrites a vector in the eigenbasis, `Lambda` scales each coordinate
+independently, `V` maps back.
+
+In that basis `A` is just `n` separate one-dimensional scalings. A matrix that lacks a full set of
+independent eigenvectors is called defective and cannot be diagonalised; the smallest example is
+`[[1, 1], [0, 1]]`, which has eigenvalue 1 with algebraic multiplicity 2 but only a one-dimensional
+eigenspace.
+
+```python
+V, Lam = vecs, np.diag(vals)
+assert np.allclose(V @ Lam @ np.linalg.inv(V), A)
+
+defective = np.array([[1.0, 1.0], [0.0, 1.0]])
+d_vals, d_vecs = np.linalg.eig(defective)
+assert np.linalg.matrix_rank(d_vecs) == 1        # only one independent eigenvector
+```
+
+<Concept>
+
+Diagonalisation says: pick the right coordinate system and the matrix stops mixing coordinates.
+Everything that is hard because coordinates interact — powers, exponentials, recurrences — becomes
+easy because in the eigenbasis they do not.
+
+</Concept>
+
+## Powers and long-run behaviour
+
+`A^k = V Lambda^k V_inv`, and `Lambda^k` just raises each eigenvalue to the `k`-th power. So the
+behaviour of `A^k` as `k` grows is governed entirely by the eigenvalues: it converges to zero
+exactly when every `|lambda| < 1`, blows up if any `|lambda| > 1`, and the largest `|lambda|` (the
+spectral radius) sets the rate.
+
+The dominant eigenvector is the direction that survives repeated multiplication, which is why power
+iteration converges to it and why a Markov chain's stationary distribution is the eigenvector for
+eigenvalue 1.
+
+```python
+M = np.array([[0.9, 0.2],
+              [0.1, 0.8]])                        # column-stochastic
+vals, vecs = np.linalg.eig(M)
+stationary = vecs[:, np.argmin(np.abs(vals - 1.0))].real
+stationary /= stationary.sum()
+assert np.allclose(M @ stationary, stationary)
+```
+
+## Trace, determinant, and complex eigenvalues
+
+The eigenvalues carry two familiar summaries: their sum is the trace and their product is the
+determinant. A real matrix can still have complex eigenvalues, always in conjugate pairs; a pure
+rotation by `theta` has eigenvalues `exp(+-i*theta)` and no real eigenvector, because it turns every
+real direction.
+
+Similarity transforms `P_inv A P` preserve the eigenvalues (same characteristic polynomial) but
+change the eigenvectors. This is why eigenvalues are basis-independent properties of the underlying
+map, while eigenvectors depend on the coordinate system.
+
+```python
+rot = np.array([[0.0, -1.0], [1.0, 0.0]])
+vals = np.linalg.eigvals(rot)
+assert np.allclose(sorted(vals, key=np.imag), [-1j, 1j])
+assert np.isclose(np.trace(rot), np.sum(vals).real)
+assert np.isclose(np.linalg.det(rot), np.prod(vals).real)
+```
+
+## Symmetric matrices are the good case
+
+If `A == A.T`, all eigenvalues are real, the eigenvectors can be chosen orthonormal, and
+`A = Q Lambda Q.T` with `Q` orthogonal — the spectral theorem. No inverse is needed, the
+decomposition always exists, and it is numerically stable.
+
+Covariance matrices, Gram matrices, graph Laplacians, and Hessians are all symmetric, so almost
+every eigen-computation in ML is really the symmetric case. Use `np.linalg.eigh`, which assumes
+symmetry, returns real sorted eigenvalues, and is faster and more accurate than `eig`.
+
+```python
+S = np.array([[4.0, 1.0],
+              [1.0, 3.0]])
+w, Q = np.linalg.eigh(S)
+assert np.allclose(Q @ Q.T, np.eye(2))           # orthonormal eigenvectors
+assert np.allclose(Q @ np.diag(w) @ Q.T, S)
+```
+
+<WhyItMatters>
+
+PCA is the eigendecomposition of a covariance matrix: eigenvectors are principal directions,
+eigenvalues are variances. The eigenvalues of a loss Hessian are the local curvatures, and their
+ratio is the condition number that sets gradient descent's speed. An RNN is stable only if its
+recurrent weight's spectral radius is below 1. Spectral clustering uses the smallest eigenvectors of
+a graph Laplacian.
+
+</WhyItMatters>
+
+## Doing this in floating point
+
+Do not find eigenvalues by forming the characteristic polynomial and rooting it: converting a matrix
+to polynomial coefficients is severely ill-conditioned, and polynomial root-finding is fragile.
+Library routines use the QR algorithm, which iterates orthogonal similarity transforms toward a
+triangular form.
+
+For non-symmetric ("non-normal") matrices, the eigenvectors themselves can be extremely
+ill-conditioned even when the eigenvalues are fine: a tiny perturbation moves them a lot, and
+`V_inv` in the decomposition has a huge norm. The condition number of `V` measures this; when it is
+large, prefer the Schur decomposition or the SVD for whatever you actually need.
+
+```python
+non_normal = np.array([[1.0, 1e6],
+                       [0.0, 1.0 + 1e-6]])
+vals, V = np.linalg.eig(non_normal)
+assert np.linalg.cond(V) > 1e6                    # eigenvectors barely independent
+```
+
+<ProductionNote>
+
+Call `eigh` for anything you know is symmetric and `eig` only when you must. Log the eigenvalue
+spectrum for covariance and Hessian matrices — the ratio of largest to smallest is the condition
+number driving optimisation, and a near-zero eigenvalue signals a flat direction. If you only need
+the top few eigenpairs of a large matrix, use `scipy.sparse.linalg.eigsh`, not a full
+decomposition.
+
+</ProductionNote>
+
+## Cost
+
+A full eigendecomposition of a dense `n*n` matrix is `O(n^3)`, with `eigh` roughly a constant factor
+cheaper than `eig`. Matrix powers via the decomposition cost one `O(n^3)` factorisation plus
+`O(n^2)` per power, versus `O(n^3)` per power by repeated multiplication — a win when you need many
+powers or non-integer ones.
+
+For a large sparse matrix, a full decomposition is out of reach; iterative methods (Lanczos for
+symmetric, Arnoldi for general) find the extreme eigenpairs in a few matrix-vector products each.
+Power iteration is the cheapest of all when only the dominant eigenvector is needed.
+
+## Exercises
+
+<Exercise id="la-eig-two-by-two" difficulty="easy">
+
+Find the eigenvalues and eigenvectors of `A = [[3, 1], [0, 2]]` by hand.
+
+<Solution>
+
+`A` is upper triangular, so its eigenvalues are its diagonal entries: `lambda = 3` and `lambda = 2`.
+
+For `lambda = 3`: solve `(A - 3I) v = 0`, i.e. `[[0, 1], [0, -1]] v = 0`, giving `v2 = 0` and `v1`
+free. An eigenvector is `(1, 0)`.
+
+For `lambda = 2`: solve `[[1, 1], [0, 0]] v = 0`, giving `v1 = -v2`. An eigenvector is `(1, -1)`.
+
+Check: `A @ (1, 0) = (3, 0) = 3*(1, 0)` and `A @ (1, -1) = (2, -2) = 2*(1, -1)`. The two
+eigenvectors are independent, so `A` is diagonalisable.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-eig-powers" difficulty="medium">
+
+Given `A = V Lambda V_inv` with eigenvalues `0.5` and `2`, describe `A^k` as `k -> infinity` and
+explain why the general term does not simply vanish or explode.
+
+<Solution>
+
+`A^k = V Lambda^k V_inv`, and `Lambda^k = diag(0.5^k, 2^k)`. As `k` grows, `0.5^k -> 0` while
+`2^k -> infinity`, so `A^k` is dominated by the `2^k` term along the eigenvector for eigenvalue 2.
+
+A generic vector `x` decomposes in the eigenbasis as `c1 v1 + c2 v2`. Then
+`A^k x = c1 0.5^k v1 + c2 2^k v2`. The first component decays to zero; the second grows without
+bound (unless `c2 = 0`). So `A^k x` neither vanishes nor stays bounded in general — it aligns with
+`v2` and grows like `2^k`. `A^k` converges to zero only if every `|lambda| < 1`; here one eigenvalue
+exceeds 1, so it does not.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-eig-defective" difficulty="hard">
+
+Show that `A = [[2, 1], [0, 2]]` is defective, and explain what goes wrong if you try to write
+`A = V Lambda V_inv`.
+
+<Solution>
+
+The characteristic polynomial is `det(A - lambda I) = (2 - lambda)^2`, so `lambda = 2` with
+algebraic multiplicity 2.
+
+The eigenspace is the null space of `A - 2I = [[0, 1], [0, 0]]`, which is `{(v1, 0)}`: dimension 1.
+So the geometric multiplicity is 1, less than the algebraic multiplicity 2. There is only one
+independent eigenvector.
+
+To form `V` you need two independent eigenvectors as columns, but only one exists, so `V` is
+singular and `V_inv` does not exist. `A` cannot be diagonalised. The closest you can do is the
+Jordan form `[[2, 1], [0, 2]]` (already Jordan), or in numerical practice the Schur form, which is
+upper triangular with the eigenvalue on the diagonal and always exists.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-eig-interview-hessian" difficulty="interview">
+
+In an interview: "How do the eigenvalues of the loss Hessian relate to how gradient descent
+behaves?"
+
+<Solution>
+
+Near a minimum the loss is approximately quadratic, `L(x) ~ L(x*) + 0.5 (x - x*).T H (x - x*)`, with
+`H` the symmetric Hessian. In the eigenbasis of `H` the dynamics decouple: along the eigenvector for
+eigenvalue `lambda`, a gradient step with learning rate `eta` multiplies the error by
+`(1 - eta*lambda)`.
+
+Convergence along that direction needs `|1 - eta*lambda| < 1`, i.e. `eta < 2/lambda`. To stay stable
+in the steepest direction you must set `eta < 2/lambda_max`, and then the flattest direction
+converges at rate `1 - eta*lambda_min ~ 1 - 2*lambda_min/lambda_max`. So the number of iterations
+scales with the condition number `lambda_max / lambda_min`.
+
+Practical consequences: a poorly conditioned Hessian means slow progress; momentum and Adam
+effectively rescale directions to reduce the effective condition number; and a near-zero eigenvalue
+is a flat valley where progress stalls. Negative eigenvalues mean a saddle, not a minimum.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-eig-rnn-stability-real-world" difficulty="real-world">
+
+An RNN's hidden state explodes to `nan` after a few hundred steps during training. Relate this to
+the recurrent weight matrix and give concrete mitigations.
+
+<Solution>
+
+Ignoring the nonlinearity, the hidden state evolves roughly as `h_t ~ W_rec^t h_0`, so its growth is
+governed by the spectral radius of `W_rec` (the largest `|lambda|`). If that exceeds 1, `||h_t||`
+grows geometrically and eventually overflows; the nonlinearity delays but does not prevent this when
+the linearised gain is above 1.
+
+Mitigations. Initialise `W_rec` orthogonally or with a spectral radius just below 1, so early
+training is stable, and clip the global gradient norm so one bad batch cannot launch the divergence.
+
+Use a gated architecture (LSTM, GRU) whose gates keep the effective recurrent Jacobian near 1, and
+optionally apply spectral normalisation to `W_rec` using a power-method estimate of its largest
+singular value. Monitor the spectral radius during training and alert if it drifts above 1.
+
+Validate by checking that `||h_t||` stays bounded over long rollouts on held-out sequences, not just
+that the `nan` disappeared on the training batch.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. State the defining equation of an eigenpair and what it says geometrically.
+2. Read `A = V Lambda V_inv` as a three-step operation on a vector.
+3. When does `A^k` converge to the zero matrix, in terms of eigenvalues?
+4. What is the difference between algebraic and geometric multiplicity, and what does a gap imply?
+5. Why is finding eigenvalues via the characteristic polynomial a bad numerical idea?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="`np.linalg.eig` returned complex numbers for my real matrix.">
+
+That is correct behaviour. Real matrices can have complex-conjugate eigenvalue pairs, which is how
+rotation shows up. If the matrix is symmetric, use `np.linalg.eigh` instead and you will get real
+eigenvalues.
+
+</Gotcha>
+
+<Gotcha question="I used `eig` on a symmetric matrix and the eigenvectors are not orthogonal.">
+
+`eig` does not exploit symmetry and can return a slightly non-orthogonal, unsorted set with tiny
+imaginary parts. `eigh` guarantees real, sorted eigenvalues and orthonormal eigenvectors, and is
+faster. Always use `eigh` for symmetric input.
+
+</Gotcha>
+
+<Gotcha question="My matrix has a repeated eigenvalue, so it must be defective.">
+
+Not necessarily. A repeated eigenvalue is defective only if its eigenspace is smaller than its
+multiplicity. The identity matrix has eigenvalue 1 repeated `n` times and is perfectly
+diagonalisable. Check the geometric multiplicity.
+
+</Gotcha>
+
+<Gotcha question="The eigenvalues look right but the eigenvectors change wildly with a tiny input change.">
+
+For a non-normal matrix the eigenvectors can be ill-conditioned even when the eigenvalues are not.
+`np.linalg.cond(V)` will be large. Use the Schur decomposition or the SVD for whatever you need
+downstream.
+
+</Gotcha>
+
+<Gotcha question="Eigenvectors from `np.linalg.eig` have inconsistent signs and scale between runs.">
+
+Eigenvectors are defined only up to a nonzero scalar (a sign for real, a phase for complex).
+Normalise them and fix a convention, such as making the largest-magnitude entry positive, if you
+need reproducible output.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+An eigenvector is a direction `A` only scales; its eigenvalue is the scale. The eigenvalues are the
+roots of `det(A - lambda*I)`, and each eigenspace is the null space of `A - lambda*I`. When there
+are `n` independent eigenvectors, `A = V Lambda V_inv` changes to a basis where `A` is diagonal.
+
+That decomposition makes `A^k = V Lambda^k V_inv`, so eigenvalue magnitudes decide whether powers
+decay, blow up, or converge, and the dominant eigenvector is what power iteration and Markov chains
+find. Trace is the eigenvalue sum, determinant the product; real matrices can have complex-conjugate
+pairs. Defective matrices lack a full eigenbasis and have no diagonalisation.
+
+Symmetric matrices always have `A = Q Lambda Q.T` with orthonormal `Q` and real eigenvalues — use
+`eigh`. Never route through the characteristic polynomial, and watch `cond(V)` for non-normal
+matrices. The Practice, Debug, Interview, Test, Project, and Review tabs build power iteration, the
+decomposition, and its ML uses.

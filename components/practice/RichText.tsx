@@ -22,7 +22,7 @@ function inline(text: string, keyPrefix: string) {
     const link = /^\[([^\]]+)\]\(([^)]+)\)$/.exec(piece);
     if (link) {
       return (
-        <a key={key} href={link[2]} target="_blank" rel="noreferrer noopener">
+        <a key={key} href={link[2]}>
           {link[1]}
         </a>
       );

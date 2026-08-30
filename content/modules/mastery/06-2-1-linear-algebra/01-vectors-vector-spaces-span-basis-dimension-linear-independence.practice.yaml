@@ -1,0 +1,766 @@
+lessonId: "roadmap:phase-2-2.1:0"
+module: 2-1-linear-algebra
+lesson: 01-vectors-vector-spaces-span-basis-dimension-linear-independence
+title: "Vectors, vector spaces, span, basis, dimension, linear independence"
+summary: Reason about span, independence, basis, and dimension from the axioms, then run the same checks on real feature matrices and embeddings with a tolerance instead of exact equality.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lav-classify-subspace
+    tier: normal
+    kind: code-reading
+    title: Read a subspace test
+    minutes: 10
+    requiredForMastery: true
+    concepts: [subspace, closure, zero-vector]
+    prompt: |
+      Read this function and say what it checks and what it misses.
+      ```python
+      def looks_like_subspace(vectors):
+          a, b = vectors[0], vectors[1]
+          return (a + b).shape == a.shape
+      ```
+      Which subspace axioms does a real test need?
+    hints:
+      - A subspace must contain the zero vector of the surrounding space.
+      - Closure has to hold for every linear combination, not one sum of two chosen elements.
+    solution: |
+      The function only checks that adding the first two elements returns something of the same
+      shape, which is nearly always true and proves nothing about a subspace. A correct membership
+      test for a candidate subspace `S` of a vector space checks three things: the zero vector is in
+      `S`, `u + v` is in `S` for every `u, v` in `S`, and `c*v` is in `S` for every scalar `c` and
+      `v` in `S`. In practice you check closure symbolically or by construction, for example by
+      confirming `S` is exactly the span of some set, since a span always satisfies all three.
+  - id: lav-write-independence-check
+    tier: normal
+    kind: write-code
+    title: Independence from the definition
+    minutes: 12
+    requiredForMastery: true
+    concepts: [linear-independence, null-space, rank]
+    prompt: |
+      Write `is_independent(cols)` for a `(d, k)` array whose columns are the vectors. Base the
+      decision on whether `A x = 0` has only the trivial solution, and state which rank value that
+      corresponds to.
+    hints:
+      - Columns are independent exactly when the rank equals the number of columns.
+      - "`np.linalg.matrix_rank` gives you that rank; compare it against `cols.shape[1]`."
+    solution: |
+      Return `np.linalg.matrix_rank(cols) == cols.shape[1]`. The columns are independent when the
+      only `x` with `cols @ x == 0` is `x == 0`, which is the same as the null space being `{0}`,
+      which is the same as the rank equalling the column count `k`. If the rank is below `k`, some
+      nontrivial combination of columns is zero and at least one column is redundant. For measured
+      data, pass an explicit `tol` so a direction with a tiny singular value is treated as dependent.
+  - id: lav-predict-span-dimension
+    tier: normal
+    kind: predict-output
+    title: Dimension of a span
+    minutes: 10
+    requiredForMastery: true
+    concepts: [span, dimension, rank]
+    prompt: |
+      The vectors are `(1, 0, 1)`, `(0, 1, 1)`, `(2, 1, 3)`, `(1, 1, 2)` in R^3. What is the
+      dimension of their span, and why can it not be 4?
+    hints:
+      - The span of any set of vectors in R^3 has dimension at most 3.
+      - Look for combinations of the first two that reproduce the others.
+    solution: |
+      `(2, 1, 3) = 2*(1, 0, 1) + 1*(0, 1, 1)` and `(1, 1, 2) = 1*(1, 0, 1) + 1*(0, 1, 1)`, so the
+      last two vectors add nothing. The first two are not multiples of each other, so they are
+      independent and the span has dimension 2. It cannot be 4 because the span is a subspace of
+      R^3, and no subspace of R^3 has dimension greater than 3; four vectors in a 3-dimensional
+      space are always dependent.
+  - id: lav-explain-basis-uniqueness
+    tier: normal
+    kind: explain
+    title: Why coordinates are unique
+    minutes: 10
+    requiredForMastery: true
+    concepts: [basis, coordinates, linear-independence]
+    prompt: |
+      Explain why, given a basis, every vector has exactly one coordinate tuple. Use the
+      independence of the basis in the argument.
+    hints:
+      - Suppose two coordinate tuples produce the same vector and subtract them.
+      - A basis is linearly independent, so a combination equal to zero must have all-zero coefficients.
+    solution: |
+      Suppose a vector `v` equals both `sum a_i b_i` and `sum c_i b_i` for basis vectors `b_i`.
+      Subtracting gives `sum (a_i - c_i) b_i = 0`. Because a basis is linearly independent, the only
+      combination of its vectors equal to zero is the one with every coefficient zero, so
+      `a_i - c_i = 0` for all `i`, meaning `a_i = c_i`. The two tuples are identical, so the
+      coordinates are unique. Spanning guarantees at least one tuple exists; independence guarantees
+      no more than one.
+  - id: lav-coordinates-change-of-basis
+    tier: intermediate
+    kind: write-code
+    title: Coordinates in a non-standard basis
+    minutes: 16
+    requiredForMastery: true
+    concepts: [basis, change-of-basis, coordinates]
+    prompt: |
+      Given a square matrix `B` whose columns are a basis of R^n and a vector `v`, write
+      `to_coords(B, v)` and `from_coords(B, c)`. Show they invert each other and explain the role
+      of `B` and its inverse.
+    hints:
+      - "`from_coords` is just `B @ c`, rebuilding the vector from its coordinates."
+      - "`to_coords` solves `B @ c = v`; use `np.linalg.solve` rather than forming an explicit inverse."
+    solution: |
+      `from_coords(B, c)` returns `B @ c`: the columns of `B` are the basis vectors, so `c` scales
+      and sums them into the standard-coordinate vector. `to_coords(B, v)` returns
+      `np.linalg.solve(B, v)`: it finds the coefficients `c` with `B @ c == v`. They invert each
+      other because `solve(B, B @ c) == c` and `B @ solve(B, v) == v` up to rounding. `B` maps
+      basis coordinates to standard coordinates; `B` inverse maps back. Avoid `np.linalg.inv`; a
+      solve is more accurate and cheaper.
+  - id: lav-build-basis-from-spanning-set
+    tier: intermediate
+    kind: write-code
+    title: Reduce a spanning set to a basis
+    minutes: 20
+    requiredForMastery: true
+    concepts: [span, basis, rank, pivoting]
+    prompt: |
+      Given a `(d, k)` array whose columns span a subspace but may be dependent, return a subset of
+      the original columns that is a basis for the same span. Use a rank-revealing method and keep
+      original columns, not orthonormalised ones.
+    hints:
+      - A column-pivoted QR orders columns by how much new direction each one adds.
+      - The first `r` pivots, where `r` is the rank, index an independent subset spanning the whole set.
+    solution: |
+      Compute `r = np.linalg.matrix_rank(cols)`. Run `scipy.linalg.qr(cols, pivoting=True)` (or an
+      equivalent pivoted decomposition) to get a permutation `p` ordering columns by contributed
+      direction. Take `cols[:, p[:r]]`. Those `r` original columns are independent because the
+      pivoted QR would not have selected a dependent one into the leading block, and they span the
+      original set because dropping only columns that were linear combinations of earlier pivots
+      cannot shrink the span. Verify by checking the rank of the subset equals `r` and that every
+      original column lies in its span.
+  - id: lav-rank-nullity-budget
+    tier: intermediate
+    kind: predict-output
+    title: Apply rank and nullity
+    minutes: 14
+    requiredForMastery: true
+    concepts: [rank, null-space, rank-nullity]
+    prompt: |
+      A matrix `A` has shape `(50, 12)` and `np.linalg.matrix_rank(A)` returns 9. Give the
+      dimension of the column space, the dimension of the null space, and the number of free
+      parameters in the solution set of `A x = b` when a solution exists.
+    hints:
+      - Rank is the dimension of the column space.
+      - Rank plus nullity equals the number of columns, not the number of rows.
+    solution: |
+      The column space has dimension 9 (the rank). Rank–nullity for the 12 columns gives
+      `9 + nullity = 12`, so the null space has dimension 3. When `A x = b` is consistent, its
+      solution set is a particular solution plus any null-space vector, so it is a 3-dimensional
+      affine set: there are 3 free parameters. The row count 50 does not enter this calculation; it
+      only bounds the rank from above alongside the column count.
+  - id: lav-tolerant-rank-spectrum
+    tier: intermediate
+    kind: performance
+    title: Choose a rank tolerance from the spectrum
+    minutes: 20
+    requiredForMastery: true
+    concepts: [singular-values, tolerance, condition-number]
+    prompt: |
+      You have a standardised feature matrix `X` of shape `(10000, 40)`. Describe how to pick a
+      numerical rank instead of trusting the default, and what evidence to record. Compare the cost
+      of an SVD against forming `X.T @ X`.
+    hints:
+      - Sorted singular values often show a clear drop where signal ends and the noise floor begins.
+      - The Gram matrix is smaller but squares the condition number.
+    solution: |
+      Compute the singular values `s = np.linalg.svd(X, compute_uv=False)`, sort descending, and
+      plot them on a log scale. Set the tolerance just above the flat tail, for example
+      `tol = s.max() * max(X.shape) * eps` as a baseline, then adjust to the visible elbow. Count
+      `s > tol` as the numerical rank and record `s`, the chosen `tol`, and the condition number
+      `s[0] / s[-1]`. The SVD of `X` costs about `m*n*min(m, n)` but is accurate. Forming `X.T @ X`
+      is only `n*n*m` plus an `n*n` eig, but the condition number is squared, so small singular
+      values that matter can be lost. Prefer the SVD unless a benchmark shows the Gram route is
+      accurate enough.
+  - id: lav-debug-pairwise-independence
+    tier: tricky
+    kind: debug
+    title: Pairwise checks miss dependence
+    minutes: 16
+    requiredForMastery: true
+    concepts: [linear-independence, span, rank]
+    prompt: |
+      This function reports the three columns as independent, but they are not. Find the flawed
+      assumption and replace it with a correct test.
+    code: |
+      def independent(cols):
+          a, b, c = cols.T
+          pairs = [(a, b), (a, c), (b, c)]
+          return all(np.linalg.matrix_rank(np.stack(p, axis=1)) == 2 for p in pairs)
+    hints:
+      - Every pair being independent does not prevent one column from being a combination of the other two.
+      - The right quantity is the rank of all three columns together.
+    solution: |
+      The function only checks that no column is a scalar multiple of one other column. Three
+      vectors can be pairwise non-parallel and still coplanar, so one is a linear combination of the
+      other two — for example `(1,0,0)`, `(0,1,0)`, `(1,1,0)`. Replace the pairwise loop with a
+      single check on the full set: `return np.linalg.matrix_rank(cols) == cols.shape[1]`, with an
+      explicit `tol` for real data. Add a regression using the coplanar triple above, which the old
+      code passed and the new code fails.
+  - id: lav-debug-gram-condition
+    tier: tricky
+    kind: debug
+    title: The Gram matrix hid the near-dependence
+    minutes: 18
+    requiredForMastery: true
+    concepts: [gram-matrix, condition-number, singular-values]
+    prompt: |
+      This routine declares the columns well-conditioned, but a direct SVD of `X` disagrees.
+      Explain why the Gram-based number is misleading and fix the diagnostic.
+    code: |
+      def well_conditioned(X, limit=1e6):
+          g = X.T @ X
+          w = np.linalg.eigvalsh(g)
+          return (w.max() / w.min()) < limit
+    hints:
+      - Eigenvalues of `X.T @ X` are the squares of the singular values of `X`.
+      - A condition number computed from squared quantities is the square of the real one.
+    solution: |
+      `eigvalsh(X.T @ X)` returns `sigma_i**2`, so `w.max() / w.min()` is `(sigma_max / sigma_min)**2`,
+      the square of the true condition number, and it also loses precision because squaring collapses
+      small singular values toward the rounding floor. A matrix with condition number `1e4` looks
+      like `1e8` here, and one that is actually `1e9` can underflow to a spurious finite ratio.
+      Compute singular values directly: `s = np.linalg.svd(X, compute_uv=False); return s[0] / s[-1] < limit`.
+      Add a case with a column pair differing by `1e-7` and assert the SVD version flags it.
+  - id: lav-debug-absolute-tolerance
+    tier: tricky
+    kind: debug
+    title: A span test that breaks on scale
+    minutes: 16
+    requiredForMastery: true
+    concepts: [span, tolerance, numerical-stability]
+    prompt: |
+      `in_span` works on small examples and fails once the vectors are scaled up by a million.
+      Diagnose the cause and repair the tolerance.
+    code: |
+      def in_span(basis, v, tol=1e-9):
+          c, *_ = np.linalg.lstsq(basis, v, rcond=None)
+          return np.linalg.norm(basis @ c - v) < tol
+    hints:
+      - Rounding error in the residual grows with the magnitude of the entries.
+      - Compare the residual against something that also scales with `v`.
+    solution: |
+      The residual `norm(basis @ c - v)` is produced by floating-point arithmetic whose absolute
+      error scales with the size of the numbers. When `v` has norm `1e6`, even an exact-in-theory
+      membership leaves a residual well above `1e-9`, so true members are rejected. Make the
+      tolerance relative: `return norm(basis @ c - v) <= tol * max(1.0, norm(v))`. Regression: take
+      a vector known to be in the span, multiply `basis` and `v` by `1e6`, and assert the function
+      still returns `True`.
+  - id: lav-debug-default-rank-tol
+    tier: tricky
+    kind: debug
+    title: Default rank tolerance is too generous
+    minutes: 16
+    requiredForMastery: true
+    concepts: [rank, tolerance, feature-selection]
+    prompt: |
+      A feature-screening step keeps every column because this check always sees full rank, even
+      though two columns are near-duplicates. Fix it without hard-coding a magic number.
+    code: |
+      def has_redundant_columns(X):
+          return np.linalg.matrix_rank(X) < X.shape[1]
+    hints:
+      - The default tolerance in `matrix_rank` is tied to the largest singular value and machine epsilon.
+      - Two columns differing only by measurement noise can still exceed that default.
+    solution: |
+      `matrix_rank`'s default `tol` is roughly `s.max() * max(X.shape) * eps`, which is far below
+      the noise level of real features, so near-duplicate columns still count as independent
+      directions. Compute the singular values, choose `tol` from the spectrum's noise floor (or a
+      domain-set relative threshold such as `s.max() * 1e-6`), and compare
+      `np.sum(s > tol) < X.shape[1]`. Return the offending singular values too, so the caller can
+      see how close to dependent the columns are. Test with a column equal to another plus
+      `1e-8 * randn`.
+  - id: lav-design-collinearity-report
+    tier: challenge
+    kind: design
+    title: Design a collinearity report
+    minutes: 30
+    requiredForMastery: false
+    concepts: [multicollinearity, singular-values, reporting]
+    prompt: |
+      Design a function that takes a design matrix and returns a review-ready report on linear
+      dependence among its columns, before any model is fitted. State inputs, outputs, and the
+      decisions it must not make silently.
+    hints:
+      - Standardise columns first so scale differences do not masquerade as importance.
+      - Separate detection from remediation; the report describes, the caller decides.
+    solution: |
+      Inputs: the matrix, column names, and an optional relative tolerance. Standardise each column
+      to zero mean and unit variance. Compute the SVD, report singular values, the condition
+      number, and the numerical rank at the chosen tolerance. For each near-null right-singular
+      vector, list the columns with the largest loadings as a candidate dependent group, and report
+      per-column variance inflation factors. Output a structured object plus a short text summary.
+      It must not drop columns, must not pick the tolerance without recording it, and must not
+      collapse the spectrum to a single pass or fail without showing the numbers. Include golden
+      reports for an orthogonal matrix, an exact duplicate column, and a near-duplicate.
+  - id: lav-audit-embedding-dimension
+    tier: challenge
+    kind: refactor
+    title: Audit an embedding's effective width
+    minutes: 28
+    requiredForMastery: false
+    concepts: [embedding, effective-dimension, low-rank]
+    prompt: |
+      A service stores 512-wide embeddings and memory is tight. Define a safe process to decide
+      whether the width can be reduced, without breaking downstream consumers.
+    hints:
+      - Effective dimension is the rank of the centred rows, not the stored width.
+      - Any width change is a contract change for everything that reads the vectors.
+    solution: |
+      Sample rows representatively, centre them, and compute the singular value spectrum. Report the
+      cumulative variance and the elbow; if a small fraction of directions holds nearly all
+      variance, the effective dimension is well below 512. Prototype a fixed random or PCA
+      projection to that width and measure downstream task metrics, not just reconstruction error.
+      Treat the width as a public contract: version the embedding, run old and new side by side,
+      and migrate consumers before removing the old vectors. Keep the projection matrix and the
+      spectrum as evidence. Do not shrink on the spectrum alone if any consumer depends on absolute
+      coordinate positions.
+quizzes:
+  - id: lav-checkpoint
+    title: Checkpoint — span, independence, dimension
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lav-cp-subspace
+        kind: mcq
+        prompt: Which condition is necessary for a nonempty subset to be a subspace?
+        options:
+          - {id: closed, text: It is closed under linear combinations and contains the zero vector}
+          - {id: finite, text: It contains finitely many vectors}
+          - {id: orthonormal, text: Its vectors are orthonormal}
+        answer: [closed]
+        explanation: A subspace must contain the zero vector and stay inside itself under addition and scaling.
+        concepts: [subspace]
+        points: 1
+      - id: lav-cp-independence
+        kind: mcq
+        prompt: Vectors are linearly independent when `sum c_i v_i = 0` implies what?
+        options:
+          - {id: trivial, text: Every c_i is zero}
+          - {id: somezero, text: At least one c_i is zero}
+          - {id: sumzero, text: The c_i sum to zero}
+        answer: [trivial]
+        explanation: Only the trivial combination may produce the zero vector.
+        concepts: [linear-independence]
+        points: 1
+      - id: lav-cp-dimension
+        kind: mcq
+        prompt: Five vectors in R^4 are always what?
+        options:
+          - {id: dependent, text: Linearly dependent}
+          - {id: independent, text: Linearly independent}
+          - {id: basis, text: A basis of R^4}
+        answer: [dependent]
+        explanation: An independent set in an n-dimensional space has at most n vectors.
+        concepts: [dimension]
+        points: 1
+      - id: lav-cp-float
+        kind: multi
+        prompt: What should a numerical independence check on real data do?
+        options:
+          - {id: svd, text: Use singular values rather than an exact determinant}
+          - {id: tol, text: Apply an explicit, recorded tolerance}
+          - {id: cond, text: Report the condition number}
+          - {id: exact, text: Require the Gram determinant to be exactly zero for dependence}
+        answer: [svd, tol, cond]
+        explanation: Exact zero never occurs in floating point; a tolerant, spectrum-based check with recorded evidence is the working approach.
+        concepts: [numerical-stability, singular-values]
+        points: 1
+  - id: lav-assessment
+    title: Assessment — vector spaces and dimension
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lav-as-axioms
+        kind: explain
+        prompt: State the closure axioms of a vector space and why they are the ones you check first.
+        modelAnswer: |
+          For all vectors `u, v` and scalars `c`, both `u + v` and `c*v` must lie in the space. The
+          other axioms (associativity, commutativity, zero vector, inverses, distributivity,
+          `1*v = v`) are usually inherited from the ambient space, so closure is what a candidate
+          subset can actually fail.
+        explanation: Closure is the property most subsets violate; the algebraic laws come for free from the surrounding space.
+        concepts: [vector-space, closure]
+        points: 1
+      - id: lav-as-span-subspace
+        kind: explain
+        prompt: Why is the span of any set of vectors always a subspace?
+        modelAnswer: |
+          It contains the zero vector (all coefficients zero), it is closed under addition because
+          the sum of two linear combinations is another linear combination, and it is closed under
+          scaling because scaling a linear combination scales its coefficients. All three subspace
+          conditions hold by construction.
+        explanation: A span is generated by linear combinations, so it satisfies the subspace conditions automatically.
+        concepts: [span, subspace]
+        points: 1
+      - id: lav-as-pairwise
+        kind: find-bug
+        prompt: What is wrong with proving independence of three vectors by checking each pair is non-parallel?
+        modelAnswer: |
+          Pairwise non-parallel only rules out one vector being a multiple of another. Three vectors
+          can be pairwise non-parallel yet coplanar, making one a combination of the other two. The
+          correct test is that the rank of all three equals three, or that `sum c_i v_i = 0` forces
+          every `c_i = 0`.
+        explanation: Dependence can require two or more vectors to express; pairwise checks cannot see it.
+        concepts: [linear-independence]
+        points: 1
+      - id: lav-as-coordinates
+        kind: write-function
+        prompt: Given a basis matrix `B` (columns are basis vectors) and a vector `v`, give expressions for `v`'s coordinates and for rebuilding `v` from coordinates `c`.
+        modelAnswer: Coordinates are `np.linalg.solve(B, v)`; rebuilding is `B @ c`.
+        explanation: The basis matrix maps coordinates to the vector; solving against it recovers the coordinates.
+        concepts: [basis, coordinates]
+        points: 1
+      - id: lav-as-rank-nullity
+        kind: scenario
+        prompt: A matrix has 20 columns and rank 14. How many free parameters does a consistent system `A x = b` have, and why?
+        modelAnswer: |
+          Nullity is `20 - 14 = 6`, so the solution set is a particular solution plus a
+          6-dimensional null space: 6 free parameters. Rank–nullity uses the column count, not the
+          row count.
+        explanation: The solution set of a consistent system is an affine copy of the null space.
+        concepts: [rank-nullity, null-space]
+        points: 1
+      - id: lav-as-effective-dim
+        kind: scenario
+        prompt: An embedding is stored at width 300 but its centred rows have 25 dominant singular values and a flat tail. What is the effective dimension and what does it imply?
+        modelAnswer: |
+          The effective dimension is about 25: the rows lie close to a 25-dimensional subspace of
+          R^300. Most of the stored width is unused capacity, so a projection to a smaller width
+          would lose little information, subject to checking downstream task metrics.
+        explanation: Rank of the row space, read from the spectrum's elbow, is the real dimensionality.
+        concepts: [effective-dimension, low-rank]
+        points: 1
+      - id: lav-as-gram
+        kind: true-false
+        prompt: Computing the condition number from the eigenvalues of `X.T @ X` gives the same value as from the singular values of `X`.
+        options:
+          - {id: "true", text: "True"}
+          - {id: "false", text: "False"}
+        answer: ["false"]
+        explanation: Eigenvalues of the Gram matrix are squared singular values, so the ratio is the square of the true condition number and less accurate.
+        concepts: [gram-matrix, condition-number]
+        points: 1
+      - id: lav-as-tolerance
+        kind: find-bug
+        prompt: Why can `np.linalg.matrix_rank(X)` with its default tolerance still miss redundant features?
+        modelAnswer: |
+          The default tolerance is roughly `s.max() * max(X.shape) * eps`, far below the noise level
+          of real features. Two columns differing only by measurement noise produce a small but
+          above-threshold singular value and count as an independent direction. Set the tolerance
+          from the spectrum's noise floor instead.
+        explanation: The default guards against pure rounding, not against data-level near-dependence.
+        concepts: [rank, tolerance]
+        points: 1
+      - id: lav-as-basis-size
+        kind: mcq
+        prompt: Why is the dimension of a vector space well defined?
+        options:
+          - {id: same, text: Every basis of the space has the same number of vectors}
+          - {id: standard, text: Only the standard basis counts}
+          - {id: largest, text: Dimension is the size of the largest spanning set}
+        answer: [same]
+        explanation: The replacement lemma forces any two bases to have equal size.
+        concepts: [dimension, basis]
+        points: 1
+      - id: lav-as-remedy
+        kind: scenario
+        prompt: A linear model has unstable, huge coefficients across retrains. Name the linear-algebra cause and two remedies.
+        modelAnswer: |
+          The design matrix is near rank-deficient from multicollinearity, so the least-squares
+          solution is ill-conditioned and not unique in practice. Remedies: drop or combine the
+          near-dependent columns, or add L2 (ridge) regularisation, which raises every singular
+          value away from zero and restores a stable unique solution.
+        explanation: Near-dependence among columns makes the normal equations ill-conditioned; removing it or regularising fixes it.
+        concepts: [multicollinearity, regularisation]
+        points: 1
+interview:
+  - id: lav-iv-what-is-a-vector
+    level: basic
+    requiredForMastery: true
+    concepts: [vector-space, axioms]
+    question: What does it mean to call something a vector?
+    shortAnswer: |
+      It is an element of a vector space: a set with addition and scalar multiplication that are
+      closed and obey the vector space axioms. Tuples, polynomials, functions, and weight tensors
+      all qualify.
+    fullAnswer: |
+      The definition is structural, not visual. Fix a field of scalars; a vector space is a set
+      closed under `u + v` and `c*v` with a zero vector, inverses, and the usual distributive and
+      associative laws. The arrow-in-space picture and the list-of-numbers picture are two models of
+      that structure. This is why one theory of span, independence, and dimension applies to
+      geometry, polynomial fitting, and neural network parameters at once.
+    commonWrongAnswer: A vector is an ordered list of numbers.
+    followUps:
+      - Give an example of a vector space whose elements are not tuples.
+      - Which axiom does a candidate subspace most often fail?
+  - id: lav-iv-independence-test
+    level: intermediate
+    requiredForMastery: true
+    concepts: [linear-independence, rank, null-space]
+    question: How do you test a set of vectors for linear independence?
+    shortAnswer: |
+      Stack them as columns and check the rank equals the number of columns, equivalently that
+      `A x = 0` has only the zero solution. On real data use a tolerance on the singular values.
+    fullAnswer: |
+      Independence means the only combination equal to zero is trivial, which is exactly a null
+      space of `{0}` and a rank equal to the column count. I would call `np.linalg.matrix_rank` with
+      an explicit tolerance chosen from the singular value spectrum, not the default. Pairwise
+      non-parallel checks are not sufficient once there are three or more vectors, since dependence
+      can need several vectors to express.
+    commonWrongAnswer: Check that no vector is a scalar multiple of any other.
+    followUps:
+      - Why is the default tolerance in matrix_rank often too small for features?
+      - How does this connect to the null space?
+  - id: lav-iv-basis-dimension
+    level: intermediate
+    requiredForMastery: true
+    concepts: [basis, dimension, coordinates]
+    question: What is a basis, and why is dimension well defined?
+    shortAnswer: |
+      A basis is a linearly independent set that spans the space. Every vector then has unique
+      coordinates in it. Dimension is well defined because every basis of a space has the same
+      number of vectors.
+    fullAnswer: |
+      Spanning guarantees every vector is some combination of the basis; independence makes that
+      combination unique, since two representations would subtract to a nontrivial zero combination.
+      The replacement lemma shows any independent set is no larger than any spanning set, so all
+      bases have equal size, and that common size is the dimension. Coordinates turn abstract
+      vectors into tuples you can compute with.
+    commonWrongAnswer: A basis is any set of vectors that spans the space.
+    followUps:
+      - Can a spanning set fail to be a basis?
+      - How do you change coordinates from one basis to another?
+  - id: lav-iv-collinearity
+    level: scenario
+    requiredForMastery: true
+    concepts: [multicollinearity, condition-number, regularisation]
+    question: A regression's coefficients swing wildly between retrains. What is going on and what do you do?
+    shortAnswer: |
+      The design matrix is near rank-deficient because two or more features are almost linearly
+      dependent, so the solution is ill-conditioned. Drop or merge the redundant features, or add
+      ridge regularisation.
+    fullAnswer: |
+      I would standardise the columns and inspect the singular value spectrum and condition number,
+      or variance inflation factors. A dominant small singular value points to a near-dependent
+      group, which I find from the loadings of the corresponding right-singular vector. Fixes are to
+      remove or combine those columns, or apply L2 regularisation, which lifts every singular value
+      away from zero and makes the solution unique and stable. I also check for duplicated or
+      constant columns.
+    commonWrongAnswer: Just increase the number of training iterations.
+    followUps:
+      - Why does ridge regularisation help numerically?
+      - How would you detect which specific columns are the problem?
+  - id: lav-iv-effective-dimension
+    level: advanced
+    requiredForMastery: true
+    concepts: [effective-dimension, low-rank, singular-values]
+    question: How do you tell how many dimensions an embedding actually uses?
+    shortAnswer: |
+      Centre the rows and look at the singular value spectrum. The number of singular values above
+      the noise floor is the effective dimension, which can be far below the stored width.
+    fullAnswer: |
+      Stored width is the dimension of the container, not of the data. I compute the SVD of the
+      centred row matrix, square the singular values to get variance per direction, and find the
+      elbow where the spectrum flattens. If a small number of directions holds nearly all the
+      variance, the representation is effectively low rank, and a projection to a smaller width
+      should preserve downstream metrics. I report the spectrum and the elbow rather than a single
+      threshold.
+    commonWrongAnswer: The embedding uses exactly as many dimensions as its width.
+    followUps:
+      - What is the connection between this and PCA?
+      - Why centre the rows first?
+  - id: lav-iv-span-membership
+    level: debugging
+    requiredForMastery: true
+    concepts: [span, tolerance, least-squares]
+    question: How would you test whether a vector lies in the span of a set, on real data?
+    shortAnswer: |
+      Solve the least-squares problem for the coefficients, then compare the residual norm against a
+      relative tolerance scaled by the vector's norm. A near-zero relative residual means it is in
+      the span.
+    fullAnswer: |
+      Exact membership is not decidable in floating point, so I frame it as: is the perpendicular
+      distance from the vector to the subspace negligible relative to the vector's size?
+      `np.linalg.lstsq` gives the best coefficients and `norm(A @ c - v)` is that distance. I accept
+      when it is below `tol * max(1, norm(v))`. An absolute tolerance breaks when the vectors are
+      large, because rounding error grows with magnitude.
+    commonWrongAnswer: Check whether the linear system has an exact solution.
+    followUps:
+      - Why is a relative tolerance necessary here?
+      - What does lstsq return when the vector is not in the span?
+projects:
+  - id: lav-project-subspace-toolkit
+    kind: major
+    title: Build a subspace and dependence toolkit
+    minutes: 260
+    summary: Implement and test a small library that answers span, independence, basis, dimension, and near-dependence questions on real matrices with explicit, recorded tolerances.
+    problem: |
+      A data science team keeps shipping models that break because of collinear features and
+      misjudged embedding widths. Build a NumPy toolkit that turns the linear-algebra vocabulary of
+      this lesson into audited functions: membership in a span, independence of a set, reduction of a
+      spanning set to a basis of original vectors, coordinates in a basis, numerical rank with a
+      chosen tolerance, and a collinearity report for a design matrix. Every answer must come with
+      the evidence used to reach it.
+    requirements:
+      - Implement span membership via least squares with a relative, caller-visible tolerance.
+      - Implement independence and numerical rank from singular values, never from an exact determinant.
+      - Reduce a dependent spanning set to a basis drawn from the original columns using a pivoted decomposition.
+      - Compute coordinates in an arbitrary basis and their inverse, using solve rather than an explicit inverse.
+      - Produce a collinearity report with singular values, condition number, numerical rank, and candidate dependent groups.
+      - Return structured evidence (the spectrum, the tolerance, the residuals) alongside every boolean.
+    constraints:
+      - Use NumPy and the Python standard library for the core; SciPy is allowed for pivoted QR.
+      - Never treat an exact zero as the criterion for dependence.
+      - Never choose a tolerance without returning it.
+      - Do not form `X.T @ X` for conditioning questions unless a benchmark in the repo justifies it.
+    expectedBehaviour:
+      - Independence and rank agree with hand-worked small cases and with each other.
+      - Scaling all inputs by a large factor does not change any boolean result.
+      - A near-duplicate column is flagged while an orthogonal set is reported clean.
+      - Coordinates round-trip to the original vector within a stated tolerance.
+      - The collinearity report names the columns involved in each near-dependent direction.
+    structure: |
+      subspace_toolkit/
+        __init__.py
+        span.py
+        independence.py
+        basis.py
+        conditioning.py
+        report.py
+      tests/
+        test_span.py
+        test_independence.py
+        test_basis.py
+        test_conditioning.py
+        test_report.py
+    milestones:
+      - title: "1 — Span and independence"
+        detail: Least-squares membership and rank-based independence with relative tolerances and evidence.
+      - title: "2 — Basis and coordinates"
+        detail: Pivoted reduction to an original-column basis, plus change-of-basis both directions.
+      - title: "3 — Conditioning"
+        detail: Numerical rank from the spectrum, condition number, and tolerance selection helpers.
+      - title: "4 — Collinearity report"
+        detail: Structured and text report with candidate dependent groups and golden fixtures.
+    testing:
+      - Hand-worked 2x2 and 3x3 cases for independence, rank, and coordinates.
+      - Scale-invariance tests that multiply inputs by 1e-6 and 1e6.
+      - Near-dependence fixtures with a controlled gap between signal and noise singular values.
+      - Property test that a reduced basis has the target rank and spans every original column.
+      - Golden collinearity reports for orthogonal, exact-duplicate, and near-duplicate matrices.
+    failureCases:
+      - An exact determinant or `matrix_rank` default hides a data-level near-dependence.
+      - An absolute tolerance rejects a true span member after scaling.
+      - The Gram matrix route reports a condition number that is the square of the real one.
+      - A reduced basis uses orthonormalised vectors instead of original columns when originals were required.
+    bonus:
+      - Emit the collinearity report as Markdown for pull requests.
+      - Add variance inflation factors per column.
+      - Cache the SVD when several queries hit the same matrix.
+    architectureHints:
+      - Keep tolerance selection in one place and thread the chosen value into every result.
+      - Separate detection from remediation; the toolkit describes, the caller decides.
+      - Return small dataclasses carrying both the answer and its evidence.
+    referenceOutline: |
+      `span.in_span` solves with `lstsq` and compares a relative residual. `independence.numerical_rank`
+      wraps an SVD with an explicit tolerance and returns the spectrum. `basis.reduce_to_basis` uses
+      pivoted QR to pick original columns. `basis.coordinates` uses `solve`. `conditioning` computes
+      the condition number from singular values only. `report.collinearity` assembles the spectrum,
+      rank, condition number, and per-direction column loadings into a structured object plus text.
+  - id: lav-final-collinearity-audit
+    kind: final-challenge
+    title: Audit a feature matrix before a model ships
+    minutes: 90
+    summary: Given a real-looking design matrix, produce a defensible statement of its rank, its near-dependent groups, and the fix, with fail-before-fix tests.
+    problem: |
+      You are handed a 60-column standardised design matrix that a team wants to fit a linear model
+      on. Two pairs of columns are near-duplicates, one column is an exact linear combination of
+      three others, and one column is constant. Produce an audit that finds every defect from the
+      singular value spectrum, names the columns in each dependent group, and recommends a concrete
+      remediation, with a regression test per defect that fails before the fix.
+    requirements:
+      - Report the singular value spectrum, condition number, and numerical rank at a stated tolerance.
+      - Identify each near-dependent group by the loadings of the corresponding right-singular vectors.
+      - Distinguish the exact combination from the near-duplicates and the constant column in the writeup.
+      - Recommend drop, merge, or ridge for each case and justify it.
+      - Provide one fail-before-fix test per defect and a clean run after remediation.
+    constraints:
+      - Do not use an exact determinant or the default rank tolerance as the criterion.
+      - Do not remove columns before the audit records why.
+      - Do not report a single pass or fail without the supporting numbers.
+    expectedBehaviour:
+      - The numerical rank equals 60 minus the number of independent dependence relations.
+      - Each reported group lists exactly the columns that participate in that relation.
+      - Scaling the matrix does not change the findings.
+      - After remediation the condition number falls below the stated limit.
+    milestones:
+      - title: "1 — Spectrum and rank"
+        detail: Compute and record singular values, condition number, and tolerance-based rank.
+      - title: "2 — Localise the groups"
+        detail: Use near-null right-singular vectors to name the columns in each dependent set.
+      - title: "3 — Remediate and retest"
+        detail: Apply the per-case fix and show the spectrum and tests afterwards.
+    testing:
+      - Fail-before-fix regression for each of the four defects.
+      - Scale-invariance check on the whole audit.
+      - Assertion that the constant column is caught separately from the near-duplicates.
+    failureCases:
+      - The exact linear combination is missed because the tolerance was set too high.
+      - A near-duplicate pair is reported as two independent directions under the default tolerance.
+      - The remediation changes column meanings without updating the downstream contract.
+    bonus:
+      - Produce the audit as a Markdown report with the spectrum plotted as text.
+    architectureHints:
+      - Freeze the expected dependence relations as fixtures before writing the detector.
+      - Keep detection, localisation, and remediation in separate functions and commits.
+    referenceOutline: |
+      Standardise, take the SVD, and record the spectrum. Set the tolerance from the noise floor.
+      For every singular value below it, read the right-singular vector and list the columns with
+      large absolute loadings as one dependence group. Classify each group as exact or near from the
+      size of the singular value, handle the constant column as a special case, and map each to a
+      drop, merge, or ridge recommendation with a regression test.
+resources:
+  - name: Mathematics for Machine Learning — Deisenroth, Faisal, Ong
+    type: book
+    difficulty: core
+    url: "https://mml-book.github.io/"
+    usefulness: 5
+    why: Chapters 2 to 4 build vectors, vector spaces, span, basis, rank, and the four fundamental subspaces at exactly the level an ML engineer needs, with a free official PDF.
+    covers: Vector spaces, linear independence, basis and rank, linear mappings, norms and inner products, and the groundwork for eigen and singular value decompositions.
+  - name: 3Blue1Brown — Essence of Linear Algebra
+    type: video
+    difficulty: intro
+    url: "https://www.3blue1brown.com/topics/linear-algebra"
+    usefulness: 5
+    why: The geometric series gives the mental pictures for span, linear independence, basis, and change of basis before any algebra, which makes the formal definitions click faster.
+    covers: Vectors, linear combinations, span, basis, linear transformations, determinants, change of basis, and a first look at eigenvectors.
+  - name: MIT 18.06 Linear Algebra (OCW, Gilbert Strang)
+    type: university
+    difficulty: core
+    url: "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/"
+    usefulness: 5
+    why: Strang's lectures and problem sets are the standard first course, with the column space, null space, rank, and independence treated as the central ideas rather than afterthoughts.
+    covers: Elimination, column and null spaces, rank, independence, basis and dimension, the four subspaces, orthogonality, and least squares.
+  - name: numpy.linalg.matrix_rank reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.linalg.matrix_rank.html"
+    usefulness: 4
+    why: It documents the singular-value-threshold definition of numerical rank and the exact formula for the default tolerance, which is what you must override for feature data.
+    covers: Numerical rank, the default tolerance formula, the tol and hermitian arguments, and batch behaviour on stacked matrices.
+  - name: numpy.linalg.lstsq reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.linalg.lstsq.html"
+    usefulness: 4
+    why: Span membership and coordinate recovery on real data are least-squares problems, and this page defines the residuals, rank, and singular values the function returns for a tolerant test.
+    covers: Least-squares solution, returned residuals and rank, singular values, the rcond argument, and handling of rank-deficient systems.

@@ -1,0 +1,259 @@
+---
+id: "roadmap:phase-1-1.2:0"
+title: "ndarray memory layout: strides, contiguity, views vs copies"
+description: "Treat an ndarray as a typed view over a byte buffer, then reason from shape and strides to predict aliasing, contiguity, copies, and performance."
+module: 1-2-numpy-the-actual-foundation
+order: 1
+estimatedMinutes: 115
+prerequisites: []
+learningObjectives:
+  - Derive an element address from shape, strides, item size, and an index tuple
+  - Predict whether slicing, reshaping, transposing, and advanced indexing produce a view or a copy
+  - Diagnose non-contiguous arrays and choose deliberately among reshape, ravel, flatten, ascontiguousarray, and copy
+  - Design array boundaries that avoid accidental aliasing and unnecessary materialization
+---
+
+An `ndarray` is not a nested Python list. It is a small metadata object that interprets bytes: a data buffer, a dtype, a shape, and one byte stride per axis.
+
+That model explains views, transposes, contiguity, and most surprising copies. If two arrays can describe the same bytes with different metadata, NumPy can return a view. If the requested result cannot be expressed by one affine address rule, NumPy must allocate or reject the operation.
+
+Performance follows the same model. Traversing adjacent bytes helps caches and vectorized kernels; jumping through memory or materializing temporary buffers costs bandwidth.
+
+<TypeScriptComparison>
+
+- A JavaScript nested array stores references to independently allocated arrays; a NumPy matrix normally stores homogeneous values in one buffer.
+- A `TypedArray.subarray()` is close to a NumPy basic slice because it aliases storage. `TypedArray.slice()` copies.
+- JavaScript arrays expose logical indices but not multidimensional shape or strides. NumPy makes the address mapping inspectable.
+- Assignment aliases objects in both languages, but NumPy adds many operations that return new metadata views over the same storage.
+
+</TypeScriptComparison>
+
+## The address equation
+
+For a two-dimensional array, the byte address of element `(i, j)` is:
+
+```text
+address = base + i * strides[0] + j * strides[1]
+```
+
+The general rule sums `index[k] * strides[k]` across axes. Shape bounds the legal indices. Dtype tells NumPy how many bytes to read and how to interpret them.
+
+```python
+import numpy as np
+
+x = np.arange(12, dtype=np.int32).reshape(3, 4)
+print(x.shape)      # (3, 4)
+print(x.itemsize)   # 4
+print(x.strides)    # commonly (16, 4)
+```
+
+Moving one column adds four bytes. Moving one row skips four `int32` values, or sixteen bytes. For `x[2, 1]`, the offset is `2 * 16 + 1 * 4 = 36` bytes.
+
+Strides may be zero or negative. Broadcasting can use a zero stride to reuse one value; reversing an axis uses a negative stride to walk backward. A stride is an address step, not an element count.
+
+## Contiguity is an ordering claim
+
+A C-contiguous array stores the last axis with the smallest step. A Fortran-contiguous array stores the first axis with the smallest step. One-dimensional arrays can satisfy both flags.
+
+```python
+a = np.arange(12).reshape(3, 4)
+t = a.T
+
+print(a.strides, a.flags.c_contiguous)
+print(t.strides, t.flags.c_contiguous, t.flags.f_contiguous)
+```
+
+Transpose usually swaps shape and strides without moving data. The result is perfectly valid but has a different efficient traversal order. “Not C-contiguous” does not mean corrupt or always slow; it means a C-order consumer may need a copy.
+
+Slicing every second column preserves an affine mapping but introduces gaps. Reshaping that result may or may not be representable without rearranging bytes. Ask NumPy about ownership and sharing rather than guessing from syntax.
+
+```python
+view = a[:, ::2]
+print(view.strides)
+print(np.shares_memory(a, view))
+print(view.flags.c_contiguous)
+```
+
+## Views, shallow metadata, and ownership
+
+Basic indexing with integers, slices, `...`, and `None` normally returns a view. The new array gets its own shape and strides but reaches the original buffer. Mutating either can therefore affect the other.
+
+```python
+source = np.arange(8)
+window = source[2:6]
+window[:] = -1
+print(source)  # [0, 1, -1, -1, -1, -1, 6, 7]
+```
+
+The `.base` attribute can reveal an ownership chain, but it is not a complete alias test: the base may be an intermediate array, and complex operations can share only part of a buffer. Use `np.shares_memory` when correctness depends on overlap. `np.may_share_memory` is a cheaper conservative test and may report false positives.
+
+`copy()` creates independent storage. Use it at an ownership boundary, not reflexively after every slice. Copies consume memory bandwidth and often dominate otherwise fast numeric code.
+
+<CommonMistake>
+
+Treating a view as an immutable snapshot creates time-dependent bugs. If later mutation is possible and the consumer needs historical state, copy explicitly where ownership changes.
+
+</CommonMistake>
+
+## Advanced indexing gathers into a copy
+
+Integer-array and boolean indexing select arbitrary locations. Those locations generally cannot be represented by one base pointer plus fixed per-axis strides, so advanced indexing returns a copy.
+
+```python
+x = np.arange(10)
+basic = x[2:6]
+advanced = x[[2, 3, 4, 5]]
+
+print(np.shares_memory(x, basic))     # True
+print(np.shares_memory(x, advanced))  # False
+```
+
+Assignment through advanced indexing is special: NumPy gathers target positions and scatters the result back. Repeated indices do not imply repeated accumulation. For accumulation semantics, use operations such as `np.add.at` or a purpose-built reduction.
+
+Mixed basic and advanced indexing also changes axis placement rules. Keep complicated selectors named and test result shapes; terse indexing expressions are a common source of silent ML feature-axis bugs.
+
+## Reshape, ravel, flatten, and contiguity
+
+`reshape` returns a view when compatible strides exist and otherwise may copy. Code should not promise aliasing merely because a particular input shape happened to avoid allocation. `ravel` prefers a view; `flatten` always copies.
+
+```python
+x = np.arange(12).reshape(3, 4).T
+
+r = x.reshape(-1)               # may allocate for this layout
+v = np.ravel(x, order="K")      # follows physical memory when possible
+c = x.flatten()                  # always independent
+packed = np.ascontiguousarray(x) # returns x itself if already suitable
+```
+
+`np.ascontiguousarray` is useful at native-library, serialization, and accelerator boundaries. It makes the copy policy explicit and avoids copying inputs that already meet the contract. Validate dtype at the same boundary because layout alone is insufficient.
+
+`order="K"` means follow the array's memory layout as closely as possible. `C` and `F` describe index order, not merely the original allocation language.
+
+## Performance is access order plus kernel behavior
+
+CPU caches load lines of adjacent bytes. A reduction along a unit-stride axis usually gives a kernel a friendlier stream than one that jumps across large strides. NumPy kernels can still optimize strided data, so measure the full operation rather than declaring every transpose slow.
+
+Large hidden copies are often more expensive than arithmetic. Inspect `shape`, `dtype`, `strides`, contiguity flags, and `np.shares_memory` near a suspected boundary. Benchmark after warming and verify that the compared operations produce equivalent output.
+
+In PyTorch, tensors use the same shape/stride idea. `permute` is metadata-only; some kernels require `contiguous()`. Understanding NumPy layout makes tensor view errors and host-to-device transfer costs much less mysterious.
+
+<ProductionNote>
+
+Define array contracts at API boundaries: accepted shape, dtype, contiguity, writability, and ownership. A function that stores an input beyond the call should state whether it retains a view or takes a copy.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="numpy-layout-offset-easy" difficulty="easy">
+
+An `int32` array has shape `(5, 7)` and strides `(28, 4)`. What byte offset contains element `(3, 2)`?
+
+<Solution>
+
+The offset is `3 * 28 + 2 * 4 = 92` bytes from the array's data pointer. Strides are already measured in bytes, so do not multiply by `itemsize` again.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-layout-slice-medium" difficulty="medium">
+
+Predict the shape, strides, and sharing behavior of `x[:, ::-2]` when `x` is a C-contiguous `(3, 6)` `int64` array.
+
+<Solution>
+
+The result shape is `(3, 3)`. Its row stride remains 48 bytes and its column stride is `-16` bytes. Basic slicing returns a view, with its data pointer positioned at the first selected element near the row's end.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-layout-indexing-hard" difficulty="hard">
+
+Explain why `x[1:4, [0, 2]]` cannot generally be described as a simple view and state the mutation consequence.
+
+<Solution>
+
+The integer array requests a gather whose selected column positions are not represented as one fixed slice range. Advanced indexing therefore materializes a result. Mutating that returned array does not mutate `x`, although assigning directly to the indexing expression scatters values into `x`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-layout-interview" difficulty="interview">
+
+In an interview, explain why transposing an array is often cheap but using the result can still be expensive.
+
+<Solution>
+
+Transpose normally swaps shape and strides, so creating it is constant-time metadata work. Later kernels may traverse non-unit strides, lose cache efficiency, or require a contiguous temporary. I would inspect flags and benchmark the consuming operation, then materialize once at a deliberate boundary if repeated kernels benefit.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-layout-serving-real-world" difficulty="real-world">
+
+A model server accepts image batches from several decoders. Design a boundary that prevents silent layout copies inside every inference call.
+
+<Solution>
+
+Specify batch shape, channel order, dtype, alignment, and C-contiguity. Normalize once with validated axis movement and `np.ascontiguousarray`, record whether allocation occurred, and pass the packed buffer through subsequent stages. Test already-packed, transposed, sliced, read-only, and invalid inputs.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. What four pieces define an ndarray's logical interpretation?
+2. How do you derive an element's byte offset?
+3. Which indexing family normally returns views, and which normally copies?
+4. Why can transpose be cheap while a later kernel is expensive?
+5. When should an API take an explicit copy?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why did changing my slice change the original array?">
+
+Basic slicing normally returns a view over shared storage. Call `copy()` at the point where independent ownership is required.
+
+</Gotcha>
+
+<Gotcha question="Why is reshaping sometimes allocating?">
+
+The requested shape may not have a valid constant-stride interpretation for the current layout. NumPy then materializes compatible storage.
+
+</Gotcha>
+
+<Gotcha question="Why does flatten behave differently from ravel?">
+
+`flatten()` promises a copy. `ravel()` prefers a view when the layout permits one.
+
+</Gotcha>
+
+<Gotcha question="Why is my transposed array not C-contiguous?">
+
+Transpose swaps axes and strides without rearranging bytes. It may become Fortran-contiguous instead.
+
+</Gotcha>
+
+<Gotcha question="Can I rely on array.base being the original variable?">
+
+No. It may reference an intermediate owner. Use memory-sharing checks when overlap matters.
+
+</Gotcha>
+
+<Gotcha question="Why did repeated advanced indices not accumulate repeatedly?">
+
+Advanced assignment uses buffered gather/scatter behavior. Use an indexed reduction such as `np.add.at` when repeats must accumulate.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+An ndarray is metadata over bytes. Shape defines legal coordinates, dtype defines interpretation, and strides turn coordinates into byte addresses.
+
+Basic slicing can express new metadata and therefore usually shares storage. Advanced indexing gathers arbitrary locations and therefore returns a copy. Reshape sits between those cases: it shares only when compatible strides exist.
+
+Contiguity describes traversal order, not validity. Make copies deliberate at ownership or native-kernel boundaries, then measure the consumer rather than optimizing flags in isolation. The Practice, Debug, Interview, Test, and Project tabs now make you prove each distinction.

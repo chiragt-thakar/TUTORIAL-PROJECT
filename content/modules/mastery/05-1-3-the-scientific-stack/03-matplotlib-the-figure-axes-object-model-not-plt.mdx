@@ -1,0 +1,199 @@
+---
+id: "roadmap:phase-1-1.3:2"
+title: "matplotlib: the Figure/Axes object model (not plt. state-machine style)"
+description: "Create predictable visualizations by owning Figure, Axes, Artist, transform, layout, scale, and export decisions explicitly."
+module: 1-3-the-scientific-stack
+order: 3
+estimatedMinutes: 110
+prerequisites: ["roadmap:phase-1-1.3:0"]
+learningObjectives:
+  - Explain the Figure, Axes, Axis, and Artist hierarchy and use the object-oriented API
+  - Choose scales, limits, transforms, and shared axes without distorting the data story
+  - Build reusable plotting functions that accept Axes and return created artists
+  - Produce deterministic, accessible, publication-ready exports
+---
+
+Matplotlib renders an object tree. A `Figure` is the whole canvas; each `Axes` is one plotting coordinate system; `Axis` objects manage ticks and scales; and lines, text, patches, legends, and images are `Artist` instances.
+
+The state-machine API in `matplotlib.pyplot` is useful for short interactive work. Production plotting becomes clearer when you create objects once and call methods on the intended `Axes`.
+
+<TypeScriptComparison>
+
+Think of a Figure as an SVG root or canvas scene, Axes as nested viewports, and Artists as scene nodes. Global `plt.*` calls resemble mutating whichever DOM node happens to be selected. Passing `ax` explicitly resembles passing a component dependency.
+
+</TypeScriptComparison>
+
+## Own the object graph
+
+`plt.subplots` is a convenient constructor, not a requirement to use global state afterward.
+
+```python
+from collections.abc import Sequence
+import matplotlib.pyplot as plt
+from matplotlib.axes import Axes
+from matplotlib.lines import Line2D
+
+
+def plot_power(ax: Axes, times: Sequence[float], watts: Sequence[float]) -> Line2D:
+    (line,) = ax.plot(times, watts, label="Power", color="tab:blue")
+    ax.set(xlabel="Elapsed time (s)", ylabel="Power (W)", title="Device power")
+    ax.grid(True, alpha=0.25)
+    return line
+
+
+fig, ax = plt.subplots(figsize=(7, 4), layout="constrained")
+plot_power(ax, [0, 1, 2], [100, 130, 125])
+ax.legend()
+fig.savefig("power.png", dpi=160, bbox_inches="tight")
+plt.close(fig)
+```
+
+A reusable function accepts an Axes, draws only its responsibility, and returns useful Artists. It does not call `show`, create hidden figures, or decide the output path.
+
+## Data, axes, figure, and display coordinates
+
+Matplotlib composes transforms. Data coordinates are interpreted by an Axes scale and limits. Axes coordinates run from `(0, 0)` at its lower-left to `(1, 1)` at its upper-right. Figure coordinates cover the whole canvas. Display coordinates are physical pixels or points.
+
+```python
+ax.annotate(
+    "threshold",
+    xy=(0.02, 0.95),
+    xycoords="axes fraction",
+    ha="left",
+    va="top",
+)
+```
+
+Use data coordinates for values and Axes coordinates for labels that should remain in a fixed corner while limits change. Many confusing annotation bugs are transform mistakes.
+
+## Scales and limits carry meaning
+
+Linear, logarithmic, symmetric-log, and logit scales answer different questions. A logarithmic scale requires a policy for zero and negative values. Cropping an axis can exaggerate small differences, especially in bar charts whose length encodes magnitude from a baseline.
+
+Set limits only when the analytical question justifies them. Preserve a record of filtered data and communicate truncation visibly. Never use a second y-axis merely to place unrelated series together; shared visual space invites false correlation.
+
+## Layout is geometry, not decoration
+
+Subplots create an array of Axes. Share axes only when units and scales match. Constrained layout or explicit GridSpec arrangements are more robust than repeated manual spacing.
+
+```python
+fig, axes = plt.subplots(2, 1, sharex=True, figsize=(8, 6), layout="constrained")
+axes[0].plot([1, 2, 3], [2, 4, 3])
+axes[1].bar([1, 2, 3], [7, 5, 8])
+axes[0].set_ylabel("Power (kW)")
+axes[1].set(xlabel="Hour", ylabel="Samples")
+```
+
+Figure-level text belongs to the Figure; panel-specific labels belong to an Axes. Avoid `tight_layout` and constrained layout fighting each other in the same figure.
+
+## Styles, color, and accessibility
+
+Style sheets and `rc_context` provide scoped defaults. Keep semantic decisions in plotting code: which variable maps to color, line style, marker, or position. Do not rely on color alone for critical categories.
+
+```python
+with plt.rc_context({"font.size": 10, "axes.spines.top": False}):
+    fig, ax = plt.subplots()
+    ax.plot([0, 1], [0, 1], color="#0072B2", linestyle="-", label="Observed")
+    ax.plot([0, 1], [0.1, 0.8], color="#D55E00", linestyle="--", label="Expected")
+```
+
+Use readable contrast, direct labels where possible, units in axis labels, and alt-text or a textual summary when publishing on the web.
+
+## Ticks are views of a scale
+
+Locators decide tick positions; formatters decide their text. Setting arbitrary tick labels without matching locations produces labels detached from data.
+
+Dates need dedicated date locators and formatters. For dense data, reduce tick frequency rather than rotating every label into an unreadable fence.
+
+## Rendering and export
+
+Vector formats such as SVG or PDF preserve lines and text for diagrams. Raster formats such as PNG are appropriate for dense images and web previews. DPI affects raster resolution; `figsize` is measured in inches, so pixel dimensions are approximately `figsize * dpi`.
+
+Close figures in batch jobs to release resources. Pin styles, fonts, library versions, and random seeds for deterministic visual regression tests. Compare important plots through both numerical assertions and selected image tests.
+
+<ProductionNote>
+
+Separate data preparation from rendering. Test the prepared series, labels, limits, and artist counts. Save through the Figure object, close it explicitly, and record the parameters that generated the artifact.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="mpl-hierarchy-easy" difficulty="easy">
+
+Name the roles of Figure, Axes, Axis, and Artist.
+
+<Solution>
+
+Figure owns the canvas; Axes owns one data coordinate system; Axis controls one scale, ticks, and tick labels; Artist is the base for visible elements such as lines and text.
+
+</Solution>
+</Exercise>
+
+<Exercise id="mpl-function-medium" difficulty="medium">
+
+Refactor a helper that calls `plt.plot` and `plt.title` so it composes inside a dashboard.
+
+<Solution>
+
+Accept an `Axes`, call `ax.plot` and `ax.set_title`, and return the created line. Let the caller create the Figure, arrange panels, save, show, and close.
+
+</Solution>
+</Exercise>
+
+<Exercise id="mpl-transform-hard" difficulty="hard">
+
+Place a label permanently in the upper-left corner regardless of data limits.
+
+<Solution>
+
+Use `ax.text(0.02, 0.98, ..., transform=ax.transAxes, ha="left", va="top")`, or the equivalent `annotate` with `xycoords="axes fraction"`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="mpl-state-interview" difficulty="interview">
+
+Why prefer the object-oriented API over pyplot state for reusable code?
+
+<Solution>
+
+Explicit Figure and Axes references remove dependence on a hidden current object, compose across subplot layouts, improve testability, and make ownership of styling and output lifecycle clear.
+
+</Solution>
+</Exercise>
+
+<Exercise id="mpl-report-real-world" difficulty="real-world">
+
+Design a four-panel operational report that can export identically in a headless job.
+
+<Solution>
+
+Prepare data separately, construct one Figure and GridSpec, pass Axes into typed helpers, use scoped styles and accessible encodings, assert units and limits, save with fixed size/DPI, and close. Pin fonts and versions for deterministic output.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+  <Gotcha question="Why did my title land on the wrong subplot?">
+    A state-machine call targeted the current Axes. Hold the intended object and call `ax.set_title`.
+  </Gotcha>
+  <Gotcha question="Why did set_xticklabels drift from the data?">
+    Labels were changed without a matching locator. Configure tick positions and formatting together.
+  </Gotcha>
+  <Gotcha question="Why does a batch export consume growing memory?">
+    Figures remain registered. Close each Figure after saving it.
+  </Gotcha>
+</Gotchas>
+
+## Checkpoint
+
+You should be able to draw the object hierarchy, pass Axes into a plotting function, choose a coordinate transform, justify a scale and baseline, and export a deterministic headless figure.
+
+## Summary
+
+- Figure and Axes ownership replaces hidden current-state assumptions.
+- Artists live in explicit coordinate systems and transforms.
+- Scales, limits, and shared axes are analytical choices.
+- Reusable functions accept Axes and leave lifecycle decisions to callers.
+- Accessible, deterministic export needs scoped styles, units, and cleanup.

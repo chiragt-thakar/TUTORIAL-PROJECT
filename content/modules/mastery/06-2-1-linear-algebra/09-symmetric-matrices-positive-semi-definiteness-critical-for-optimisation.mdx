@@ -1,0 +1,386 @@
+---
+id: "roadmap:phase-2-2.1:8"
+title: "Symmetric matrices, positive (semi-)definiteness — critical for optimisation"
+description: Symmetric matrices always diagonalise orthogonally; the sign of their quadratic form splits bowls from saddles, decides convexity, and determines whether Newton, conjugate gradient, Cholesky, and a covariance estimate will work at all.
+module: 2-1-linear-algebra
+order: 9
+estimatedMinutes: 120
+prerequisites: []
+learningObjectives:
+  - Apply the spectral theorem and read the quadratic form x·Ax as an ellipsoid, saddle, or dome
+  - Test positive definiteness four ways and pick the cheapest definitive one
+  - Connect PSD Hessians to convexity and PD Hessians to a well-posed Newton step
+  - Repair a matrix that should be PSD but is not, and know why kernels and covariances must be PSD
+---
+
+A symmetric matrix is the best-behaved object in linear algebra: it always has real eigenvalues and
+an orthonormal eigenbasis, so `A = Q Lambda Q.T`. Almost every matrix that matters in optimisation
+and statistics — Hessians, covariances, Gram matrices, kernels, Fisher information — is symmetric.
+
+The extra structure that decides whether things work is the sign of the quadratic form `x.T A x`.
+Positive for all `x` means a bowl with a unique minimum, a convex function, a valid covariance, a
+Cholesky that succeeds, and a Newton step that points downhill.
+
+<TypeScriptComparison>
+
+- A symmetric matrix stored as `number[][]` wastes half its entries; packed storage keeps only the triangle, and NumPy's `eigh` and `cholesky` assume you pass the whole thing but only read one triangle.
+- The definitive positive-definiteness test in any language is "try a Cholesky factorisation and see if it fails", not "compute all eigenvalues".
+- `x.T @ A @ x` is one line in NumPy; in TypeScript it is a double loop, and forgetting to symmetrise `A` first silently uses only its symmetric part anyway.
+- Sampling from a Gaussian needs a matrix square root; `np.linalg.cholesky` gives one, and the TypeScript equivalent would be a hand-rolled Cholesky with the same "fails if not PD" behaviour.
+
+</TypeScriptComparison>
+
+## The spectral theorem
+
+If `A == A.T` (real), then all eigenvalues are real, eigenvectors for distinct eigenvalues are
+orthogonal, and you can choose an orthonormal eigenbasis even for repeated eigenvalues. So
+`A = Q Lambda Q.T` with `Q` orthogonal and `Lambda` real diagonal. No inverse, always exists,
+numerically stable — use `np.linalg.eigh`.
+
+This is why the symmetric case is the one to internalise: it has none of the pathologies (complex
+eigenvalues, defectiveness, ill-conditioned eigenvectors) of the general case.
+
+```python
+import numpy as np
+
+A = np.array([[4.0, 1.0, 0.0],
+              [1.0, 3.0, 1.0],
+              [0.0, 1.0, 2.0]])
+w, Q = np.linalg.eigh(A)
+assert np.allclose(Q @ Q.T, np.eye(3))
+assert np.allclose(Q @ np.diag(w) @ Q.T, A)
+assert np.all(np.isreal(w))
+```
+
+## The quadratic form and its level sets
+
+`q(x) = x.T A x` is a scalar. Only the symmetric part of `A` contributes, because
+`x.T A x == x.T ((A + A.T)/2) x`, so quadratic forms are always studied with symmetric `A`. In the
+eigenbasis, `q(x) = sum_i w_i * y_i^2` where `y = Q.T x`.
+
+That sum tells you the shape. All `w_i > 0`: the level sets `q(x) = c` are ellipsoids and `q` is a
+bowl. Mixed signs: hyperboloids and a saddle. All `w_i < 0`: a dome. The eigenvectors are the axes
+of the ellipsoid and the eigenvalues set how stretched each axis is.
+
+```python
+def quad(A, x):
+    return x @ A @ x
+
+bowl = np.diag([2.0, 5.0])
+saddle = np.diag([2.0, -5.0])
+assert quad(bowl, np.array([1.0, 1.0])) > 0
+assert quad(saddle, np.array([0.0, 1.0])) < 0 < quad(saddle, np.array([1.0, 0.0]))
+```
+
+## The definiteness classes and how to test them
+
+`A` is positive definite (PD) if `x.T A x > 0` for every nonzero `x`, equivalently every eigenvalue
+is positive. Positive semidefinite (PSD) allows zeros: `x.T A x >= 0`, every eigenvalue `>= 0`.
+Indefinite has eigenvalues of both signs. Negative (semi)definite is the mirror.
+
+Four tests for PD, cheapest-decisive first: attempt a Cholesky factorisation (succeeds iff PD, about
+`n^3/3` flops); check all eigenvalues positive via `eigh` (about 3 times slower); check all leading
+principal minors positive (Sylvester's criterion, by-hand only); check `x.T A x > 0` on many random
+`x` (a probabilistic screen, never a proof).
+
+```python
+def is_pd(A):
+    try:
+        np.linalg.cholesky(A)
+        return True
+    except np.linalg.LinAlgError:
+        return False
+
+assert is_pd(np.array([[2.0, 1.0], [1.0, 2.0]]))
+assert not is_pd(np.array([[1.0, 2.0], [2.0, 1.0]]))     # eigenvalues 3 and -1
+```
+
+<Concept>
+
+Any matrix of the form `B.T @ B` is PSD: `x.T (B.T B) x == ||B x||^2 >= 0`. It is PD exactly when
+`B` has independent columns. Gram matrices, `X.T X` in regression, and kernel matrices are all this
+shape, which is why they are automatically PSD.
+
+</Concept>
+
+## Convexity and Newton's method
+
+A twice-differentiable `f` is convex on a region exactly when its Hessian is PSD everywhere there,
+and strictly convex if the Hessian is PD. So "PSD Hessian" is the linear-algebra statement of "no
+local maxima or saddles, every stationary point is a global minimum".
+
+Newton's method solves `H p = -g`. If `H` is PD the step points downhill and the local model has a
+unique minimiser. If `H` is indefinite — common far from the optimum and at saddles — the raw Newton
+step can point uphill, so practical methods modify `H`: add `tau*I` until PD, flip negative
+eigenvalues, or use a trust region.
+
+```python
+import scipy.linalg as sla
+
+def safe_newton_step(H, g, base=1e-8):
+    tau = 0.0
+    while True:
+        try:
+            c, low = sla.cho_factor(H + tau * np.eye(len(g)))
+            return sla.cho_solve((c, low), -g), tau
+        except sla.LinAlgError:
+            tau = max(2 * tau, base)
+
+H = np.array([[2.0, 0.0], [0.0, -1.0]])                  # indefinite (a saddle)
+p, tau = safe_newton_step(H, np.array([1.0, 1.0]))
+assert tau > 0                                            # had to regularise
+```
+
+<WhyItMatters>
+
+A kernel matrix that is not PSD breaks every kernel method — the optimisation is no longer convex
+and SVM duals become unbounded. A covariance estimate that is not PSD gives negative variances and
+breaks Gaussian sampling. BFGS deliberately maintains a PD Hessian approximation so its steps stay
+descent directions. Natural gradient and Gauss-Newton rely on a PSD Fisher or Gauss-Newton matrix.
+
+</WhyItMatters>
+
+## Conditioning and the matrix square root
+
+For a PD matrix the condition number is `w_max / w_min`, the ratio of the ellipsoid's longest to
+shortest axis. It sets gradient descent's convergence rate and conjugate gradient's iteration count
+(`~ sqrt(cond)`), and it is what preconditioning tries to reduce.
+
+Every PSD matrix has a unique PSD square root `A^{1/2} = Q Lambda^{1/2} Q.T`, and a Cholesky factor
+is a cheaper non-symmetric square root. Both are used to whiten data (`Sigma^{-1/2} x`), to sample
+`x = mu + L z` from a Gaussian, and in natural-gradient preconditioning.
+
+```python
+S = np.array([[4.0, 1.0], [1.0, 3.0]])
+w, Q = np.linalg.eigh(S)
+S_half = Q @ np.diag(np.sqrt(w)) @ Q.T
+assert np.allclose(S_half @ S_half, S)
+L = np.linalg.cholesky(S)
+assert np.allclose(L @ L.T, S)                            # a different, triangular square root
+```
+
+## Doing this in floating point
+
+A matrix that is PSD in theory often has a smallest computed eigenvalue like `-1e-16` from rounding.
+Treat "PSD" as "eigenvalues above `-tol` for a small relative `tol`", and if you need an actually-PSD
+matrix, clip the negative eigenvalues to zero and reconstruct, or add `eps*I`.
+
+The nearest PD matrix to a symmetric `A` (in Frobenius norm) is obtained by clipping eigenvalues at
+a small positive floor and rebuilding; this is standard for repairing a covariance or kernel
+estimate. Cholesky is still the fastest PD *test*, but it does not tell you how far from PD you are.
+
+```python
+noisy = np.array([[1.0, 0.999999999],
+                  [0.999999999, 1.0]])                    # PSD up to rounding
+w = np.linalg.eigvalsh(noisy)
+assert w.min() > -1e-8                                    # tiny, treat as >= 0
+w_clipped = np.clip(w, 1e-10, None)
+_, Q = np.linalg.eigh(noisy)
+repaired = Q @ np.diag(w_clipped) @ Q.T                   # nearest PD
+```
+
+<ProductionNote>
+
+Test a matrix for PD with a Cholesky attempt, not a full eigendecomposition — it is faster and it is
+the definitive test. For covariance and kernel estimates, add a small `jitter*I` (or eigenvalue
+clipping) before any Cholesky or sampling. Log `w_min` and `w_max` of your Hessian or covariance;
+`w_min <= 0` is the signal that the model or estimate has degenerated.
+
+</ProductionNote>
+
+## Cost
+
+Cholesky is `O(n^3/6)`, half of LU and the fastest route to a PD test, a linear solve, a
+determinant, and a square root all at once. A full symmetric eigendecomposition is `O(n^3)` with a
+moderate constant. Sylvester's minor test is `O(n^3)` if done naively and offers no numerical
+advantage, so it is a paper tool.
+
+Eigenvalue clipping to repair a matrix costs one `O(n^3)` `eigh` plus an `O(n^3)` reconstruction.
+Adding `jitter*I` is `O(n)` and usually enough, so try that first and only fall back to clipping
+when the negative mass is large.
+
+## Exercises
+
+<Exercise id="la-spd-classify-forms" difficulty="easy">
+
+Classify each quadratic form by definiteness: (a) `x^2 + 4y^2`; (b) `x^2 - y^2`; (c)
+`x^2 + 2xy + y^2`.
+
+<Solution>
+
+(a) Matrix `diag(1, 4)`, eigenvalues `1, 4`, both positive: positive definite. The form is a bowl,
+zero only at the origin.
+
+(b) Matrix `diag(1, -1)`, eigenvalues `1, -1`, opposite signs: indefinite. It is a saddle —
+positive along `x`, negative along `y`.
+
+(c) `x^2 + 2xy + y^2 = (x + y)^2`. Matrix `[[1, 1], [1, 1]]`, eigenvalues `2` and `0`. Non-negative
+everywhere but zero on the line `x = -y`: positive semidefinite, not positive definite.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-spd-cholesky-test" difficulty="medium">
+
+Explain why a successful Cholesky factorisation proves positive definiteness, and why a failed one
+proves the matrix is not PD.
+
+<Solution>
+
+Cholesky computes `A = L L.T` with `L` lower triangular by, at step `k`, taking the square root of
+`A[k,k]` minus the sum of squares of the already-computed entries in row `k`. That diagonal quantity
+is the Schur complement's pivot, and for a PD matrix every such pivot is strictly positive, so every
+square root is real and the algorithm runs to completion.
+
+If `A` is not PD, some pivot is zero or negative at the step where the leading principal submatrix
+stops being PD, so the algorithm hits a non-positive number under a square root and fails. Thus
+"Cholesky succeeds" is equivalent to "every leading principal minor is positive", which is
+Sylvester's criterion, which is equivalent to PD. It is also about three times cheaper than
+computing all eigenvalues.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-spd-newton-modification" difficulty="hard">
+
+At a point far from the optimum a Newton step `H p = -g` gives a `p` with `g.T p > 0` (an ascent
+direction). Explain how the eigenvalues of `H` cause this and give two principled fixes.
+
+<Solution>
+
+Diagonalise `H = Q Lambda Q.T` and write `g` in that basis as `gtilde = Q.T g`. The Newton step is
+`p = -Q Lambda^{-1} gtilde`, so `g.T p = -sum_i gtilde_i^2 / w_i`. If some `w_i < 0`, that term is
+`+gtilde_i^2 / |w_i| > 0` and can dominate, making `g.T p > 0`.
+
+The step climbs along the negative-curvature direction, because Newton's step goes to the stationary
+point of the local quadratic, which for a saddle is uphill in some directions.
+
+Fix 1: add `tau*I` with `tau` large enough that `H + tau*I` is PD (all `w_i + tau > 0`); this
+interpolates between the Newton step and a scaled gradient step and is the Levenberg-Marquardt idea.
+
+Fix 2: eigenvalue modification — replace each `w_i` by `max(|w_i|, delta)` and step with the modified
+inverse. This keeps full Newton scaling in the healthy directions and turns the bad ones into
+gradient descent. A trust region does the same implicitly by bounding `||p||`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-spd-interview-kernel" difficulty="interview">
+
+In an interview: "Why must a kernel matrix be positive semidefinite, and what do you do if a
+computed one is not?"
+
+<Solution>
+
+A kernel `k(x, y)` corresponds to an inner product in some feature space (Mercer's condition). The
+Gram matrix `K` with `K_ij = k(x_i, x_j)` is then `Phi Phi.T`, which is PSD by construction.
+
+Kernel methods rely on this: the SVM dual is concave only if `K` is PSD, the kernel-ridge system
+`(K + lambda I)` is well-posed only then, and a Gaussian process needs `K` PSD to be a valid
+covariance.
+
+If a computed `K` has small negative eigenvalues, the usual cause is floating-point rounding in the
+kernel evaluations or a mis-specified kernel. Remedies: add a jitter `epsilon*I`; project to the
+nearest PSD matrix by clipping eigenvalues and reconstructing; or, if the negative mass is large,
+revisit the kernel — a similarity that is not PSD is not a valid kernel.
+
+I would check `eigvalsh(K).min()` relative to `eigvalsh(K).max()`: `-1e-12` is rounding, `-0.3` is a
+modelling bug.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-spd-covariance-repair-real-world" difficulty="real-world">
+
+A risk model estimates a `500 x 500` covariance from 300 samples and then Cholesky-factors it for
+Monte Carlo sampling. The Cholesky fails. Diagnose and provide a robust pipeline.
+
+<Solution>
+
+With 300 samples and 500 dimensions the sample covariance `S = (1/(n-1)) Xc.T @ Xc` has rank at most
+299, so it is singular — at least 201 eigenvalues are exactly zero in theory and slightly negative
+in practice. Cholesky requires strict positive definiteness and fails on the first non-positive
+pivot.
+
+Robust pipeline. Estimate with shrinkage: `S_shrunk = (1 - a) S + a * F`, where `F` is a
+well-conditioned target such as `mean(diag(S)) * I` and `a` is chosen by Ledoit-Wolf. This is
+guaranteed PD for `a > 0` and reduces estimation error, not just the numerical symptom.
+
+Alternatively add a fixed `jitter*I` sized to the noise floor, or clip eigenvalues at a small
+positive floor and reconstruct.
+
+Then factor the repaired matrix with Cholesky and sample `x = mu + L z`. Keep `L` for reuse across
+Monte Carlo draws. Log the shrinkage intensity and the smallest eigenvalue before and after; a large
+required shrinkage means the estimate is data-starved and the downstream risk numbers should carry a
+wide uncertainty band.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. State the spectral theorem for real symmetric matrices and why `eigh` is the right routine.
+2. In the eigenbasis, what does `x.T A x` look like, and how do the eigenvalue signs set the shape?
+3. Give the four tests for positive definiteness and say which is the cheapest decisive one.
+4. What is the linear-algebra condition for a twice-differentiable function to be convex?
+5. A matrix that should be PSD has a smallest eigenvalue of `-1e-15`. What is going on and what do
+   you do?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="I checked `x.T A x > 0` on 1000 random `x` and concluded `A` is PD.">
+
+That is a screen, not a proof. It can miss a narrow negative-curvature direction. Do a Cholesky
+attempt or compute the smallest eigenvalue with `eigvalsh` for a definitive answer.
+
+</Gotcha>
+
+<Gotcha question="`np.linalg.cholesky` failed, so my matrix is broken.">
+
+It means the matrix is not positive definite — possibly by design (a singular sample covariance) or
+by rounding. Add `jitter*I`, use shrinkage, or clip eigenvalues. Cholesky failing is information,
+not a bug.
+
+</Gotcha>
+
+<Gotcha question="My quadratic form uses a non-symmetric `A`.">
+
+Only the symmetric part `(A + A.T)/2` affects `x.T A x`. If you meant the form defined by `A`,
+symmetrise first; otherwise you are silently analysing a different matrix.
+
+</Gotcha>
+
+<Gotcha question="Sylvester's criterion says check the minors, so I compute all `2^n` of them.">
+
+Only the `n` *leading* principal minors (top-left `k x k` blocks) need to be positive for PD. Even
+then it is a by-hand tool; in code, use Cholesky.
+
+</Gotcha>
+
+<Gotcha question="I clipped negative eigenvalues to zero and my matrix is now PSD but the solve still fails.">
+
+PSD is not enough for Cholesky or a unique solve; you need PD. Clip to a small positive floor, not
+zero, or add `eps*I`. Zero eigenvalues leave the matrix singular.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Symmetric matrices always factor as `A = Q Lambda Q.T` with real eigenvalues and orthonormal
+eigenvectors, and this is the case underneath almost every optimisation and statistics matrix. The
+quadratic form `x.T A x`, which depends only on the symmetric part, is a sum of `w_i y_i^2` in the
+eigenbasis, so eigenvalue signs decide bowl, saddle, or dome.
+
+Positive definite means all eigenvalues positive, a unique minimum, a convex function, a working
+Cholesky, and a downhill Newton step; test it by attempting a Cholesky. PSD (eigenvalues `>= 0`) is
+the condition for convexity and for a valid covariance or kernel, and any `B.T B` is PSD.
+
+Indefinite Hessians need modification — `tau*I`, eigenvalue flipping, or a trust region — for Newton
+to work. Repair a should-be-PSD matrix by clipping eigenvalues to a positive floor or adding jitter.
+The condition number `w_max/w_min` drives convergence, and every PSD matrix has a square root used
+for whitening and sampling. The Practice, Debug, Interview, Test, Project, and Review tabs build the
+tests and the repairs.

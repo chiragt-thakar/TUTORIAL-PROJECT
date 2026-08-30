@@ -1,0 +1,839 @@
+lessonId: "roadmap:phase-1-1.1:10"
+module: 1-1-python-fluency-beyond-the-basics
+lesson: 11-testing-pytest-fixtures-parametrize-mocking-property-based-testing
+title: "Testing: pytest fixtures, parametrize, mocking, property-based testing with hypothesis"
+summary: Build diagnostic tests from owned fixtures, meaningful cases, honest boundary doubles, and searchable invariants.
+
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+
+exercises:
+  - id: testing-name-contract
+    tier: normal
+    kind: refactor
+    title: Name the behavior under test
+    minutes: 9
+    requiredForMastery: true
+    concepts: [test-design, observable-behavior]
+    prompt: |
+      Refactor `test_process_1` so its name and assertion state the guarantee that `chunked` keeps
+      every input exactly once and in order. Do not assert helper calls.
+    hints:
+      - Put the contract and condition in the test name.
+      - Flatten the returned batches and compare with the original sequence.
+    solution: |
+      A name such as `test_chunked_preserves_items_and_order` identifies the unit and guarantee.
+      Assert that flattening the result equals the original and separately assert batch size bounds.
+      Helper-call assertions would couple the test to an implementation path instead of behavior.
+
+  - id: testing-yield-fixture
+    tier: normal
+    kind: write-code
+    title: Own a temporary resource
+    minutes: 12
+    requiredForMastery: true
+    concepts: [fixtures, teardown, ownership]
+    prompt: |
+      Write a pytest fixture that creates `FakeBroker()`, starts it, yields it, and always closes it
+      after a consuming test. Keep one resource under this fixture's ownership.
+    hints:
+      - Setup appears before one `yield`.
+      - Teardown appears after it and is unwound by pytest.
+    solution: |
+      The fixture owns one complete lifecycle. If `start()` partially allocates before raising, the
+      class itself or a narrower fixture must provide immediate cleanup because execution never
+      reaches the fixture's yield.
+    solutionCode: |
+      import pytest
+
+      @pytest.fixture
+      def broker():
+          instance = FakeBroker()
+          instance.start()
+          yield instance
+          instance.close()
+
+  - id: testing-parametrize-cases
+    tier: normal
+    kind: write-code
+    title: Expand one normalization guarantee
+    minutes: 12
+    requiredForMastery: true
+    concepts: [parametrize, test-ids]
+    prompt: |
+      Parametrize `normalize` over whitespace, empty input, and Unicode case conversion. Give every
+      row a readable ID and use the same assertion for all rows.
+    hints:
+      - Parametrize both the raw value and expected result.
+      - Use `pytest.param(..., id="...")` for diagnostic node IDs.
+    solution: |
+      One table is appropriate because setup, action, and assertion remain identical. If one case
+      needs a different failure contract or setup, move it to a separate named test.
+    solutionCode: |
+      @pytest.mark.parametrize(
+          ("raw", "expected"),
+          [
+              pytest.param(" Ada ", "ada", id="whitespace"),
+              pytest.param("", "", id="empty"),
+              pytest.param("Σ", "σ", id="unicode"),
+          ],
+      )
+      def test_normalize(raw: str, expected: str) -> None:
+          assert normalize(raw) == expected
+
+  - id: testing-read-brittle-mock
+    tier: normal
+    kind: code-reading
+    title: Find an implementation-coupled assertion
+    minutes: 11
+    requiredForMastery: true
+    concepts: [mocking, contracts, refactoring]
+    prompt: Explain why this test can fail after a safe refactor even if observable behavior stays correct.
+    code: |
+      service.submit(job)
+      repository._serialize.assert_called_once()
+      repository._insert.assert_called_once()
+    hints:
+      - The names beginning with an underscore signal internal structure.
+      - Ask what a caller or external boundary can observe.
+    solution: |
+      The test freezes two private steps rather than the service result or contractual repository
+      call. Combining serialization and insertion, changing their order, or using a public `save`
+      method breaks the test without changing behavior. Assert the returned result and persisted or
+      published boundary effect instead.
+
+  - id: testing-fixture-scope
+    tier: intermediate
+    kind: design
+    title: Choose fixture scopes deliberately
+    minutes: 15
+    requiredForMastery: true
+    concepts: [fixture-scope, database, isolation]
+    prompt: |
+      A database container takes 20 seconds to start, while test rows must never leak between tests.
+      Design fixture scopes and cleanup without restarting the container for every test.
+    hints:
+      - Resource process lifetime and logical data lifetime need not share a scope.
+      - Use a narrow transaction, schema, or truncation boundary per test.
+    solution: |
+      A session-scoped fixture can own the container and connection details. A function-scoped
+      fixture owns a transaction or isolated schema and rolls back or removes data after each test.
+      Tests request the narrow fixture, so shared infrastructure is fast while mutable state remains
+      isolated. Verify cleanup after failures and parallel workers.
+
+  - id: testing-patch-namespace-debug
+    tier: intermediate
+    kind: debug
+    title: Patch the consumer namespace
+    minutes: 14
+    requiredForMastery: true
+    concepts: [patching, imports, lookup]
+    prompt: Fix the test so it replaces the callable actually used by `jobs.service`.
+    code: |
+      # jobs/service.py
+      from jobs.clock import now
+
+      def create_job():
+          return Job(created_at=now())
+
+      # test_service.py
+      @patch("jobs.clock.now", return_value=FIXED)
+      def test_created_at(mock_now):
+          assert create_job().created_at == FIXED
+    hints:
+      - "`from ... import ...` binds a name in the importing module."
+      - Patch the namespace consulted during the call.
+    solution: |
+      Patch `jobs.service.now`, because `create_job` looks up its module-global `now`. Scoping the
+      patch restores the binding after the test. A longer-term design can inject a clock and avoid
+      import patching entirely.
+    solutionCode: |
+      @patch("jobs.service.now", return_value=FIXED)
+      def test_created_at(mock_now):
+          assert create_job().created_at == FIXED
+          mock_now.assert_called_once_with()
+
+  - id: testing-autospec-debug
+    tier: intermediate
+    kind: debug
+    title: Stop a permissive mock from lying
+    minutes: 14
+    requiredForMastery: true
+    concepts: [autospec, mock, interface]
+    prompt: |
+      This test passes although `Gateway.send` accepts only `(payload, *, timeout)`. Repair the mock
+      so the invalid production call fails in the test.
+    code: |
+      gateway = MagicMock()
+      publish(gateway)
+      gateway.send.assert_called_once()
+
+      # production accidentally calls gateway.send(payload, 5, "extra")
+    hints:
+      - A bare MagicMock manufactures attributes and accepts arbitrary arguments.
+      - Build the double from the real collaborator's callable signature.
+    solution: |
+      Create an autospecced instance from `Gateway` and inject it. The invalid positional signature
+      then raises `TypeError`. This proves API shape, not gateway semantics, so retain a contract or
+      integration test for serialization and protocol behavior.
+    solutionCode: |
+      gateway = create_autospec(Gateway, instance=True, spec_set=True)
+      publish(gateway)
+      gateway.send.assert_called_once_with(expected_payload, timeout=5)
+
+  - id: testing-hypothesis-property
+    tier: intermediate
+    kind: write-code
+    title: Express a batching invariant
+    minutes: 17
+    requiredForMastery: true
+    concepts: [hypothesis, invariants, strategies]
+    prompt: |
+      Write a Hypothesis property for `chunked(items, size)` that proves conservation, order, and
+      non-empty batches bounded by `size` for integer lists up to 200 items.
+    hints:
+      - Generate size from positive integers rather than filtering zero.
+      - Flatten batches to express conservation and order together.
+    solution: |
+      The strategies encode valid inputs directly. Empty input makes the size assertion vacuous but
+      still satisfies conservation. The property is stronger than a table of arbitrary examples.
+    solutionCode: |
+      from hypothesis import given, strategies as st
+
+      @given(
+          items=st.lists(st.integers(), max_size=200),
+          size=st.integers(min_value=1, max_value=30),
+      )
+      def test_chunked_invariants(items: list[int], size: int) -> None:
+          batches = list(chunked(items, size))
+          assert [x for batch in batches for x in batch] == items
+          assert all(1 <= len(batch) <= size for batch in batches)
+
+  - id: testing-teardown-before-yield-debug
+    tier: tricky
+    kind: debug
+    title: Close a partial fixture acquisition
+    minutes: 17
+    requiredForMastery: true
+    concepts: [fixtures, partial-failure, cleanup]
+    prompt: Diagnose the leaked server when `load_schema()` raises before yield.
+    code: |
+      @pytest.fixture
+      def server():
+          instance = Server()
+          instance.start()
+          instance.load_schema()
+          yield instance
+          instance.close()
+    hints:
+      - Pytest cannot enter teardown code after a yield it never reached.
+      - Register cleanup immediately after successful acquisition.
+    solution: |
+      Wrap later setup in `try/finally`, use `request.addfinalizer(instance.close)` immediately after
+      `start`, or split schema loading into a dependent fixture. The rule is that every successful
+      acquisition gains a cleanup owner before another fallible acquisition begins.
+    solutionCode: |
+      @pytest.fixture
+      def server(request):
+          instance = Server()
+          instance.start()
+          request.addfinalizer(instance.close)
+          instance.load_schema()
+          return instance
+
+  - id: testing-filter-health-check
+    tier: tricky
+    kind: performance
+    title: Repair a rejecting strategy
+    minutes: 16
+    requiredForMastery: true
+    concepts: [hypothesis, assume, strategy-design]
+    prompt: |
+      A property generates two arbitrary integers and calls `assume(0 <= start <= end <= 100)`.
+      Hypothesis reports too much filtering. Redesign the strategy without rejection.
+    hints:
+      - Generate one endpoint, then generate the other inside the valid range.
+      - A composite strategy can make later values depend on earlier values.
+    solution: |
+      Generate `start` from 0..100, then `end` from start..100 in a composite strategy. Every drawn
+      example is valid, so exploration and shrinking focus on the domain instead of rejected noise.
+    solutionCode: |
+      @st.composite
+      def intervals(draw):
+          start = draw(st.integers(min_value=0, max_value=100))
+          end = draw(st.integers(min_value=start, max_value=100))
+          return start, end
+
+  - id: testing-fake-versus-mock
+    tier: tricky
+    kind: design
+    title: Choose a behavior-rich fake
+    minutes: 16
+    requiredForMastery: true
+    concepts: [fakes, mocks, repositories]
+    prompt: |
+      A service depends on repository uniqueness, optimistic version checks, and transaction-like
+      rollback. Explain why a MagicMock is weak and design the smallest useful fake.
+    hints:
+      - The collaborator's state transition is part of the contract.
+      - Record real values and enforce the same visible invariants in memory.
+    solution: |
+      A permissive mock returns configured answers without proving interactions compose. Build an
+      in-memory fake keyed by ID that rejects duplicates, compares versions, stages writes, and
+      exposes commit or rollback. Use it for service behavior, while real-database integration tests
+      verify that the fake's contract matches storage semantics.
+
+  - id: testing-async-await-debug
+    tier: tricky
+    kind: debug
+    title: Assert an awaited collaborator
+    minutes: 14
+    requiredForMastery: true
+    concepts: [asyncmock, async-testing, awaits]
+    prompt: |
+      An async service forgets to await `gateway.send`. Its test injects `MagicMock` and only checks
+      `called`. Repair the double and assertion so the defect is visible.
+    hints:
+      - An async callable needs an await-aware test double.
+      - Calling a coroutine and awaiting it are distinct events.
+    solution: |
+      Inject an `AsyncMock` constrained to the gateway interface and assert it was awaited with the
+      payload. The production omission now leaves an unawaited coroutine and fails the await
+      assertion instead of satisfying a generic call assertion.
+    solutionCode: |
+      gateway = create_autospec(AsyncGateway, instance=True, spec_set=True)
+      await service.publish(job, gateway=gateway)
+      gateway.send.assert_awaited_once_with(job.payload)
+
+  - id: testing-layered-inference-plan
+    tier: challenge
+    kind: design
+    title: Build a layered verification plan
+    minutes: 26
+    requiredForMastery: true
+    concepts: [test-pyramid, contracts, ml-systems]
+    prompt: |
+      Design tests for an inference pipeline with normalization, dynamic batching, a remote model,
+      idempotent persistence, and retries. Assign each guarantee to unit, property, integration,
+      contract, or end-to-end evidence and define deterministic failure injection.
+    hints:
+      - Put mathematical invariants near pure transforms and protocol claims near real boundaries.
+      - Control clocks, IDs, readiness, and failures rather than sleeping.
+    solution: |
+      Unit and Hypothesis tests cover normalization, conservation, ordering, bounds, and retry state
+      transitions. A strict fake exercises service policies. Integration tests own real persistence
+      and serialization; contract tests hit a representative model endpoint; one end-to-end path
+      proves wiring. Inject clocks and stable IDs, use events for concurrency, and fail before,
+      during, and after side effects to prove idempotency.
+
+  - id: testing-property-oracle
+    tier: challenge
+    kind: write-code
+    title: Compare an optimized implementation to an oracle
+    minutes: 24
+    requiredForMastery: true
+    concepts: [property-testing, oracle, shrinking]
+    prompt: |
+      An optimized top-k selector is difficult to reason about. Design a Hypothesis differential
+      property against a slow sorting oracle, including duplicates, empty input, and invalid k.
+    hints:
+      - Generate the value list and k together so valid and invalid cases are intentional.
+      - Compare a normalized public result, not internal heap structure.
+    solution: |
+      For valid `0 <= k <= len(values)`, compare the optimized result with the documented ordering
+      of `sorted(values, reverse=True)[:k]`, including duplicate semantics. Generate invalid negative
+      and oversized k in a separate property asserting the public exception. Named examples retain
+      empty and duplicate boundaries while shrinking finds minimal algorithm disagreements.
+
+quizzes:
+  - id: testing-checkpoint
+    title: Checkpoint — ownership and evidence
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: testing-cp-yield
+        kind: mcq
+        prompt: When does teardown after a yield fixture run?
+        options:
+          - id: a
+            text: After the fixture reaches yield and its consumer finishes, including failure paths
+          - id: b
+            text: Even if setup fails before reaching yield
+          - id: c
+            text: Only when the test passes
+          - id: d
+            text: Before dependent fixtures tear down
+        answer: [a]
+        explanation: Successfully yielded fixtures unwind in reverse dependency order; pre-yield failure needs earlier cleanup registration.
+        concepts: [fixtures, teardown]
+        points: 1
+      - id: testing-cp-patch
+        kind: mcq
+        prompt: If `service` imported `send` directly from `gateway`, where should a test normally patch it?
+        options:
+          - id: a
+            text: service.send
+          - id: b
+            text: gateway.send only
+          - id: c
+            text: builtins.send
+          - id: d
+            text: sys.send
+        answer: [a]
+        explanation: Patch the reference looked up by the code under test.
+        concepts: [patching]
+        points: 1
+      - id: testing-cp-hypothesis
+        kind: multi
+        prompt: What does Hypothesis add to a property test?
+        options:
+          - id: a
+            text: Structured generation from strategies
+          - id: b
+            text: Shrinking failing examples
+          - id: c
+            text: Automatic discovery of the correct business specification
+          - id: d
+            text: Reproduction support for failures
+        answer: [a, b, d]
+        explanation: The author must still provide the meaningful property and domain.
+        concepts: [hypothesis, shrinking]
+        points: 1
+      - id: testing-cp-mock
+        kind: true-false
+        prompt: Autospec proves that a remote service implements the mocked protocol semantics.
+        options:
+          - id: "true"
+            text: "True"
+          - id: "false"
+            text: "False"
+        answer: ["false"]
+        explanation: Autospec constrains Python API shape, not remote behavior.
+        concepts: [autospec, contract-tests]
+        points: 1
+
+  - id: testing-assessment
+    title: Assessment — pytest and property-based testing
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: testing-assess-scope
+        kind: scenario
+        prompt: A session-scoped mutable fixture makes tests pass individually but fail as a suite. What is the likely cause and repair?
+        modelAnswer: State leaks between tests and order changes observations. Keep expensive infrastructure wide if needed, but give mutable logical state function scope with rollback, reset, or isolated namespaces.
+        explanation: Fixture scope is both a performance and isolation contract.
+        concepts: [fixture-scope, isolation]
+        points: 1
+      - id: testing-assess-autouse
+        kind: multi
+        prompt: Which are good uses of autouse fixtures?
+        options:
+          - id: a
+            text: Universally blocking accidental network access
+          - id: b
+            text: Quietly creating a scenario-specific admin user
+          - id: c
+            text: Resetting one process-global registry required by every test in a package
+          - id: d
+            text: Hiding a database dependency from test signatures
+        answer: [a, c]
+        explanation: Autouse fits universal isolation, not invisible scenario construction.
+        concepts: [autouse, fixtures]
+        points: 1
+      - id: testing-assess-parametrize
+        kind: mcq
+        prompt: When should cases remain separate instead of becoming one parametrized test?
+        options:
+          - id: a
+            text: When they share one action and assertion
+          - id: b
+            text: When they express different behaviors or require conditional assertions
+          - id: c
+            text: Whenever there are fewer than five cases
+          - id: d
+            text: Whenever values contain Unicode
+        answer: [b]
+        explanation: Parametrization should repeat one contract, not compress unrelated ones.
+        concepts: [parametrize, readability]
+        points: 1
+      - id: testing-assess-lookup
+        kind: find-bug
+        prompt: A test patches `payments.gateway.charge`, but `payments.service` imported `charge` directly before the patch. Why can the real call happen?
+        modelAnswer: The service holds its own bound reference and looks up `payments.service.charge`. Patch that consumer name or inject the dependency.
+        explanation: Patch lookup location, not historical definition location.
+        concepts: [patching, imports]
+        points: 1
+      - id: testing-assess-spec
+        kind: multi
+        prompt: Which statements about autospec are correct?
+        options:
+          - id: a
+            text: It can enforce callable signatures.
+          - id: b
+            text: It can constrain attributes to a reference object.
+          - id: c
+            text: It reproduces external service semantics automatically.
+          - id: d
+            text: It can catch calls the real Python API rejects.
+        answer: [a, b, d]
+        explanation: Specs constrain interface shape, not behavior beyond it.
+        concepts: [autospec, mocks]
+        points: 1
+      - id: testing-assess-property
+        kind: explain
+        prompt: Name three strong classes of property and give one batching example.
+        modelAnswer: Strong classes include round trip, conservation, idempotence, oracle equivalence, and metamorphic relations. For batching, flattening all batches must reproduce the original items in order and each batch size must stay within the configured bound.
+        explanation: A property states a general falsifiable guarantee.
+        concepts: [properties, invariants]
+        points: 1
+      - id: testing-assess-filter
+        kind: performance
+        prompt: Why does heavy use of assume weaken a strategy?
+        modelAnswer: It rejects generated values after drawing them, wasting the exploration budget and often harming shrinking. Encode validity directly with bounded, dependent, mapped, or composite strategies.
+        explanation: Strategy design should make useful examples common.
+        concepts: [assume, strategies]
+        points: 1
+      - id: testing-assess-async
+        kind: complete-code
+        prompt: Which assertion distinguishes awaiting an AsyncMock from merely calling it?
+        modelAnswer: Use `mock.assert_awaited_once_with(...)` or another await-specific AsyncMock assertion.
+        explanation: A coroutine call can exist without its result ever being awaited.
+        concepts: [asyncmock]
+        points: 1
+      - id: testing-assess-flaky
+        kind: scenario
+        prompt: A concurrency test passes after adding `sleep(0.2)`. What is the stronger repair?
+        modelAnswer: Coordinate the exact transition with an event, barrier, injected scheduler or clock, and assert observable state. A duration guess changes probability rather than proving ordering.
+        explanation: Deterministic synchronization turns races into controlled test states.
+        concepts: [flaky-tests, determinism]
+        points: 1
+      - id: testing-assess-coverage
+        kind: true-false
+        prompt: Full statement coverage proves every meaningful input boundary and invariant.
+        options:
+          - id: "true"
+            text: "True"
+          - id: "false"
+            text: "False"
+        answer: ["false"]
+        explanation: Coverage reports executed structure, not specification quality.
+        concepts: [coverage, test-quality]
+        points: 1
+
+interview:
+  - id: testing-iv-fixtures
+    level: basic
+    requiredForMastery: true
+    concepts: [fixtures, dependency-injection, teardown]
+    question: What are pytest fixtures, and how should you scope them?
+    shortAnswer: |
+      Fixtures are named dependencies that own setup, value provision, and teardown. Their
+      dependency graph makes resource construction composable. I choose the narrowest scope that
+      meets cost constraints and separate expensive infrastructure lifetime from mutable test state.
+    fullAnswer: |
+      A yield fixture registers teardown after successful setup, and pytest unwinds dependent
+      fixtures in reverse order. Setup that can fail before yield needs cleanup registered earlier
+      or split ownership.
+
+      Function scope gives the strongest isolation. Wider scopes require explicit reset contracts.
+      Autouse is reserved for truly universal isolation, not scenario data hidden from signatures.
+    commonWrongAnswer: Fixtures are global beforeEach helpers, so session scope is best for speed. That ignores dependency visibility, teardown, and state leakage.
+    followUps:
+      - What happens when setup fails before yield?
+      - When is autouse justified?
+
+  - id: testing-iv-parametrize
+    level: intermediate
+    requiredForMastery: true
+    concepts: [parametrize, test-design]
+    question: When does parametrization improve a suite, and when does it hurt?
+    shortAnswer: |
+      It improves a suite when multiple named cases share the same behavior, action, and assertion.
+      It hurts when conditional branches hide different contracts or huge tables obscure why each
+      boundary matters. Readable IDs are part of the diagnostic design.
+    fullAnswer: |
+      Parametrization removes repeated mechanics while retaining independent test nodes. Marks can
+      describe a known platform case or expected failure at the parameter level.
+
+      When examples multiply around a general invariant, I consider Hypothesis. When setup or
+      expected failure meaning changes, I keep separate tests with separate names.
+    commonWrongAnswer: Parametrize every repeated line to minimize test code. Test readability and failure meaning matter more than line count.
+    followUps:
+      - What is indirect parametrization for?
+      - How do you name cases?
+
+  - id: testing-iv-mocking
+    level: comparison
+    requiredForMastery: true
+    concepts: [mock, fake, contract-test]
+    question: Compare mocks, fakes, and real integrations.
+    shortAnswer: |
+      A mock records and scripts interactions, a fake implements a lightweight behavioral model,
+      and an integration uses the real collaborator. I mock narrow expensive or failure boundaries,
+      use fakes when state semantics matter, and retain integration or contract evidence because
+      neither double proves the real system.
+    fullAnswer: |
+      Autospecced mocks catch API-shape mistakes but can overfit implementation calls. Fakes often
+      make service tests more realistic, though they can drift from database or broker semantics.
+
+      I choose from the guarantee: output behavior, a contractual interaction, state transition, or
+      protocol compatibility. The test double should be the smallest one that can prove it.
+    commonWrongAnswer: Unit tests should mock every dependency and integration tests are unnecessary. That can test only a fictional graph of mocks.
+    followUps:
+      - Why patch where a name is looked up?
+      - How do you detect fake drift?
+
+  - id: testing-iv-hypothesis
+    level: advanced
+    requiredForMastery: true
+    concepts: [hypothesis, shrinking, properties]
+    question: How does property-based testing work?
+    shortAnswer: |
+      I define a strategy that models an input domain and a property that must hold across it.
+      Hypothesis explores examples, records reproducibility data, and shrinks failures toward a
+      minimal counterexample. It finds cases; it does not invent the specification.
+    fullAnswer: |
+      Useful properties include round trips, invariants, conservation, equivalence to a simple
+      oracle, and metamorphic relationships. Strategies should construct valid domain values rather
+      than reject most arbitrary ones with assume.
+
+      I keep named examples for important business boundaries, control external nondeterminism, and
+      use stateful testing when defects depend on operation sequences.
+    commonWrongAnswer: It is fuzzing with random values, so enough runs prove correctness. Hypothesis is structured and shrinking, but finite exploration is not proof.
+    followUps:
+      - What makes a property weak?
+      - When would you use stateful testing?
+
+  - id: testing-iv-flakiness
+    level: debugging
+    requiredForMastery: true
+    concepts: [flaky-tests, determinism, shared-state]
+    question: How do you diagnose and repair a flaky test?
+    shortAnswer: |
+      I preserve the failure evidence, classify hidden time, order, randomness, network, or shared
+      state, and reproduce through repetition or randomized order. Then I control the causal boundary
+      with clocks, events, temporary resources, seeded domain inputs, and explicit cleanup—not sleeps.
+    fullAnswer: |
+      I first determine whether the product or test is nondeterministic. Parallel workers and suite
+      ordering can expose global state, reused ports, database leakage, or test doubles that were not
+      restored.
+
+      The repair establishes ownership and waits on observable conditions. Quarantine, if necessary,
+      needs an owner and expiry; it is not a permanent green-build mechanism.
+    commonWrongAnswer: Retry the test three times or increase every sleep. That lowers observed frequency without restoring a guarantee.
+    followUps:
+      - How do you test a timeout without waiting?
+      - What evidence distinguishes a product race?
+
+  - id: testing-iv-ml
+    level: scenario
+    requiredForMastery: true
+    concepts: [ml-testing, invariants, evaluation]
+    question: How would you test an ML inference pipeline without asserting one exact model score everywhere?
+    shortAnswer: |
+      I test deterministic software invariants—schema, normalization, tensor shape and dtype,
+      batching, ordering, retry, and persistence—separately from model quality. Model evaluation uses
+      versioned datasets and explicit tolerances or metrics. A small end-to-end smoke test verifies wiring.
+    fullAnswer: |
+      Pure preprocessing gets unit and property tests. Serialization and serving protocols get
+      contract tests. Persistence and idempotency get real integration tests with controlled failure.
+
+      Numerical checks use justified tolerances and record model, runtime, device, and seed. Quality
+      gates compare distributions or benchmark metrics rather than freezing incidental floating-point
+      output from every layer.
+    commonWrongAnswer: Mock the model to return one fixed score and pursue 100 percent coverage. That misses both boundary invariants and actual quality evidence.
+    followUps:
+      - How do you test nondeterministic GPU output?
+      - Where do golden datasets belong?
+
+projects:
+  - id: testing-inference-verification-lab
+    kind: major
+    title: Build a layered inference verification lab
+    minutes: 240
+    summary: Verify batching, retries, persistence, and a remote-model boundary with examples, properties, fakes, mocks, and real integrations.
+    problem: |
+      Build a small inference pipeline that accepts identified requests, normalizes text, batches by
+      capacity, calls a gateway, and persists idempotent results in input order. Its suite must show
+      which guarantees belong to pure tests, Hypothesis properties, a strict fake, a real storage
+      integration, and a protocol contract test.
+    requirements:
+      - Write fixture ownership for temporary files or database state, gateway lifecycle, clocks, and IDs.
+      - Parametrize named input and failure boundary cases without conditional test bodies.
+      - Add properties for conservation, ordering, batch bounds, idempotence, and serialization round trips.
+      - Use at least one composite strategy that generates valid related domain values without heavy filtering.
+      - Use an autospecced mock for one narrow interaction and a behavior-rich fake for stateful policy tests.
+      - Patch only consumer lookup namespaces and explain each patch.
+      - Inject failures before gateway call, after response, and during persistence.
+      - Add a real integration proving storage uniqueness and rollback semantics.
+      - Keep model-quality evaluation separate from deterministic software assertions.
+    constraints:
+      - Do not make network calls from ordinary unit tests.
+      - Do not use sleep to coordinate concurrency or retries.
+      - Do not assert private helper-call sequences unless they are public protocol events.
+      - Do not let a session-scoped mutable fixture leak rows.
+      - Do not suppress Hypothesis health checks to hide a poorly modeled strategy.
+    expectedBehaviour:
+      - Every accepted input appears exactly once in ordered output or a structured failure.
+      - Duplicate retries never persist a second result.
+      - Fixture cleanup runs after assertion, setup, and injected collaborator failures.
+      - The suite catches a wrong gateway signature and a real protocol mismatch independently.
+      - Hypothesis reports a minimal counterexample for an injected batching defect.
+      - Tests pass individually, in random order, and under supported parallel execution.
+    structure: |
+      inference_lab/
+        models.py
+        normalize.py
+        batching.py
+        service.py
+        ports.py
+      tests/
+        conftest.py
+        test_normalize.py
+        test_batch_properties.py
+        test_service.py
+        test_storage_integration.py
+        test_gateway_contract.py
+      TEST_STRATEGY.md
+    milestones:
+      - title: "1 — Write the contract map"
+        detail: Assign each observable guarantee to the cheapest credible test layer before coding tests.
+      - title: "2 — Own fixtures"
+        detail: Implement narrow lifecycle fixtures and prove cleanup under partial setup and test failure.
+      - title: "3 — Search invariants"
+        detail: Build domain strategies and properties, then inject a defect to observe shrinking.
+      - title: "4 — Verify boundaries"
+        detail: Add strict mocks, fakes, real storage, and protocol checks without duplicating their purposes.
+      - title: "5 — Prove determinism"
+        detail: Run repeatedly, in random order, and in parallel while removing all timing guesses and leaked state.
+    testing:
+      - Verify each fixture teardown through a recorded lifecycle event.
+      - Ensure every parameter node has a diagnostic ID.
+      - Run a wrong-signature mutation and prove autospec catches it.
+      - Run fake and real storage contract cases from one shared behavior suite.
+      - Save one shrunk batching counterexample as a named regression.
+      - Fail the gateway contract independently from service unit tests.
+    failureCases:
+      - A giant fixture hides resource ownership.
+      - A mock permits a method or signature the real collaborator lacks.
+      - Tests patch the definition module while the consumer retains its binding.
+      - "`assume` rejects most generated examples."
+      - Coverage rises while assertions remain implementation-coupled.
+      - Parallel execution exposes shared database or filesystem state.
+    bonus:
+      - Add a Hypothesis rule-based state machine for retry and idempotency transitions.
+      - Mutation-test one pure module and classify surviving mutations.
+      - Produce a timing report that keeps the local feedback suite under a stated budget.
+    architectureHints:
+      - Keep domain strategies beside test factories and compose them from primitives.
+      - Define a shared repository contract suite and run it against fake and real implementations.
+      - Use events and injected clocks for deterministic concurrency and timeout tests.
+    referenceOutline: |
+      Pure functions receive table examples and properties. The service depends on typed ports; a
+      strict fake models gateway responses and repository state while one autospecced mock verifies
+      a contractual publish. Session infrastructure and function state have separate fixtures. A
+      shared contract suite prevents fake drift. Integration and end-to-end tests remain few and
+      explicit, with every external variable recorded.
+
+  - id: testing-final-nine-defects
+    kind: final-challenge
+    title: Repair nine false-confidence tests
+    minutes: 90
+    summary: Find nine defects in a green suite that mocks reality, leaks state, filters properties, and hides races.
+    problem: |
+      You inherit tests with a session-scoped mutable database, one giant autouse fixture, teardown
+      registered only after fallible setup, a patch at the definition rather than lookup namespace,
+      bare MagicMock collaborators, a mock of the algorithm under test, conditional parametrized
+      assertions, a Hypothesis strategy that rejects almost everything, and sleeps used for
+      concurrency ordering.
+
+      Identify exactly nine defects before editing. For each, state the false guarantee, narrow
+      repair, and a regression that fails against the original suite or product mutation.
+    requirements:
+      - Identify exactly nine independent defects from the brief.
+      - Redraw fixture ownership and scopes before changing test bodies.
+      - Replace lookup and signature mistakes with an injected dependency or correctly scoped autospec.
+      - Restore execution of the real algorithm.
+      - Split unrelated parametrized behavior into diagnostic tests.
+      - Construct valid generated inputs directly.
+      - Replace sleeps with deterministic synchronization.
+    constraints:
+      - Do not delete an assertion merely to make the suite green.
+      - Do not convert every test into an integration test.
+      - Do not globally suppress health checks or warnings.
+      - Do not solve leakage by relying on test order.
+    expectedBehaviour:
+      - Every test passes alone, under random order, and under parallel execution.
+      - A wrong collaborator signature fails before deployment.
+      - Injected mutations in the core algorithm are detected.
+      - Partial fixture setup releases acquired resources.
+      - Hypothesis explores the intended domain and shrinks an injected failure.
+    milestones:
+      - title: "1 — Inventory false evidence"
+        detail: Tie each of nine defects to a behavior the current suite claims but cannot prove.
+      - title: "2 — Repair ownership and doubles"
+        detail: Fix fixture lifetimes, patch boundaries, specs, and algorithm execution.
+      - title: "3 — Repair cases and time"
+        detail: Clarify parametrization, model strategies, and make concurrency deterministic.
+    testing:
+      - Demonstrate all nine original defects with failing checks or mutations.
+      - Record fixture acquisition and teardown order under setup failure.
+      - Run the suite repeatedly with randomized ordering and parallel workers.
+      - Prove the corrected mock rejects an impossible call.
+    failureCases:
+      - Counting several symptoms of one giant fixture as separate root defects.
+      - Replacing sleep with a longer polling sleep.
+      - Keeping a mock of the function whose output is asserted.
+      - Using a broad skip for the failing parallel case.
+    bonus:
+      - Add a concise test-strategy decision record for future contributors.
+    architectureHints:
+      - Classify every assertion as output, state, or contractual interaction.
+      - Give each resource one fixture owner and immediate cleanup registration.
+      - Let strategies make illegal states unrepresentable unless rejection is being tested.
+    referenceOutline: |
+      Narrow fixtures form an explicit graph, with wide infrastructure separated from function-level
+      state. Dependencies are injected or patched at consumer lookup with constrained doubles. Pure
+      behavior runs for real. Each parametrized test states one invariant, composite strategies
+      generate valid domains, and events or clocks control concurrency. CI varies order and workers.
+
+resources:
+  - name: pytest fixtures reference
+    type: docs
+    difficulty: core
+    url: "https://docs.pytest.org/en/stable/how-to/fixtures.html"
+    usefulness: 5
+    why: Defines dependency injection, scope, yield teardown, ordering, autouse, and safe cleanup in pytest's own documentation.
+    covers: Fixture creation, dependencies, scopes, teardown, factories, parametrization, and autouse.
+  - name: pytest parametrization guide
+    type: docs
+    difficulty: core
+    url: "https://docs.pytest.org/en/stable/how-to/parametrize.html"
+    usefulness: 5
+    why: Shows the supported ways to expand cases and attach marks or IDs without inventing collection behavior.
+    covers: Parametrize decorators, fixtures, hooks, IDs, expected failures, and empty parameter sets.
+  - name: Python unittest.mock documentation
+    type: docs
+    difficulty: core
+    url: "https://docs.python.org/3/library/unittest.mock.html"
+    usefulness: 5
+    why: Authoritatively defines patch lookup, spec, autospec, side effects, AsyncMock, and assertion behavior.
+    covers: Mock, MagicMock, AsyncMock, patch, create_autospec, call recording, and cleanup.
+  - name: Hypothesis quick start
+    type: docs
+    difficulty: intro
+    url: "https://hypothesis.readthedocs.io/en/latest/quickstart.html"
+    usefulness: 5
+    why: Introduces generation, properties, failure reproduction, and shrinking through executable examples.
+    covers: given, core strategies, assertions, examples, and shrinking.
+  - name: Hypothesis data generation guide
+    type: docs
+    difficulty: deep
+    url: "https://hypothesis.readthedocs.io/en/latest/data.html"
+    usefulness: 5
+    why: Teaches strategy composition and explains why modeled domains outperform filter-heavy random data.
+    covers: Strategies, builds, composite, recursive data, filtering, mapping, and flat-mapping.

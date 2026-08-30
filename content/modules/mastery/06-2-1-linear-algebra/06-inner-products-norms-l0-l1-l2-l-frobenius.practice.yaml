@@ -1,0 +1,763 @@
+lessonId: "roadmap:phase-2-2.1:5"
+module: 2-1-linear-algebra
+lesson: 06-inner-products-norms-l0-l1-l2-l-frobenius
+title: "Inner products, norms (L0/L1/L2/L∞/Frobenius), orthogonality, projections"
+summary: Derive length and angle from the inner product axioms, compare the p-norms by their unit balls and uses, compute projections onto vectors and subspaces, and connect all of it to weight decay, sparsity, cosine similarity, and least squares.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: linp-read-cosine
+    tier: normal
+    kind: code-reading
+    title: Read a cosine-similarity helper
+    minutes: 10
+    requiredForMastery: true
+    concepts: [inner-product, norm, cosine-similarity]
+    prompt: |
+      Read this function, say what it computes, and name the input that makes it return `nan`.
+      ```python
+      def sim(a, b):
+          return (a @ b) / (np.linalg.norm(a) * np.linalg.norm(b))
+      ```
+    hints:
+      - The numerator is an inner product; the denominator is a product of two norms.
+      - Think about a vector whose norm is zero.
+    solution: |
+      It computes the cosine of the angle between `a` and `b`: the inner product `a @ b` normalised
+      by the product of the Euclidean norms, giving a value in `[-1, 1]`. It returns `nan` when
+      either `a` or `b` is the zero vector (or numerically tiny), because the denominator is then
+      zero and the division is `0 / 0`. A robust version floors the denominator or rejects
+      zero-norm inputs, and pipelines usually L2-normalise vectors at ingest so the divide is done
+      once and zero vectors are dropped.
+  - id: linp-write-safe-norm
+    tier: normal
+    kind: write-code
+    title: Overflow-safe 2-norm
+    minutes: 12
+    requiredForMastery: true
+    concepts: [l2-norm, overflow, scaling]
+    prompt: |
+      Write `safe_norm(x)` returning the Euclidean norm without overflowing for entries around
+      `1e200`, and explain why `np.sqrt(np.sum(x**2))` fails there.
+    hints:
+      - Divide by the largest absolute entry before squaring.
+      - "`(1e200)**2` is `1e400`, which is `inf` in float64."
+    solution: |
+      Let `m = np.max(np.abs(x))`; if `m == 0` return `0.0`, else return `m * np.sqrt(np.sum((x /
+      m)**2))`. Scaling by `m` keeps every squared term at most 1, so the sum cannot overflow, and
+      multiplying back by `m` restores the magnitude. `np.sqrt(np.sum(x**2))` squares each entry
+      first: `(1e200)**2 == 1e400` overflows to `inf`, so the whole result is `inf` even though the
+      true norm is about `1.4e200` and perfectly representable. `np.linalg.norm` and `math.hypot`
+      use this scaling internally.
+  - id: linp-predict-norms
+    tier: normal
+    kind: predict-output
+    title: Compute the norm family
+    minutes: 10
+    requiredForMastery: true
+    concepts: [l1-norm, l2-norm, linf-norm, l0-count]
+    prompt: |
+      For `x = (0, -3, 4, 0, 1)`, give the L1 norm, the L2 norm, the L-infinity norm, and the count
+      of nonzeros.
+    hints:
+      - L1 sums absolute values; L2 is the root of the sum of squares.
+      - L-infinity is the largest absolute entry.
+    solution: |
+      L1: `0 + 3 + 4 + 0 + 1 = 8`. L2: `sqrt(0 + 9 + 16 + 0 + 1) = sqrt(26) approx 5.099`.
+      L-infinity: `max(0, 3, 4, 0, 1) = 4`. Nonzero count (the so-called L0): 3. The L0 count is
+      not a true norm because scaling `x` does not scale it, but it is the sparsity target that an
+      L1 penalty relaxes.
+  - id: linp-explain-parallelogram
+    tier: normal
+    kind: explain
+    title: Which norms come from an inner product
+    minutes: 10
+    requiredForMastery: true
+    concepts: [inner-product, parallelogram-law, norm]
+    prompt: |
+      Explain how to test whether a given norm is induced by an inner product, and state the result
+      for L1 and L2 in two dimensions.
+    hints:
+      - The test is the parallelogram law.
+      - Try `x = (1, 0)` and `y = (0, 1)` for each norm.
+    solution: |
+      A norm comes from an inner product exactly when it satisfies the parallelogram law
+      `||x + y||^2 + ||x - y||^2 == 2||x||^2 + 2||y||^2` for all `x, y`. For L2 with `x = (1, 0)`,
+      `y = (0, 1)`: left side `2 + 2 = 4`, right side `2 + 2 = 4` — holds, and it holds in general,
+      so L2 is induced (by the dot product). For L1 with the same vectors: `||x + y||_1 = 2`,
+      `||x - y||_1 = 2`, left side `4 + 4 = 8`, but right side `2*1 + 2*1 = 4` — fails, so L1 is not
+      induced by any inner product. The same check rules out L-infinity.
+  - id: linp-project-onto-vector
+    tier: intermediate
+    kind: write-code
+    title: Projection onto a line and its residual
+    minutes: 14
+    requiredForMastery: true
+    concepts: [projection, orthogonality, residual]
+    prompt: |
+      Write `project_onto(u, x)` returning the projection of `x` onto the line through `u`, and
+      assert the residual `x - project_onto(u, x)` is orthogonal to `u`.
+    hints:
+      - The projection is `(x . u / u . u) * u`.
+      - Orthogonality of the residual is the defining property of the projection.
+    solution: |
+      Return `(x @ u) / (u @ u) * u`. The coefficient `(x @ u) / (u @ u)` is chosen so that the
+      residual `r = x - proj` satisfies `r @ u == 0`: expanding, `r @ u = x @ u - (x @ u) / (u @ u)
+      * (u @ u) = 0`. That orthogonality is what makes the projection the closest point on the line
+      to `x`. Numerically, guard `u @ u` against being near zero. The subspace generalisation with
+      an orthonormal basis `Q` is `Q @ (Q.T @ x)`.
+  - id: linp-projection-matrix-props
+    tier: intermediate
+    kind: predict-output
+    title: Idempotent and symmetric
+    minutes: 12
+    requiredForMastery: true
+    concepts: [projection-matrix, idempotent, symmetric]
+    prompt: |
+      `Q` has orthonormal columns and `P = Q @ Q.T`. State the values of `P @ P`, `P.T`, the
+      eigenvalues of `P`, and `trace(P)` in terms of the number of columns `k` of `Q`.
+    hints:
+      - "`Q.T @ Q == I_k`, so `P @ P = Q @ (Q.T @ Q) @ Q.T`."
+      - A projection's eigenvalues are only 0 and 1.
+    solution: |
+      `P @ P = Q @ (Q.T @ Q) @ Q.T = Q @ I_k @ Q.T = P`, so `P` is idempotent. `P.T = (Q @ Q.T).T =
+      Q @ Q.T = P`, so `P` is symmetric. Its eigenvalues are 1 on the `k`-dimensional column space
+      of `Q` and 0 on the orthogonal complement, so `P` has `k` eigenvalues equal to 1 and the rest
+      0. Hence `trace(P) = k`, which is the dimension of the subspace being projected onto.
+  - id: linp-orthonormal-coordinates
+    tier: intermediate
+    kind: write-code
+    title: Coordinates in an orthonormal basis
+    minutes: 14
+    requiredForMastery: true
+    concepts: [orthonormal-basis, coordinates, inner-product]
+    prompt: |
+      Given an orthonormal set as the columns of `Q` (a full basis of `R^n`) and a vector `x`, write
+      `coords(Q, x)` and `rebuild(Q, c)` and explain why no linear solve is needed.
+    hints:
+      - For an orthonormal basis the coordinate along `q_i` is just `x @ q_i`.
+      - "`rebuild` is `Q @ c`."
+    solution: |
+      `coords(Q, x)` returns `Q.T @ x`: the `i`-th entry is `x @ q_i`, the inner product of `x` with
+      the `i`-th basis vector. `rebuild(Q, c)` returns `Q @ c`. No solve is needed because
+      orthonormality makes `Q.T` the inverse of `Q` (`Q.T @ Q == I`), so recovering coordinates is a
+      matrix-vector product rather than an `O(n^3)` elimination. This is the practical payoff of an
+      orthonormal basis and the reason Gram-Schmidt and QR are worth the cost.
+  - id: linp-frobenius-vs-spectral
+    tier: intermediate
+    kind: explain
+    title: Frobenius versus spectral norm
+    minutes: 12
+    requiredForMastery: true
+    concepts: [frobenius-norm, spectral-norm, singular-values]
+    prompt: |
+      Explain the difference between `np.linalg.norm(A, 'fro')` and `np.linalg.norm(A, 2)` for a
+      matrix, in terms of singular values, and give the inequality relating them.
+    hints:
+      - Both can be written using the singular values of `A`.
+      - One is a root-sum-of-squares, the other is a maximum.
+    solution: |
+      If `A` has singular values `s_1 >= s_2 >= ... >= s_r`, then the Frobenius norm is
+      `sqrt(sum s_i^2)` and the spectral norm is `s_1`, the largest singular value (also the largest
+      factor by which `A` stretches any unit vector). Since `s_1^2 <= sum s_i^2 <= r * s_1^2`, we
+      have `||A||_2 <= ||A||_F <= sqrt(r) * ||A||_2`. `np.linalg.norm(A)` with no `ord` defaults to
+      Frobenius for a 2-D array, which surprises people expecting the operator norm.
+  - id: linp-debug-abs-tol-orthogonality
+    tier: tricky
+    kind: debug
+    title: Absolute tolerance on an orthogonality test
+    minutes: 14
+    requiredForMastery: true
+    concepts: [orthogonality, tolerance, scaling]
+    prompt: |
+      This check says two clearly orthogonal vectors are not orthogonal once they are scaled up.
+      Fix it.
+    code: |
+      def orthogonal(x, y):
+          return abs(x @ y) < 1e-10
+    solution: |
+      The rounding error in `x @ y` grows with the magnitude of the entries, so for vectors with
+      norm `1e6` even an exactly-orthogonal pair leaves `abs(x @ y)` well above `1e-10`, and the
+      test wrongly returns `False`. Make the tolerance relative to the sizes involved:
+      `return abs(x @ y) <= tol * np.linalg.norm(x) * np.linalg.norm(y)` with a small `tol` such as
+      `1e-12`. Regression: take an orthogonal pair, multiply both by `1e6`, and assert the function
+      still returns `True`.
+    hints:
+      - Rounding error in a dot product scales with the entry magnitudes.
+      - Compare against `norm(x) * norm(y)`, not an absolute constant.
+  - id: linp-debug-l2-decay-expecting-sparsity
+    tier: tricky
+    kind: debug
+    title: Expecting sparsity from an L2 penalty
+    minutes: 16
+    requiredForMastery: true
+    concepts: [l2-regularisation, l1-regularisation, sparsity]
+    prompt: |
+      A feature-selection routine adds `lam * np.sum(w**2)` to the loss and then keeps only the
+      features with nonzero weight. Nothing is ever exactly zero. Explain and fix.
+    code: |
+      def penalty(w, lam):
+          return lam * np.sum(w ** 2)     # intended to zero out useless features
+    solution: |
+      An L2 (ridge) penalty has gradient `2 * lam * w`, which shrinks toward zero but vanishes as
+      `w -> 0`, so the optimum has all coefficients small but nonzero — it never produces exact
+      zeros. Sparsity comes from an L1 penalty `lam * np.sum(np.abs(w))`, whose subgradient near
+      zero is a constant `+/- lam`, creating a threshold below which the optimal coefficient is
+      pinned exactly at zero (soft-thresholding). Fix: use `lam * np.sum(np.abs(w))` and an
+      optimiser that handles the non-smooth point (proximal gradient / coordinate descent), or
+      apply an explicit magnitude threshold after ridge if only approximate selection is needed.
+      Regression: on data with known irrelevant features, assert the L1 fit sets their coefficients
+      to exactly 0.
+    hints:
+      - Look at the gradient of each penalty as `w` approaches zero.
+      - Only one of the two has a nonvanishing slope at the origin.
+  - id: linp-debug-norm-default-matrix
+    tier: tricky
+    kind: debug
+    title: Wrong matrix norm by default
+    minutes: 14
+    requiredForMastery: true
+    concepts: [frobenius-norm, spectral-norm, gradient-clipping]
+    prompt: |
+      A gradient-clipping utility is meant to bound the operator norm of a weight-update matrix but
+      uses `np.linalg.norm(G)`. It clips too aggressively. Fix it.
+    code: |
+      def clip(G, max_norm):
+          n = np.linalg.norm(G)
+          return G if n <= max_norm else G * (max_norm / n)
+    solution: |
+      `np.linalg.norm(G)` on a 2-D array returns the Frobenius norm, which is `sqrt(sum s_i^2)` and
+      can be up to `sqrt(rank)` times the spectral norm `s_1`. So the utility measures a larger
+      quantity than intended and rescales even when the true operator norm is within budget. If the
+      operator norm is what should be bounded, use `np.linalg.norm(G, 2)` (largest singular value)
+      or a power-method estimate for speed. If the intent was actually the Frobenius norm (as in
+      standard gradient clipping on a flattened gradient), keep `norm(G)` but document that choice.
+      Regression: a matrix with one large singular value and several small ones is clipped under the
+      spectral norm but not under Frobenius, or vice versa; assert the intended behaviour.
+    hints:
+      - Default `np.linalg.norm` on a matrix is Frobenius, not spectral.
+      - Frobenius can exceed the spectral norm by a factor up to the square root of the rank.
+  - id: linp-perf-power-method-spectral
+    tier: tricky
+    kind: performance
+    title: Estimate the spectral norm cheaply
+    minutes: 18
+    requiredForMastery: true
+    concepts: [spectral-norm, power-method, cost]
+    prompt: |
+      You need the spectral norm of a `4096 x 4096` matrix inside a training loop, where a full SVD
+      is too slow. Describe the power-method estimate, its cost per iteration, and its accuracy
+      trade-off.
+    hints:
+      - Repeatedly apply `A.T @ (A @ v)` and renormalise.
+      - Each iteration is a couple of matrix-vector products.
+    solution: |
+      Start from a random unit vector `v`. Repeat: `w = A.T @ (A @ v)`; `v = w / norm(w)`. The
+      Rayleigh quotient `sqrt(v @ (A.T @ (A @ v)))` converges to the largest singular value `s_1`.
+      Each iteration is two matrix-vector products at `O(m*n)` each, versus `O(m*n*min(m, n))` for a
+      full SVD, so a handful of iterations is thousands of times cheaper for a large square matrix.
+      Convergence is linear with rate `s_2 / s_1`, so a well-separated top singular value needs only
+      5 to 20 iterations for a few digits; a near-degenerate top pair converges slowly and may need
+      a block power method or a fixed small iteration budget with a known bias.
+  - id: linp-design-norm-report
+    tier: challenge
+    kind: design
+    title: Design a training-norm dashboard
+    minutes: 30
+    requiredForMastery: false
+    concepts: [norm-monitoring, gradient-norm, weight-norm, reporting]
+    prompt: |
+      Design a `norm_report(model_state)` that, each logging step, records the norms most useful for
+      catching training pathologies. State which norms, at what granularity, what to flag, and what
+      it must not do.
+    hints:
+      - Per-layer weight and gradient L2 norms, plus update-to-weight ratio.
+      - A spike in gradient norm precedes divergence; a collapse in a layer's weight norm flags a dead unit.
+    solution: |
+      Inputs: per-layer parameter tensors, their gradients, the optimiser update, and the step
+      number. Record per layer: `||w||_2`, `||g||_2`, `||update||_2`, the ratio
+      `||update||_2 / (||w||_2 + eps)`, the fraction of near-zero weights (approximate L0), and for
+      key weight matrices a power-method estimate of the spectral norm. Also record global
+      `||g||_2` across all parameters. Flag: a global gradient-norm spike above a rolling
+      quantile (pre-divergence), an update-to-weight ratio outside a healthy band (too small means
+      stalled, too large means unstable), and a layer whose weight norm collapses toward zero
+      (dead). It must not compute a full SVD every step (use the power method with a small budget),
+      must not use absolute thresholds that break under model scale (use relative and rolling
+      statistics), and must not silently skip layers it cannot classify. Provide golden traces for
+      a healthy run, a divergent run, and a run with a dead layer.
+  - id: linp-refactor-lstsq-as-projection
+    tier: challenge
+    kind: refactor
+    title: Refactor a regression to expose the projection
+    minutes: 28
+    requiredForMastery: false
+    concepts: [least-squares, projection, orthonormal-basis, qr]
+    prompt: |
+      A module fits `beta = np.linalg.inv(X.T @ X) @ X.T @ y` and separately recomputes fitted
+      values as `X @ beta` and residuals as `y - X @ beta`. Refactor it around an orthonormal basis
+      for `col(X)` so the projection structure is explicit and the numerics improve.
+    hints:
+      - "`Q, R = np.linalg.qr(X)` gives an orthonormal basis for the column space of `X`."
+      - The fitted values are `Q @ (Q.T @ y)`; the residual is `y - Q @ (Q.T @ y)`.
+    solution: |
+      Compute `Q, R = np.linalg.qr(X)` (economy mode). The fitted values are the projection
+      `y_hat = Q @ (Q.T @ y)`, and the residual `r = y - y_hat` is orthogonal to every column of
+      `X` by construction, which you can assert as `np.allclose(Q.T @ r, 0)`. Recover the
+      coefficients by back-substitution `beta = scipy.linalg.solve_triangular(R, Q.T @ y)` instead
+      of inverting `X.T @ X`, avoiding the squared condition number. This makes the "least squares
+      is projection onto `col(X)`" structure explicit, reuses `Q` and `R` for the fit, the fitted
+      values, the residual, and the coefficient standard errors, and is numerically sounder. Add a
+      fail-before-fix test on a mildly collinear `X` where the old inverse-based coefficients are
+      unstable and the QR ones are not.
+quizzes:
+  - id: linp-checkpoint
+    title: Checkpoint — inner products, norms, projection
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: linp-cp-induced-norm
+        kind: mcq
+        prompt: The norm induced by an inner product is given by what?
+        options:
+          - {id: sqrt, text: "`sqrt(<x, x>)`"}
+          - {id: sumabs, text: "`sum |x_i|`"}
+          - {id: maxabs, text: "`max |x_i|`"}
+        answer: [sqrt]
+        explanation: The induced norm is the square root of the inner product of a vector with itself.
+        concepts: [inner-product, norm]
+        points: 1
+      - id: linp-cp-l1-ball
+        kind: mcq
+        prompt: Why does an L1 penalty tend to produce exactly-zero coefficients?
+        options:
+          - {id: corners, text: Its unit ball is a diamond with corners on the coordinate axes}
+          - {id: smooth, text: Its gradient vanishes smoothly at the origin}
+          - {id: convex, text: It is the only convex penalty}
+        answer: [corners]
+        explanation: Loss contours meet the diamond at a corner, where some coordinates are zero.
+        concepts: [l1-regularisation, sparsity]
+        points: 1
+      - id: linp-cp-projection
+        kind: mcq
+        prompt: For orthonormal columns `Q`, the projection of `x` onto `col(Q)` is which expression?
+        options:
+          - {id: qqt, text: "`Q @ (Q.T @ x)`"}
+          - {id: qtq, text: "`Q.T @ (Q @ x)`"}
+          - {id: inv, text: "`Q @ np.linalg.inv(Q.T @ Q) @ x`"}
+        answer: [qqt]
+        explanation: With `Q.T @ Q == I`, the projection matrix is `Q @ Q.T`.
+        concepts: [projection, orthonormal-basis]
+        points: 1
+      - id: linp-cp-matrix-norm-default
+        kind: multi
+        prompt: Which statements about `np.linalg.norm` on a 2-D array are true?
+        options:
+          - {id: fro, text: With no `ord`, it returns the Frobenius norm}
+          - {id: spec, text: "`ord=2` returns the largest singular value"}
+          - {id: equal, text: Frobenius and spectral norms are always equal}
+          - {id: ineq, text: The Frobenius norm is at least the spectral norm}
+        answer: [fro, spec, ineq]
+        explanation: They coincide only for rank-1 matrices; in general `||A||_2 <= ||A||_F`.
+        concepts: [frobenius-norm, spectral-norm]
+        points: 1
+  - id: linp-assessment
+    title: Assessment — inner products, norms, orthogonality, projection
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: linp-as-axioms
+        kind: explain
+        prompt: State the inner product axioms and what each guarantees.
+        modelAnswer: |
+          Symmetry `<x, y> == <y, x>` (conjugate symmetry in the complex case); linearity in each
+          argument; positive-definiteness `<x, x> >= 0` with equality only at `x == 0`. Symmetry and
+          linearity make it a well-behaved bilinear form; positive-definiteness makes
+          `sqrt(<x, x>)` a genuine norm and gives Cauchy-Schwarz.
+        explanation: The three axioms are what let length, angle, and projection be defined.
+        concepts: [inner-product]
+        points: 1
+      - id: linp-as-cauchy-schwarz
+        kind: explain
+        prompt: Sketch the proof of Cauchy-Schwarz from a non-negative quadratic, and state the equality case.
+        modelAnswer: |
+          `<x - t y, x - t y> >= 0` is a non-negative quadratic in `t`, so its discriminant is
+          `<= 0`: `<x, y>^2 <= <x, x> <y, y>`. Taking roots gives `|<x, y>| <= ||x|| ||y||`.
+          Equality holds iff `x` and `y` are linearly dependent.
+        explanation: A non-negative quadratic has non-positive discriminant.
+        concepts: [cauchy-schwarz]
+        points: 1
+      - id: linp-as-parallelogram
+        kind: scenario
+        prompt: You are told a norm satisfies the parallelogram law. What can you conclude, and does L-infinity qualify?
+        modelAnswer: |
+          It is induced by an inner product, recoverable by the polarisation identity. L-infinity
+          does not qualify: for `x = (1, 0)`, `y = (0, 1)` the law gives `1 + 1` on the left and
+          `2 + 2` on the right, so it fails and no inner product induces it.
+        explanation: The parallelogram law is exactly the condition for an inner-product norm.
+        concepts: [parallelogram-law, norm]
+        points: 1
+      - id: linp-as-l1-l2
+        kind: find-bug
+        prompt: A routine adds `lam * sum(w**2)` and then keeps features with nonzero weight. Why does it never select anything out?
+        modelAnswer: |
+          The L2 gradient `2 lam w` vanishes as `w -> 0`, so ridge shrinks but never zeroes
+          coefficients. Sparsity needs L1, whose subgradient is a constant `+/- lam` at zero,
+          creating a soft-threshold that pins small coefficients at exactly zero.
+        explanation: Only a penalty with nonvanishing slope at the origin yields exact zeros.
+        concepts: [l1-regularisation, l2-regularisation]
+        points: 1
+      - id: linp-as-projection-normal-eq
+        kind: write-function
+        prompt: Give the projection of `y` onto `col(X)` and derive the normal equations from residual orthogonality.
+        modelAnswer: |
+          The projection is `X @ beta` where `beta` minimises `||y - X beta||`. At the minimum the
+          residual `r = y - X beta` is orthogonal to every column of `X`, so `X.T @ r == 0`, hence
+          `X.T @ X beta == X.T @ y`.
+        explanation: Closest point means the residual is perpendicular to the subspace.
+        concepts: [projection, least-squares]
+        points: 1
+      - id: linp-as-projection-props
+        kind: scenario
+        prompt: "`P = Q @ Q.T` with `Q` having 3 orthonormal columns in `R^10`. Give `P @ P`, `P.T`, `trace(P)`, and `rank(P)`."
+        modelAnswer: |
+          `P @ P == P` (idempotent) and `P.T == P` (symmetric). `trace(P) == 3` and `rank(P) == 3`,
+          both equal to the number of orthonormal columns and the dimension of the subspace.
+        explanation: An orthogonal projection has eigenvalues 0 and 1, with 1 repeated `k` times.
+        concepts: [projection-matrix, trace, rank]
+        points: 1
+      - id: linp-as-overflow
+        kind: find-bug
+        prompt: Why does `np.sqrt(np.sum(x**2))` return `inf` for `x = [1e200, 1e200]` while the true norm is finite?
+        modelAnswer: |
+          `(1e200)**2 == 1e400`, which overflows to `inf` in float64, so the sum and the root are
+          `inf`. The true norm is about `1.414e200`, which is representable. Scaling by the max
+          entry before squaring (as `np.linalg.norm` and `math.hypot` do) avoids the overflow.
+        explanation: Squaring can overflow even when the norm itself fits.
+        concepts: [l2-norm, overflow]
+        points: 1
+      - id: linp-as-cosine-nan
+        kind: scenario
+        prompt: A cosine-similarity search returns `nan` for some pairs and over-ranks very short documents. What are the causes and fixes?
+        modelAnswer: |
+          `nan` comes from a zero or near-zero norm in the denominator. Over-ranking short documents
+          comes from tiny `||d||` inflating small alignments, and from a shared bias direction.
+          Fixes: drop zero vectors, floor the norm, L2-normalise at index time, subtract the mean
+          embedding or top principal component, and add a length prior. Validate on judged pairs.
+        explanation: Division by a small norm both breaks and biases the ranking.
+        concepts: [cosine-similarity, normalisation]
+        points: 1
+      - id: linp-as-fro-spectral
+        kind: true-false
+        prompt: For every matrix `A`, `np.linalg.norm(A, 'fro') >= np.linalg.norm(A, 2)`.
+        options:
+          - {id: "true", text: "True"}
+          - {id: "false", text: "False"}
+        answer: ["true"]
+        explanation: Frobenius is the root-sum-of-squares of singular values; spectral is the largest single one.
+        concepts: [frobenius-norm, spectral-norm]
+        points: 1
+      - id: linp-as-orthonormal-coords
+        kind: scenario
+        prompt: Why is recovering coordinates in an orthonormal basis `O(n^2)` while a general basis needs `O(n^3)`?
+        modelAnswer: |
+          For an orthonormal `Q`, `Q.T` is the inverse, so coordinates are `Q.T @ x`, a
+          matrix-vector product. For a general basis `B` you must solve `B c = x`, an `O(n^3)`
+          elimination, because `B` has no cheap inverse.
+        explanation: Orthonormality replaces a linear solve with a transpose-multiply.
+        concepts: [orthonormal-basis, coordinates]
+        points: 1
+interview:
+  - id: linp-iv-inner-product
+    level: basic
+    requiredForMastery: true
+    concepts: [inner-product, norm, angle]
+    question: What does an inner product give you that a bare vector space does not?
+    shortAnswer: |
+      Length and angle. From `<x, y>` you get the norm `sqrt(<x, x>)`, the angle via
+      `cos(theta) = <x, y> / (||x|| ||y||)`, orthogonality as `<x, y> == 0`, and projection onto
+      subspaces.
+    fullAnswer: |
+      A vector space only lets you add and scale. An inner product adds a notion of size and
+      alignment: it is symmetric, linear in each slot, and positive definite, and from those three
+      facts follow Cauchy-Schwarz, the triangle inequality, well-defined angles, and the whole
+      theory of orthogonal projection and least squares. The dot product is one inner product; any
+      `x.T @ M @ y` with `M` SPD is another, giving a different geometry. Function spaces use an
+      integral inner product and inherit the same results.
+    commonWrongAnswer: It is just another name for the dot product.
+    followUps:
+      - Give a valid inner product that is not the dot product.
+      - How does Cauchy-Schwarz follow from positive-definiteness?
+  - id: linp-iv-norm-family
+    level: comparison
+    requiredForMastery: true
+    concepts: [l1-norm, l2-norm, linf-norm, unit-ball]
+    question: Compare the L1, L2, and L-infinity norms and where each is used.
+    shortAnswer: |
+      L1 sums absolute values (diamond ball, promotes sparsity, robust to outliers). L2 is Euclidean
+      length (circular ball, smooth, from an inner product). L-infinity is the max coordinate
+      (square ball, worst-case bounds). They differ most in their unit-ball corners.
+    fullAnswer: |
+      L1's unit ball is a diamond with corners on the axes, so constrained optimisation lands on a
+      corner and zeroes coordinates — this is lasso and robust regression. L2's ball is a sphere,
+      it is the only one of the three from an inner product, and its penalty (ridge, weight decay)
+      shrinks smoothly without zeroing. L-infinity's ball is a box; it bounds the largest single
+      component and appears in adversarial robustness and quantisation. For matrices the analogues
+      are the Frobenius norm (entrywise L2) and the spectral norm (largest singular value).
+    commonWrongAnswer: They all measure basically the same thing up to a constant.
+    followUps:
+      - Why is L2 the only one induced by an inner product?
+      - Which norm would you use to bound the largest weight in a quantised layer?
+  - id: linp-iv-projection-least-squares
+    level: scenario
+    requiredForMastery: true
+    concepts: [projection, least-squares, orthogonality]
+    question: In what sense is linear regression a projection?
+    shortAnswer: |
+      The fitted values `X @ beta` are the orthogonal projection of `y` onto the column space of
+      `X`. The residual is the part of `y` perpendicular to that space, and setting `X.T @ residual
+      = 0` gives the normal equations.
+    fullAnswer: |
+      Least squares minimises `||y - X beta||_2`, which geometrically asks for the closest point to
+      `y` inside `col(X)`. The closest point is the foot of the perpendicular — the orthogonal
+      projection — so the residual `y - X beta` is orthogonal to every column of `X`. That
+      condition, `X.T @ (y - X beta) == 0`, is the normal equations `X.T X beta == X.T y`. Using a
+      QR or SVD basis for `col(X)` makes the projection `Q @ Q.T @ y` explicit and avoids squaring
+      the condition number.
+    commonWrongAnswer: Regression just solves a linear system; projection is unrelated.
+    followUps:
+      - Why prefer QR over the normal equations here?
+      - What does the Pythagorean theorem say about the fit?
+  - id: linp-iv-cosine-stability
+    level: debugging
+    requiredForMastery: true
+    concepts: [cosine-similarity, normalisation, numerical-stability]
+    question: An embedding search using cosine similarity misbehaves on short or empty inputs. What do you check?
+    shortAnswer: |
+      Whether any embedding has a near-zero norm — that both produces `nan` and inflates weak
+      alignments. Floor the norm, drop zero vectors, L2-normalise at index time, and remove a
+      shared bias direction.
+    fullAnswer: |
+      Cosine similarity divides by the product of norms, so a tiny `||d||` makes the score
+      unreliable and unbounded in effect, and an exactly-zero vector gives `nan`. Short documents
+      also often collapse onto a bias direction shared with many queries. I would L2-normalise all
+      stored vectors once, reject zero vectors, subtract the mean embedding or the top principal
+      component to kill the shared direction, and add a length or term-frequency prior. Then I would
+      validate ranking quality on judged pairs rather than trusting that the symptom is gone.
+    commonWrongAnswer: Just clamp the similarity score into `[-1, 1]` and move on.
+    followUps:
+      - Why does L2-normalising at ingest time help?
+      - How does subtracting the mean embedding change the geometry?
+  - id: linp-iv-spectral-vs-frobenius
+    level: internals
+    requiredForMastery: true
+    concepts: [spectral-norm, frobenius-norm, power-method]
+    question: How do you compute or estimate the spectral norm of a large matrix, and how does it differ from Frobenius?
+    shortAnswer: |
+      The spectral norm is the largest singular value; estimate it with a few power-method
+      iterations of `A.T @ (A @ v)` rather than a full SVD. The Frobenius norm is the
+      root-sum-of-squares of all singular values and is `O(mn)` to compute directly.
+    fullAnswer: |
+      Frobenius is just `sqrt(sum of squared entries)`, cheap and always at least the spectral norm.
+      The spectral norm `s_1` measures the largest stretch factor of the map and needs the top
+      singular value. A full SVD is `O(mn min(m, n))`; the power method iterates
+      `v <- A.T @ (A @ v)` with renormalisation and converges to `s_1` at rate `s_2 / s_1`, costing
+      two matrix-vector products per step. Inside a training loop you use a small fixed iteration
+      budget, accepting a slight underestimate, which is enough for spectral normalisation or
+      Lipschitz control.
+    commonWrongAnswer: "`np.linalg.norm(A)` already gives the spectral norm."
+    followUps:
+      - What is the convergence rate of the power method?
+      - When would the power method converge slowly?
+  - id: linp-iv-weighted-inner-product
+    level: advanced
+    requiredForMastery: true
+    concepts: [weighted-inner-product, mahalanobis, spd]
+    question: What is a weighted inner product and where does it show up in ML?
+    shortAnswer: |
+      `<x, y>_M = x.T @ M @ y` for a symmetric positive definite `M`. It defines a different
+      geometry — different lengths, angles, and orthogonality. The Mahalanobis distance uses
+      `M = Sigma^{-1}`, the inverse covariance.
+    fullAnswer: |
+      Any SPD matrix `M` gives a valid inner product `x.T @ M @ y`, with induced norm
+      `sqrt(x.T @ M @ x)`. Choosing `M` reshapes the space: whitening uses `M = Sigma^{-1}` so that
+      correlated, unequally-scaled features become "round", which is exactly the Mahalanobis
+      distance used in anomaly detection and Gaussian discriminant analysis. Natural-gradient
+      methods use `M` as the Fisher information, measuring distance in distribution space rather
+      than parameter space. Projections and least squares all generalise by replacing the dot
+      product with `<., .>_M`.
+    commonWrongAnswer: A weighted inner product is just element-wise scaling of the vectors.
+    followUps:
+      - Why must `M` be positive definite and not merely symmetric?
+      - How does the Mahalanobis distance relate to whitening?
+projects:
+  - id: linp-project-norm-projection-toolkit
+    kind: major
+    title: Build a norms-and-projection toolkit
+    minutes: 240
+    summary: Implement overflow-safe norms, the full p-norm family, weighted inner products, orthogonal projection onto vectors and subspaces, and a spectral-norm power method, each validated and each returning evidence.
+    problem: |
+      Build a toolkit that turns this lesson into audited functions: `norm(x, ord)` covering L1, L2,
+      L-infinity, L0-count, Frobenius, and spectral, all overflow-safe; `inner(x, y, M=None)` for
+      the dot product and weighted inner products with an SPD check on `M`; `cosine(x, y)` with a
+      norm floor; `project(x, basis)` onto a line or a subspace, returning the projection, the
+      residual, and a check that the residual is orthogonal; `projection_matrix(Q)` with idempotence
+      and symmetry assertions; and `spectral_norm(A, iters)` via the power method with a reported
+      convergence estimate.
+    requirements:
+      - "`norm` matches `np.linalg.norm` for every supported `ord` and stays finite for entries around `1e200`."
+      - "`inner` verifies `M` is symmetric positive definite before using it and reports the check."
+      - "`cosine` floors the denominator and returns a sentinel or raises for zero-norm inputs, never `nan`."
+      - "`project` returns projection, residual, and `max(abs(basis.T @ residual))` as an orthogonality witness."
+      - "`projection_matrix` asserts `P @ P == P` and `P == P.T` within tolerance and reports `trace(P)`."
+      - "`spectral_norm` returns the estimate, the iteration count, and the ratio between the last two Rayleigh quotients as a convergence proxy."
+    constraints:
+      - NumPy and the standard library only; SciPy allowed in tests as a reference.
+      - Never compute a norm by an unscaled sum of squares.
+      - Never divide by a norm without a floor or an explicit zero-vector policy.
+      - Never claim a subspace projection without the orthogonality witness.
+    expectedBehaviour:
+      - Every `norm` value matches the reference across random inputs and extreme magnitudes.
+      - "`inner` rejects a symmetric-but-indefinite `M` with a clear error."
+      - Projections reproduce `np.linalg.lstsq` fitted values for a subspace given by the columns of `X`.
+      - The power-method spectral norm converges to `np.linalg.svd(A)[1][0]` for well-separated spectra.
+      - Scaling inputs does not change orthogonality verdicts or cosine values.
+    structure: |
+      norm_kit/
+        __init__.py
+        norms.py
+        inner.py
+        projection.py
+        spectral.py
+      tests/
+        test_norms.py
+        test_inner.py
+        test_projection.py
+        test_spectral.py
+    milestones:
+      - title: "1 — Norms"
+        detail: Overflow-safe p-norm family plus Frobenius, matching the reference.
+      - title: "2 — Inner products and cosine"
+        detail: Dot and weighted inner products with an SPD guard, and a safe cosine.
+      - title: "3 — Projection"
+        detail: Projection onto lines and subspaces with an orthogonality witness and matrix properties.
+      - title: "4 — Spectral norm"
+        detail: Power-method estimate with a convergence proxy and a full-SVD cross-check.
+    testing:
+      - Norm values versus `np.linalg.norm` for `ord` in {1, 2, inf, 'fro'} on random and extreme inputs.
+      - SPD acceptance and indefinite rejection for weighted inner products.
+      - Projection fitted values equal to `lstsq` on several design matrices.
+      - Power-method estimate within tolerance of the true top singular value for separated spectra, and a documented bias for degenerate ones.
+      - Scale-invariance of orthogonality and cosine.
+    failureCases:
+      - A norm overflows on large entries because it squares before scaling.
+      - "`cosine` returns `nan` for a zero vector instead of applying its policy."
+      - A subspace projection is returned without checking residual orthogonality, and is silently wrong for a non-orthonormal basis.
+      - The power method is run with too few iterations on a degenerate spectrum and the large error is not reported.
+    bonus:
+      - Add a block power method for the top-`k` singular values.
+      - Add a Mahalanobis distance built on the weighted inner product.
+      - Emit a norm report as Markdown.
+    architectureHints:
+      - Route every norm through one scaled-accumulation helper.
+      - Represent a projection result as an object with `projection`, `residual`, and `orthogonality_error`.
+      - Keep the SPD check in one place and reuse it for weighted inner products and Mahalanobis.
+    referenceOutline: |
+      `norms.norm` dispatches on `ord`, scaling by the max absolute entry for L2 and Frobenius.
+      `inner.inner` checks `M` via a Cholesky attempt. `inner.cosine` floors the denominator.
+      `projection.project` orthonormalises the basis with QR if needed, returns `Q @ (Q.T @ x)`, the
+      residual, and `Q.T @ residual`. `spectral.spectral_norm` iterates `A.T @ (A @ v)` with
+      renormalisation and tracks the Rayleigh quotient.
+  - id: linp-final-embedding-similarity-audit
+    kind: final-challenge
+    title: Audit and fix an embedding similarity service
+    minutes: 90
+    summary: Given a retrieval service that ranks by raw cosine similarity, diagnose the norm and geometry problems causing bad rankings and fix them, proving each fix with fail-before-fix tests on judged pairs.
+    problem: |
+      A service embeds documents and queries, then ranks by `dot(q, d) / (||q|| ||d||)`. Symptoms:
+      some queries return `nan` scores; very short documents dominate unrelated queries; and a
+      cluster of documents ranks highly for everything. Produce an audit that identifies each cause
+      from the norms and the geometry (zero or tiny `||d||`, a shared bias direction, unnormalised
+      vectors), applies a fix (drop and floor zero vectors, L2-normalise at index time, mean-centre
+      or remove the top principal component, add a length prior), and shows ranking-quality metrics
+      before and after on a judged query-document set, with a regression per fault.
+    requirements:
+      - Detect and report documents with `||d||` below a threshold and the fraction of the corpus affected.
+      - Quantify the shared bias direction (variance explained by the top principal component of the embeddings) and remove it.
+      - L2-normalise stored embeddings so ranking is a plain dot product, dropping true zero vectors.
+      - Add a length or term prior and justify its weight.
+      - Report nDCG or MAP on judged pairs before and after, plus a fail-before-fix test per fault.
+    constraints:
+      - Do not divide by a norm without a floor or a zero-vector policy.
+      - Do not remove the bias direction without reporting how much variance it held.
+      - Do not claim improvement from the symptom disappearing; use the judged metric.
+    expectedBehaviour:
+      - No query returns `nan` after the fix.
+      - Short-document over-ranking drops, measured on the judged set, not by inspection.
+      - The high-for-everything cluster no longer dominates after the bias direction is removed.
+      - Scaling all embeddings by a constant does not change rankings after L2 normalisation.
+      - The judged-set metric improves and each fault has a test that failed before the fix.
+    milestones:
+      - title: "1 — Diagnose"
+        detail: Norm histogram, zero-vector count, top principal component variance, normalisation status.
+      - title: "2 — Fix"
+        detail: Floor and drop, L2-normalise, remove the bias direction, add a length prior.
+      - title: "3 — Measure"
+        detail: nDCG or MAP before and after on judged pairs, with a regression per fault.
+    testing:
+      - Fail-before-fix regression for the `nan` scores, the short-document bias, and the shared-direction cluster.
+      - Scale-invariance of rankings after normalisation.
+      - A held-out judged set showing the metric improves.
+    failureCases:
+      - Zero vectors are normalised to `nan` instead of dropped.
+      - The bias direction is removed without recording its variance share, so the change is unexplained.
+      - The length prior is tuned to the symptom rather than to the judged metric.
+    bonus:
+      - Compare cosine ranking to a Mahalanobis ranking using the inverse embedding covariance.
+    architectureHints:
+      - Freeze the judged set and the pre-fix metric as fixtures first.
+      - Keep diagnosis, each fix, and measurement in separate commits.
+    referenceOutline: |
+      Compute `norms = np.linalg.norm(E, axis=1)` and inspect the low tail. PCA-centre `E` and
+      measure the top component's variance share; project it out. Normalise rows, dropping any with
+      zero norm. Add `alpha * length_feature` to the score. Evaluate nDCG on judged pairs before and
+      after each step.
+resources:
+  - name: MIT 18.06 — Orthogonal vectors and subspaces, projections (OCW)
+    type: university
+    difficulty: core
+    url: "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-14-orthogonal-vectors-and-subspaces/"
+    usefulness: 5
+    why: Strang builds orthogonality, the projection matrix `P = A (A.T A)^{-1} A.T`, and the fact that least squares is projection onto the column space, which is the backbone of this lesson.
+    covers: Orthogonal vectors and subspaces, orthogonal complements, projection onto a subspace, the projection matrix, and least squares as projection.
+  - name: 3Blue1Brown — Dot products and duality
+    type: video
+    difficulty: intro
+    url: "https://www.3blue1brown.com/lessons/dot-products"
+    usefulness: 4
+    why: It gives the geometric meaning of the inner product as a projection and a length-times-cosine, which makes Cauchy-Schwarz and the angle formula intuitive before the algebra.
+    covers: The dot product as projection times length, its sign and geometry, and the link between a vector and the linear functional it defines.
+  - name: "numpy.linalg.norm reference"
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.linalg.norm.html"
+    usefulness: 4
+    why: It lists exactly what each `ord` value computes for vectors and matrices, including that the 2-D default is Frobenius and that `ord=2` on a matrix is the largest singular value.
+    covers: Vector p-norms, matrix Frobenius and induced norms, the `ord` and `axis` arguments, and the default behaviour that surprises people.
+  - name: "Boyd and Vandenberghe — Introduction to Applied Linear Algebra (VMLS)"
+    type: book
+    difficulty: core
+    url: "https://web.stanford.edu/~boyd/vmls/"
+    usefulness: 5
+    why: The norm, distance, angle, and least-squares chapters are written for data applications, with the L1-versus-L2 and projection material at exactly the level used here, and the PDF is free.
+    covers: Norms and distance, angle and correlation, orthonormal sets, projection, least squares, and regularisation.
+  - name: "Hastie, Tibshirani, Wainwright — Statistical Learning with Sparsity"
+    type: book
+    difficulty: deep
+    url: "https://hastie.su.domains/StatLearnSparsity/"
+    usefulness: 4
+    why: It explains rigorously why the L1 ball's geometry yields exact zeros and how soft-thresholding arises, which is the analytic backing for the sparsity claims in this lesson.
+    covers: The lasso, the geometry of the L1 constraint, soft-thresholding, coordinate descent, and comparisons with ridge.

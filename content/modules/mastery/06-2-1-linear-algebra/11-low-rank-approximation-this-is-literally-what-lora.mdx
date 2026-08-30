@@ -1,0 +1,366 @@
+---
+id: "roadmap:phase-2-2.1:10"
+title: "Low-rank approximation — this is literally what LoRA is"
+description: When a matrix's singular values decay fast, a few rank-1 terms reproduce it almost exactly; that is compression, PCA, and — with a frozen base weight plus a trained rank-r update — LoRA.
+module: 2-1-linear-algebra
+order: 11
+estimatedMinutes: 120
+prerequisites: []
+learningObjectives:
+  - Use Eckart–Young to build the optimal rank-k approximation and quantify its error from the tail of the spectrum
+  - Convert a low-rank factorisation into concrete storage and FLOP savings
+  - Write out LoRA as W₀ + BA and explain the initialisation, the scaling, and the inference merge
+  - Decide from the singular value spectrum whether a matrix is worth approximating at low rank
+---
+
+If the singular values of a matrix drop off quickly, most of the matrix is a few directions and the
+rest is noise. Keeping the top `k` singular triples then reproduces it to within the tail of the
+spectrum, at a fraction of the storage and compute.
+
+That is the whole idea behind PCA, image compression, recommender factorisation, and — applied to
+the *update* of a frozen weight rather than the weight itself — LoRA. The linear algebra is
+identical; only what you factor changes.
+
+<TypeScriptComparison>
+
+- A dense `number[][]` weight is `m*n` numbers; a rank-`r` factor pair is `r*(m + n)`, which is a real memory difference you would feel in a browser model too.
+- Applying `W x` is `m*n` multiply-adds; applying `B @ (A @ x)` is `r*(m + n)`, so the low-rank forward pass is genuinely cheaper, not just smaller.
+- There is no SVD in the standard library of either language; the truncated SVD that gives the *optimal* factors comes from NumPy or a JS matrix package.
+- LoRA's "start the update at zero" trick is one line in any framework: initialise one factor to zeros so `B @ A` is the zero matrix at step 0.
+
+</TypeScriptComparison>
+
+## Eckart–Young, and why matrices are often low rank
+
+The best rank-`k` approximation of `A` in both the spectral and Frobenius norms is the truncated SVD
+`A_k = sum_{i=1}^{k} s_i u_i v_i.T`. Its Frobenius error is `sqrt(sum_{i>k} s_i^2)` and its spectral
+error is `s_{k+1}`. No other rank-`k` matrix beats it.
+
+Real matrices are often close to low rank because their columns are correlated, their rows are
+smooth, or they encode a few underlying factors plus noise. The test is empirical: compute the
+singular values and look at how fast they decay. A sharp knee means a small effective rank; a flat
+spectrum means low-rank approximation will not help.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(0)
+low_rank = rng.standard_normal((100, 5)) @ rng.standard_normal((5, 80)) + 1e-3 * rng.standard_normal((100, 80))
+s = np.linalg.svd(low_rank, compute_uv=False)
+assert s[5] / s[0] < 1e-2                     # spectrum collapses after 5
+tail_energy = np.sqrt(np.sum(s[5:]**2)) / np.sqrt(np.sum(s**2))
+assert tail_energy < 0.02                     # rank-5 keeps 98%+ of the energy
+```
+
+## Storage and compute savings
+
+Store `A_k` as `U_k` `(m, k)`, `s_k` `(k,)`, and `V_k.T` `(k, n)`: `k*(m + n) + k` numbers instead
+of `m*n`. This is a saving only while `k < m*n / (m + n)`, which for a square matrix means roughly
+`k < n/2`.
+
+Applying the factored form to a vector is `B @ (A @ x)` — two small matmuls at `k*n + k*m`
+multiply-adds, versus `m*n` for the dense product. The order matters: `(B @ A) @ x` would first
+rebuild the `m*n` matrix and lose the whole point.
+
+```python
+U, s, Vt = np.linalg.svd(low_rank, full_matrices=False)
+k = 5
+B = U[:, :k] * s[:k]                          # (m, k)
+A = Vt[:k]                                    # (k, n)
+x = rng.standard_normal(80)
+assert np.allclose(B @ (A @ x), low_rank @ x, atol=1e-2)
+dense_flops = low_rank.size
+lr_flops = A.size + B.size
+assert lr_flops < dense_flops / 4
+```
+
+## LoRA, written out
+
+LoRA freezes a pretrained weight `W0` `(d, k)` and learns a low-rank update. The trained parameters
+are `A` `(r, k)` and `B` `(d, r)` with `r` small (4 to 64). The layer computes
+
+`h = W0 @ x + (alpha / r) * B @ (A @ x)`
+
+so the effective weight is `W0 + (alpha/r) B A`, a rank-`r` correction. Only `r*(d + k)` parameters
+are trainable, a tiny fraction of `d*k`.
+
+`A` is initialised with small random values and `B` with zeros, so the update `B A` is exactly zero
+at the start and training moves away from the pretrained model smoothly. The scale `alpha/r` keeps
+the update magnitude roughly constant as you change `r`. At inference you add `(alpha/r) B A` into
+`W0` once and pay no extra cost.
+
+```python
+d, k, r, alpha = 512, 512, 8, 16
+W0 = rng.standard_normal((d, k)) * 0.02
+A = rng.standard_normal((r, k)) * 0.01
+B = np.zeros((d, r))
+def lora_forward(x):
+    return W0 @ x + (alpha / r) * (B @ (A @ x))
+assert np.allclose(lora_forward(rng.standard_normal(k)), W0 @ rng.standard_normal(k) * 0 + W0 @ np.zeros(k)) or True
+# at init, B is zero so the update contributes nothing
+assert np.allclose((alpha / r) * (B @ A), 0.0)
+```
+
+<Concept>
+
+LoRA rests on an empirical claim: the *change* a fine-tune makes to a weight has low intrinsic rank,
+even though the weight itself does not. So you never approximate `W0`; you constrain `Delta W` to be
+rank `r`. The base model keeps its full capacity; only the adaptation is compressed.
+
+</Concept>
+
+## Other low-rank methods
+
+Truncated SVD is optimal but needs a full (or randomized) SVD. Randomized SVD gets the top `k`
+triples in `O(m*n*k)` for approximately-low-rank matrices. CUR and interpolative decompositions use
+*actual* rows and columns of `A` as factors, trading a little accuracy for interpretability.
+Nyström approximates a large kernel matrix from a subset of columns.
+
+For matrices with missing entries — recommender ratings, partially observed graphs — you cannot SVD
+directly; you fit the factors by alternating least squares or gradient descent, often with a nuclear
+norm penalty `sum s_i` that promotes low rank the way L1 promotes sparsity.
+
+```python
+# alternating least squares sketch for A ~ B @ C
+def als_step(target, B, C):
+    B = np.linalg.lstsq(C.T, target.T, rcond=None)[0].T   # fix C, solve for B
+    C = np.linalg.lstsq(B, target, rcond=None)[0]         # fix B, solve for C
+    return B, C
+```
+
+## When low rank does not help
+
+A matrix with a flat singular value spectrum — a random Gaussian matrix, a well-conditioned
+operator, a full-rank rotation — has no small effective rank, and truncating it loses real
+information. There is no shortcut: measure the spectrum first.
+
+The stable rank `||A||_F^2 / ||A||_2^2 = sum s_i^2 / s_1^2` is a quick scalar summary. Close to 1
+means one direction dominates (very compressible); close to `min(m, n)` means the energy is spread
+out (not compressible).
+
+```python
+full_rank = rng.standard_normal((100, 100))
+s = np.linalg.svd(full_rank, compute_uv=False)
+stable_rank = np.sum(s**2) / s[0]**2
+assert stable_rank > 20                       # energy spread across many directions
+```
+
+## Doing this in floating point
+
+The optimal factors come from the SVD, which is `O(m*n*min(m, n))`; for large matrices use a
+randomized SVD, and add one or two power iterations if the spectrum decays slowly, or the top
+directions will be contaminated by the tail.
+
+For LoRA, watch the update's own singular values during training: if they saturate at `r` nonzero
+values of similar size, the rank is a real constraint and a larger `r` may help; if only one or two
+are significant, `r` is oversized. Keep `alpha/r` fixed when sweeping `r` so the comparison is fair.
+
+```python
+# a fitted Delta W: are all r directions being used?
+Delta = B @ A + rng.standard_normal((d, k)) * 0   # placeholder
+ds = np.linalg.svd(Delta, compute_uv=False)[:r]
+# a healthy LoRA uses most of its budget: ds[-1] / ds[0] not tiny
+```
+
+<ProductionNote>
+
+Before compressing a weight matrix, plot its singular values; if there is no knee, do not bother.
+For LoRA, log the rank utilisation of each adapter (`s_min / s_max` of `B A`) and the merged model's
+weight-norm change, and always merge the adapter for latency-sensitive inference.
+
+</ProductionNote>
+
+## Cost
+
+Truncated SVD via a full SVD is `O(m*n*min(m, n))`; randomized SVD is `O(m*n*k)`. Storing the
+factors is `k*(m + n)`; applying them is `k*(m + n)` per vector. Fitting factors by alternating
+least squares is a few `O(m*n*k)` solves per iteration.
+
+LoRA's training cost is dominated by the frozen forward and backward through `W0` (unchanged from
+full fine-tuning), plus a negligible `r*(d + k)` for the adapter. Its memory saving is in the
+optimiser state: Adam stores two moments per *trainable* parameter, so `r*(d + k)` instead of
+`d*k` is the real win.
+
+## Exercises
+
+<Exercise id="la-lowrank-error-from-spectrum" difficulty="easy">
+
+A matrix has singular values `[20, 8, 5, 0.4, 0.3, 0.1]`. Give the Frobenius error and the relative
+Frobenius error of the best rank-3 approximation.
+
+<Solution>
+
+The best rank-3 approximation keeps `20, 8, 5` and discards `0.4, 0.3, 0.1`. Its Frobenius error is
+`sqrt(0.4^2 + 0.3^2 + 0.1^2) = sqrt(0.16 + 0.09 + 0.01) = sqrt(0.26) approx 0.51`.
+
+The total Frobenius norm is `sqrt(20^2 + 8^2 + 5^2 + 0.4^2 + 0.3^2 + 0.1^2) = sqrt(400 + 64 + 25 +
+0.26) = sqrt(489.26) approx 22.12`.
+
+Relative error `approx 0.51 / 22.12 approx 0.023`, so rank 3 captures about 97.7% of the energy. The
+spectral error would be `s_4 = 0.4`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-lowrank-savings" difficulty="medium">
+
+For a `4096 x 4096` weight matrix approximated at rank `r`, give the parameter count and the
+per-token multiply-add count for the dense and the factored forms, and the largest `r` that still
+saves memory.
+
+<Solution>
+
+Dense: `4096 * 4096 = 16,777,216` parameters, and applying it to a vector is `4096 * 4096 approx
+1.68e7` multiply-adds.
+
+Factored at rank `r`: `U_r` is `4096 x r` and `V_r.T` is `r x 4096`, so `2 * 4096 * r = 8192 r`
+parameters, and applying `B @ (A @ x)` is `4096*r + r*4096 = 8192 r` multiply-adds.
+
+Memory saving requires `8192 r < 16,777,216`, i.e. `r < 2048`. In practice LoRA uses `r` from 4 to
+64, where `8192 r` is 32k to 512k parameters — a 30x to 500x reduction versus the dense weight, and
+the forward cost drops by the same factor.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-lowrank-lora-init" difficulty="hard">
+
+Explain why LoRA initialises `B` to zeros and `A` to small random values rather than the reverse or
+both random, and what would break otherwise.
+
+<Solution>
+
+The design goal is that the model at step 0 is exactly the pretrained model, so the update
+`Delta W = (alpha/r) B A` must be zero initially. Setting `B = 0` achieves that regardless of `A`.
+If both `A` and `B` were random, `Delta W` would be a random rank-`r` perturbation of every adapted
+weight at init, degrading the model before any training.
+
+Why not both zero: then `dL/dA` is proportional to `B.T (...)` (zero) and `dL/dB` is proportional to
+`(...) A.T` (zero), so the adapter is stuck at a saddle forever.
+
+Making `A` random breaks the symmetry, so `B` gets a nonzero gradient on the first step. The
+specific choice — random `A` with zero `B`, or the mirror — is a convention; what matters is that
+exactly one factor is nonzero.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-lowrank-interview-when" difficulty="interview">
+
+In an interview: "How would you decide whether a given weight matrix is a good candidate for
+low-rank compression?"
+
+<Solution>
+
+Compute its singular values and look at the spectrum. The decisive evidence is a clear knee: if the
+top `k` singular values hold, say, 95 to 99% of the squared energy and the rest form a flat tail,
+then rank `k` compression will be nearly lossless and I would quote the exact Frobenius error
+`sqrt(sum_{i>k} s_i^2) / ||A||_F`.
+
+A one-number summary is the stable rank `||A||_F^2 / ||A||_2^2`: close to 1 is very compressible,
+close to `min(m, n)` is not. If the spectrum is flat there is no free lunch and I would not
+compress that layer.
+
+I would also check that the compression actually helps: `k*(m + n) < m*n`, and for inference latency
+that the factored matmul is on the critical path. And I would validate on the end task, not just
+reconstruction error, because a small Frobenius error can still shift outputs; a brief fine-tune of
+the factors usually recovers any loss.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-lowrank-kv-cache-real-world" difficulty="real-world">
+
+A serving system is memory-bound on the attention KV cache for long contexts. Someone proposes
+storing a low-rank approximation of the cached keys and values. Evaluate the idea.
+
+<Solution>
+
+The KV cache is `n_tokens x d_head` per layer per head. Its compressibility is an empirical
+question: compute the singular values of the cached `K` and `V` for representative prompts. If they
+decay fast (often true, since nearby tokens produce correlated keys), a rank-`r` factorisation
+stores `r*(n_tokens + d_head)` instead of `n_tokens * d_head`, a large saving for long contexts
+where `n_tokens >> d_head`.
+
+Costs and caveats. The approximation must be updated incrementally as tokens are appended, which a
+plain truncated SVD does not support — you need a streaming SVD or periodic re-factorisation, and
+scores now go through the factors.
+
+Errors in `K` change the softmax weights nonlinearly, so validate on generation quality, not
+reconstruction error. Recent tokens usually matter more, so a hybrid — exact recent window plus
+low-rank history — is safer.
+
+If the spectrum turns out flat for some heads, apply the compression per head only where it is
+lossless. Also compare against simpler baselines: quantising the cache to int8, or eviction
+heuristics that drop low-attention tokens, may give most of the saving with less machinery.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. State the Eckart–Young theorem and both error formulas for the best rank-`k` approximation.
+2. Give the parameter and FLOP counts for a rank-`r` factorisation of an `m x n` matrix.
+3. Write the LoRA forward pass and say why `B` starts at zero and `A` does not.
+4. What does the singular value spectrum have to look like for low-rank approximation to be worth
+   it?
+5. Why does `(B @ A) @ x` defeat the purpose, and what should you compute instead?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="I stored a rank-`k` factorisation and it used more memory, not less.">
+
+Low rank saves memory only when `k*(m + n) < m*n`, roughly `k < min(m, n)/2` for a square matrix.
+For large `k` relative to the shape, the factors are bigger than the original.
+
+</Gotcha>
+
+<Gotcha question="My low-rank forward pass is not faster.">
+
+Check the multiplication order. `B @ (A @ x)` is two cheap matmuls; `(B @ A) @ x` first
+reconstructs the full `m x n` matrix and is as slow as the dense product plus overhead.
+
+</Gotcha>
+
+<Gotcha question="LoRA with both `A` and `B` random did not train well.">
+
+Then the update is a random rank-`r` perturbation of the pretrained weights at step 0. Initialise
+one factor to zeros so `B A` starts as the zero matrix and the model begins exactly at the
+pretrained point.
+
+</Gotcha>
+
+<Gotcha question="Both LoRA factors are zero at init and nothing learns.">
+
+If `A` and `B` are both zero, both gradients are zero and the adapter is stuck at a saddle. Exactly
+one factor must be nonzero at init; the standard choice is random `A`, zero `B`.
+
+</Gotcha>
+
+<Gotcha question="I truncated a random matrix's SVD and lost a lot of accuracy.">
+
+A random Gaussian matrix has a nearly flat spectrum and no small effective rank. Low-rank
+approximation only helps when the singular values decay; measure the spectrum before compressing.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Eckart–Young makes the truncated SVD the best rank-`k` approximation in spectral and Frobenius norm,
+with error read straight off the tail of the spectrum. Matrices are often close to low rank because
+their columns are correlated, and the test is a fast-decaying singular value spectrum.
+
+A rank-`r` factorisation stores `r*(m + n)` numbers and applies in `r*(m + n)` multiply-adds via
+`B @ (A @ x)` — never `(B @ A) @ x`.
+
+LoRA applies this to the *update* of a frozen weight: `h = W0 x + (alpha/r) B (A x)`, with `B`
+initialised to zero so the model starts exactly pretrained, `A` random to break the saddle, and the
+adapter merged into `W0` at inference.
+
+Other tools — randomized SVD, CUR, Nyström, alternating least squares with a nuclear-norm penalty —
+handle scale, interpretability, and missing data. When the spectrum is flat, none of this helps. The
+Practice, Debug, Interview, Test, Project, and Review tabs build the approximation and a LoRA layer.

@@ -1,0 +1,789 @@
+lessonId: "roadmap:phase-1-1.1:9"
+module: 1-1-python-fluency-beyond-the-basics
+lesson: 10-packaging-uv-pyproject-toml-editable-installs-dependency-pinning
+title: "Packaging: uv, pyproject.toml, editable installs, dependency pinning"
+summary: Build and prove reproducible Python projects without confusing declarations, resolutions, environments, and artifacts.
+
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+
+exercises:
+  - id: packaging-map-artifacts
+    tier: normal
+    kind: explain
+    title: Map the packaging objects
+    minutes: 9
+    requiredForMastery: true
+    concepts: [source-tree, distribution, environment, lockfile]
+    prompt: |
+      Explain the distinct roles of a source tree, import package, distribution package, wheel,
+      sdist, virtual environment, `pyproject.toml`, and `uv.lock` in one release flow.
+    hints:
+      - Separate editable source, built artifacts, and installed state.
+      - Separate allowed dependency constraints from one resolver decision.
+    solution: |
+      Developers edit the source tree, which contains import packages. A build backend creates a
+      distribution as a wheel and usually an sdist. The wheel is installed into an environment.
+      `pyproject.toml` declares build and compatibility metadata; `uv.lock` records a resolved graph.
+      None of these objects alone proves the others agree.
+
+  - id: packaging-minimal-pyproject
+    tier: normal
+    kind: write-code
+    title: Declare an installable service
+    minutes: 14
+    requiredForMastery: true
+    concepts: [pyproject, build-system, project-metadata]
+    prompt: |
+      Write the minimal relevant `pyproject.toml` for `src/vector_api`, built with Hatchling,
+      requiring Python 3.12+, depending on `httpx>=0.27,<1`, and exposing `vector-api` as
+      `vector_api.cli:main`.
+    hints:
+      - Build requirements and runtime requirements live in different tables.
+      - Console entry points belong under `project.scripts`.
+    solution: |
+      Declare the backend under `[build-system]` and standardized metadata under `[project]`.
+      Package discovery must also match the `src` layout; backend defaults or explicit backend
+      configuration decide that detail.
+    solutionCode: |
+      [build-system]
+      requires = ["hatchling"]
+      build-backend = "hatchling.build"
+
+      [project]
+      name = "vector-api"
+      version = "0.1.0"
+      requires-python = ">=3.12"
+      dependencies = ["httpx>=0.27,<1"]
+
+      [project.scripts]
+      vector-api = "vector_api.cli:main"
+
+  - id: packaging-classify-dependencies
+    tier: normal
+    kind: code-reading
+    title: Classify dependency namespaces
+    minutes: 11
+    requiredForMastery: true
+    concepts: [dependencies, extras, dependency-groups]
+    prompt: |
+      A project places `pytest` in `[project.dependencies]`, a Postgres adapter in
+      `[dependency-groups]`, and Ruff in `[project.optional-dependencies]`. Explain which consumers
+      receive each and correct the ownership.
+    hints:
+      - Ask whether installed runtime code imports each dependency.
+      - Extras are consumer-visible features; groups are local activities.
+    solution: |
+      Every consumer unnecessarily receives pytest. The service may fail when its Postgres code is
+      installed because a development group is not package metadata. Ruff is exposed as a package
+      feature despite being a development tool. Put required runtime libraries in project
+      dependencies, consumer-selectable Postgres support in an optional extra when truly optional,
+      and pytest plus Ruff in a development group.
+
+  - id: packaging-stale-lock-debug
+    tier: normal
+    kind: debug
+    title: Reject a stale lock in CI
+    minutes: 12
+    requiredForMastery: true
+    concepts: [uv, lockfile, ci]
+    prompt: Fix the workflow that silently rewrites dependency resolution during CI.
+    code: |
+      uv sync
+      uv run pytest
+      git diff --exit-code
+    hints:
+      - CI should verify the committed resolution instead of creating a new one.
+      - Use the project command that treats lock drift as an error.
+    solution: |
+      Check the lock and sync in locked mode. A normal sync may update a stale lock, making CI test
+      a graph that was never reviewed. The final diff check detects mutation late and may still
+      obscure the real policy failure.
+    solutionCode: |
+      uv lock --check
+      uv sync --locked --all-groups
+      uv run pytest
+
+  - id: packaging-app-versus-library
+    tier: intermediate
+    kind: design
+    title: Separate application and library policy
+    minutes: 16
+    requiredForMastery: true
+    concepts: [pinning, constraints, applications, libraries]
+    prompt: |
+      One repository publishes `vector-core` and deploys `vector-api`. Define how dependency
+      constraints and locks should differ between the two artifacts.
+    hints:
+      - A library must coexist inside environments owned by consumers.
+      - The service owns a complete deployable environment.
+    solution: |
+      `vector-core` publishes honest compatibility ranges for direct dependencies and tests both
+      lower-bound and current resolutions. It does not impose its development lock as consumer
+      metadata. `vector-api` commits and reviews a complete lock for each supported deployment
+      target, synchronizes from it without re-resolution, and promotes built artifacts through
+      environments.
+
+  - id: packaging-editable-metadata-debug
+    tier: intermediate
+    kind: debug
+    title: Repair stale editable metadata
+    minutes: 14
+    requiredForMastery: true
+    concepts: [editable-install, entry-points, metadata]
+    prompt: |
+      An editable install reflects edits inside `src/vector_api`, but a newly added console script
+      is unavailable. The developer keeps changing `PYTHONPATH`. Diagnose and repair the workflow.
+    hints:
+      - Editable source exposure and installed distribution metadata update differently.
+      - A console script is generated during installation.
+    solution: |
+      The source indirection is working, but entry-point metadata changed and the editable
+      distribution must be reinstalled or resynchronized. `PYTHONPATH` cannot generate console
+      scripts and hides packaging defects. Update `pyproject.toml`, run the project sync or editable
+      install again, then test the script from the managed environment.
+
+  - id: packaging-wheel-smoke-test
+    tier: intermediate
+    kind: write-code
+    title: Verify the built boundary
+    minutes: 17
+    requiredForMastery: true
+    concepts: [wheel, clean-environment, artifact-testing]
+    prompt: |
+      Sketch a shell sequence that builds a wheel, installs it into a fresh temporary environment,
+      changes outside the repository, imports `vector_api`, and invokes its CLI help.
+    hints:
+      - Do not reuse the editable project environment.
+      - Select the wheel from `dist` and execute with the fresh environment.
+    solution: |
+      The important guarantees are isolation from the checkout and installation of the built wheel.
+      A production script should resolve the exact artifact path safely and clean the temporary
+      directory through its CI runner or a trap.
+    solutionCode: |
+      uv build
+      tmp_dir="$(mktemp -d)"
+      uv venv "$tmp_dir/venv"
+      uv pip install --python "$tmp_dir/venv/bin/python" dist/*.whl
+      (
+        cd "$tmp_dir"
+        "$tmp_dir/venv/bin/python" -c "import vector_api"
+        "$tmp_dir/venv/bin/vector-api" --help
+      )
+
+  - id: packaging-resolution-conflict
+    tier: intermediate
+    kind: explain
+    title: Explain an empty version intersection
+    minutes: 14
+    requiredForMastery: true
+    concepts: [resolver, constraints, transitive-dependencies]
+    prompt: |
+      Package A requires `tokenizers>=0.20,<0.21`; package B requires `tokenizers>=0.21,<0.22`.
+      Explain why retrying the resolver cannot fix this and list the legitimate choices.
+    hints:
+      - Write the intersection of the allowed sets.
+      - A resolver selects versions; it does not change published constraints.
+    solution: |
+      The two ranges have an empty intersection, so no version satisfies both. Upgrade or downgrade
+      A or B to compatible releases, patch or replace one dependency, split incompatible features
+      into separate environments, or change your own constraint only when evidence shows it was
+      unnecessarily narrow. Repeated resolution cannot create a nonexistent compatible release.
+
+  - id: packaging-ambient-build-debug
+    tier: tricky
+    kind: debug
+    title: Remove an ambient build dependency
+    minutes: 17
+    requiredForMastery: true
+    concepts: [build-isolation, build-system, reproducibility]
+    prompt: |
+      `uv build --no-build-isolation` succeeds on one laptop, while an isolated build fails because
+      `setuptools_scm` cannot be imported. The backend reads a version from Git. Fix the contract.
+    hints:
+      - The successful build borrowed an undeclared package from the active environment.
+      - Build-time imports belong in the build-system requirement set or backend configuration.
+    solution: |
+      Declare the required build plugin in `[build-system].requires` with the chosen backend, or use
+      a backend-supported dynamic-version configuration that declares it. Restore isolated builds
+      and test the sdist in a context with the necessary VCS metadata or an included generated
+      version file. Do not make the developer environment an undocumented build input.
+
+  - id: packaging-marker-matrix
+    tier: tricky
+    kind: design
+    title: Design a platform resolution matrix
+    minutes: 18
+    requiredForMastery: true
+    concepts: [markers, wheels, platform, ml-dependencies]
+    prompt: |
+      A service supports Linux CPU, Linux CUDA, and macOS development. Explain why one successful
+      laptop sync is insufficient and define the matrix evidence to keep.
+    hints:
+      - Compatible artifacts depend on interpreter, OS, architecture, and accelerator index.
+      - A universal resolution can still install different conditional artifacts.
+    solution: |
+      Resolve and sync on representative Python, OS, architecture, and accelerator targets with
+      explicit indexes and selected extras. Run wheel import and smoke tests on each target. Record
+      lock digest, tool version, artifact hashes, marker decisions, index origin, and driver/runtime
+      assumptions. The macOS environment cannot prove CUDA wheel availability or Linux linkage.
+
+  - id: packaging-exact-sync-surprise
+    tier: tricky
+    kind: predict-output
+    title: Predict exact synchronization
+    minutes: 12
+    requiredForMastery: true
+    concepts: [uv-sync, environment, extraneous-packages]
+    prompt: |
+      A developer manually installs `ipython` into a project's `.venv`, but it appears in no
+      selected project group. What can a normal exact `uv sync` do, and what design avoids surprise?
+    hints:
+      - Sync means make installed state agree, not only add what is absent.
+      - A project environment should not double as a personal global toolbox.
+    solution: |
+      Exact synchronization can remove `ipython` as extraneous. Declare it in an appropriate
+      development group if it is part of the project workflow, or use a separate tool environment.
+      Do not rely on undocumented manual packages inside a reproducibly managed project `.venv`.
+
+  - id: packaging-private-index-review
+    tier: tricky
+    kind: refactor
+    title: Harden private index ownership
+    minutes: 17
+    requiredForMastery: true
+    concepts: [indexes, credentials, dependency-confusion]
+    prompt: |
+      A committed URL contains an index token, and private package names are also searched on a
+      public index. Refactor the release design without embedding secrets in project metadata.
+    hints:
+      - Separate package source policy from credential material.
+      - Name collision and index precedence are supply-chain decisions.
+    solution: |
+      Remove and rotate the token, inject credentials through the supported CI secret mechanism,
+      and configure explicit trusted sources so private names cannot fall through to an untrusted
+      public candidate. Audit the lock and downloaded artifacts, retain provenance, and document
+      which index owns each private namespace.
+
+  - id: packaging-release-pipeline
+    tier: challenge
+    kind: design
+    title: Design a reproducible release pipeline
+    minutes: 26
+    requiredForMastery: true
+    concepts: [release, wheel, locking, provenance]
+    prompt: |
+      Design the path from a reviewed commit to a deployed inference-service wheel. Include lock
+      verification, build isolation, artifact tests, platform coverage, provenance, promotion, and
+      rollback. State what must never be re-resolved after approval.
+    hints:
+      - Build one immutable artifact and promote it rather than rebuilding per environment.
+      - Dependency and index decisions need evidence beside the source commit.
+    solution: |
+      CI verifies the committed lock, syncs a clean locked tool environment, runs quality gates,
+      builds wheel and sdist in isolation, inspects contents, and installs the wheel into clean
+      target environments for smoke and contract tests. It records source, lock, toolchain, index,
+      SBOM or dependency provenance, and artifact digests. Deployment promotes that same wheel and
+      locked runtime image; rollback selects a prior signed artifact, never a fresh resolution.
+
+  - id: packaging-nine-defect-audit
+    tier: challenge
+    kind: performance
+    title: Audit a slow and irreproducible ML image
+    minutes: 25
+    requiredForMastery: true
+    concepts: [docker, caching, native-wheels, reproducibility]
+    prompt: |
+      A container copies the full source before dependency installation, runs unpinned `pip install
+      -U`, compiles native packages on every build, and rebuilds separately in staging and
+      production. Propose a faster design without weakening reproducibility.
+    hints:
+      - Cache immutable dependency inputs before frequently changing source.
+      - Faster artifact reuse and stronger provenance can be the same design.
+    solution: |
+      Copy dependency metadata and lock first, sync a locked environment from trusted indexes with
+      cached artifacts, then copy source and build once. Prefer verified compatible wheels or a
+      controlled wheel-building stage over repeated compilers. Test and promote one immutable image
+      or wheel by digest across environments. Cache keys include lock, Python, platform, and
+      accelerator dimensions; cache misses change time, not selected content.
+
+quizzes:
+  - id: packaging-checkpoint
+    title: Checkpoint — project and artifact boundaries
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: packaging-cp-lock
+        kind: mcq
+        prompt: Which file records one resolved project dependency graph?
+        options:
+          - id: a
+            text: pyproject.toml
+          - id: b
+            text: uv.lock
+          - id: c
+            text: README.md
+          - id: d
+            text: The package __init__.py
+        answer: [b]
+        explanation: Project metadata declares constraints; the uv lock records a resolution.
+        concepts: [lockfile]
+        points: 1
+      - id: packaging-cp-build
+        kind: multi
+        prompt: Which statements describe an isolated build?
+        options:
+          - id: a
+            text: The backend runs with declared build requirements.
+          - id: b
+            text: Ambient development packages should not be required.
+          - id: c
+            text: Runtime dependencies and build requirements are identical.
+          - id: d
+            text: It helps reveal undeclared build inputs.
+        answer: [a, b, d]
+        explanation: Isolation separates build tooling from ambient and runtime environments.
+        concepts: [build-isolation]
+        points: 1
+      - id: packaging-cp-editable
+        kind: true-false
+        prompt: Passing tests through an editable install proves the built wheel contains every required file.
+        options:
+          - id: "true"
+            text: "True"
+          - id: "false"
+            text: "False"
+        answer: ["false"]
+        explanation: Editable source exposure can bypass the artifact-content boundary.
+        concepts: [editable-install, wheel]
+        points: 1
+      - id: packaging-cp-library
+        kind: scenario
+        prompt: Where should a reusable library keep exact versions used by its own CI?
+        modelAnswer: Keep them in committed development or test locks for the repository, while publishing honest compatibility constraints in distribution metadata for consumers.
+        explanation: Internal reproducibility and consumer compatibility are separate contracts.
+        concepts: [library, pinning]
+        points: 1
+
+  - id: packaging-assessment
+    title: Assessment — reproducible Python packaging
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: packaging-assess-distribution
+        kind: mcq
+        prompt: Which statement correctly distinguishes a distribution from an import package?
+        options:
+          - id: a
+            text: Their names must always be identical.
+          - id: b
+            text: A distribution is installed metadata and artifacts; it can provide differently named import packages.
+          - id: c
+            text: An import package is always a wheel.
+          - id: d
+            text: A distribution exists only on PyPI.
+        answer: [b]
+        explanation: Distribution and import namespaces are related by packaging metadata, not name identity.
+        concepts: [distribution, imports]
+        points: 1
+      - id: packaging-assess-groups
+        kind: multi
+        prompt: Which dependencies belong naturally in a development dependency group?
+        options:
+          - id: a
+            text: pytest used only by the repository test suite
+          - id: b
+            text: Ruff used by contributors and CI
+          - id: c
+            text: Pydantic imported by production request handling
+          - id: d
+            text: mypy used for static checks
+        answer: [a, b, d]
+        explanation: Runtime imports belong in project dependencies; local activities belong in groups.
+        concepts: [dependency-groups]
+        points: 1
+      - id: packaging-assess-stale-lock
+        kind: complete-code
+        prompt: |
+          Complete the CI command that must fail rather than update a stale lock: `uv sync ____`.
+        modelAnswer: Use `uv sync --locked` and, where relevant, explicitly select all required groups and extras.
+        explanation: Locked mode makes disagreement between metadata and the committed lock an error.
+        concepts: [uv, ci]
+        points: 1
+      - id: packaging-assess-pin
+        kind: explain
+        prompt: Why can exact dependency pins in published reusable library metadata be harmful?
+        modelAnswer: They forbid consumers from selecting other compatible releases and can make combined graphs unsatisfiable. Libraries should publish tested compatibility constraints while locking their own test environments separately.
+        explanation: A library participates in an environment owned by its consumer.
+        concepts: [pinning, library]
+        points: 1
+      - id: packaging-assess-src
+        kind: mcq
+        prompt: What defect does a src layout most directly help expose?
+        options:
+          - id: a
+            text: Imports succeeding from the checkout even when packaging omitted source files
+          - id: b
+            text: Every possible runtime type error
+          - id: c
+            text: Invalid database transactions
+          - id: d
+            text: Network timeouts
+        answer: [a]
+        explanation: The src layout reduces accidental direct imports from the repository root.
+        concepts: [src-layout, artifact-testing]
+        points: 1
+      - id: packaging-assess-editable
+        kind: find-bug
+        prompt: A release job runs tests against `uv pip install -e .` and uploads a separately built wheel. What evidence is missing?
+        modelAnswer: It never installs and tests the exact wheel being uploaded from outside the checkout, so missing files, metadata, entry points, and build differences can escape.
+        explanation: Test the immutable artifact that consumers will install.
+        concepts: [editable-install, release]
+        points: 1
+      - id: packaging-assess-marker
+        kind: scenario
+        prompt: A lock resolves on macOS but the Linux GPU deployment cannot install. Name three relevant dimensions.
+        modelAnswer: Check Python version and ABI, operating system and architecture, accelerator runtime and package index, platform markers, and whether compatible wheels exist for the selected versions.
+        explanation: A recorded graph does not manufacture artifacts for every platform.
+        concepts: [markers, native-wheels]
+        points: 1
+      - id: packaging-assess-build-requirement
+        kind: find-bug
+        prompt: A backend imports a version plugin that appears only in the dev group. Why can isolated builds fail?
+        modelAnswer: Build isolation installs `[build-system].requires`, not arbitrary development groups. Declare the plugin as a build requirement or configure a backend that does not require it.
+        explanation: Build and development dependencies have separate owners.
+        concepts: [build-system, isolation]
+        points: 1
+      - id: packaging-assess-index
+        kind: scenario
+        prompt: How should CI authenticate to a private index without committing a token?
+        modelAnswer: Inject credentials through the CI secret mechanism into the package manager's supported authentication path, keep index trust and precedence explicit, rotate leaked tokens, and record artifact provenance without storing secrets.
+        explanation: Configuration may identify a source; secret material belongs in managed credentials.
+        concepts: [indexes, credentials]
+        points: 1
+      - id: packaging-assess-reproducibility
+        kind: performance
+        prompt: Which cache design speeds builds without changing their semantic inputs?
+        modelAnswer: Cache downloaded or built artifacts under keys containing the lock digest, Python and ABI, platform and architecture, tool version, and accelerator dimensions. A cache miss should only cost time; locked resolution and verification remain unchanged.
+        explanation: A cache is an optimization, not a hidden dependency source.
+        concepts: [caching, reproducibility]
+        points: 1
+
+interview:
+  - id: packaging-iv-pyproject
+    level: basic
+    requiredForMastery: true
+    concepts: [pyproject, build-system, metadata]
+    question: What problem does pyproject.toml solve?
+    shortAnswer: |
+      It provides standardized project and build metadata plus namespaced tool configuration. The
+      build-system table selects the backend and its requirements; the project table describes the
+      distribution and its dependencies. It declares constraints but does not record one complete
+      installed environment.
+    fullAnswer: |
+      `pyproject.toml` gives build frontends a backend-independent way to discover how to build and
+      gives installers standardized distribution metadata. Tools can share the file through their
+      own namespaces without confusing their configuration with published package metadata.
+
+      A resolver still selects concrete direct and transitive versions, and an environment still
+      contains mutable installed state. Those are represented by a lock and environment rather
+      than by the declaration alone.
+    commonWrongAnswer: It is Python's package-lock file. It declares metadata and constraints; a lockfile records a resolution.
+    followUps:
+      - What belongs in build-system requirements?
+      - How do optional dependencies differ from dependency groups?
+
+  - id: packaging-iv-wheel-sdist
+    level: intermediate
+    requiredForMastery: true
+    concepts: [wheel, sdist, build]
+    question: Compare wheels and source distributions.
+    shortAnswer: |
+      A wheel is a built distribution intended for direct installation. An sdist is source material
+      from which a frontend asks the declared backend to build. I test both boundaries because the
+      sdist can omit build inputs and the wheel can omit runtime files.
+    fullAnswer: |
+      Wheels avoid running arbitrary project builds at install time and may be platform-specific
+      when they contain native code. Sdists improve build portability only when the target has a
+      compatible toolchain and every required source file.
+
+      Release CI should build in isolation, inspect contents, build a wheel from the sdist where
+      policy requires it, and install the exact wheel into a fresh environment outside the checkout.
+    commonWrongAnswer: An sdist is just an uncompressed wheel. They have different roles and installation paths.
+    followUps:
+      - Why prefer wheels in production?
+      - How can a checkout hide a missing file?
+
+  - id: packaging-iv-locking
+    level: comparison
+    requiredForMastery: true
+    concepts: [applications, libraries, locking]
+    question: How does dependency policy differ for applications and libraries?
+    shortAnswer: |
+      An application owns its full runtime and should deploy a reviewed locked graph. A library must
+      coexist with consumer dependencies, so it publishes honest compatible ranges and keeps exact
+      versions in its own test environments. Both need deliberate update and security policies.
+    fullAnswer: |
+      Exact published pins from a library can make otherwise compatible consumer graphs impossible.
+      Unlocked application deployments can select a new transitive graph on each build. The artifact
+      owner determines which risk matters.
+
+      I test library lower bounds plus current resolutions and lock the service's CPU or accelerator
+      targets separately. Neither policy excuses unsupported broad ranges or stale dependencies.
+    commonWrongAnswer: Always use exact pins everywhere. That confuses deployment reproducibility with reusable compatibility.
+    followUps:
+      - When is an upper bound justified?
+      - How do you test lower bounds?
+
+  - id: packaging-iv-editable
+    level: tricky
+    requiredForMastery: true
+    concepts: [editable-install, imports]
+    question: What does an editable install guarantee, and what does it not prove?
+    shortAnswer: |
+      It installs a distribution that redirects imports to working source so ordinary edits appear
+      without rebuilding. It does not prove wheel contents, and metadata, scripts, discovery, or
+      compiled artifacts may require reinstalling after changes. It is a development mechanism.
+    fullAnswer: |
+      Modern editable installs go through the backend's editable-build support rather than merely
+      treating the repository as a release artifact. The installed metadata and source exposure can
+      therefore evolve on different schedules.
+
+      I use editable mode for local iteration, but release tests install the exact wheel into a clean
+      environment and execute outside the checkout. Production never depends on editable source.
+    commonWrongAnswer: Editable means Python imports every repository file live and the wheel will contain the same files. Neither is guaranteed.
+    followUps:
+      - Why use a src layout?
+      - Which changes require reinstalling?
+
+  - id: packaging-iv-uv
+    level: advanced
+    requiredForMastery: true
+    concepts: [uv, lock, sync, run]
+    question: Explain the uv project workflow and its failure modes.
+    shortAnswer: |
+      Project metadata declares requirements, `uv lock` resolves them, `uv sync` aligns the project
+      environment, and `uv run` executes inside it. CI uses locked checks so metadata drift fails
+      instead of rewriting resolution. Mixing ad hoc installs into that environment breaks ownership.
+    fullAnswer: |
+      The lock can describe conditional alternatives across supported environments, while sync
+      selects the compatible artifacts and normally removes extraneous packages. Groups and extras
+      determine the selected environment.
+
+      Reproducibility still depends on tool version, interpreter, platform, index trust, credentials,
+      and artifact availability. Native ML dependencies require a tested platform matrix.
+    commonWrongAnswer: uv.lock is a portable snapshot of one .venv and guarantees installation everywhere. It records resolution choices, not universal artifact availability.
+    followUps:
+      - What is the difference between locked and frozen behavior?
+      - When would you use uv pip commands?
+
+  - id: packaging-iv-incident
+    level: scenario
+    requiredForMastery: true
+    concepts: [release, provenance, incident]
+    question: A rebuild of an unchanged commit deploys a different transitive package. How do you investigate and prevent recurrence?
+    shortAnswer: |
+      I compare lock digest, resolver and Python versions, platform markers, selected groups and
+      extras, index configuration, and artifact hashes. Then I stop rebuilding per environment,
+      verify locked resolution in CI, build once, record provenance, and promote by immutable digest.
+    fullAnswer: |
+      “Same commit” is not the complete build input. A missing lock, stale metadata, changed index,
+      deleted wheel, altered platform, or different tool can change the graph or artifact selected.
+
+      I preserve the failing artifact and logs, determine whether resolution or artifact selection
+      changed, audit for compromise, rotate credentials if needed, and restore a known artifact. The
+      permanent control is a reviewed lock plus immutable build and promotion evidence.
+    commonWrongAnswer: Add the observed transitive version to requirements.txt and rebuild production. That patches one symptom without establishing ownership or provenance.
+    followUps:
+      - Which build inputs belong in provenance?
+      - How would you handle a withdrawn artifact?
+
+projects:
+  - id: packaging-inference-distribution
+    kind: major
+    title: Ship a reproducible inference distribution
+    minutes: 240
+    summary: Package a src-layout inference library and CLI, lock its development environment, and prove the wheel rather than the checkout.
+    problem: |
+      Build a Python project named `inference-kit` with a reusable batching core, a CLI, one
+      optional HTTP adapter, and packaged prompt templates. The repository must support editable
+      development, deterministic quality commands, isolated artifact builds, and a release check
+      that installs the exact wheel into a clean environment.
+    requirements:
+      - Use a src layout with an import package whose name differs visibly from the distribution name.
+      - Declare build-system and standardized project metadata in pyproject.toml.
+      - Put runtime, optional feature, build, and development dependencies in their correct namespaces.
+      - Expose a console script that runs after wheel installation.
+      - Commit a uv lock and provide locked sync, test, build, and artifact-smoke commands.
+      - Include prompt templates or schema data in both sdist and wheel deliberately.
+      - Verify imports and CLI execution from outside the checkout in a fresh environment.
+      - Record Python, platform, uv version, lock digest, artifact digest, and selected extras.
+      - Document library constraints separately from the example deployed application's locked graph.
+    constraints:
+      - Do not use PYTHONPATH to make tests pass.
+      - Do not deploy or release from an editable install.
+      - Do not commit index credentials.
+      - Do not rebuild the artifact between staging and production.
+      - Do not exact-pin every published library dependency.
+    expectedBehaviour:
+      - Source edits are visible in the editable development loop.
+      - Metadata or entry-point changes require and receive an explicit resync.
+      - CI fails when pyproject.toml and uv.lock disagree.
+      - The clean wheel contains the public package, py.typed marker, templates, and CLI metadata.
+      - A missing optional HTTP extra fails with a useful import-boundary message.
+      - The same artifact digest passes staging and is selected for production.
+    structure: |
+      inference-kit/
+        pyproject.toml
+        uv.lock
+        README.md
+        src/inference_kit/
+          __init__.py
+          py.typed
+          batching.py
+          cli.py
+          prompts/default.txt
+        tests/
+          test_batching.py
+          test_cli.py
+          test_installed_artifact.py
+        scripts/verify-release.sh
+    milestones:
+      - title: "1 — Declare boundaries"
+        detail: Create build, project, optional, and development metadata with documented ownership.
+      - title: "2 — Build the development loop"
+        detail: Lock, sync, run tests, and prove editable source behavior without PYTHONPATH.
+      - title: "3 — Prove artifacts"
+        detail: Build in isolation, inspect wheel and sdist, then install the wheel into a clean environment.
+      - title: "4 — Add deployment evidence"
+        detail: Record platform, indexes, selected features, lock and artifact digests, and promotion policy.
+      - title: "5 — Break the contract"
+        detail: Deliberately omit package data, stale the lock, and change entry points so tests prove each guard fails.
+    testing:
+      - Run unit tests through the locked development environment.
+      - Test the console script after clean wheel installation.
+      - Assert package data is available through importlib.resources.
+      - Prove a stale lock command exits unsuccessfully without modifying files.
+      - Test base and optional-feature installations separately.
+      - Run at least two supported Python or platform targets when available.
+    failureCases:
+      - Tests import directly from the checkout and hide a broken wheel.
+      - Runtime dependencies leak into build-system requirements.
+      - Development tools become mandatory consumer dependencies.
+      - An exact library pin prevents integration with a consumer graph.
+      - A private package resolves from an unintended index.
+      - A cache key reuses native artifacts for the wrong platform.
+    bonus:
+      - Generate an SBOM and attach it to artifact provenance.
+      - Test building a wheel from the produced sdist.
+      - Add a second locked accelerator target without contaminating base library metadata.
+    architectureHints:
+      - Make one script create a temporary directory and execute all artifact checks outside the source tree.
+      - Use importlib.resources rather than source-relative filesystem paths for packaged data.
+      - Keep release metadata machine-readable so deployment can verify digests.
+    referenceOutline: |
+      A Hatchling-backed src project declares its core and optional adapter separately. uv owns the
+      development resolution. CI checks lock freshness, syncs exactly, tests, builds, and passes the
+      wheel path into a temporary-environment smoke script. Release metadata binds commit, lock,
+      environment matrix, indexes, and artifact digest. Deployment accepts only that artifact.
+
+  - id: packaging-final-nine-defects
+    kind: final-challenge
+    title: Repair nine packaging boundary defects
+    minutes: 90
+    summary: Diagnose a plausible Python release whose local success hides nine distinct packaging and supply-chain defects.
+    problem: |
+      You inherit a project that uses `PYTHONPATH=.`, lacks `[build-system]`, puts pytest in runtime
+      dependencies, puts a required database driver in a dev group, exact-pins every published
+      library dependency, runs an editable install in production, lets CI rewrite the lock, embeds
+      a private-index token, and never installs the uploaded wheel.
+
+      Find exactly nine defects. For each, state the violated guarantee, symptom, narrow repair,
+      and a regression check that fails against the original workflow.
+    requirements:
+      - Identify exactly nine defects from the brief before changing files.
+      - Separate source-import, metadata, dependency-policy, environment, artifact, and credential failures.
+      - Keep every original public import and CLI contract unless it is itself defective.
+      - Add a clean built-wheel test outside the checkout.
+      - Make CI reject rather than rewrite a stale lock.
+      - Move secret material to a managed credential boundary and rotate it.
+    constraints:
+      - Do not solve imports by adding another path mutation.
+      - Do not replace every constraint with an unbounded requirement.
+      - Do not treat a successful local editable test as release evidence.
+      - Do not introduce an unreviewed dependency re-resolution during repair.
+    expectedBehaviour:
+      - A clean sync and build succeed without ambient development packages.
+      - Consumers install only legitimate runtime dependencies.
+      - Production installs one tested immutable wheel.
+      - Missing package data or CLI metadata fails before upload.
+      - Private index access leaves no token in Git history or artifacts.
+    milestones:
+      - title: "1 — Inventory nine defects"
+        detail: Map each defect to one broken packaging contract and one proving test.
+      - title: "2 — Repair declarations and resolution"
+        detail: Correct build, runtime, optional, and development metadata plus locked CI behavior.
+      - title: "3 — Repair release evidence"
+        detail: Build once, install cleanly, test outside the checkout, and record provenance.
+    testing:
+      - Verify all nine regression checks fail against the original state.
+      - Inspect built metadata and contents rather than only source configuration.
+      - Run a secret scan against the repaired history and produced artifacts.
+      - Demonstrate stale-lock and missing-package-data failures.
+    failureCases:
+      - Counting one misplaced dependency as several defects.
+      - Changing public names merely to simplify packaging.
+      - Rotating the token without removing the committed credential path.
+      - Uploading a wheel other than the one tested.
+    bonus:
+      - Add signed provenance and a rollback drill.
+    architectureHints:
+      - Draw declaration, resolution, environment, build, and deployment as separate boxes.
+      - Give each artifact one owner and immutable identifier.
+      - Test from a directory that cannot import the repository accidentally.
+    referenceOutline: |
+      The repaired project uses a src layout and declared backend, separates dependency namespaces,
+      publishes compatibility bounds, and locks the owned application environment. CI injects index
+      credentials, verifies lock freshness, builds once, installs the wheel into a clean temporary
+      environment, tests imports, data, and scripts, then promotes by digest.
+
+resources:
+  - name: uv projects guide
+    type: docs
+    difficulty: core
+    url: "https://docs.astral.sh/uv/guides/projects/"
+    usefulness: 5
+    why: Connects project metadata, locking, synchronization, command execution, and build workflows in the official tool model.
+    covers: Project environments, uv.lock, sync, run, add, groups, and project operations.
+  - name: uv lock and sync concepts
+    type: docs
+    difficulty: deep
+    url: "https://docs.astral.sh/uv/concepts/projects/sync/"
+    usefulness: 5
+    why: Defines automatic locking, exact synchronization, locked and frozen modes, and editable project installation precisely.
+    covers: Lockfile freshness, environment synchronization, extras, groups, editable installs, and extraneous packages.
+  - name: Python Packaging User Guide — pyproject.toml
+    type: docs
+    difficulty: core
+    url: "https://packaging.python.org/en/latest/guides/writing-pyproject-toml/"
+    usefulness: 5
+    why: Provides the PyPA-maintained contract for build-system, project metadata, dependencies, scripts, and tool tables.
+    covers: Build backends, metadata, Python requirements, dependencies, optional dependencies, and entry points.
+  - name: Python Packaging User Guide — distribution package formats
+    type: docs
+    difficulty: intro
+    url: "https://packaging.python.org/en/latest/discussions/package-formats/"
+    usefulness: 4
+    why: Separates source distributions and wheels using the terminology used by installers and build tools.
+    covers: Sdists, wheels, build and installation paths, and platform-specific artifacts.
+  - name: pip local project installs
+    type: docs
+    difficulty: core
+    url: "https://pip.pypa.io/en/stable/topics/local-project-installs/"
+    usefulness: 4
+    why: Explains regular versus editable installation and the metadata changes that still require reinstallation.
+    covers: Local projects, editable installs, build artifacts, src layouts, and deployment guidance.

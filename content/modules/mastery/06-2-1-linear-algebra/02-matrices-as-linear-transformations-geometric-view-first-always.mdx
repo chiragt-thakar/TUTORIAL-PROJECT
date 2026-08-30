@@ -1,0 +1,385 @@
+---
+id: "roadmap:phase-2-2.1:1"
+title: "Matrices as linear transformations (geometric view first, always)"
+description: Read a matrix as a function that moves space — its columns are the images of the basis vectors — and use that picture to predict what scaling, rotation, shear, projection, and rank collapse do before touching arithmetic.
+module: 2-1-linear-algebra
+order: 2
+estimatedMinutes: 120
+prerequisites: []
+learningObjectives:
+  - Explain why a linear map is fixed entirely by where it sends a basis, and read a matrix's columns as those images
+  - Classify a 2x2 matrix as scaling, rotation, reflection, shear, or projection from its geometric effect on the unit square
+  - Connect determinant to signed area change and rank to the dimension of the image, including the collapse case
+  - Describe a non-square matrix as a map between spaces of different dimension and relate it to a linear layer
+---
+
+A matrix is a function. Feed it a vector, get a vector back. The rule it applies is linear: it keeps
+the origin fixed, and it sends straight, evenly spaced grid lines to straight, evenly spaced grid
+lines. Every picture in this lesson comes from those two constraints.
+
+The single fact to hold onto is that the columns of the matrix are where the transformation sends
+the standard basis vectors. Once you know where `e1` and `e2` land, linearity forces where every
+other vector goes. Reading a matrix is reading those landing spots.
+
+<TypeScriptComparison>
+
+- A matrix in NumPy behaves like a callable: `A @ x` is function application, and `A @ B` is function composition, not elementwise anything.
+- TypeScript would model this as `type LinearMap = (v: Vec) => Vec`, but it cannot express that the function respects addition and scaling — that promise lives only in how you built `A`.
+- `A @ B` reads right to left like `f(g(x))`: `B` acts first. Function composition order trips people up in both languages.
+- `Array.prototype.map` transforms elements independently; a linear map mixes coordinates, so it is closer to a reduce that produces a new vector.
+
+</TypeScriptComparison>
+
+## Linear means the map commutes with combination
+
+A map `T` from one vector space to another is linear when `T(u + v) = T(u) + T(v)` and
+`T(c*v) = c*T(v)` for every vector `u, v` and scalar `c`. Both conditions together say that `T` does
+not care whether you combine first and map, or map first and combine.
+
+One consequence does all the work. Write any vector in coordinates as `x1*e1 + ... + xn*en`. Then
+`T(x) = x1*T(e1) + ... + xn*T(en)`. The map is completely determined by the `n` vectors `T(ei)`, and
+stacking those as columns gives the matrix.
+
+```python
+import numpy as np
+
+def linear_map_from_basis_images(images: np.ndarray, x: np.ndarray) -> np.ndarray:
+    """images: (m, n), column j is T(e_j). Returns T(x) built from linearity alone."""
+    return sum(x[j] * images[:, j] for j in range(images.shape[1]))
+
+A = np.array([[2.0, -1.0],
+              [0.0,  3.0]])          # T(e1) = (2, 0), T(e2) = (-1, 3)
+x = np.array([4.0, 1.0])
+assert np.allclose(linear_map_from_basis_images(A, x), A @ x)   # same thing
+assert np.allclose(A @ x, [7.0, 3.0])
+```
+
+<Concept>
+
+"Grid lines stay straight, parallel, and evenly spaced, and the origin does not move" is the whole
+definition of linear, stated visually. A transformation that bends grid lines or shifts the origin
+is not linear and has no single matrix that represents it by multiplication alone.
+
+</Concept>
+
+## Reading a 2x2 matrix by where the square goes
+
+The unit square has corners at `(0,0)`, `(1,0)`, `(1,1)`, `(0,1)`. A linear map sends it to a
+parallelogram whose two edge vectors are the columns of the matrix. Sketch those two columns and the
+parallelogram is the transformation.
+
+A few shapes recur often enough to name on sight. A diagonal matrix scales each axis. A rotation
+keeps lengths and angles and turns the square. A shear slides one axis while fixing the other. A
+reflection flips orientation. A projection flattens the square onto a line.
+
+```python
+theta = np.pi / 6
+rotation = np.array([[np.cos(theta), -np.sin(theta)],
+                     [np.sin(theta),  np.cos(theta)]])
+shear_x  = np.array([[1.0, 1.5],
+                     [0.0, 1.0]])
+project_x = np.array([[1.0, 0.0],
+                      [0.0, 0.0]])
+
+square = np.array([[0, 1, 1, 0], [0, 0, 1, 1]], dtype=float)
+assert np.allclose(np.linalg.norm(rotation @ square, axis=0),
+                   np.linalg.norm(square, axis=0))       # rotation preserves lengths
+assert np.allclose((project_x @ square)[1], 0.0)         # projection kills the y-coordinate
+```
+
+<CommonMistake>
+
+Reading a matrix row by row to guess its effect. Rows tell you how each output coordinate is
+assembled, which is rarely a geometric picture. Columns tell you where the basis vectors go, which
+is always the picture. Look down the columns.
+
+</CommonMistake>
+
+## Composition is multiplication, and order matters
+
+Applying `B` then `A` to a vector is `A @ (B @ x)`, which equals `(A @ B) @ x`. So the matrix of
+"do `B`, then `A`" is the product `A @ B`. The rightmost matrix touches the vector first, exactly
+like `f(g(x))`.
+
+Because rotations and shears do not commute as functions, their matrices do not commute either.
+Rotating then shearing is a different map from shearing then rotating, and `A @ B` differs from
+`B @ A` to match.
+
+```python
+first_rotate_then_shear = shear_x @ rotation
+first_shear_then_rotate = rotation @ shear_x
+assert not np.allclose(first_rotate_then_shear, first_shear_then_rotate)
+```
+
+## Determinant is signed area change
+
+Map the unit square and measure the area of the resulting parallelogram. That number is the absolute
+value of the determinant. If the map also flips the square over — swapping its orientation — the
+determinant is negative.
+
+A determinant of zero means the square was flattened to a segment or a point: the map collapsed at
+least one dimension. Such a matrix has no inverse, because you cannot rebuild a 2-D square from its
+1-D shadow.
+
+```python
+assert np.isclose(np.linalg.det(np.diag([3.0, 2.0])), 6.0)     # area scaled by 6
+assert np.isclose(np.linalg.det(rotation), 1.0)                # rotation preserves area
+assert np.isclose(np.linalg.det(np.array([[1.0, 0.0], [0.0, -1.0]])), -1.0)  # reflection flips
+assert np.isclose(np.linalg.det(project_x), 0.0)              # projection collapses
+```
+
+<WhyItMatters>
+
+Every dense layer without its bias and activation is one of these maps: `h = W x`. Rotation-like
+weight matrices preserve norms and keep gradients well scaled; near-singular ones squash a direction
+and make that part of the input unrecoverable, which shows up as vanishing gradients and dead
+features.
+
+</WhyItMatters>
+
+## Rank is the dimension of the image
+
+The image, or column space, is the set of vectors the map can actually produce. Its dimension is the
+rank. A full-rank `2x2` matrix fills the plane; a rank-1 matrix sends the whole plane onto a single
+line; a rank-0 matrix sends everything to the origin.
+
+Rank survives composition only downward: `rank(A @ B)` is at most the smaller of the two ranks. Once
+a map has thrown away a dimension, nothing downstream can bring it back. This is the structural
+reason a bottleneck layer limits what a network can represent.
+
+```python
+rank1 = np.outer([1.0, 2.0], [3.0, 4.0])       # every column is a multiple of (1, 2)
+assert np.linalg.matrix_rank(rank1) == 1
+assert np.linalg.matrix_rank(rank1 @ np.random.default_rng(0).standard_normal((2, 2))) == 1
+```
+
+## Non-square matrices map between different-sized spaces
+
+An `m x n` matrix takes a vector in `R^n` to a vector in `R^m`. If `m < n` the map must lose
+information — more inputs than outputs. If `m > n` the image is a low-dimensional slice sitting
+inside the bigger space, and most target vectors are unreachable.
+
+This is the shape of every linear layer: weights `(out_features, in_features)` map an
+`in_features`-vector to an `out_features`-vector. Widening a layer raises the ceiling on the image
+dimension; it does not guarantee the weights use it.
+
+```python
+W = np.random.default_rng(1).standard_normal((3, 5))   # R^5 -> R^3
+x = np.ones(5)
+assert (W @ x).shape == (3,)
+assert np.linalg.matrix_rank(W) == 3                   # image is all of R^3 here
+```
+
+## Doing this in floating point
+
+A near-singular matrix is one whose square-to-parallelogram map almost collapses a direction. The
+ratio of the longest to the shortest edge of the mapped unit circle is the condition number, and it
+measures how much the map amplifies input error along the worst direction.
+
+Solving `A x = b` with a condition number of `1e8` loses about eight digits. A determinant near zero
+is a weak signal here because it scales with the matrix entries; the singular values, which are the
+semi-axis lengths of the mapped unit circle, are the honest measure.
+
+```python
+near_singular = np.array([[1.0, 1.0],
+                          [1.0, 1.0 + 1e-9]])
+s = np.linalg.svd(near_singular, compute_uv=False)
+assert s[0] / s[1] > 1e8                               # the map nearly flattens one direction
+assert abs(np.linalg.det(near_singular)) < 1e-8        # tiny, but that alone is not the diagnosis
+```
+
+<ProductionNote>
+
+When a linear system or least-squares fit behaves badly, print the singular value spectrum of the
+matrix, not its determinant. The ratio `s[0] / s[-1]` tells you how many digits you are losing, and
+the small singular values name the directions the map barely represents.
+
+</ProductionNote>
+
+## Cost
+
+Applying an `m x n` matrix to a vector is `m*n` multiply-adds. Composing two matrices to reuse the
+result later costs an `m*n*k` matmul up front but turns two applications into one. Storing the
+composed map is worth it only when you apply it many times.
+
+Structured maps beat dense ones. A rotation stored as an angle applies in a handful of operations; a
+diagonal scaling is `n` multiplies, not `n*n`. Recognising that a matrix is a permutation, a
+diagonal, or a rank-1 update lets you skip the general matmul entirely.
+
+## Exercises
+
+<Exercise id="la-transform-name-the-map" difficulty="easy">
+
+For each matrix, state where `e1` and `e2` land and name the transformation:
+`[[0, -1], [1, 0]]`, `[[2, 0], [0, 2]]`, `[[1, 0], [0, 0]]`.
+
+<Solution>
+
+`[[0, -1], [1, 0]]` sends `e1` to `(0, 1)` and `e2` to `(-1, 0)`. Both basis vectors turn 90 degrees
+counterclockwise and keep unit length, so it is a rotation by 90 degrees.
+
+`[[2, 0], [0, 2]]` sends `e1` to `(2, 0)` and `e2` to `(0, 2)`. Every vector doubles in length with
+direction unchanged, so it is a uniform scaling by 2.
+
+`[[1, 0], [0, 0]]` sends `e1` to `(1, 0)` and `e2` to `(0, 0)`. The `y`-axis is crushed to the
+origin and the `x`-axis is fixed, so it is the projection onto the `x`-axis.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-transform-columns-are-images" difficulty="medium">
+
+Prove that the `j`-th column of a matrix `A` equals `A @ e_j`, and use that to build the matrix of
+the map that sends `(1, 0)` to `(3, 1)` and `(0, 1)` to `(-2, 4)`.
+
+<Solution>
+
+`e_j` is the vector with a 1 in position `j` and zeros elsewhere. The matrix-vector product
+`A @ e_j` forms `sum_k e_j[k] * A[:, k]`, and every term is zero except `k = j`, where the
+coefficient is 1. So `A @ e_j = A[:, j]`, the `j`-th column.
+
+The map is linear and specified on the standard basis, so its matrix has `T(e1) = (3, 1)` as column
+one and `T(e2) = (-2, 4)` as column two:
+
+```python
+A = np.array([[3.0, -2.0],
+              [1.0,  4.0]])
+```
+
+Check: `A @ [1, 0] = (3, 1)` and `A @ [0, 1] = (-2, 4)`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-transform-determinant-composition" difficulty="hard">
+
+Show geometrically why `det(A @ B) = det(A) * det(B)`, then explain what a negative determinant
+means for the composition of two reflections.
+
+<Solution>
+
+`det(M)` is the signed factor by which `M` scales area. Applying `B` scales every region's area by
+`det(B)`; applying `A` afterwards scales the already-transformed area by `det(A)`. The combined map
+`A @ B` therefore scales area by `det(A) * det(B)`, which is the definition of `det(A @ B)`.
+
+Signs carry through the same argument: each map either preserves orientation (positive) or flips it
+(negative), and flips multiply like signs.
+
+Two reflections each have determinant `-1`, so their composition has determinant `(-1) * (-1) = 1`.
+Orientation is restored, and in fact the composition of two reflections is a rotation.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-transform-layer-interview" difficulty="interview">
+
+In an interview: a colleague says "our embedding layer is 1024-wide, so it represents a
+1024-dimensional space." How do you respond using the transformation picture?
+
+<Solution>
+
+Width 1024 is the dimension of the output space the layer can write into, not the dimension it
+actually fills. The layer is a linear map, and its image has dimension equal to the rank of the
+weight matrix, which can be far below 1024.
+
+If the weights are low rank — through training dynamics, weight decay, or an explicit bottleneck —
+the embeddings lie on a lower-dimensional subspace, and the extra coordinates are linear functions
+of the others. I would compute the singular values of the weight matrix or of a batch of
+embeddings, look for where the spectrum drops to a noise floor, and report that as the effective
+dimension.
+
+The practical implication is that a narrower layer, or a factorised one, might lose nothing while
+saving memory and compute.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-transform-whitening-real-world" difficulty="real-world">
+
+You have a batch of feature vectors whose covariance is far from the identity — some directions have
+huge variance, others tiny. Design a single linear map that makes the covariance the identity and
+explain what it does geometrically.
+
+<Solution>
+
+Compute the covariance `C` of the centred batch, take its eigendecomposition `C = V diag(w) V.T`
+(or an SVD of the centred data), and apply the map `x -> diag(w)^(-1/2) V.T (x - mean)`. The new
+covariance is the identity.
+
+Geometrically, `V.T` rotates the cloud so its spread aligns with the axes, and `diag(w)^(-1/2)`
+rescales each axis so every direction has unit variance. The ellipsoidal point cloud becomes a
+spherical one.
+
+In practice add a small floor to `w` before the inverse square root, because tiny eigenvalues are
+mostly noise and dividing by their square roots blows that noise up. The floor is a condition-number
+cap on the whitening map.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Why is a linear map completely determined by where it sends the standard basis vectors?
+2. Given a `2x2` matrix, how do you read off the parallelogram it maps the unit square to?
+3. What does `det(A) = 0` tell you about the map's image and about invertibility?
+4. Why is `rank(A @ B)` never larger than the smaller of `rank(A)` and `rank(B)`?
+5. For a badly behaved linear solve, why report the singular value spectrum rather than the
+   determinant?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Is translation a linear transformation?">
+
+No. A linear map fixes the origin, and translation moves it. Translation is affine. To handle it
+with a single matrix you embed vectors in one higher dimension using homogeneous coordinates, which
+is what graphics and some ML pipelines do.
+
+</Gotcha>
+
+<Gotcha question="I multiplied A @ B expecting 'apply A then B'.">
+
+`A @ B` applied to `x` is `A @ (B @ x)`, so `B` runs first. Composition reads right to left, like
+`f(g(x))`. If you want "apply A then B", form `B @ A`.
+
+</Gotcha>
+
+<Gotcha question="The determinant is small, so the matrix must be nearly singular.">
+
+Not on its own. Scale a well-conditioned matrix by `0.01` and its determinant shrinks by `1e-4` per
+dimension while its condition number is unchanged. The ratio of largest to smallest singular value
+is the scale-free measure of near-singularity.
+
+</Gotcha>
+
+<Gotcha question="A wider layer represents a higher-dimensional space.">
+
+It raises the ceiling on the image dimension. The map still only fills a subspace of dimension equal
+to the weight matrix's rank, which training does not force up to the full width.
+
+</Gotcha>
+
+<Gotcha question="Rows and columns both describe the transformation, so either is fine to read.">
+
+Columns are the images of the basis vectors — the geometric picture. Rows are the recipes for each
+output coordinate — an algebraic view that rarely looks like anything. For intuition, read columns.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+A matrix is a linear function of vectors, and linearity means it commutes with addition and scaling.
+That forces the map to be fixed by its action on a basis, and the columns of the matrix are exactly
+those basis images.
+
+Read a `2x2` matrix by drawing where its columns send the unit square. Scaling, rotation,
+reflection, shear, and projection each have a recognisable shape. The determinant is the signed area
+factor, zero when the map collapses a dimension; the rank is the dimension of the image and only
+falls under composition.
+
+Non-square matrices map between spaces of different size and are the shape of every linear layer.
+On real data, judge near-singularity by the singular value spectrum, not the determinant. The
+Practice, Debug, Interview, Test, Project, and Review tabs drill these readings on concrete maps.

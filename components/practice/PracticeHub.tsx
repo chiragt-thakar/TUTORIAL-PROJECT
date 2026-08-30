@@ -48,7 +48,7 @@ export function PracticeHub({ index }: { index: PracticeIndexEntry[] }) {
   if (index.length === 0) {
     return (
       <p className="practice-empty">
-        No topic has practice content yet. The first one is being written — see <code>PRACTICE_SYSTEM.md</code>.
+        No topic has practice content yet. Author the next topic listed in <code>CLAUDE.md</code>.
       </p>
     );
   }

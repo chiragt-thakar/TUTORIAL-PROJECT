@@ -1,0 +1,391 @@
+---
+id: "roadmap:phase-2-2.1:2"
+title: "Matrix multiplication — four different mental models of it"
+description: The same product AB read four ways — entrywise dot products, A acting on the columns of B, the rows of A acting on B, and a sum of rank-1 outer products — plus why it is really function composition, and which view to reach for when.
+module: 2-1-linear-algebra
+order: 3
+estimatedMinutes: 120
+prerequisites: []
+learningObjectives:
+  - Compute and explain AB through all four views and state which one a given problem makes easy
+  - Justify the shape rule, non-commutativity, associativity, and distributivity from the composition view
+  - Use the outer-product view to see low-rank updates, attention scores, and the gradient of a linear layer
+  - Reason about the cost of a matrix chain and why association order changes the FLOP count
+---
+
+`A @ B` has one definition and at least four readings. Each reading is a different way to slice the
+same sum, and each makes a different problem obvious. Fluency here means picking the slice that turns
+your problem into one line instead of a nested loop.
+
+Underneath all four is a single fact: if `A` and `B` are matrices of linear maps, then `A @ B` is
+the matrix of "do `B`, then `A`". Every rule of matrix multiplication — the shape constraint,
+associativity, the failure of commutativity — falls out of that.
+
+<TypeScriptComparison>
+
+- The textbook triple loop is `for i: for j: for k: C[i][j] += A[i][k] * B[k][j]`. NumPy's `@` runs the same arithmetic through BLAS with cache blocking, so it is orders of magnitude faster for the identical result.
+- TypeScript has no `@`; you would write the loops by hand over `number[][]` and lose vectorisation entirely.
+- `A.map(row => ...)` tempts you to think row-at-a-time, which is only one of the four views and not usually the fastest.
+- `math.js` and similar libraries provide `multiply`, but the mental models below are what let you avoid calling it in a loop when a single reshaped product would do.
+
+</TypeScriptComparison>
+
+## The definition, and why the shapes must line up
+
+For `A` of shape `(m, k)` and `B` of shape `(k, n)`, the product `C = A @ B` has shape `(m, n)` and
+`C[i, j] = sum over p of A[i, p] * B[p, j]`. The shared dimension `k` is summed away; that is why
+the inner shapes must match and the outer shapes survive.
+
+From the composition view the constraint is obvious. `B` maps `R^n` into `R^k`, so `A` must accept
+inputs from `R^k`, which means `A` has `k` columns. Mismatched inner dimensions are a type error:
+the output of one map is not a legal input to the next.
+
+```python
+import numpy as np
+
+A = np.arange(6.0).reshape(2, 3)   # (2, 3)
+B = np.arange(12.0).reshape(3, 4)  # (3, 4)
+C = A @ B                          # (2, 4)
+assert C.shape == (2, 4)
+assert np.isclose(C[1, 2], sum(A[1, p] * B[p, 2] for p in range(3)))
+```
+
+## View 1 — every entry is a dot product
+
+`C[i, j]` is the dot product of row `i` of `A` with column `j` of `B`. This is the view the
+definition states directly, and it is the one to use when you care about a single output number,
+such as one similarity score or one logit.
+
+Attention scores are exactly this: `scores = Q @ K.T`, where `scores[i, j]` is the dot product of
+query `i` with key `j`. Reading that line as "a grid of dot products" tells you immediately what
+each entry means and why the result is `(n_queries, n_keys)`.
+
+```python
+Q = np.random.default_rng(0).standard_normal((3, 8))
+K = np.random.default_rng(1).standard_normal((5, 8))
+scores = Q @ K.T
+assert np.isclose(scores[2, 4], Q[2] @ K[4])
+```
+
+## View 2 — the output columns are A acting on B's columns
+
+Column `j` of `C` is `A @ (column j of B)`. The product applies the map `A` to each column of `B`
+independently. This is the right view when `B` is a batch of vectors stacked as columns and you want
+"run every vector through `A`".
+
+It also explains why the column space of `C` sits inside the column space of `A`: every output
+column is a combination of `A`'s columns, so `C` can never reach a direction `A` cannot.
+
+```python
+for j in range(B.shape[1]):
+    assert np.allclose(C[:, j], A @ B[:, j])
+```
+
+## View 3 — the output rows are A's rows acting on B
+
+Row `i` of `C` is `(row i of A) @ B`. Each row of `A` is a recipe of coefficients that mixes the
+rows of `B`. Use this when the rows of `A` are the interesting objects — a set of probe directions,
+or the weights of several linear readouts applied to the same features `B`.
+
+Views 2 and 3 are mirror images: one combines `A`'s columns, the other combines `B`'s rows. Which
+feels natural depends on whether your data lives in the columns or the rows.
+
+```python
+for i in range(A.shape[0]):
+    assert np.allclose(C[i, :], A[i, :] @ B)
+```
+
+## View 4 — a sum of rank-1 outer products
+
+`C = sum over p of (column p of A) outer (row p of B)`. Each term is a rank-1 matrix: an outer
+product of one column of `A` with one row of `B`. The full product is `k` of these stacked up.
+
+This view is the key to low-rank thinking. If only a few terms are large, `C` is close to low rank.
+It is also how a linear layer's weight gradient arises: `dL/dW = delta outer x`, a single rank-1
+update per example, summed over the batch.
+
+```python
+outer_sum = sum(np.outer(A[:, p], B[p, :]) for p in range(A.shape[1]))
+assert np.allclose(outer_sum, C)
+
+# a rank-1 update, the p = single-term case
+delta = np.array([0.1, -0.2])
+x = np.array([1.0, 0.0, 3.0])
+assert np.allclose(np.outer(delta, x).shape, (2, 3))   # same shape as a (2, 3) weight
+```
+
+<Concept>
+
+The four views are one sum, `sum_p A[i,p] B[p,j]`, grouped differently: fix `i, j` (dot products),
+fix `j` (columns), fix `i` (rows), or fix `p` (outer products). No view is more correct; each
+exposes a different structure of the same numbers.
+
+</Concept>
+
+## The algebra, read off composition
+
+`A @ B` generally does not equal `B @ A`: doing `B` then `A` is a different map from doing `A` then
+`B`, and often the shapes do not even allow both. Matrix multiplication is associative,
+`(A @ B) @ C = A @ (B @ C)`, because composing functions is associative.
+
+It also distributes over addition, `A @ (B + C) = A @ B + A @ C`, because linear maps respect sums.
+Both facts are inherited from the maps, not proved by grinding through indices.
+
+```python
+R = np.array([[0.0, -1.0], [1.0, 0.0]])   # rotate 90 degrees
+S = np.array([[1.0, 1.0], [0.0, 1.0]])    # shear
+assert not np.allclose(R @ S, S @ R)      # order matters
+M = np.random.default_rng(2).standard_normal((2, 2))
+assert np.allclose((R @ S) @ M, R @ (S @ M))   # association does not
+```
+
+<CommonMistake>
+
+Assuming `A @ B == B @ A` because scalar multiplication commutes, or cancelling `A` from
+`A @ B == A @ C` to conclude `B == C`. Cancellation needs `A` invertible; if `A` is singular there
+are many `B` giving the same product.
+
+</CommonMistake>
+
+## Associativity changes the bill
+
+Associativity says the answer is the same whichever way you parenthesise, but the cost is not.
+Multiplying `(m, k)` by `(k, n)` costs about `m*k*n` scalar multiply-adds. For a chain
+`A (m,k) @ B (k,n) @ C (n,p)`, doing `(A @ B) @ C` costs `m*k*n + m*n*p`, while `A @ (B @ C)` costs
+`k*n*p + m*k*p`.
+
+Pick the order that keeps the intermediate matrix small. Multiplying a big matrix by a tall-then-wide
+pair in the wrong order can be many times slower, and for long chains the optimal parenthesisation
+is a classic dynamic-programming problem.
+
+```python
+A = np.random.default_rng(3).standard_normal((1000, 2))
+B = np.random.default_rng(4).standard_normal((2, 1000))
+v = np.random.default_rng(5).standard_normal((1000, 1))
+# (A @ B) @ v forms a 1000x1000 intermediate; A @ (B @ v) never does
+assert np.allclose((A @ B) @ v, A @ (B @ v))
+```
+
+<WhyItMatters>
+
+`x @ W1 @ W2` in an MLP, `Q @ K.T @ V` in attention, and repeated `P @ P` for graph walks are all
+matrix chains. Choosing the association order, or refactoring `A @ B` with `B` low rank into
+`(A @ U) @ V`, is a direct FLOP and memory saving with no change to the result.
+
+</WhyItMatters>
+
+## Doing this in floating point
+
+The summed products in each entry are done in finite precision, so `A @ B` is not bit-exact and
+`(A @ B) @ C` can differ from `A @ (B @ C)` in the last few digits. BLAS also reorders the inner sum
+for cache and parallelism, so results can vary slightly across machines and thread counts.
+
+The error grows with the shared dimension `k` and with cancellation between large terms of opposite
+sign. When two routes to the same product disagree beyond a relative tolerance of a few times
+`k * eps`, suspect an ill-conditioned factor rather than a bug.
+
+```python
+rng = np.random.default_rng(6)
+A, B, C = (rng.standard_normal((200, 200)) for _ in range(3))
+left = (A @ B) @ C
+right = A @ (B @ C)
+assert np.allclose(left, right, rtol=1e-9)          # close, not identical
+assert not np.array_equal(left, right)              # usually differ in the last bits
+```
+
+<ProductionNote>
+
+If a pipeline's output changes when you refactor a matrix chain's association or move it to a GPU,
+that is expected floating-point reordering, not necessarily a regression. Compare with a relative
+tolerance scaled by the shared dimension, and only investigate when the gap is far larger than that.
+
+</ProductionNote>
+
+## Cost
+
+A dense `(m, k) @ (k, n)` product is `2*m*k*n` FLOPs and is memory-bound or compute-bound depending
+on shape. BLAS `gemm` tiles the loops so each block of `A` and `B` is reused from cache, which is
+why one `@` beats a hand loop by a hundredfold or more.
+
+The outer-product view maps onto hardware: an accumulator holds a running `(m, n)` sum while rank-1
+updates stream through. When `B` is known to be rank `r`, replacing the `(k, n)` factor with a
+`(k, r) @ (r, n)` pair drops the cost from `m*k*n` to `m*k*r + m*r*n`.
+
+## Exercises
+
+<Exercise id="la-matmul-hand-compute" difficulty="easy">
+
+Compute `A @ B` for `A = [[1, 2], [0, 1], [3, 0]]` and `B = [[4, 1], [2, 5]]` by the dot-product
+view, then confirm the first column equals `A @ B[:, 0]`.
+
+<Solution>
+
+`A` is `(3, 2)`, `B` is `(2, 2)`, so the product is `(3, 2)`. Entry by entry:
+
+- Row 0: `[1*4 + 2*2, 1*1 + 2*5] = [8, 11]`
+- Row 1: `[0*4 + 1*2, 0*1 + 1*5] = [2, 5]`
+- Row 2: `[3*4 + 0*2, 3*1 + 0*5] = [12, 3]`
+
+So `A @ B = [[8, 11], [2, 5], [12, 3]]`.
+
+First column check: `A @ [4, 2] = [1*4 + 2*2, 0*4 + 1*2, 3*4 + 0*2] = [8, 2, 12]`, which matches
+column 0 of the product. That is the column view of the same computation.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-matmul-outer-sum" difficulty="medium">
+
+Show that `A @ B` equals `sum_p np.outer(A[:, p], B[p, :])` by expanding one entry, then use the
+identity to explain why `A @ B` has rank at most `min(rank(A), rank(B))`.
+
+<Solution>
+
+Entry `(i, j)` of `sum_p outer(A[:, p], B[p, :])` is `sum_p A[i, p] * B[p, j]`, which is exactly the
+definition of `(A @ B)[i, j]`. So the outer-product sum and the standard product are the same
+matrix.
+
+Each term `outer(A[:, p], B[p, :])` is rank 1, and its column space is spanned by `A[:, p]`. The
+sum of `k` such terms has column space inside `span(columns of A)`, so `rank(A @ B) <= rank(A)`.
+Applying the same argument to rows (or to `B.T @ A.T`) gives `rank(A @ B) <= rank(B)`. Hence the
+rank is at most the smaller of the two.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-matmul-chain-cost" difficulty="hard">
+
+You must compute `M = A @ B @ C` with shapes `A: (100, 5)`, `B: (5, 100)`, `C: (100, 20)`. Give the
+FLOP count for both parenthesisations and state which to use and why.
+
+<Solution>
+
+`(A @ B) @ C`: first product is `(100, 5) @ (5, 100)` at about `100*5*100 = 50000` multiply-adds,
+producing a `(100, 100)` matrix; then `(100, 100) @ (100, 20)` at `100*100*20 = 200000`. Total about
+`250000`.
+
+`A @ (B @ C)`: first product is `(5, 100) @ (100, 20)` at `5*100*20 = 10000`, producing `(5, 20)`;
+then `(100, 5) @ (5, 20)` at `100*5*20 = 10000`. Total about `20000`.
+
+Use `A @ (B @ C)`: it is roughly 12 times cheaper and never forms the `(100, 100)` intermediate, so
+it also uses far less memory. The rule is to contract against the small shared dimension first.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-matmul-interview-views" difficulty="interview">
+
+In an interview: "You need the diagonal of `A @ B` but not the rest. How do you get it without
+forming the full product?"
+
+<Solution>
+
+The diagonal entry `(A @ B)[i, i]` is the dot product of row `i` of `A` with column `i` of `B`, so
+`diag(A @ B) = np.sum(A * B.T, axis=1)`, computed with the entrywise product of `A` and `B.T`
+followed by a row sum.
+
+This costs `m*k` operations instead of the `m*k*n` of the full product, and it never allocates the
+`(m, n)` result. In `einsum` it is `np.einsum('ik,ki->i', A, B)`. The key realisation is that only
+the `i = j` dot products are needed, so the column view collapses to a single elementwise
+multiply-and-sum.
+
+I would mention that if `A` and `B` are large and only a few diagonal entries are needed, slicing
+the relevant rows and columns first is cheaper still.
+
+</Solution>
+</Exercise>
+
+<Exercise id="la-matmul-lowrank-real-world" difficulty="real-world">
+
+A layer computes `y = x @ W` with `W` of shape `(4096, 4096)`, and profiling shows this matmul
+dominates inference. An analysis says `W` is well approximated by rank 64. Design the replacement
+and give the speedup.
+
+<Solution>
+
+Factor `W ≈ U @ V` with `U` of shape `(4096, 64)` and `V` of shape `(64, 4096)`, obtained from the
+truncated SVD of `W` (`U = U_r @ diag(s_r)`, `V = Vt_r`). At inference compute `y = (x @ U) @ V`.
+
+Cost per token drops from `4096*4096 ≈ 16.8M` multiply-adds to `4096*64 + 64*4096 ≈ 0.52M`, about a
+32 times reduction, plus the stored parameters fall from `16.8M` to `0.52M`.
+
+Before shipping, measure end-task quality, not just `||W - U @ V||`, because a small Frobenius error
+can still move predictions. Keep the rank a tunable knob, warm-start from the SVD, and optionally
+fine-tune `U` and `V` to recover any lost accuracy. This is the same construction as a LoRA adapter,
+used here to replace rather than augment the weight.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. State the four views of `A @ B` as four ways of grouping the single sum `sum_p A[i,p] B[p,j]`.
+2. Why must the inner dimensions match, argued from composition rather than from the formula?
+3. Give a concrete pair where `A @ B` and `B @ A` differ, and explain why cancellation of `A` is not
+   valid in general.
+4. For a chain of three matrices, why does the association order change the FLOP count but not the
+   result?
+5. When `B` is known to be rank `r`, how do you rewrite `A @ B` to save work, and what is the new
+   cost?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Is matrix multiplication elementwise like NumPy's `*`?">
+
+No. `*` (or `np.multiply`) is Hadamard, entrywise, and needs matching shapes. `@` (or `np.matmul`)
+is the composition product with the inner-dimension rule. Mixing them up is one of the most common
+NumPy bugs.
+
+</Gotcha>
+
+<Gotcha question="`A @ B == A @ C`, so `B` must equal `C`.">
+
+Only if `A` is invertible. If `A` is singular, its null space is nontrivial, and any `C = B + n`
+with `n` in that null space gives the same product. Cancellation is multiplication by `A` inverse,
+which does not exist here.
+
+</Gotcha>
+
+<Gotcha question="I refactored a matrix chain and the outputs changed slightly — is that a bug?">
+
+Probably not. Floating-point addition is not associative, and `(A @ B) @ C` sums the products in a
+different order from `A @ (B @ C)`. Differences of a few times `k * eps` relative are expected;
+only large gaps signal an ill-conditioned factor or a real error.
+
+</Gotcha>
+
+<Gotcha question="The rows view and the columns view give different answers.">
+
+They cannot; they are the same product sliced differently. If your code disagrees, you have a
+transpose or an axis wrong somewhere. Check that "row `i` of `A` times `B`" uses `A[i, :] @ B`, not
+`A[:, i] @ B`.
+
+</Gotcha>
+
+<Gotcha question="Bigger shared dimension `k` means more accurate, since more terms are averaged.">
+
+The opposite. Each entry sums `k` products, and rounding error accumulates roughly with `k`, worse
+if terms nearly cancel. Large `k` needs more care, not less; that is why high-precision accumulation
+matters for long contractions.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Matrix multiplication is one sum grouped four ways: entrywise dot products, `A` applied to `B`'s
+columns, `A`'s rows applied to `B`, and a sum of rank-1 outer products. Each view makes a different
+question a one-liner — a single score, a batch transform, a set of readouts, a low-rank structure.
+
+The algebra comes from composition. Inner dimensions match because the output of one map must be a
+legal input to the next; the product is associative and distributive but not commutative for the
+same reason. Association order leaves the answer alone but can change the FLOP count by a large
+factor.
+
+In floating point the product is close but not exact, and refactoring a chain can shift the last
+digits. The outer-product view is the one to carry into low-rank approximation, attention, and the
+gradient of a linear layer. The Practice, Debug, Interview, Test, Project, and Review tabs exercise
+all four.

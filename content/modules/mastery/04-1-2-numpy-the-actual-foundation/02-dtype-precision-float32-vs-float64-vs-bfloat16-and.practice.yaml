@@ -1,0 +1,308 @@
+lessonId: "roadmap:phase-1-1.2:1"
+module: 1-2-numpy-the-actual-foundation
+lesson: 02-dtype-precision-float32-vs-float64-vs-bfloat16-and
+title: "dtype, precision, float32 vs float64 vs bfloat16 — and why it matters for training"
+summary: Connect bits to numerical behavior and choose storage, compute, and accumulator precision deliberately.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: ndp-inspect-finfo
+    tier: normal
+    kind: write-code
+    title: Inspect format limits
+    minutes: 10
+    requiredForMastery: true
+    concepts: [finfo, epsilon, range]
+    prompt: Write a function reporting epsilon, smallest normal, maximum, and decimal precision for a floating dtype.
+    hints:
+      - "`np.finfo` exposes machine limits."
+      - Accept the dtype rather than constructing a large array.
+    solution: |
+      Query `np.finfo(dtype)` and return its `eps`, `tiny`, `max`, and `precision`. These describe
+      format limits, though spacing at other magnitudes scales with exponent.
+    solutionCode: |
+      def float_limits(dtype: np.dtype) -> dict[str, float | int]:
+          info = np.finfo(dtype)
+          return {"eps": info.eps, "tiny": info.tiny, "max": info.max, "precision": info.precision}
+  - id: ndp-spacing
+    tier: normal
+    kind: predict-output
+    title: Predict a lost increment
+    minutes: 10
+    requiredForMastery: true
+    concepts: [spacing, rounding, float32]
+    prompt: Explain why `np.float32(100_000_000) + np.float32(1)` may equal the original value.
+    hints: [Floating values are not evenly spaced., Inspect `np.spacing(np.float32(100_000_000))`.]
+    solution: At that magnitude adjacent float32 values are farther than one unit apart. The exact sum rounds to the original representable value, so the increment disappears.
+  - id: ndp-result-type
+    tier: normal
+    kind: code-reading
+    title: Read promotion explicitly
+    minutes: 11
+    requiredForMastery: true
+    concepts: [promotion, result-type, scalars]
+    prompt: Without relying on memory, design code that reports the dtype selected for two operands before performing an expensive operation.
+    hints: [NumPy exposes its promotion decision., Pass dtypes or representative operands to `result_type`.]
+    solution: Use `np.result_type(left, right)` and compare it with the required output policy before allocating. This makes promotion observable and avoids brittle assumptions about operand order.
+  - id: ndp-accumulator
+    tier: intermediate
+    kind: write-code
+    title: Widen only the accumulator
+    minutes: 13
+    requiredForMastery: true
+    concepts: [reduction, accumulator, memory]
+    prompt: Sum a large float32 array with float64 accumulation without first converting the entire array.
+    hints: [Reduction functions accept a dtype argument., The source buffer can remain float32.]
+    solution: Call `values.sum(dtype=np.float64)`. NumPy reads float32 inputs into a wider accumulation path and returns a float64 result without storing a second full-sized input array.
+  - id: ndp-bfloat-tradeoff
+    tier: intermediate
+    kind: explain
+    title: Explain bfloat16's trade
+    minutes: 14
+    requiredForMastery: true
+    concepts: [bfloat16, exponent, significand]
+    prompt: Compare bfloat16 with IEEE float16 for neural-network training.
+    hints: [Compare exponent widths first., Then compare significand precision and scaling needs.]
+    solution: Bfloat16 keeps float32-like exponent range, reducing overflow and underflow pressure, but carries fewer significand bits than float16 and rounds more coarsely. Sensitive accumulation commonly remains float32.
+  - id: ndp-tolerance-design
+    tier: intermediate
+    kind: design
+    title: Choose meaningful tolerances
+    minutes: 16
+    requiredForMastery: true
+    concepts: [rtol, atol, testing]
+    prompt: Define comparison policy for probabilities near zero and logits near one thousand.
+    hints: [Relative tolerance weakens near zero., Absolute tolerance alone scales poorly at large magnitude.]
+    solution: Use a domain-derived absolute floor for probabilities and a relative tolerance for large logits, plus finite and range checks. Calibrate thresholds against a trusted precision baseline and downstream metric sensitivity.
+  - id: ndp-inplace-cast-debug
+    tier: tricky
+    kind: debug
+    title: Repair an in-place cast failure
+    minutes: 15
+    requiredForMastery: true
+    concepts: [in-place, casting, integer]
+    prompt: Fix the normalization while preserving fractional output.
+    code: |
+      pixels = np.array([0, 128, 255], dtype=np.uint8)
+      pixels /= 255
+    hints: [The existing buffer cannot change dtype in place., Create the desired floating boundary explicitly.]
+    solution: Convert to the required floating dtype before division or use an out-of-place expression with an explicit destination policy. Do not rely on implicit promotion for an in-place integer buffer.
+    solutionCode: |
+      normalized = pixels.astype(np.float32) / np.float32(255.0)
+  - id: ndp-variance-debug
+    tier: tricky
+    kind: debug
+    title: Replace unstable variance
+    minutes: 18
+    requiredForMastery: true
+    concepts: [cancellation, variance, stable-algorithm]
+    prompt: Diagnose negative or inaccurate variance for large values and repair the algorithm.
+    code: |
+      variance = np.mean(x * x) - np.mean(x) ** 2
+    hints: [Two large nearly equal quantities are subtracted., Center values or use a stable library reduction.]
+    solution: The difference-of-moments formula suffers catastrophic cancellation. Use `np.var` with a suitable accumulator, or a stable two-pass or online algorithm after considering overflow and precision.
+  - id: ndp-softmax-debug
+    tier: tricky
+    kind: debug
+    title: Stabilize softmax
+    minutes: 18
+    requiredForMastery: true
+    concepts: [overflow, softmax, stabilization]
+    prompt: Repair softmax for large logits.
+    code: |
+      def softmax(x):
+          e = np.exp(x)
+          return e / e.sum(axis=-1, keepdims=True)
+    hints: [Softmax is invariant to subtracting one constant per row., Choose the maximum to keep exponent arguments non-positive.]
+    solution: Subtract the row maximum before exponentiation and use an appropriate compute/accumulator dtype. This prevents positive exponential overflow while preserving the mathematical ratio.
+    solutionCode: |
+      def softmax(x):
+          shifted = x - np.max(x, axis=-1, keepdims=True)
+          e = np.exp(shifted)
+          return e / e.sum(axis=-1, keepdims=True)
+  - id: ndp-integer-overflow
+    tier: tricky
+    kind: predict-output
+    title: Bound an integer reduction
+    minutes: 15
+    requiredForMastery: false
+    concepts: [integer-overflow, accumulator, bounds]
+    prompt: A million uint16 readings may each equal 65535. Choose a safe total dtype and justify it from the maximum sum.
+    hints: [Compute count times maximum element., Compare the result against candidate integer ranges.]
+    solution: The maximum is 65,535,000,000, which exceeds 32-bit unsigned range. A uint64 or suitably checked int64 accumulator covers it; validate platform and downstream serialization contracts.
+  - id: ndp-mixed-precision-policy
+    tier: challenge
+    kind: design
+    title: Design a mixed-precision policy
+    minutes: 25
+    requiredForMastery: false
+    concepts: [mixed-precision, loss-scaling, monitoring]
+    prompt: Design rollout policy for lower-precision transformer training on new accelerator hardware.
+    hints: [Separate eligible matmuls from sensitive reductions and optimizer state., Compare convergence and finite values against a float32 baseline.]
+    solution: Define autocast eligibility, float32 accumulators and master state, scaling policy, finite-gradient checks, denylisted operations, target-hardware baselines, quality thresholds, telemetry, and automatic rollback.
+  - id: ndp-precision-benchmark
+    tier: challenge
+    kind: performance
+    title: Benchmark precision end to end
+    minutes: 24
+    requiredForMastery: false
+    concepts: [benchmark, conversion, quality]
+    prompt: Design a benchmark for float32 versus reduced-precision inference that cannot hide conversion overhead or accuracy loss.
+    hints: [Time input conversion and transfer as well as kernels., Validate representative and extreme cases with task metrics.]
+    solution: Warm both pipelines, include conversion transfer and synchronization, measure distributions of latency and memory, compare finite outputs and task metrics to a trusted baseline, and record hardware plus kernel policy.
+quizzes:
+  - id: ndp-checkpoint
+    title: Checkpoint — floating representation
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: ndp-cp-range
+        kind: mcq
+        prompt: Which field primarily determines floating-point range?
+        options: [{id: sign, text: Sign}, {id: exponent, text: Exponent}, {id: significand, text: Significand}]
+        answer: [exponent]
+        explanation: Exponent width controls the available orders of magnitude.
+        concepts: [floating-format]
+        points: 1
+      - id: ndp-cp-flatten
+        kind: true-false
+        prompt: Machine epsilon is the spacing between every pair of floats.
+        options: [{id: "true", text: "True"}, {id: "false", text: "False"}]
+        answer: ["false"]
+        explanation: Epsilon describes spacing near one; spacing scales with magnitude.
+        concepts: [epsilon]
+        points: 1
+  - id: ndp-assessment
+    title: Assessment — precision policy
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: ndp-as-bfloat
+        kind: mcq
+        prompt: What is bfloat16's main advantage over IEEE float16 for training?
+        options: [{id: exact, text: Exact decimal arithmetic}, {id: range, text: Wider exponent range}, {id: morefrac, text: More fraction bits}]
+        answer: [range]
+        explanation: Bfloat16 preserves roughly float32 exponent range while sacrificing fraction bits.
+        concepts: [bfloat16]
+        points: 1
+      - id: ndp-as-associative
+        kind: true-false
+        prompt: Floating-point addition is associative.
+        options: [{id: "true", text: "True"}, {id: "false", text: "False"}]
+        answer: ["false"]
+        explanation: Rounding after each operation makes grouping affect results.
+        concepts: [rounding]
+        points: 1
+      - id: ndp-as-accumulator
+        kind: mcq
+        prompt: Which improves sum accuracy without widening stored inputs?
+        options: [{id: sort, text: Rename the array}, {id: acc64, text: Use a float64 accumulator}, {id: exacteq, text: Compare with exact equality}]
+        answer: [acc64]
+        explanation: A wider reduction dtype changes accumulation without duplicating all stored values.
+        concepts: [accumulation]
+        points: 1
+      - id: ndp-as-softmax
+        kind: complete-code
+        prompt: State the key stabilization step before exponentiating logits.
+        modelAnswer: Subtract the maximum along the softmax axis with keepdims so exponent arguments are non-positive.
+        explanation: Softmax is shift-invariant and this prevents positive overflow.
+        concepts: [softmax, stability]
+        points: 2
+      - id: ndp-as-rollout
+        kind: scenario
+        prompt: Name four acceptance signals for a reduced-precision rollout.
+        modelAnswer: Compare task quality, convergence, non-finite rates, latency or throughput, memory, and output error on target hardware against a reproducible float32 baseline.
+        explanation: Numerical and operational evidence must be evaluated together.
+        concepts: [mixed-precision, validation]
+        points: 2
+interview:
+  - id: ndp-iv-float
+    level: basic
+    requiredForMastery: true
+    concepts: [floating-format]
+    question: Why can floats represent huge values but not every small decimal exactly?
+    shortAnswer: A finite bit pattern encodes a sign, binary significand, and exponent. The exponent gives scale, but only finitely many binary fractions exist, so most decimals round.
+    fullAnswer: Precision is relative and spacing expands with magnitude. Operations round after each step, which introduces bounded local error that algorithms can amplify or control.
+    commonWrongAnswer: Floats are decimals with a fixed number of places. They are usually binary scientific notation.
+    followUps: [What is machine epsilon?, What are subnormals?]
+  - id: ndp-iv-formats
+    level: comparison
+    requiredForMastery: true
+    concepts: [float16, bfloat16, float32]
+    question: Compare float16, bfloat16, and float32 for training.
+    shortAnswer: Float32 offers stronger precision and range at higher bandwidth cost. Float16 has limited range but more fraction precision than bfloat16; bfloat16 keeps float32-like range with coarse precision.
+    fullAnswer: Hardware support, accumulation policy, scaling, and operation stability matter more than labels alone. Reduced formats commonly accelerate matrix kernels while float32 protects reductions and optimizer state.
+    commonWrongAnswer: Bfloat16 is always more accurate than float16. Accuracy depends on whether range or local precision dominates.
+    followUps: [Why use loss scaling?, Which operations remain float32?]
+  - id: ndp-iv-promotion
+    level: internals
+    requiredForMastery: false
+    concepts: [promotion, casting]
+    question: How do you reason about NumPy result dtype safely?
+    shortAnswer: I inspect `np.result_type` or the operation contract rather than guessing from operand order. I distinguish promotion from explicit casting and treat in-place outputs as stricter boundaries.
+    fullAnswer: Scalars, arrays, signedness, width, and operation rules influence results. Narrow casts need range checks, and API boundaries should name the intended storage and output dtype.
+    commonWrongAnswer: The left operand determines dtype. NumPy promotion considers all operands and the operation.
+    followUps: [What does safe casting mean?, Why can in-place division fail?]
+  - id: ndp-iv-stability
+    level: advanced
+    requiredForMastery: false
+    concepts: [stable-algorithm, cancellation]
+    question: What is numerical stability?
+    shortAnswer: A stable algorithm prevents small representation or input errors from being amplified unreasonably. It is about formulation and conditioning, not merely choosing more bits.
+    fullAnswer: Examples include shifted softmax, log-sum-exp, stable variance, scaling, and wider accumulators. I compare error against a trusted baseline over the real input range.
+    commonWrongAnswer: Stable means using float64. Wider types help but do not repair a badly conditioned formula universally.
+    followUps: [Explain catastrophic cancellation., How would you test stability?]
+  - id: ndp-iv-rollout
+    level: scenario
+    requiredForMastery: false
+    concepts: [mixed-precision, observability]
+    question: How would you debug NaNs after enabling mixed precision?
+    shortAnswer: Reproduce against float32, find the first non-finite operation with hooks or anomaly checks, inspect ranges and scaling, and selectively restore precision. I would verify target hardware and kernel policy.
+    fullAnswer: Check inputs, logits, losses, gradients, reductions, optimizer state, overflow counters, and unscaling order. Bisect autocast regions and add finite-value assertions before changing the whole model.
+    commonWrongAnswer: Increase epsilon everywhere. That can hide symptoms and change model behavior without identifying the unstable operation.
+    followUps: [When does gradient scaling help?, Why might bfloat16 behave differently?]
+projects:
+  - id: ndp-project-precision-lab
+    kind: major
+    title: Build a numerical precision laboratory
+    minutes: 210
+    summary: Compare storage and accumulator policies on stable and unstable ML-shaped computations.
+    problem: Build a reproducible CLI that runs sums, variance, softmax, and a small matrix pipeline across available dtypes, compares them with a float64 reference, and produces a machine-readable quality and performance report.
+    requirements: [Report dtype limits and local spacing., Include naive and stable variance and softmax variants., Separate input storage from accumulator dtype., Measure absolute relative and task-level error., Detect NaN infinity overflow and underflow., Record timing memory hardware and configuration.]
+    constraints: [Do not claim unsupported bfloat16 execution; report capability honestly., Include conversion time., Seed generated inputs and include adversarial scales.]
+    expectedBehaviour: [Stable algorithms outperform naive variants on adversarial inputs., Wider accumulators improve long reductions., Unsupported formats are skipped with a reason., Reports reproduce from saved configuration.]
+    milestones:
+      - {title: "1 — Formats", detail: Inspect limits spacing and promotion behavior.}
+      - {title: "2 — Kernels", detail: Implement reference naive and stable computations.}
+      - {title: "3 — Evidence", detail: Add benchmarking quality gates and JSON output.}
+    testing: [Test zeros extremes cancellation repeated sums and non-finite input., Compare stable kernels with float64 references., Test tolerance decisions at small and large scales.]
+    failureCases: [Timing asynchronous work without synchronization., Excluding cast overhead., Using exact float equality., Treating one random batch as acceptance.]
+    bonus: [Add PyTorch autocast when installed., Visualize error versus magnitude.]
+    architectureHints: [Represent each experiment as data plus a pure runner., Keep reference computation separate from candidate policy.]
+    referenceOutline: Generate seeded normal and adversarial cases, execute each declared storage-compute-accumulator policy, compare against float64, capture finite and error metrics, then benchmark complete pipelines and emit JSON.
+resources:
+  - name: NumPy data types user guide
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/user/basics.types.html"
+    usefulness: 5
+    why: It is the primary overview of NumPy scalar types, overflow, and precision.
+    covers: Integer widths, floating types, overflow behavior, and dtype inspection.
+  - name: NumPy dtype reference
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/arrays.dtypes.html"
+    usefulness: 5
+    why: It precisely defines dtype objects and their role in interpreting array memory.
+    covers: Byte order, scalar types, structured fields, and dtype construction.
+  - name: Python floating-point tutorial
+    type: tutorial
+    difficulty: intro
+    url: "https://docs.python.org/3/tutorial/floatingpoint.html"
+    usefulness: 4
+    why: It gives a clear primary explanation of binary approximation and comparison pitfalls.
+    covers: Representation error, display, summation, and approximate comparison.

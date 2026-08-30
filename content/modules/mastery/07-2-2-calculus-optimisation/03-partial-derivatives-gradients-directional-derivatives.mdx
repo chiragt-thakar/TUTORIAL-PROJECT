@@ -1,0 +1,352 @@
+---
+id: "roadmap:phase-2-2.2:2"
+title: "Partial derivatives, gradients, directional derivatives"
+description: The partial derivative holds the other variables fixed; the gradient collects the partials into the direction of steepest ascent, perpendicular to the level sets; the directional derivative is the gradient projected onto a direction — and −∇f is what gradient descent follows.
+module: 2-2-calculus-optimisation
+order: 3
+estimatedMinutes: 100
+prerequisites: []
+learningObjectives:
+  - Compute partial derivatives and assemble the gradient, and state what its direction and magnitude mean
+  - Explain why the gradient is perpendicular to level sets and equals the direction of steepest ascent
+  - Use the directional derivative D_u f = ∇f · u and identify the direction that maximises it
+  - Distinguish "partials exist" from "differentiable", and connect the gradient to steepest descent and input-gradient methods
+---
+
+A partial derivative measures how `f` changes as you nudge one input, holding the rest fixed. The
+gradient stacks all the partials into one vector, and that vector has a strong geometric meaning:
+it points in the direction of fastest increase, its length is that rate, and it is perpendicular to
+the contour through the point.
+
+Gradient descent is "step opposite the gradient". Everything in this section — momentum, adaptive
+methods, second-order corrections — is a refinement of what to do with `∇f`, so it pays to know
+exactly what it is.
+
+<TypeScriptComparison>
+
+- A numerical gradient in TypeScript is a loop of central differences, one per coordinate: `for i: g[i] = (f(x_plus_ei_h) - f(x_minus_ei_h)) / (2h)`.
+- Visualising a 2-D gradient field is a quiver plot in both worlds: at each grid point draw the arrow `-∇f` to see where descent flows.
+- Neither language distinguishes a gradient (strictly a covector / row) from a column vector; both treat it as an array and rely on the dot product to pair it with a direction.
+- `∇f · u` is a single `dot()` call; the projection onto a unit direction is the same in JS and NumPy.
+
+</TypeScriptComparison>
+
+## Partial derivatives
+
+`∂f/∂x_i` is the ordinary derivative of `f` treated as a function of `x_i` alone, with every other
+variable held constant. Geometrically it is the slope of the slice of the surface taken parallel to
+the `x_i` axis.
+
+```python
+import numpy as np
+
+def f(x):                      # f(x, y) = x**2 * y + sin(y)
+    return x[0]**2 * x[1] + np.sin(x[1])
+
+# analytic partials: df/dx = 2xy ; df/dy = x**2 + cos(y)
+x = np.array([2.0, 1.0])
+grad_analytic = np.array([2 * x[0] * x[1], x[0]**2 + np.cos(x[1])])
+
+def numerical_grad(f, x, h=1e-6):
+    g = np.zeros_like(x)
+    for i in range(x.size):
+        e = np.zeros_like(x); e[i] = h
+        g[i] = (f(x + e) - f(x - e)) / (2 * h)
+    return g
+
+assert np.allclose(grad_analytic, numerical_grad(f, x), atol=1e-6)
+```
+
+## The gradient and its geometry
+
+`∇f = (∂f/∂x_1, ..., ∂f/∂x_n)`. Three facts, all consequences of the first-order approximation
+`f(x + dx) ≈ f(x) + ∇f · dx`:
+
+- **Direction of steepest ascent.** Among all unit directions `u`, the increase `∇f · u` is largest
+  when `u = ∇f / ||∇f||`. So `∇f` points uphill fastest, and `−∇f` downhill fastest.
+- **Magnitude.** `||∇f||` is that maximum rate of increase per unit step.
+- **Perpendicular to level sets.** Moving along a contour keeps `f` constant, so `∇f · u = 0` for
+  any direction `u` tangent to the contour: `∇f` is normal to the level set.
+
+```python
+# gradient is orthogonal to the level curve
+def g(x): return x[0]**2 + 2 * x[1]**2          # ellipse contours
+p = np.array([1.0, 1.0])
+grad = np.array([2 * p[0], 4 * p[1]])          # (2, 4)
+tangent = np.array([-grad[1], grad[0]])        # rotate 90 deg -> along the contour
+assert np.isclose(grad @ tangent, 0.0)
+```
+
+## Directional derivatives
+
+The rate of change of `f` at `x` along a unit direction `u` is
+
+`D_u f(x) = ∇f(x) · u = ||∇f|| cos θ`,
+
+where `θ` is the angle between `u` and `∇f`. It is maximised (`+||∇f||`) along the gradient,
+minimised (`−||∇f||`) opposite it, and zero perpendicular to it. For a non-unit `v`, scale:
+`D_v f = ∇f · v` gives the change per unit of `v`, which is `||v||` times the unit-direction rate.
+
+```python
+grad = np.array([3.0, 4.0])                    # ||grad|| = 5
+u1 = grad / 5                                  # steepest ascent
+u2 = np.array([4.0, -3.0]) / 5                 # perpendicular
+assert np.isclose(grad @ u1, 5.0)
+assert np.isclose(grad @ u2, 0.0)
+```
+
+<Concept>
+
+The gradient is the whole first-order picture in one object: `∇f · dx` is the best linear estimate
+of the change in `f` for a small step `dx`. Steepest descent, the directional derivative, and the
+tangent plane are all just this dot product read different ways.
+
+</Concept>
+
+## Partials existing is not enough
+
+A function can have all its partial derivatives at a point and still not be differentiable there —
+the partials only probe the axis directions, and off-axis behaviour can misbehave. The clean
+sufficient condition is that the partials exist *and are continuous* near the point (`f` is `C^1`),
+which guarantees differentiability.
+
+```python
+# f(x,y) = x*y/(x**2+y**2), f(0,0)=0 : both partials at the origin are 0,
+# but f is not even continuous there (limit depends on the path)
+def f(x, y):
+    return np.where((x == 0) & (y == 0), 0.0, x * y / (x**2 + y**2))
+# along y = x : f = 1/2 ; along y = 0 : f = 0 -> no limit at (0,0) -> not differentiable
+assert f(1e-9, 1e-9) != f(1e-9, 0.0)
+```
+
+## The gradient in machine learning
+
+The loss gradient with respect to the parameters, `∇_θ L`, is the single object training is built
+on: a step `θ ← θ − η ∇_θ L` moves downhill fastest to first order. Because only the *direction*
+often matters, gradient clipping and normalisation rescale `∇_θ L` without changing where it points.
+
+The gradient with respect to the *inputs*, `∇_x L`, drives a different family of methods: adversarial
+examples step `x` along `∇_x L` to raise the loss, saliency maps visualise `|∇_x f|`, and integrated
+gradients average `∇_x f` along a path from a baseline. And every row of a Jacobian is the gradient
+of one output component.
+
+```python
+# a linear model: gradient wrt parameters and wrt input
+w = np.array([0.5, -1.0, 2.0]); x = np.array([1.0, 2.0, 3.0]); y = 4.0
+pred = w @ x
+loss = 0.5 * (pred - y)**2
+grad_w = (pred - y) * x                        # dL/dw
+grad_x = (pred - y) * w                        # dL/dx
+assert grad_w.shape == w.shape and grad_x.shape == x.shape
+```
+
+## Doing this in floating point
+
+A numerical gradient costs `2n` function evaluations (central differences, one pair per coordinate)
+and inherits the finite-difference step-size trade-off from the previous lesson. It is a check, not
+the production gradient; autodiff computes `∇f` exactly for the cost of a constant times one forward
+pass.
+
+When comparing analytic and numerical gradients, use a relative error over the whole vector,
+`||g_a − g_n|| / (||g_a|| + ||g_n|| + eps)`, not per-component absolute errors, so components near
+zero do not dominate the verdict.
+
+<ProductionNote>
+
+Log `||∇_θ L||` during training: a spike precedes divergence, a collapse toward zero means a stalled
+or vanished gradient. For input-gradient methods, remember `∇_x L` shares all the finite-difference
+caveats, and prefer autodiff (`x.requires_grad_(True)`) over perturbing pixels.
+
+</ProductionNote>
+
+## Cost
+
+Assembling the gradient by autodiff is `O(cost of f)`; by central differences it is `O(n · cost of
+f)`. The directional derivative `∇f · u` for a *known* `u` can be computed directly by forward-mode
+autodiff (a Jacobian–vector product) in `O(cost of f)` without forming the full gradient — useful
+when you only need the slope along one direction, as in a line search.
+
+## Exercises
+
+<Exercise id="lpg-compute-gradient" difficulty="easy">
+
+For `f(x, y, z) = x^2 y + e^z + x z`, give `∇f` and evaluate it at `(1, 2, 0)`.
+
+<Solution>
+
+`∂f/∂x = 2xy + z`. `∂f/∂y = x^2`. `∂f/∂z = e^z + x`.
+
+So `∇f = (2xy + z, x^2, e^z + x)`.
+
+At `(1, 2, 0)`: `∂f/∂x = 2·1·2 + 0 = 4`; `∂f/∂y = 1`; `∂f/∂z = e^0 + 1 = 2`. So `∇f(1, 2, 0) =
+(4, 1, 2)`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lpg-steepest-and-perp" difficulty="medium">
+
+At a point where `∇f = (3, -4)`, give the unit direction of steepest ascent, the maximum rate of
+increase, a unit direction along which `f` is momentarily unchanged, and the directional derivative
+along `u = (1, 0)`.
+
+<Solution>
+
+`||∇f|| = sqrt(9 + 16) = 5`.
+
+Steepest ascent unit direction: `∇f / ||∇f|| = (3/5, -4/5)`. Maximum rate of increase: `||∇f|| =
+5`.
+
+A direction of zero change is perpendicular to `∇f`: rotate 90 degrees to `(4, 3)`, normalise to
+`(4/5, 3/5)` (or its negative). Check: `(3, -4) · (4/5, 3/5) = (12 - 12)/5 = 0`.
+
+Directional derivative along `u = (1, 0)`: `∇f · u = 3`. (This is just `∂f/∂x`.)
+
+</Solution>
+</Exercise>
+
+<Exercise id="lpg-gradient-perp-levelset" difficulty="hard">
+
+Prove that `∇f(a)` is orthogonal to the level set `{x : f(x) = f(a)}` at `a`, assuming `f` is `C^1`
+and `∇f(a) ≠ 0`.
+
+<Solution>
+
+Let `c(t)` be any smooth curve lying in the level set with `c(0) = a`, so `f(c(t)) = f(a)` for all
+`t` near `0`.
+
+Differentiate both sides with respect to `t` using the chain rule:
+`d/dt f(c(t)) = ∇f(c(t)) · c'(t) = 0`.
+
+Evaluate at `t = 0`: `∇f(a) · c'(0) = 0`. The vector `c'(0)` is a tangent vector to the level set
+at `a`, and this holds for *every* such curve, so `∇f(a)` is orthogonal to every tangent direction
+of the level set — i.e. it is normal to the level set at `a`.
+
+Since `∇f(a) ≠ 0`, the level set is a genuine `(n-1)`-dimensional surface near `a` (implicit
+function theorem) and `∇f(a)` spans its normal line.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lpg-interview-normalize" difficulty="interview">
+
+In an interview: "Why do some training setups normalise the gradient to unit norm before stepping,
+and what do you lose?"
+
+<Solution>
+
+Normalising, `θ ← θ − η · ∇L / ||∇L||`, decouples the *direction* of the step (still steepest
+descent) from its *magnitude* (now fixed at `η`). This helps when the gradient norm varies wildly,
+so a single learning rate would either crawl when the gradient is small or overshoot when it is
+large, and it makes the step size a distance in parameter space.
+
+What you lose: the gradient magnitude carries real information. Near a minimum `||∇L||` shrinks, and
+an un-normalised step naturally slows down and converges; a fixed-norm step keeps taking `η`-sized
+jumps and oscillates around the optimum unless `η` is decayed. You also lose the relative scaling
+between parameters that the raw gradient provides — normalisation treats a component that barely
+matters the same as one that dominates.
+
+In practice the common compromises are gradient *clipping* (rescale only when `||∇L||` exceeds a
+threshold, preserving magnitude below it) and adaptive methods (Adam, RMSProp) that normalise
+*per-coordinate* by a running estimate of the gradient scale, which keeps direction information
+while taming disparate magnitudes.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lpg-saliency-real-world" difficulty="real-world">
+
+You are asked to build a saliency map showing which input pixels most affect a classifier's score
+for the predicted class. Describe the computation, the pitfalls, and a more robust alternative.
+
+<Solution>
+
+Basic vanilla-gradient saliency: set `x.requires_grad_(True)`, forward to the logit `f_c(x)` of the
+predicted class `c`, call `.backward()`, and take `∇_x f_c` — often reduced across colour channels
+by max-abs or L2, then normalised for display. Bright pixels are where a small change most moves the
+score.
+
+Pitfalls. The raw gradient is noisy because ReLU networks are piecewise linear and the local slope
+jumps between regions; it saturates (a pixel already firing a ReLU strongly has near-zero gradient
+even if it is important); and it depends on the exact input, so imperceptible changes give visibly
+different maps. Sign can also mislead — magnitude is usually what you display.
+
+More robust alternatives. SmoothGrad averages `∇_x f_c` over many small Gaussian perturbations of
+`x`, cancelling the noise. Integrated Gradients integrates `∇_x f_c` along a straight path from a
+baseline `x_0` to `x` and multiplies by `(x − x_0)`; the attributions then sum to
+`f_c(x) − f_c(x_0)` (completeness) and saturation is handled.
+
+Both are still gradient methods: use autodiff, not pixel perturbation, and validate the maps against
+a deletion/insertion metric rather than trusting that they "look right".
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. What does `∂f/∂x_i` hold fixed, and what slice of the surface is its slope?
+2. State the three geometric facts about `∇f` (direction, magnitude, relation to level sets).
+3. Write `D_u f` for a unit `u` and say which `u` maximises it.
+4. Why is "all partials exist at `a`" not enough for differentiability, and what condition fixes it?
+5. Name one method that uses `∇_θ L` and one that uses `∇_x L`.
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="All the partial derivatives exist, so the function is differentiable.">
+
+Not necessarily. Partials only test the axis directions. `x*y/(x^2+y^2)` (patched to 0 at the
+origin) has both partials equal to 0 at the origin but is not even continuous there. Differentiability
+needs the partials to exist *and be continuous* nearby.
+
+</Gotcha>
+
+<Gotcha question="The directional derivative along `(3, 4)` is `∇f · (3, 4)`.">
+
+Only if `(3, 4)` is a unit vector — it is not (its norm is 5). For a unit direction, use
+`(3/5, 4/5)`. `∇f · (3, 4)` gives the change per unit of that non-unit vector, which is 5 times the
+unit-direction rate.
+
+</Gotcha>
+
+<Gotcha question="`−∇f` points toward the minimum.">
+
+It points in the direction of *fastest local decrease*, which is not usually straight at the
+minimum. On an elongated valley, `−∇f` points mostly across the valley, which is why plain gradient
+descent zig-zags and why momentum and preconditioning help.
+
+</Gotcha>
+
+<Gotcha question="I compared analytic and numerical gradients component by component with an absolute tolerance.">
+
+Components near zero fail an absolute test for no real reason. Use a single relative error over the
+whole vector: `||g_a − g_n|| / (||g_a|| + ||g_n|| + eps)`.
+
+</Gotcha>
+
+<Gotcha question="A saliency map is the ground truth of what the model uses.">
+
+It is a first-order, input-specific, often noisy approximation. Raw gradients saturate and flicker.
+Use SmoothGrad or Integrated Gradients and validate with a deletion/insertion metric.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+A partial derivative differentiates `f` in one input with the others fixed. The gradient `∇f` stacks
+the partials, and from the first-order approximation `f(x + dx) ≈ f(x) + ∇f · dx` come its three
+properties: it points in the direction of steepest ascent, its norm is that maximum rate, and it is
+perpendicular to the level set.
+
+The directional derivative `D_u f = ∇f · u` is the gradient projected onto a direction, maximal
+along `∇f` and zero along the contour. Partials existing does not imply differentiability; continuous
+partials (`C^1`) do.
+
+In ML, `∇_θ L` is what gradient descent follows — sometimes normalised or clipped because only the
+direction matters — and `∇_x L` powers adversarial examples, saliency, and integrated gradients. Use
+autodiff for the real gradient and central differences only as a relative-error check. The Practice,
+Debug, Interview, Test, Project, and Review tabs build the gradient, its geometry, and the input-
+gradient methods.

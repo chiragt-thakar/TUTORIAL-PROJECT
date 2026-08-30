@@ -1,0 +1,788 @@
+lessonId: "roadmap:phase-2-2.1:9"
+module: 2-1-linear-algebra
+lesson: 10-singular-value-decomposition-svd-the-single-most-useful
+title: "Singular Value Decomposition (SVD) — the single most useful decomposition in ML"
+summary: Factor any matrix as rotate-scale-rotate, relate singular values to the eigendecomposition of A-transpose-A, read rank and norms and conditioning and the pseudo-inverse off one SVD, and use Eckart-Young for the best low-rank approximation.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lsvd-read-truncation
+    tier: normal
+    kind: code-reading
+    title: Read a truncated-SVD reconstruction
+    minutes: 10
+    requiredForMastery: true
+    concepts: [truncated-svd, eckart-young, low-rank]
+    prompt: |
+      Read this snippet, say what `A_k` is, and give its Frobenius distance to `A` in terms of the
+      singular values.
+      ```python
+      U, s, Vt = np.linalg.svd(A, full_matrices=False)
+      k = 8
+      A_k = (U[:, :k] * s[:k]) @ Vt[:k]
+      ```
+    hints:
+      - Keeping the top `k` singular triples is the Eckart-Young optimal rank-`k` matrix.
+      - The Frobenius error is the norm of the discarded singular values.
+    solution: |
+      `A_k` is the best rank-`k` approximation of `A` in both the spectral and Frobenius norms: the
+      sum of the first `k` rank-1 terms `s_i u_i v_i.T`. `U[:, :k] * s[:k]` scales each kept left
+      singular vector by its singular value, and multiplying by `Vt[:k]` adds the outer products.
+      Its Frobenius distance to `A` is `sqrt(sum_{i>k} s_i**2)` — exactly the norm of the tail of
+      the spectrum — and its spectral distance is `s[k]` (the first discarded singular value).
+      Eckart-Young says no other rank-`k` matrix is closer.
+  - id: lsvd-write-svd-pinv
+    tier: normal
+    kind: write-code
+    title: Pseudo-inverse from the SVD
+    minutes: 12
+    requiredForMastery: true
+    concepts: [pseudo-inverse, svd, tolerance]
+    prompt: |
+      Write `pinv_svd(A, rcond=1e-12)` that builds the Moore-Penrose pseudo-inverse from
+      `np.linalg.svd`, zeroing singular values below `rcond * s.max()`.
+    hints:
+      - "`A_pinv = V @ S_plus @ U.T` where `S_plus` inverts the kept singular values."
+      - "`np.linalg.svd` returns `Vt`, so `V` is `Vt.T`."
+    solution: |
+      `U, s, Vt = np.linalg.svd(A, full_matrices=False)`; `cutoff = rcond * s.max()`;
+      `s_inv = np.where(s > cutoff, 1.0 / s, 0.0)`; `return (Vt.T * s_inv) @ U.T`. The pseudo-inverse
+      inverts the invertible part of the spectrum and annihilates the rest, so `A_pinv @ b` gives
+      the least-squares minimum-norm solution. The `rcond` cutoff treats singular values near the
+      rounding floor as zero, which is essential for rank-deficient or ill-conditioned `A`; without
+      it, dividing by a tiny `s` blows up noise. This is what `np.linalg.pinv` does internally.
+  - id: lsvd-predict-reads
+    tier: normal
+    kind: predict-output
+    title: Read quantities off a spectrum
+    minutes: 10
+    requiredForMastery: true
+    concepts: [rank, spectral-norm, condition-number, nuclear-norm]
+    prompt: |
+      A `6 x 4` matrix has singular values `s = [10, 6, 2, 1e-14]`. Give its numerical rank, spectral
+      norm, Frobenius norm, nuclear norm, and condition number (using the rank-`r` smallest singular
+      value).
+    hints:
+      - Numerical rank counts singular values above the noise floor.
+      - Spectral is `s[0]`; Frobenius is the root-sum-of-squares; nuclear is the sum.
+    solution: |
+      Numerical rank is 3: `10, 6, 2` are real, `1e-14` is rounding noise. Spectral norm
+      `||A||_2 = s[0] = 10`. Frobenius norm `sqrt(100 + 36 + 4 + ~0) = sqrt(140) approx 11.83`.
+      Nuclear norm `10 + 6 + 2 + ~0 = 18`. Condition number using the smallest *significant*
+      singular value is `s[0] / s[2] = 10 / 2 = 5`; using the literal smallest `1e-14` would give a
+      meaningless `1e15`, which is why conditioning is quoted at the numerical rank.
+  - id: lsvd-explain-geometry
+    tier: normal
+    kind: explain
+    title: The rotate-scale-rotate picture
+    minutes: 10
+    requiredForMastery: true
+    concepts: [svd-geometry, singular-values, ellipsoid]
+    prompt: |
+      Explain what `V.T`, `S`, and `U` each do to a vector, and what the unit sphere maps to under
+      `A`.
+    hints:
+      - "`V.T` and `U` are orthogonal, so they rotate or reflect."
+      - "`S` scales along the coordinate axes."
+    solution: |
+      Applying `A = U S V.T` to `x`: `V.T` rotates or reflects `x` into the right-singular-vector
+      frame; `S` scales coordinate `i` by the singular value `s_i` (and drops or pads dimensions if
+      `A` is non-square); `U` rotates or reflects the result into the left-singular-vector frame.
+      Because the two orthogonal maps preserve the sphere and only `S` changes lengths, the unit
+      sphere maps to an ellipsoid whose semi-axis lengths are the `s_i` and whose axis directions
+      are the columns of `U`. Every linear map is this rotation, axis stretch, rotation.
+  - id: lsvd-svd-vs-eig-symmetric
+    tier: intermediate
+    kind: predict-output
+    title: SVD versus eigendecomposition for a symmetric matrix
+    minutes: 12
+    requiredForMastery: true
+    concepts: [svd, eigendecomposition, symmetric, sign]
+    prompt: |
+      A symmetric matrix has eigenvalues `4, -3, 1`. Give its singular values and describe how `U`
+      and `V` relate to the eigenvectors.
+    hints:
+      - Singular values are non-negative and sorted descending.
+      - A negative eigenvalue contributes a sign that must live in `U` or `V`.
+    solution: |
+      The singular values are the absolute eigenvalues sorted descending: `4, 3, 1`. For the
+      positive eigenvalue `4` and `1`, the corresponding left and right singular vectors both equal
+      the eigenvector: `u_i = v_i = q_i`. For the negative eigenvalue `-3`, the singular value is
+      `3` and the sign is absorbed by flipping one side: `u_i = -q_i`, `v_i = q_i` (or vice versa),
+      so that `s_i u_i v_i.T = 3 * (-q_i) q_i.T = -3 q_i q_i.T`, matching the eigen term. For a
+      symmetric *PSD* matrix there are no negative eigenvalues and the SVD equals the
+      eigendecomposition exactly.
+  - id: lsvd-energy-rank-choice
+    tier: intermediate
+    kind: write-code
+    title: Choose a rank by explained energy
+    minutes: 14
+    requiredForMastery: true
+    concepts: [truncated-svd, explained-variance, rank-selection]
+    prompt: |
+      Write `rank_for_energy(s, frac=0.99)` returning the smallest `k` such that the top `k`
+      singular values capture at least `frac` of the total squared energy, and state the
+      reconstruction error at that `k`.
+    hints:
+      - Work with `s**2`, the energy per direction.
+      - Cumulative energy over total energy crosses `frac` at the answer.
+    solution: |
+      `energy = np.cumsum(s**2) / np.sum(s**2)`; `k = int(np.searchsorted(energy, frac) + 1)`;
+      return `k`. The top `k` singular triples then form the Eckart-Young optimal rank-`k`
+      approximation with Frobenius error `sqrt(np.sum(s[k:]**2))`, which is
+      `sqrt((1 - energy[k-1]) * np.sum(s**2))` at the chosen `k`. This is exactly how PCA picks the
+      number of components: `s**2 / (n - 1)` are the variances, and `energy` is the cumulative
+      fraction of variance explained.
+  - id: lsvd-condition-number-read
+    tier: intermediate
+    kind: explain
+    title: Conditioning straight from the spectrum
+    minutes: 12
+    requiredForMastery: true
+    concepts: [condition-number, singular-values, digits-lost]
+    prompt: |
+      Explain why `s[0] / s[-1]` is the condition number of a full-rank matrix, and roughly how many
+      digits a linear solve loses if that ratio is `1e9` in double precision.
+    hints:
+      - Conditioning is worst-case output sensitivity to input change.
+      - Double precision has about 16 significant digits.
+    solution: |
+      The map stretches the unit sphere into an ellipsoid with longest semi-axis `s[0]` and
+      shortest `s[-1]`. The inverse map stretches by `1 / s[-1]` along that shortest direction, so a
+      relative perturbation of the input can be amplified by up to `s[0] / s[-1]` in the solution —
+      that ratio is the 2-norm condition number. A rule of thumb: solving loses about
+      `log10(cond)` digits, so `cond = 1e9` loses about 9 of the ~16 digits available in float64,
+      leaving roughly 7 trustworthy digits. Beyond `1e16` the solution is essentially noise.
+  - id: lsvd-randomized-svd
+    tier: intermediate
+    kind: performance
+    title: Randomized SVD for a low-rank matrix
+    minutes: 16
+    requiredForMastery: true
+    concepts: [randomized-svd, low-rank, cost]
+    prompt: |
+      You need the top 20 singular triples of a `100000 x 5000` matrix that is approximately rank
+      50. Describe the randomized SVD and its cost versus a full SVD.
+    hints:
+      - Project `A` onto a small random subspace to capture its range.
+      - The expensive dense SVD then happens on a small matrix.
+    solution: |
+      Draw a random `(5000, l)` matrix `Omega` with `l = 20 + oversample` (oversample about 10),
+      form `Y = A @ Omega` (`O(m n l)`), orthonormalise `Q, _ = np.linalg.qr(Y)` so `Q` (shape
+      `(m, l)`) approximately spans the range of `A`, then `B = Q.T @ A` (`O(m n l)`), take the
+      small dense SVD `Ub, s, Vt = np.linalg.svd(B, full_matrices=False)`, and set `U = Q @ Ub`.
+      Keep the top 20. Cost is `O(m n l)` plus a `O(l**2 n)` small SVD, versus `O(m n min(m, n)) =
+      O(m n * 5000)` for the full SVD — roughly a `250x` reduction here. Accuracy is excellent when
+      the spectrum decays fast; one or two power iterations (`Y = A @ (A.T @ Y)`) sharpen it when
+      the decay is slow.
+  - id: lsvd-full-vs-economy-shapes
+    tier: intermediate
+    kind: predict-output
+    title: Full versus economy SVD shapes
+    minutes: 10
+    requiredForMastery: true
+    concepts: [economy-svd, full-svd, shapes]
+    prompt: |
+      For `A` of shape `(200, 30)`, give the shapes of `U`, `s`, and `Vt` from
+      `np.linalg.svd(A, full_matrices=True)` and from `full_matrices=False`, and say what the extra
+      columns of the full `U` are.
+    hints:
+      - "`s` is always 1-D of length `min(m, n)`."
+      - Full `U` is square; economy `U` matches `A`'s column count.
+    solution: |
+      Full: `U` is `(200, 200)`, `s` is `(30,)`, `Vt` is `(30, 30)`. Economy
+      (`full_matrices=False`): `U` is `(200, 30)`, `s` is `(30,)`, `Vt` is `(30, 30)`. `s` is a 1-D
+      array of the `min(m, n) = 30` singular values in both cases. The extra `200 - 30 = 170`
+      columns of the full `U` are an orthonormal basis for the left null space of `A` (the
+      orthogonal complement of the column space). You want the economy form unless you specifically
+      need that complement, since it saves forming a `200 x 200` matrix.
+  - id: lsvd-debug-vt-as-v
+    tier: tricky
+    kind: debug
+    title: Using Vt where V was meant
+    minutes: 12
+    requiredForMastery: true
+    concepts: [svd, transpose, right-singular-vectors]
+    prompt: |
+      This projects data onto the top principal directions but the projected coordinates are wrong
+      (rotated). Find the bug.
+    code: |
+      def project_top_k(X, k):
+          U, s, Vt = np.linalg.svd(X - X.mean(0), full_matrices=False)
+          V = Vt
+          return (X - X.mean(0)) @ V[:, :k]
+    solution: |
+      `np.linalg.svd` returns the right singular vectors already transposed as `Vt`, so the
+      principal directions are the *rows* of `Vt`, i.e. columns of `Vt.T`. The code sets `V = Vt`
+      and then slices `V[:, :k]`, which takes the first `k` columns of `Vt` — the first `k` entries
+      of each right singular vector, not the first `k` directions. The projection is onto a wrong,
+      rotated subspace. Fix: `V = Vt.T; return Xc @ V[:, :k]`, or directly `Xc @ Vt[:k].T`.
+      Regression: compare against `sklearn.decomposition.PCA` scores, or check that
+      `np.allclose(np.cov(result.T), np.diag(s[:k]**2 / (n - 1)))`.
+    hints:
+      - "`np.linalg.svd` returns `V` transposed."
+      - The principal directions are rows of `Vt`, not columns.
+  - id: lsvd-debug-ata-route
+    tier: tricky
+    kind: debug
+    title: Singular values via A-transpose-A
+    minutes: 14
+    requiredForMastery: true
+    concepts: [svd, gram-matrix, conditioning, underflow]
+    prompt: |
+      This computes singular values by eigendecomposing the Gram matrix. It is accurate for
+      well-conditioned inputs and wrong for ill-conditioned ones. Explain and fix.
+    code: |
+      def singular_values(A):
+          w = np.linalg.eigvalsh(A.T @ A)
+          return np.sqrt(np.clip(w, 0, None))[::-1]
+    solution: |
+      Forming `A.T @ A` squares the condition number: if `A` has singular values `s`, then
+      `A.T @ A` has eigenvalues `s**2`, so a ratio `s[0] / s[-1] = 1e8` becomes `1e16` in the Gram
+      matrix and the smallest eigenvalues are lost to rounding or underflow (and can come out
+      slightly negative, hence the `clip`). Taking square roots cannot recover information already
+      destroyed. Fix: call `np.linalg.svd(A, compute_uv=False)` directly, which works on `A`, is
+      backward stable, and returns the singular values sorted descending. Regression: build `A` with
+      `s = [1, 1e-9]`, and assert the direct SVD recovers `1e-9` while the Gram route returns `0` or
+      garbage.
+    hints:
+      - "`A.T @ A` has eigenvalues `s**2`, so its condition number is `cond(A)**2`."
+      - Work from `A` with `np.linalg.svd`.
+  - id: lsvd-debug-sign-instability
+    tier: tricky
+    kind: debug
+    title: Unstable singular-vector signs
+    minutes: 14
+    requiredForMastery: true
+    concepts: [sign-ambiguity, reproducibility, svd]
+    prompt: |
+      A pipeline caches principal directions from the SVD and compares them across runs; the
+      comparison fails intermittently because some direction vectors are negated. Fix it robustly.
+    code: |
+      def principal_directions(X, k):
+          U, s, Vt = np.linalg.svd(X - X.mean(0), full_matrices=False)
+          return Vt[:k]
+    solution: |
+      Singular vectors are defined only up to a sign, and the sign chosen by LAPACK is not stable
+      across platforms, versions, or tiny input changes; `u_i` and `v_i` flip together. Impose a
+      deterministic convention: for each direction, flip its sign (and the paired `u_i` if you keep
+      it) so that its largest-magnitude entry is positive — `for i in range(k): j =
+      np.argmax(np.abs(Vt[i])); if Vt[i, j] < 0: Vt[i] = -Vt[i]`. Return the sign-fixed directions.
+      Regression: run the SVD on `X` and on `X` with a `1e-12` perturbation and assert the
+      sign-fixed directions match, whereas the raw ones may not.
+    hints:
+      - Singular-vector signs are arbitrary and not reproducible.
+      - Pick a rule, such as forcing the largest-magnitude entry positive.
+  - id: lsvd-design-spectrum-report
+    tier: challenge
+    kind: design
+    title: Design a matrix spectrum report
+    minutes: 30
+    requiredForMastery: false
+    concepts: [singular-values, effective-rank, conditioning, reporting]
+    prompt: |
+      Design `spectrum_report(A)` that returns a review-ready summary from one SVD: the singular
+      values, numerical rank at a stated tolerance, condition number at that rank, spectral,
+      Frobenius, and nuclear norms, cumulative energy, and a suggested truncation rank. State inputs,
+      outputs, and what it must not do silently.
+    hints:
+      - Compute one economy SVD and derive everything from `s`.
+      - The suggested rank comes from an energy threshold and an elbow heuristic, both reported.
+    solution: |
+      Input: `A`, an optional relative tolerance `rcond`, and an optional energy fraction. Compute
+      `U, s, Vt = np.linalg.svd(A, full_matrices=False)` once. Output: the full `s`; the numerical
+      rank `np.sum(s > rcond * s[0])`; the condition number `s[0] / s[rank - 1]`; norms
+      `s[0]`, `sqrt(sum s**2)`, `sum s`; the cumulative energy curve; a suggested truncation `k`
+      from the energy fraction plus the largest gap `s[i] / s[i+1]` (report both, they may
+      disagree); and a short text summary. It must not pick `rcond` without recording it, must not
+      quote a condition number using a rounding-level singular value (use the numerical rank), must
+      not collapse the spectrum to a single number without showing it, and must not form `A.T @ A`.
+      Golden reports: an orthogonal matrix (flat spectrum), a rank-deficient matrix (sharp drop),
+      and a slowly decaying spectrum (ambiguous rank, flagged as such).
+  - id: lsvd-refactor-pca-svd
+    tier: challenge
+    kind: refactor
+    title: Refactor a covariance-eigen PCA to an SVD PCA
+    minutes: 28
+    requiredForMastery: false
+    concepts: [pca, svd, covariance, conditioning]
+    prompt: |
+      A PCA computes `C = np.cov(X, rowvar=False)`, then `w, V = np.linalg.eig(C)`, sorts descending,
+      and projects with `V[:, :k]`. It gives tiny negative eigenvalues and unstable directions on
+      wide, near-collinear `X`. Refactor it to use the SVD of the centred data, keeping the same
+      outputs.
+    hints:
+      - Centre `X`, then `U, s, Vt = np.linalg.svd(Xc, full_matrices=False)`.
+      - Explained variances are `s**2 / (n - 1)`, always non-negative.
+    solution: |
+      Centre: `Xc = X - X.mean(0)`. Decompose: `U, s, Vt = np.linalg.svd(Xc, full_matrices=False)`.
+      Principal directions are `Vt[:k].T` (or `Vt[:k]` as row vectors); explained variances are
+      `s[:k]**2 / (n - 1)`, guaranteed non-negative; scores are `Xc @ Vt[:k].T`, equivalently
+      `U[:, :k] * s[:k]`. This never forms the covariance, so it avoids squaring the condition
+      number and the tiny negative eigenvalues that `eig` on `C` produced, and it uses `eigh`-grade
+      stability via the SVD. If the covariance is a required output, compute it as
+      `Vt.T @ np.diag(s**2 / (n - 1)) @ Vt`. Add a fail-before-fix test on a wide near-collinear `X`
+      asserting all explained variances are non-negative and that the top directions are stable
+      under a `1e-10` perturbation.
+quizzes:
+  - id: lsvd-checkpoint
+    title: Checkpoint — the SVD
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lsvd-cp-exists
+        kind: mcq
+        prompt: For which matrices does the SVD `A = U S V.T` exist?
+        options:
+          - {id: any, text: Every real (or complex) matrix, any shape, any rank}
+          - {id: square, text: Only square matrices}
+          - {id: fullrank, text: Only full-rank matrices}
+        answer: [any]
+        explanation: The SVD always exists, unlike the eigendecomposition or Cholesky.
+        concepts: [svd-existence]
+        points: 1
+      - id: lsvd-cp-geometry
+        kind: mcq
+        prompt: In `A = U S V.T`, what does `S` do geometrically?
+        options:
+          - {id: scale, text: Scales along the coordinate axes by the singular values}
+          - {id: rotate, text: Rotates the vector}
+          - {id: project, text: Projects onto the column space}
+        answer: [scale]
+        explanation: "`U` and `V.T` are the rotations; `S` is the axis-aligned stretch."
+        concepts: [svd-geometry]
+        points: 1
+      - id: lsvd-cp-eig-relation
+        kind: mcq
+        prompt: The eigenvalues of `A.T @ A` are what?
+        options:
+          - {id: sq, text: The squares of the singular values of `A`}
+          - {id: same, text: Equal to the singular values of `A`}
+          - {id: recip, text: The reciprocals of the singular values}
+        answer: [sq]
+        explanation: "`A.T @ A = V (S.T S) V.T`, so its eigenvalues are `s_i**2` with eigenvectors the columns of `V`."
+        concepts: [svd, eigendecomposition]
+        points: 1
+      - id: lsvd-cp-eckart-young
+        kind: multi
+        prompt: Which are true of the truncated SVD `A_k`?
+        options:
+          - {id: best-fro, text: It is the closest rank-`k` matrix in Frobenius norm}
+          - {id: best-spec, text: It is the closest rank-`k` matrix in spectral norm}
+          - {id: err-spec, text: "Its spectral error equals the first discarded singular value"}
+          - {id: unique-always, text: It is always the unique optimum}
+        answer: [best-fro, best-spec, err-spec]
+        explanation: Eckart-Young gives optimality in both norms; uniqueness can fail when `s[k] == s[k+1]`.
+        concepts: [eckart-young, low-rank]
+        points: 1
+  - id: lsvd-assessment
+    title: Assessment — singular value decomposition
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lsvd-as-statement
+        kind: explain
+        prompt: State `A = U S V.T` with the shape and property of each factor for a general `(m, n)` matrix.
+        modelAnswer: |
+          `U` is `(m, m)` orthogonal, `V` is `(n, n)` orthogonal, `S` is `(m, n)` with non-negative
+          entries `s_1 >= s_2 >= ... >= 0` on the main diagonal and zeros elsewhere. The economy
+          form keeps `U` `(m, r)` and `V` `(n, r)` with `r = min(m, n)`.
+        explanation: Two orthogonal factors and a non-negative diagonal one.
+        concepts: [svd-statement]
+        points: 1
+      - id: lsvd-as-geometry
+        kind: explain
+        prompt: Describe the rotate-scale-rotate geometry and what the singular values and left singular vectors mean.
+        modelAnswer: |
+          Applying `A`: `V.T` rotates, `S` scales along axes by `s_i`, `U` rotates. The unit sphere
+          maps to an ellipsoid whose semi-axis lengths are the `s_i` and whose axis directions are
+          the columns of `U`; the columns of `V` are the input directions that map to those axes.
+        explanation: Every linear map is a rotation, an axis stretch, and a rotation.
+        concepts: [svd-geometry]
+        points: 1
+      - id: lsvd-as-eig-relation
+        kind: write-function
+        prompt: Give the relationship between the SVD of `A` and the eigendecomposition of `A.T @ A`, including the left singular vectors.
+        modelAnswer: |
+          `A.T @ A = V (S.T S) V.T`: columns of `V` are its eigenvectors, `s_i**2` its eigenvalues.
+          `A @ A.T = U (S S.T) U.T` similarly for `U`. And `u_i = A @ v_i / s_i` for `s_i > 0`.
+        explanation: The SVD is the joint eigendecomposition of the two Gram matrices.
+        concepts: [svd, eigendecomposition]
+        points: 1
+      - id: lsvd-as-reads
+        kind: scenario
+        prompt: Given singular values `[12, 5, 0.001, 1e-15]`, give the numerical rank, spectral norm, condition number at that rank, and nuclear norm.
+        modelAnswer: |
+          If the tolerance places the noise floor below `0.001`, numerical rank is 3, condition
+          number `12 / 0.001 = 12000`, spectral norm `12`, nuclear norm `12 + 5 + 0.001 + ~0 ~
+          17.001`. If `0.001` is judged noise, rank is 2 and the condition number is `12 / 5 = 2.4`.
+          The choice of tolerance must be stated.
+        explanation: The reads depend on where the noise floor is drawn.
+        concepts: [rank, condition-number, nuclear-norm]
+        points: 1
+      - id: lsvd-as-eckart-young
+        kind: scenario
+        prompt: State Eckart-Young and give the Frobenius and spectral errors of the best rank-`k` approximation.
+        modelAnswer: |
+          The best rank-`k` approximation of `A` in both the spectral and Frobenius norms is the
+          truncated SVD `A_k = sum_{i<=k} s_i u_i v_i.T`. Its spectral error is `s_{k+1}` and its
+          Frobenius error is `sqrt(sum_{i>k} s_i**2)`.
+        explanation: Truncating the SVD is optimal in both unitarily invariant norms.
+        concepts: [eckart-young]
+        points: 1
+      - id: lsvd-as-pinv
+        kind: write-function
+        prompt: Give the pseudo-inverse of `A` in terms of its SVD, handling near-zero singular values.
+        modelAnswer: |
+          `A_pinv = V @ S_plus @ U.T`, where `S_plus` has `1 / s_i` for `s_i` above a cutoff
+          `rcond * s.max()` and `0` otherwise. `A_pinv @ b` is the least-squares minimum-norm
+          solution.
+        explanation: Invert the significant part of the spectrum, zero the rest.
+        concepts: [pseudo-inverse, svd]
+        points: 1
+      - id: lsvd-as-vt-bug
+        kind: find-bug
+        prompt: Code does `V = Vt` then `Xc @ V[:, :k]` for PCA scores. What is wrong?
+        modelAnswer: |
+          `np.linalg.svd` returns the right singular vectors already transposed as `Vt`, so the
+          principal directions are the rows of `Vt`. `V[:, :k]` takes the first `k` columns of `Vt`
+          — the first `k` components of each direction — not the first `k` directions. Use
+          `Vt[:k].T` or `Vt.T[:, :k]`.
+        explanation: "`Vt` is `V` transposed; slice its rows, not its columns."
+        concepts: [svd, transpose]
+        points: 1
+      - id: lsvd-as-ata
+        kind: find-bug
+        prompt: Why is computing singular values as `sqrt(eigvalsh(A.T @ A))` numerically poor?
+        modelAnswer: |
+          `A.T @ A` has eigenvalues `s**2`, so its condition number is `cond(A)**2`; small singular
+          values are pushed below the rounding floor and lost, and can come out negative. Taking
+          square roots cannot recover them. Use `np.linalg.svd(A)` directly, which is backward
+          stable.
+        explanation: The Gram matrix squares the conditioning and destroys small singular values.
+        concepts: [svd, conditioning]
+        points: 1
+      - id: lsvd-as-sign
+        kind: true-false
+        prompt: The columns of `U` and `V` from `np.linalg.svd` are uniquely determined.
+        options:
+          - {id: "true", text: "True"}
+          - {id: "false", text: "False"}
+        answer: ["false"]
+        explanation: Each singular vector is defined up to a sign (phase), and paired `u_i`, `v_i` flip together.
+        concepts: [sign-ambiguity]
+        points: 1
+      - id: lsvd-as-randomized
+        kind: scenario
+        prompt: When is a randomized SVD appropriate, and what is its cost advantage?
+        modelAnswer: |
+          When the matrix is large and approximately low rank and you need only the top `k`
+          singular triples. Project onto a random `(n, k + p)` subspace, orthonormalise, and do a
+          small dense SVD, costing `O(m n k)` instead of `O(m n min(m, n))`. Power iterations
+          sharpen it when the spectrum decays slowly.
+        explanation: Trade a full decomposition for a projection plus a tiny SVD.
+        concepts: [randomized-svd, cost]
+        points: 1
+interview:
+  - id: lsvd-iv-what-is-svd
+    level: basic
+    requiredForMastery: true
+    concepts: [svd-statement, svd-geometry]
+    question: What is the singular value decomposition, geometrically?
+    shortAnswer: |
+      `A = U S V.T`: any linear map is a rotation (`V.T`), an axis-aligned scaling by the
+      non-negative singular values (`S`), and another rotation (`U`). The unit sphere becomes an
+      ellipsoid with semi-axes `s_i` along the columns of `U`.
+    fullAnswer: |
+      Every matrix, of any shape or rank, factors into two orthogonal matrices and a non-negative
+      diagonal one. The orthogonal factors are rigid motions; only `S` changes lengths, and it does
+      so along its own axes. So `A` maps the unit sphere to an ellipsoid: the singular values are
+      the semi-axis lengths, the left singular vectors are the axis directions, and the right
+      singular vectors are the input directions that land on those axes. This picture makes the
+      spectral norm (longest axis), the rank (number of nonzero axes), and the condition number
+      (longest over shortest) immediate.
+    commonWrongAnswer: It is the eigendecomposition for non-square matrices.
+    followUps:
+      - How does it relate to the eigendecomposition of `A.T A`?
+      - What is the spectral norm in this picture?
+  - id: lsvd-iv-why-most-useful
+    level: comparison
+    requiredForMastery: true
+    concepts: [svd, eckart-young, applications]
+    question: Why is the SVD called the most useful decomposition in ML?
+    shortAnswer: |
+      It always exists and is stable, you read rank, subspaces, all three matrix norms, conditioning,
+      and the pseudo-inverse off it, and Eckart-Young makes its truncation the best low-rank
+      approximation — which is PCA, LSA, recommenders, and compression.
+    fullAnswer: |
+      Unlike the eigendecomposition (square, ideally diagonalisable) or Cholesky (SPD), the SVD
+      works on any matrix. From one SVD you get the numerical rank, orthonormal bases for all four
+      fundamental subspaces, the spectral, Frobenius, and nuclear norms, the condition number, and
+      the pseudo-inverse. Eckart-Young says the truncated SVD is the optimal rank-`k` approximation
+      in both the spectral and Frobenius norms, which is exactly what PCA, latent semantic analysis,
+      matrix-factorisation recommenders, image and weight compression, and LoRA-style adapters
+      exploit. It is also backward stable, so it is the safe fallback for least squares and
+      conditioning.
+    commonWrongAnswer: Because it is the fastest decomposition to compute.
+    followUps:
+      - What does Eckart-Young state precisely?
+      - When would you not use a full SVD?
+  - id: lsvd-iv-eig-relation
+    level: internals
+    requiredForMastery: true
+    concepts: [svd, gram-matrix, conditioning]
+    question: How are the singular values related to eigenvalues, and why not compute them via `A.T A`?
+    shortAnswer: |
+      `s_i**2` are the eigenvalues of `A.T @ A` (eigenvectors `v_i`) and of `A @ A.T` (eigenvectors
+      `u_i`). But forming `A.T @ A` squares the condition number and loses small singular values, so
+      library SVD works on `A` directly.
+    fullAnswer: |
+      Substituting the SVD, `A.T @ A = V (S.T S) V.T` and `A @ A.T = U (S S.T) U.T`, so both Gram
+      matrices are diagonalised by the singular vectors with eigenvalues `s_i**2`. In principle you
+      could eigendecompose either and take square roots, but `cond(A.T A) = cond(A)**2`, so a matrix
+      with `cond(A) = 1e8` gives a Gram matrix at `1e16` where the small eigenvalues underflow or go
+      negative. The bidiagonalisation-based SVD algorithms operate on `A` itself and are backward
+      stable, recovering singular values accurate to the full precision of `A`.
+    commonWrongAnswer: Singular values are the same as eigenvalues for any matrix.
+    followUps:
+      - What is the SVD of a symmetric PSD matrix?
+      - How does the sign of an eigenvalue show up in the SVD?
+  - id: lsvd-iv-pca
+    level: scenario
+    requiredForMastery: true
+    concepts: [pca, svd, explained-variance]
+    question: How is PCA computed with the SVD, and why prefer it over eigendecomposing the covariance?
+    shortAnswer: |
+      Centre the data, take `U, s, Vt = svd(Xc)`. Principal directions are the rows of `Vt`,
+      explained variances are `s**2 / (n - 1)`, scores are `Xc @ Vt.T` or `U * s`. It avoids forming
+      the covariance, so no squared condition number and no spurious negative variances.
+    fullAnswer: |
+      The covariance is `Xc.T @ Xc / (n - 1)`, whose eigenvectors are the principal directions. The
+      SVD of `Xc` gives the same right singular vectors `V` and singular values with
+      `s_i**2 / (n - 1)` equal to the variances, without ever forming `Xc.T @ Xc`. That matters when
+      `Xc` is wide or near-collinear: the covariance route squares the conditioning and rounding can
+      make small eigenvalues negative, which `eig` then reports as negative variance. The SVD route
+      is stable, always gives non-negative variances, and the cumulative energy of `s**2` is the
+      fraction of variance explained for choosing the number of components.
+    commonWrongAnswer: They are numerically equivalent, so it does not matter.
+    followUps:
+      - How do you choose the number of components?
+      - What are the PCA scores in terms of `U` and `s`?
+  - id: lsvd-iv-numerical-rank
+    level: debugging
+    requiredForMastery: true
+    concepts: [numerical-rank, singular-values, tolerance]
+    question: How do you determine the rank of a matrix in practice, and how does the SVD help?
+    shortAnswer: |
+      Take the SVD, sort the singular values, and count how many exceed a tolerance you set from the
+      spectrum's noise floor — not an exact zero test. Report the tolerance and the condition number
+      at that rank.
+    fullAnswer: |
+      Exact rank is undecidable from measured data because rounding turns true zeros into tiny
+      nonzeros. The SVD gives the singular values directly and in descending order, so I plot them
+      on a log scale and look for the elbow where they drop into a flat tail. The count above a
+      tolerance — a baseline of `s[0] * max(m, n) * eps`, then adjusted to the visible gap — is the
+      numerical rank. I record that tolerance, and I quote the condition number as `s[0]` over the
+      smallest *retained* singular value, not the literal smallest, which would be rounding noise.
+      Column-pivoted QR is a cheaper alternative when only the rank and a basis are needed.
+    commonWrongAnswer: Count the nonzero singular values with an exact equality check.
+    followUps:
+      - Why not use the default tolerance in `np.linalg.matrix_rank`?
+      - How would a column-pivoted QR give the same answer more cheaply?
+  - id: lsvd-iv-randomized
+    level: scenario
+    requiredForMastery: true
+    concepts: [randomized-svd, low-rank, power-iteration]
+    question: How does a randomized SVD work and when is it the right choice?
+    shortAnswer: |
+      Multiply `A` by a small random matrix to capture its range, orthonormalise to get `Q`, project
+      `B = Q.T @ A`, take a small dense SVD of `B`, and lift back with `U = Q @ Ub`. Use it for large
+      matrices that are approximately low rank when only the top `k` triples are needed.
+    fullAnswer: |
+      The range of an approximately rank-`r` matrix is captured well by `A @ Omega` for a random
+      `Omega` with a few more than `r` columns. Orthonormalising gives `Q` spanning that range, so
+      `A ~ Q Q.T A`, and the SVD of the small `B = Q.T @ A` yields the top singular triples after
+      `U = Q @ Ub`. Cost is `O(m n l)` for the projections plus a tiny `O(l**2 n)` SVD, versus
+      `O(m n min(m, n))` for the full SVD. When the spectrum decays slowly, one or two power
+      iterations `Y = A @ (A.T @ Y)` before orthonormalising restore accuracy. It is the standard
+      tool for PCA on very large data and for compressing large weight matrices.
+    commonWrongAnswer: It gives an approximate answer that is never accurate enough for production.
+    followUps:
+      - What does the oversampling parameter do?
+      - When do you need power iterations?
+projects:
+  - id: lsvd-project-svd-toolkit
+    kind: major
+    title: Build an SVD analysis and low-rank toolkit
+    minutes: 240
+    summary: Implement an economy and truncated SVD interface, a spectrum report, four-subspace bases, the SVD pseudo-inverse, a randomized SVD, and sign-fixing, all validated against NumPy.
+    problem: |
+      Build a toolkit that turns the SVD into audited analysis: `svd(A, k=None)` returning economy or
+      truncated triples with sign-fixed vectors; `spectrum_report(A)` with rank, condition number,
+      the three norms, and cumulative energy; `subspaces(A, tol)` returning orthonormal bases for
+      the column space, row space, and both null spaces; `pinv(A, rcond)`; `randomized_svd(A, k,
+      p, q)` with oversampling `p` and power iterations `q`; and `best_rank_k(A, k)` returning the
+      Eckart-Young approximation and its exact spectral and Frobenius errors. Every result carries
+      the evidence used.
+    requirements:
+      - "`svd` returns sign-fixed vectors under a documented convention and matches `np.linalg.svd` up to those signs."
+      - "`spectrum_report` derives rank, condition number, and all norms from one economy SVD, never from `A.T @ A`."
+      - "`subspaces` returns orthonormal bases whose spans match the true subspaces within tolerance, using an explicit rank tolerance."
+      - "`pinv` zeroes singular values below `rcond * s.max()` and matches `np.linalg.pinv`."
+      - "`randomized_svd` approximates the top `k` triples within a stated error for a fast-decaying spectrum and improves with `q`."
+      - "`best_rank_k` returns the approximation plus errors equal to `s[k]` (spectral) and `sqrt(sum s[k:]**2)` (Frobenius)."
+    constraints:
+      - NumPy and the standard library only; `np.linalg.svd` allowed as the dense kernel and as the test reference.
+      - Never form `A.T @ A` to get singular values or conditioning.
+      - Never return singular vectors without applying the sign convention.
+      - Keep the rank tolerance explicit and returned.
+    expectedBehaviour:
+      - Sign-fixed vectors are identical across runs and small perturbations.
+      - "`spectrum_report` numbers match hand calculations on constructed spectra."
+      - "`subspaces` bases pass `norm(basis.T @ basis - I)` near machine epsilon and reproduce projections."
+      - "`randomized_svd` error versus the full SVD shrinks as `p` and `q` grow, and matches theory for a synthetic low-rank matrix."
+      - "`best_rank_k` errors equal the closed-form values."
+    structure: |
+      svd_kit/
+        __init__.py
+        core.py
+        spectrum.py
+        subspaces.py
+        pseudo_inverse.py
+        randomized.py
+      tests/
+        test_core.py
+        test_spectrum.py
+        test_subspaces.py
+        test_pseudo_inverse.py
+        test_randomized.py
+    milestones:
+      - title: "1 — Core SVD and sign fixing"
+        detail: Economy and truncated triples with a documented sign convention.
+      - title: "2 — Spectrum report"
+        detail: Rank, condition number, spectral/Frobenius/nuclear norms, cumulative energy, suggested rank.
+      - title: "3 — Subspaces and pseudo-inverse"
+        detail: Orthonormal bases for all four subspaces and the SVD pseudo-inverse with a cutoff.
+      - title: "4 — Randomized SVD"
+        detail: Range finding with oversampling and power iterations, with an error report.
+    testing:
+      - Sign stability across runs and `1e-12` perturbations.
+      - Spectrum-report numbers on constructed spectra with known rank gaps.
+      - Subspace bases versus `scipy.linalg.null_space` and `orth`.
+      - Pseudo-inverse versus `np.linalg.pinv` on tall, wide, and rank-deficient matrices.
+      - Randomized SVD error versus the full SVD as a function of `p` and `q` on a synthetic low-rank matrix.
+    failureCases:
+      - Singular values are computed via `A.T @ A` and small ones are lost.
+      - "`Vt` is used where `V` is meant and the subspace bases are rotated."
+      - Sign fixing is omitted and cross-run comparisons flake.
+      - "`best_rank_k` slices `s`, `U`, `Vt` inconsistently and the reported error does not match the closed form."
+    bonus:
+      - Add a streaming / incremental SVD update for a growing data matrix.
+      - Add nuclear-norm-based soft thresholding for matrix completion.
+      - Emit the spectrum report as Markdown with a text sparkline of `s`.
+    architectureHints:
+      - Compute one economy SVD per public call and derive everything from `s`, `U`, `Vt`.
+      - Put the sign convention in one helper and apply it everywhere vectors leave the toolkit.
+      - Represent a report as an object carrying `s`, `rank`, `cond`, the norms, and `energy`.
+    referenceOutline: |
+      `core.svd` wraps `np.linalg.svd(full_matrices=False)`, slices to `k`, and calls the sign
+      helper. `spectrum.report` derives rank as `sum(s > tol * s[0])` and the rest from `s`.
+      `subspaces` slices `U` and `Vt` at the rank. `pseudo_inverse.pinv` builds `Vt.T * s_inv @ U.T`.
+      `randomized.rsvd` does `Y = A @ Omega`, optional `q` rounds of `Y = A @ (A.T @ Y)`,
+      `Q, _ = qr(Y)`, `B = Q.T @ A`, small SVD, `U = Q @ Ub`.
+  - id: lsvd-final-recommender-svd-audit
+    kind: final-challenge
+    title: Diagnose and fix a truncated-SVD recommender
+    minutes: 90
+    summary: Given a recommender that factors a ratings matrix with a truncated SVD, diagnose the rank choice, the handling of missing entries, and the conditioning, and rebuild it soundly with fail-before-fix tests.
+    problem: |
+      A recommender fills missing ratings with zeros, computes `U, s, Vt = np.linalg.svd(R)`, keeps
+      a hard-coded `k = 50`, and predicts with `(U[:, :50] * s[:50]) @ Vt[:50]`. It also reports a
+      "confidence" as `s[0] / s[-1]` over the full spectrum. Recommendations are poor for users with
+      few ratings and the confidence number is meaningless. Produce an audit that: shows why
+      zero-filling biases the factorisation and replaces it with a masked / imputed approach;
+      chooses `k` from the spectrum (energy and elbow) rather than a constant; quotes the condition
+      number at the numerical rank, not over the noise floor; and proves each change with a
+      regression that fails before the fix and a held-out ranking metric.
+    requirements:
+      - Demonstrate the zero-fill bias (predictions shrink toward zero for sparse rows) and replace it with mean-imputation or an alternating masked low-rank fit.
+      - Select `k` from cumulative energy and the largest spectral gap, reporting both.
+      - Report the condition number using the smallest singular value above the tolerance, and state the tolerance.
+      - Apply the sign convention so factors are reproducible across retrains.
+      - Provide one fail-before-fix test per change plus a held-out RMSE or ranking metric before and after.
+    constraints:
+      - Do not treat missing entries as genuine zeros in the factorisation.
+      - Do not quote a condition number using a rounding-level singular value.
+      - Do not hard-code `k`; derive and justify it.
+    expectedBehaviour:
+      - Predictions for sparse users are no longer systematically shrunk toward zero after the imputation fix.
+      - The chosen `k` is reported with its energy fraction and the gap that supports it.
+      - The condition number is finite and meaningful at the numerical rank.
+      - Factors match across retrains after sign fixing.
+      - The held-out metric improves and each change has a failing-first test.
+    milestones:
+      - title: "1 — Missing-data handling"
+        detail: Show the zero-fill bias, switch to imputation or a masked fit, verify on sparse rows.
+      - title: "2 — Rank and conditioning"
+        detail: Choose `k` from the spectrum; quote conditioning at the numerical rank; fix signs.
+      - title: "3 — Evaluate"
+        detail: Held-out RMSE / ranking before and after, with a regression per change.
+    testing:
+      - Fail-before-fix regression for the zero-fill bias, the hard-coded `k`, and the misleading confidence number.
+      - A test that factors are identical across two retrains after sign fixing.
+      - A held-out split showing the metric improves.
+    failureCases:
+      - The masked fit still initialises from a zero-filled SVD and inherits the bias.
+      - "`k` is chosen from energy alone and ignores an obvious spectral gap, or vice versa, without reporting both."
+      - The condition number is still computed over the full spectrum.
+    bonus:
+      - Add nuclear-norm-regularised matrix completion and compare with the truncated-SVD fit.
+    architectureHints:
+      - Freeze the held-out split and the pre-fix metric as fixtures first.
+      - Keep missing-data handling, rank selection, and evaluation in separate commits.
+    referenceOutline: |
+      Impute missing entries with per-item (or global) means, or run a few rounds of: SVD-truncate,
+      then reset observed entries to their true values. Pick `k` where cumulative `s**2` energy
+      passes a threshold and where `s[i] / s[i+1]` is largest, reporting both. Compute
+      `cond = s[0] / s[rank - 1]` with `rank = sum(s > tol * s[0])`. Sign-fix each `v_i` and its
+      paired `u_i`.
+resources:
+  - name: MIT 18.06 — Singular value decomposition (OCW)
+    type: university
+    difficulty: core
+    url: "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-29-singular-value-decomposition/"
+    usefulness: 5
+    why: Strang derives the SVD from `A.T A` and `A A.T`, shows the four subspaces falling out of `U` and `V`, and connects it to the pseudo-inverse and least squares, matching this lesson's structure.
+    covers: The `A = U S V.T` construction, singular values from `A.T A`, the four fundamental subspaces, the pseudo-inverse, and geometric interpretation.
+  - name: 3Blue1Brown / visual — SVD as rotate, scale, rotate
+    type: video
+    difficulty: intro
+    url: "https://www.youtube.com/watch?v=vSczTbgc8Rc"
+    usefulness: 4
+    why: A concise visual walk-through of the ellipsoid picture — that any matrix maps the unit circle to an ellipse whose axes and lengths are exactly the singular vectors and values.
+    covers: The geometric decomposition into two rotations and a scaling, the singular values as ellipse semi-axes, and the link to rank and range.
+  - name: "Halko, Martinsson, Tropp — Finding structure with randomness (randomized SVD)"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/0909.4061"
+    usefulness: 4
+    why: The definitive treatment of randomized range finding and randomized SVD, with the error bounds, oversampling, and power-iteration refinements used for large approximately-low-rank matrices in ML.
+    covers: Randomized range finding, the prototype randomized SVD, oversampling, power iteration, and probabilistic error bounds.
+  - name: "numpy.linalg.svd reference"
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.linalg.svd.html"
+    usefulness: 4
+    why: It specifies the returned `U`, `s`, `Vt` shapes, the `full_matrices` option, descending order of `s`, and that `Vt` is already transposed — the details behind the common `V` versus `Vt` bug.
+    covers: The economy and full modes, the shapes and ordering of the outputs, `compute_uv`, and the underlying LAPACK drivers.
+  - name: "Trefethen and Bau — Numerical Linear Algebra (Lectures 4 to 5, 31)"
+    type: book
+    difficulty: deep
+    url: "https://people.maths.ox.ac.uk/trefethen/text.html"
+    usefulness: 5
+    why: It presents the SVD as the organising idea of the subject, proves Eckart-Young, and analyses why the SVD is backward stable while the `A.T A` route is not.
+    covers: The SVD and its properties, low-rank approximation and Eckart-Young, norms and conditioning via singular values, and the stability of SVD algorithms.

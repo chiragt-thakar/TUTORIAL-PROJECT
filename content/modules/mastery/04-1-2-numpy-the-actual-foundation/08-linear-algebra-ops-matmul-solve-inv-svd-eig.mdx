@@ -1,0 +1,336 @@
+---
+id: "roadmap:phase-1-1.2:7"
+title: "Linear algebra ops: matmul, solve, inv, svd, eig"
+description: "Choose and validate linear algebra operations from the problem being solved, then use conditioning, residuals, rank, and decomposition structure to judge whether a numerical answer deserves trust."
+module: 1-2-numpy-the-actual-foundation
+order: 8
+estimatedMinutes: 130
+prerequisites: ["roadmap:phase-1-1.2:1", "roadmap:phase-1-1.2:4", "roadmap:phase-1-1.2:6"]
+learningObjectives:
+  - Choose among matmul, solve, least-squares, inverse, SVD, and eigendecomposition from the mathematical question rather than API familiarity
+  - Derive core and batched shapes and validate matrix orientation before calling NumPy linear algebra routines
+  - Diagnose rank deficiency, ill-conditioning, symmetry assumptions, dtype limits, and misleading residual-only checks
+  - Build tested linear algebra boundaries that report numerical evidence and avoid explicit inverses in solve paths
+---
+
+Linear algebra APIs answer different mathematical questions. `matmul` composes linear maps,
+`solve` finds unknowns in a square system, `lstsq` fits an overdetermined system, SVD exposes rank
+and sensitive directions, and eigendecomposition finds directions preserved up to scale.
+
+The dangerous mistake is choosing an operation because its output has the desired shape. A finite
+array is not evidence of a well-posed problem. Shape validation comes first; conditioning, residuals,
+rank, symmetry, and domain invariants decide whether the result deserves trust.
+
+<TypeScriptComparison>
+
+- JavaScript has no standard numerical linear algebra layer; library APIs differ, but the mathematical contracts do not.
+- TypeScript can model matrix wrappers, yet ordinary arrays cannot encode orientation or rank. NumPy shapes have the same semantic gap.
+- A thrown exception catches singularity in some cases. Neither JS nor NumPy exceptions diagnose every ill-conditioned answer.
+- Production boundaries should return numerical evidence beside values, much like a database call returns data plus operational metadata.
+
+</TypeScriptComparison>
+
+## `matmul` has core dimensions and broadcast batch dimensions
+
+For matrices, `(M,K) @ (K,N) -> (M,N)`. Leading dimensions are batch dimensions and broadcast.
+One-dimensional operands receive special treatment: a left vector behaves like `(1,K)` temporarily,
+and a right vector like `(K,1)`, after which the inserted dimension is removed.
+
+```python
+import numpy as np
+
+a = np.empty((8, 32, 64))
+b = np.empty((1, 64, 16))
+assert (a @ b).shape == (8, 32, 16)
+
+v = np.empty((64,))
+assert (a @ v).shape == (8, 32)
+```
+
+Never infer whether an `(N,)` vector represents samples, features, or coefficients from its shape.
+Normalize public inputs to an explicit contract before multiplication. Equal dimensions make
+transposed weights especially dangerous because the program may run with different meaning.
+
+<Concept>
+
+Treat each routine as a map from a mathematical problem to a numerical algorithm. Shapes establish
+mechanical compatibility; assumptions such as square, full rank, symmetric, or positive definite
+establish whether that algorithm matches the problem.
+
+</Concept>
+
+## Solve systems; do not manufacture an inverse
+
+To solve `A x = b`, call `np.linalg.solve(A, b)`. Computing `inv(A) @ b` performs extra work,
+materializes an entire inverse, and usually introduces more rounding. The inverse is a mathematical
+object, not the default implementation of every solve.
+
+```python
+def checked_solve(a, b, *, cond_limit=1e10):
+    a = np.asarray(a, dtype=np.float64)
+    b = np.asarray(b, dtype=np.float64)
+    if a.ndim != 2 or a.shape[0] != a.shape[1]:
+        raise ValueError("A must be square")
+    if b.shape[0] != a.shape[0]:
+        raise ValueError("A and b disagree")
+
+    condition = np.linalg.cond(a)
+    if not np.isfinite(condition) or condition > cond_limit:
+        raise ValueError(f"unsafe condition number: {condition:g}")
+    x = np.linalg.solve(a, b)
+    relative_residual = np.linalg.norm(a @ x - b) / max(np.linalg.norm(b), 1.0)
+    return x, {"condition": condition, "relative_residual": relative_residual}
+```
+
+A small residual proves the computed `x` nearly satisfies the supplied equations. It does not prove
+that `x` is insensitive to small input perturbations. Condition number estimates that sensitivity.
+
+## Least squares answers a different question
+
+When `A` is rectangular, an exact solution may not exist or may not be unique. `np.linalg.lstsq`
+minimizes `||Ax-b||₂` and reports residuals, rank, and singular values. Those diagnostics are part
+of the result contract, not optional logging.
+
+```python
+x, residuals, rank, singular_values = np.linalg.lstsq(a, b, rcond=None)
+if rank < min(a.shape):
+    raise ValueError("design matrix is rank deficient")
+```
+
+Feature scaling affects singular values and conditioning. A fitted coefficient vector can change
+dramatically while predictions remain similar when columns are nearly dependent. Test prediction
+quality and stability under realistic perturbations, not coefficients alone.
+
+## SVD is the general diagnostic decomposition
+
+For `A.shape == (M,N)`, reduced SVD returns `U:(M,K)`, `s:(K,)`, and `Vh:(K,N)`, where
+`K=min(M,N)`. Reconstruction is `U @ diag(s) @ Vh`. Singular values are nonnegative and ordered
+from largest to smallest.
+
+```python
+u, s, vh = np.linalg.svd(a, full_matrices=False)
+reconstructed = (u * s) @ vh
+np.testing.assert_allclose(reconstructed, a)
+
+tolerance = s[0] * max(a.shape) * np.finfo(s.dtype).eps
+numerical_rank = np.count_nonzero(s > tolerance)
+```
+
+SVD supports rank estimation, pseudoinverses, principal directions, compression, and stable least
+squares. The rank threshold is a policy tied to scale, dtype, and error budget; it is not one
+universal magic constant.
+
+## Pseudoinverse truncates sensitive directions
+
+The Moore–Penrose pseudoinverse reciprocates retained singular values and discards values below a
+threshold. That makes it useful for minimum-norm least-squares solutions, but thresholding changes
+the effective model. Record it.
+
+```python
+def truncated_pinv(a, rcond=1e-12):
+    u, s, vh = np.linalg.svd(a, full_matrices=False)
+    cutoff = rcond * s[0] if s.size else 0.0
+    reciprocal = np.divide(1.0, s, out=np.zeros_like(s), where=s > cutoff)
+    return (vh.T * reciprocal) @ u.T
+```
+
+Do not use a pseudoinverse merely to suppress a singular-matrix exception. Determine whether
+non-identifiability is acceptable in the domain, and expose effective rank to callers.
+
+## Eigenvectors require structure and careful interpretation
+
+`eig` solves `A v = λv` for a general square matrix and can return complex values even for real
+input. For real symmetric or complex Hermitian matrices, use `eigh`: it exploits structure and
+returns real eigenvalues with orthonormal eigenvectors.
+
+```python
+cov = np.cov(features, rowvar=False)
+if not np.allclose(cov, cov.T, rtol=1e-10, atol=1e-12):
+    raise ValueError("covariance must be symmetric")
+
+values, vectors = np.linalg.eigh(cov)
+order = np.argsort(values)[::-1]
+values, vectors = values[order], vectors[:, order]
+```
+
+Eigenvectors have sign or complex-phase ambiguity. Repeated eigenvalues permit any orthonormal basis
+of the shared eigenspace. Tests should compare reconstruction, subspaces, and residuals rather than
+requiring one exact vector orientation.
+
+<CommonMistake>
+
+Sorting eigenvalues without applying the same permutation to eigenvector columns breaks every
+eigenpair. Keep values and vectors coupled, and remember NumPy stores eigenvectors in columns.
+
+</CommonMistake>
+
+## Conditioning connects dtype to trust
+
+Roughly, a condition number of `κ` can amplify relative input error by up to `κ`. Float32 carries
+about seven decimal digits; a condition number near `1e7` can consume most of them. Moving to
+float64 helps rounding but does not repair a fundamentally non-identifiable problem.
+
+Scale rows or columns when the units create artificial imbalance. Regularize only when the changed
+problem matches domain intent. Report condition estimates, rank, chosen dtype, and residual metrics
+so downstream systems can reject weak answers.
+
+<ProductionNote>
+
+Pinning a BLAS implementation can matter for performance and bitwise reproducibility. Thread counts,
+kernel choice, and reduction order may change low bits. Define tolerance-based numerical contracts
+unless exact reproducibility is truly required and controlled end to end.
+
+</ProductionNote>
+
+## Test decompositions by invariants
+
+For solve, test `A@x≈b`, relative residual, and sensitivity on controlled perturbations. For SVD,
+test reconstruction, descending nonnegative singular values, and orthogonality. For eigenpairs,
+test `A@V≈V*λ`; for symmetric input, test orthonormality and real eigenvalues.
+
+Use diagonal, nearly singular, rank-deficient, symmetric, nonsymmetric, batched, empty, and invalid
+fixtures. Compare well-conditioned cases with known solutions. Never make `np.linalg.inv(a) @ b`
+the oracle for `solve`; it repeats the same problem through a weaker route.
+
+## Exercises
+
+<Exercise id="numpy-linalg-shape-easy" difficulty="easy">
+
+Derive `(8,32,64) @ (1,64,16)` and explain which dimensions broadcast and contract.
+
+<Solution>
+
+Batch dimensions `8` and `1` broadcast to `8`. Core dimension `64` contracts. The surviving matrix
+dimensions are `32,16`, so the result is `(8,32,16)`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-linalg-solve-medium" difficulty="medium">
+
+Design a boundary for solving `Ax=b` that rejects the wrong problem and returns evidence.
+
+<Solution>
+
+Validate floating finite inputs, square `A`, compatible right-hand sides, and a domain condition
+limit. Call `solve`, then return `x` with condition number and a scale-aware relative residual.
+Rejecting or warning on ill-conditioning must be an explicit product policy.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-linalg-svd-hard" difficulty="hard">
+
+Implement reduced-SVD rank estimation and a truncated reconstruction with a documented threshold.
+
+<Solution>
+
+Use `svd(..., full_matrices=False)`, choose a scale-aware cutoff such as
+`s[0]*max(shape)*eps`, retain values above it, and reconstruct `(U[:,:r]*s[:r])@Vh[:r]`. Return the
+cutoff and effective rank so the approximation policy is observable.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-linalg-interview" difficulty="interview">
+
+Explain why `solve(A,b)` is preferred over `inv(A)@b`, and what a small residual cannot prove.
+
+<Solution>
+
+`solve` targets the system directly, avoids materializing every inverse column, and generally uses
+less work with better numerical behavior. A small residual proves consistency with supplied inputs,
+but an ill-conditioned system can still produce a solution that changes greatly under tiny input
+perturbations; condition and domain stability remain necessary.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-linalg-pipeline-real-world" difficulty="real-world">
+
+Design a least-squares calibration service that refuses misleading coefficients.
+
+<Solution>
+
+Validate semantic feature layout and units, scale deliberately, call `lstsq`, and return coefficients
+with rank, singular values, condition estimate, residuals, and scaling metadata. Test collinearity,
+perturbation stability, held-out predictions, dtype, and versioned thresholds. Escalate deficient
+rank instead of silently accepting one arbitrary solution.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Why is shape compatibility insufficient for choosing a linear algebra routine?
+2. What does a residual measure, and what does condition number add?
+3. When is `lstsq` the right problem instead of `solve`?
+4. What shapes does reduced SVD return for `(M,N)`?
+5. Why should symmetric matrices use `eigh`, and how should eigenvectors be tested?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why did inv(A) at b look less stable than solve(A, b)?">
+
+It computed and rounded an entire inverse before another multiplication. Solve factors the system
+and applies the factors directly to the right-hand side.
+
+</Gotcha>
+
+<Gotcha question="Why is my tiny residual paired with a wildly wrong solution?">
+
+An ill-conditioned matrix can map large changes in `x` to small changes in `Ax`. Inspect condition
+and perturbation sensitivity.
+
+</Gotcha>
+
+<Gotcha question="Why did eig return complex numbers for a real matrix?">
+
+A real nonsymmetric matrix may have complex eigenpairs. Use `eigh` only when Hermitian or symmetric
+structure is valid.
+
+</Gotcha>
+
+<Gotcha question="Why do correct eigenvectors differ between runs or libraries?">
+
+Sign or phase is arbitrary, and repeated eigenvalues admit different bases for the same eigenspace.
+Test residuals and subspaces.
+
+</Gotcha>
+
+<Gotcha question="Why did sorting eigenvalues break reconstruction?">
+
+You did not apply the identical permutation to eigenvector columns. Eigenpairs must stay coupled.
+
+</Gotcha>
+
+<Gotcha question="Why did float64 not fix my rank-deficient model?">
+
+More precision reduces rounding error but does not create information missing from dependent columns.
+
+</Gotcha>
+
+<Gotcha question="Why did matmul accept a transposed square weight?">
+
+Equal dimensions made the wrong orientation mechanically compatible. Test semantic outputs with
+asymmetric fixtures and explicit boundary names.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Choose a linear algebra routine from the mathematical question: composition, exact solve,
+least-squares fit, rank analysis, or invariant directions. Derive core and batch shapes before the
+call, and make structural assumptions explicit.
+
+Numerical output needs evidence. Residuals measure equation fit, condition estimates measure
+sensitivity, rank identifies lost directions, and decomposition invariants expose orientation and
+pairing errors.
+
+Avoid explicit inverses in solve paths, use SVD as the general rank diagnostic, and exploit symmetric
+structure with `eigh`. The remaining tabs turn these rules into calibration and decomposition
+systems with adversarial numerical tests.

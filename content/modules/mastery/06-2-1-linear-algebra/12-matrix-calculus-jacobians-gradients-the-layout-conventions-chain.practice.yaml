@@ -1,0 +1,775 @@
+lessonId: "roadmap:phase-2-2.1:11"
+module: 2-1-linear-algebra
+lesson: 12-matrix-calculus-jacobians-gradients-the-layout-conventions-chain
+title: "Matrix calculus: Jacobians, gradients, the layout conventions, chain rule for matrices"
+summary: Get the gradient and Jacobian shapes right under a stated layout, memorise the identities that recur in deep learning, run the chain rule as a product of Jacobians, and see that reverse-mode backprop is vector-Jacobian products all the way down.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lmc-read-backward
+    tier: normal
+    kind: code-reading
+    title: Read a backward pass
+    minutes: 10
+    requiredForMastery: true
+    concepts: [chain-rule, vector-jacobian-product, linear-layer]
+    prompt: |
+      Read this backward pass for `y = W @ x` then `h = tanh(y)`. Say what each line is the
+      derivative of, and why no Jacobian matrix appears.
+      ```python
+      grad_h = g
+      grad_y = grad_h * (1 - h**2)
+      grad_x = W.T @ grad_y
+      grad_W = np.outer(grad_y, x)
+      ```
+    hints:
+      - "`tanh` is elementwise, so its Jacobian is diagonal and multiplies pointwise."
+      - The linear layer's input gradient is `W.T @ (upstream)`, its weight gradient an outer product.
+    solution: |
+      `grad_h = g` is the given upstream gradient `dL/dh`. `grad_y = grad_h * (1 - h**2)` applies
+      the elementwise `tanh` derivative `1 - tanh(y)**2` — a diagonal Jacobian, so it is a pointwise
+      multiply, not a matmul. `grad_x = W.T @ grad_y` is the vector-Jacobian product for the linear
+      map, since `dy/dx = W` and the input gradient is `W.T @ (dL/dy)`. `grad_W = np.outer(grad_y,
+      x)` is `dL/dW`, entry `(i, j)` equal to `grad_y_i * x_j`. No Jacobian is formed: each step is
+      an array times a vector, which is the whole point of reverse mode.
+  - id: lmc-write-numerical-jacobian
+    tier: normal
+    kind: write-code
+    title: Finite-difference Jacobian
+    minutes: 12
+    requiredForMastery: true
+    concepts: [finite-differences, jacobian, gradient-check]
+    prompt: |
+      Write `num_jac(f, x, h=1e-6)` returning the `(m, n)` Jacobian of `f` at `x` by symmetric
+      differences, and say why symmetric beats one-sided.
+    hints:
+      - Perturb one coordinate at a time by `+h` and `-h`.
+      - Symmetric differences cancel the first-order truncation term.
+    solution: |
+      `x = np.asarray(x, float); y0 = f(x); J = np.zeros((y0.size, x.size))`; for each `j`, set
+      `dx = np.zeros_like(x); dx[j] = h`, and `J[:, j] = (f(x + dx) - f(x - dx)) / (2 * h)`; return
+      `J`. Symmetric (central) differences have truncation error `O(h**2)` versus `O(h)` for the
+      one-sided `(f(x + h) - f(x)) / h`, because the odd Taylor terms cancel. The trade-off is
+      rounding error `O(eps / h)`, so `h` around `1e-6` in double precision balances the two; sweep
+      `h` if a check is borderline.
+  - id: lmc-predict-shapes
+    tier: normal
+    kind: predict-output
+    title: Gradient and Jacobian shapes
+    minutes: 10
+    requiredForMastery: true
+    concepts: [gradient-shape, jacobian-shape, numerator-layout]
+    prompt: |
+      In numerator layout, give the shape of: the gradient of a scalar `f(X)` for `X` shape
+      `(4, 7)`; the Jacobian of `y = A @ x` with `A` shape `(3, 5)`; the Jacobian of an elementwise
+      `phi` applied to a length-6 vector.
+    hints:
+      - A scalar-by-matrix gradient matches the matrix shape.
+      - Elementwise maps have a diagonal Jacobian.
+    solution: |
+      Gradient of `f(X)`: shape `(4, 7)`, same as `X`, with entry `(i, j)` equal to `df/dX_ij`.
+      Jacobian of `y = A @ x`: `y` is length 3, `x` is length 5, so `J` is `(3, 5)` and in fact
+      `J = A`. Jacobian of elementwise `phi` on a length-6 vector: `(6, 6)` and diagonal, with
+      `J_ii = phi'(z_i)`; in practice you never form it and just multiply pointwise by `phi'(z)`.
+  - id: lmc-explain-reverse-vs-forward
+    tier: normal
+    kind: explain
+    title: Reverse mode versus forward mode
+    minutes: 10
+    requiredForMastery: true
+    concepts: [reverse-mode, forward-mode, vjp, jvp]
+    prompt: |
+      Explain the difference between reverse-mode and forward-mode automatic differentiation and
+      when each is the right choice.
+    hints:
+      - Reverse mode propagates vector-Jacobian products; forward mode propagates Jacobian-vector products.
+      - Count outputs versus inputs.
+    solution: |
+      Both evaluate the chain rule `J = J_k ... J_1` as a product of per-operation Jacobians.
+      Reverse mode evaluates it right to left, carrying a row vector (the gradient of a scalar
+      output) backward as vector-Jacobian products `v.T @ J`; its cost is a constant times one
+      forward pass, independent of the number of inputs, so it is used for training where there is
+      one scalar loss and many parameters. Forward mode evaluates left to right, carrying a column
+      vector (a perturbation direction) forward as Jacobian-vector products `J @ v`; its cost is a
+      constant times a forward pass per input direction, so it is used when you need derivatives
+      with respect to few inputs, such as a Jacobian-vector product for Hessian-free optimisation.
+  - id: lmc-derive-quadratic
+    tier: intermediate
+    kind: write-code
+    title: Gradient of a quadratic form
+    minutes: 14
+    requiredForMastery: true
+    concepts: [quadratic-form, gradient, symmetric]
+    prompt: |
+      Write `grad_quadratic(A, x)` returning `d(x.T A x)/dx` for a general `A`, and a one-line test
+      against a finite-difference gradient. State the symmetric special case.
+    hints:
+      - The general result is `(A + A.T) @ x`.
+      - For symmetric `A` it simplifies to `2 @ A @ x`.
+    solution: |
+      `return (A + A.T) @ x`. Derivation: expanding `(x + e).T A (x + e)` gives first-order term
+      `x.T A e + e.T A x = x.T (A + A.T) e`, so the gradient is `(A + A.T) x`. For symmetric `A`
+      this is `2 A x`. Test: `f = lambda v: v @ A @ v`; compare `grad_quadratic(A, x)` to
+      `np.array([(f(x + e) - f(x - e)) / 2e-6 for e in np.eye(len(x)) * 1e-6])` with a relative
+      tolerance. Forgetting the symmetrisation and returning `A @ x` is a common bug when `A` is a
+      computed near-symmetric matrix.
+  - id: lmc-logdet-gradient
+    tier: intermediate
+    kind: predict-output
+    title: Gradient of log-determinant
+    minutes: 12
+    requiredForMastery: true
+    concepts: [log-determinant, matrix-gradient, identities]
+    prompt: |
+      Give `d(log det X)/dX`, and for `X = [[2, 0], [0, 5]]` give the numeric gradient matrix.
+    hints:
+      - The identity is `d(log det X)/dX = (X inverse) transpose`.
+      - For a diagonal `X`, the inverse is diagonal with reciprocal entries.
+    solution: |
+      `d(log det X)/dX = inv(X).T`. For `X = diag(2, 5)`, `inv(X) = diag(0.5, 0.2)`, and it is
+      symmetric so the transpose is itself: the gradient matrix is `[[0.5, 0], [0, 0.2]]`. Check
+      the scalar case: `log det diag(2, 5) = log(10)`; nudging the `(0,0)` entry to `2 + h` gives
+      `log((2 + h) * 5) = log(10) + log(1 + h/2) ~ log(10) + h/2`, so `d/dX_00 = 0.5`, matching.
+      This identity appears in Gaussian log-likelihoods and normalising flows.
+  - id: lmc-chain-two-layers
+    tier: intermediate
+    kind: write-code
+    title: Backprop through a two-layer net
+    minutes: 16
+    requiredForMastery: true
+    concepts: [chain-rule, backprop, gradient-check]
+    prompt: |
+      Given `h = relu(W1 @ x)`, `y = W2 @ h`, scalar loss `L` with `dL/dy = g`, write the backward
+      returning `grad_x`, `grad_W1`, `grad_W2`, and outline a gradient check.
+    hints:
+      - ReLU derivative is the indicator `(W1 @ x) > 0`, applied elementwise.
+      - Weight gradients are outer products of the local upstream gradient with the local input.
+    solution: |
+      `z1 = W1 @ x`; `h = np.maximum(z1, 0)`. Backward: `grad_h = W2.T @ g`;
+      `grad_z1 = grad_h * (z1 > 0)`; `grad_x = W1.T @ grad_z1`;
+      `grad_W2 = np.outer(g, h)`; `grad_W1 = np.outer(grad_z1, x)`. Gradient check: define
+      `forward(theta)` that unpacks `x`, `W1`, `W2` from a flat vector and returns `L`; compare each
+      analytic gradient block to a symmetric finite difference over the corresponding entries, with
+      relative error below `1e-5` and `h` around `1e-6`. Check at a point where no pre-activation is
+      exactly zero, since ReLU is non-differentiable there.
+  - id: lmc-hessian-vector-product
+    tier: intermediate
+    kind: explain
+    title: Hessian-vector product without the Hessian
+    minutes: 14
+    requiredForMastery: true
+    concepts: [hessian, hessian-vector-product, double-backward]
+    prompt: |
+      Explain how to compute `H @ v` for the Hessian `H` of a scalar loss without forming `H`, and
+      why this matters for large models.
+    hints:
+      - "`H @ v` is the directional derivative of the gradient along `v`."
+      - A second backward pass (or forward-over-reverse) gives it at the cost of one gradient.
+    solution: |
+      `H @ v = d/dt grad L(theta + t v) at t = 0`, the directional derivative of the gradient along
+      `v`. In an autodiff framework you compute `g = grad L(theta)`, then take the gradient of the
+      scalar `g @ v` with respect to `theta` (a second backward), which returns `H @ v` exactly.
+      Equivalently, forward-mode over reverse-mode (a Jacobian-vector product of the gradient map)
+      gives the same thing. Cost is a small constant times one gradient evaluation, and memory is
+      `O(p)`, whereas the full `p x p` Hessian is infeasible for large `p`. This is the primitive
+      behind conjugate-gradient Newton steps, Gauss-Newton, Lanczos spectrum estimation, and
+      influence functions.
+  - id: lmc-trace-identities
+    tier: intermediate
+    kind: predict-output
+    title: Trace and outer-product identities
+    minutes: 12
+    requiredForMastery: true
+    concepts: [trace-gradient, outer-product, matrix-identities]
+    prompt: |
+      Give `d(trace(A @ X))/dX` and `d(a.T @ X @ b)/dX`. For `A = [[1, 2], [3, 4]]`, give the
+      numeric gradient matrix of `trace(A @ X)` with respect to `X`.
+    hints:
+      - "`d(trace(A X))/dX = A.T`."
+      - "`d(a.T X b)/dX = outer(a, b)`."
+    solution: |
+      `d(trace(A @ X))/dX = A.T`, because `trace(A X) = sum_ij A_ij X_ji`, so `d/dX_ji = A_ij`,
+      which placed at `(j, i)` is `A.T`. `d(a.T @ X @ b)/dX = a b.T` (an outer product), since
+      `a.T X b = sum_ij a_i X_ij b_j` so `d/dX_ij = a_i b_j`. For `A = [[1, 2], [3, 4]]`, the
+      gradient of `trace(A @ X)` is `A.T = [[1, 3], [2, 4]]`, independent of `X` because the
+      function is linear in `X`.
+  - id: lmc-debug-missing-broadcast-sum
+    tier: tricky
+    kind: debug
+    title: Backward forgot to sum a broadcast axis
+    minutes: 16
+    requiredForMastery: true
+    concepts: [broadcasting, backward-pass, batch]
+    prompt: |
+      This bias backward passes the shape check (after a reshape) but training diverges as the batch
+      grows. Fix it.
+    code: |
+      def bias_backward(grad_out, b_shape):
+          # forward was: Y = X + b, with b of shape (1, d) broadcast over the batch
+          return grad_out.reshape(b_shape) if grad_out.size == np.prod(b_shape) else grad_out[0:1]
+    solution: |
+      The forward pass broadcasts `b` of shape `(1, d)` across the `(batch, d)` activation, i.e. it
+      *copies* `b` down the batch axis. The backward pass must therefore *sum* the incoming
+      `(batch, d)` gradient over the batch axis: `return grad_out.sum(axis=0, keepdims=True)`. The
+      current code either reshapes (wrong: mixes batch and feature entries) or takes one row
+      (`grad_out[0:1]`, which is the gradient from a single example and is a factor of `batch` too
+      small). Because the effective bias update then scales with the batch, larger batches overshoot
+      and the loss diverges. Rule: forward copied, backward sums. Regression: gradient-check `b` at
+      batch sizes 1 and 64 and assert the per-parameter gradient matches finite differences at both.
+    hints:
+      - The forward copied `b` across the batch; the backward must sum over that axis.
+      - "`grad_out.sum(axis=0, keepdims=True)` restores `b`'s shape and magnitude."
+  - id: lmc-debug-layout-transpose
+    tier: tricky
+    kind: debug
+    title: Jacobian used in the wrong layout
+    minutes: 14
+    requiredForMastery: true
+    concepts: [numerator-layout, denominator-layout, chain-rule]
+    prompt: |
+      This chains two Jacobians for `z = g(f(x))` but the composed Jacobian comes out transposed
+      relative to a finite-difference check. Fix it, given both `Jf` and `Jg` are in numerator
+      layout.
+    code: |
+      def compose(Jg, Jf):
+          return Jf @ Jg
+    solution: |
+      In numerator layout, `Jg = dz/dy` has shape `(dim z, dim y)` and `Jf = dy/dx` has shape
+      `(dim y, dim x)`. The chain rule is `dz/dx = (dz/dy) @ (dy/dx) = Jg @ Jf`, evaluated right to
+      left in the order the functions apply. The code writes `Jf @ Jg`, which is the wrong order and
+      only has conformable shapes by accident when the dimensions coincide, producing the transpose
+      (or a shape error otherwise). Fix: `return Jg @ Jf`. Regression: pick `f`, `g` with distinct
+      input/output dimensions so the wrong order raises, and compare `compose` against
+      `num_jac(lambda x: g(f(x)), x)`.
+    hints:
+      - Numerator-layout Jacobians multiply right to left, outer function first.
+      - "`dz/dx = Jg @ Jf`, not `Jf @ Jg`."
+  - id: lmc-debug-fd-step-size
+    tier: tricky
+    kind: debug
+    title: Gradient check fails from a bad step size
+    minutes: 14
+    requiredForMastery: true
+    concepts: [finite-differences, truncation-error, rounding-error]
+    prompt: |
+      A correct analytic gradient fails this check for `h = 1e-12` and also for `h = 1e-2`. Fix the
+      check.
+    code: |
+      def grad_ok(f, x, grad, h=1e-12):
+          num = np.array([(f(x + e) - f(x - e)) / (2 * h) for e in np.eye(len(x)) * h])
+          return np.allclose(grad, num, atol=1e-8)
+    solution: |
+      The symmetric difference has truncation error `O(h**2)` and rounding error `O(eps / h)`. At
+      `h = 1e-2` the truncation term dominates and the estimate is inaccurate; at `h = 1e-12` the
+      subtraction `f(x + e) - f(x - e)` loses almost all significant digits to cancellation. Use
+      `h` around `1e-6`, and compare with a *relative* error, not an absolute `atol`:
+      `rel = norm(grad - num) / (norm(grad) + norm(num) + 1e-12); return rel < 1e-5`. Optionally
+      sweep `h` in `[1e-4, 1e-5, 1e-6, 1e-7]` and take the best. For analytic `f`, the complex-step
+      derivative `imag(f(x + 1j * h)) / h` avoids cancellation entirely.
+    hints:
+      - Too-small `h` causes catastrophic cancellation; too-large `h` causes truncation error.
+      - Use `h ~ 1e-6` and a relative-error threshold.
+  - id: lmc-design-autodiff-checker
+    tier: challenge
+    kind: design
+    title: Design a gradient-checking harness
+    minutes: 28
+    requiredForMastery: false
+    concepts: [gradient-check, finite-differences, reporting]
+    prompt: |
+      Design `check_grads(fn, inputs, analytic_grads)` that validates hand-written or custom
+      backward implementations. State the method, the tolerances, how it reports failures, and what
+      it must not do.
+    hints:
+      - Symmetric differences with a swept `h`, per-parameter relative error, and a worst-offender report.
+      - Handle non-differentiable points (ReLU at 0) and broadcasted parameters.
+    solution: |
+      Inputs: a function returning a scalar, a pytree of input arrays, the analytic gradients in the
+      same structure, an `h` list, and a relative tolerance. For each scalar entry of each input,
+      compute the symmetric difference at each `h` and keep the estimate whose neighbouring-`h`
+      estimates agree best (a self-consistency check). Compare to the analytic value with relative
+      error `|a - n| / (|a| + |n| + eps)`. Report: the max relative error, its location, a
+      histogram of errors, and the fraction of entries failing. It must not use an absolute
+      tolerance (scale-dependent), must not test at a point where any input sits on a
+      non-differentiable kink (jitter inputs or detect and skip), must sum-check broadcasted
+      parameters at more than one batch size, and must not pass silently when many entries are just
+      under the threshold (report the distribution). Golden cases: a linear layer, an elementwise
+      nonlinearity, a softmax cross-entropy, and a deliberately buggy backward that misses a
+      broadcast sum.
+  - id: lmc-refactor-explicit-jacobians
+    tier: challenge
+    kind: refactor
+    title: Refactor a layer that materialises Jacobians
+    minutes: 26
+    requiredForMastery: false
+    concepts: [vector-jacobian-product, memory, softmax, refactor]
+    prompt: |
+      A custom module's backward builds the full Jacobian of each op (`diag(phi'(z))` for
+      activations, `diag(s) - s s.T` for softmax) and multiplies. It runs out of memory on large
+      feature dimensions. Refactor to vector-Jacobian products.
+    hints:
+      - A diagonal Jacobian times a vector is an elementwise product.
+      - "`(diag(s) - s s.T) @ v` is `s * v - s * (s @ v)`."
+    solution: |
+      Replace each explicit Jacobian with its VJP. Elementwise activation: `grad_z = grad_y *
+      phi_prime(z)` instead of `np.diag(phi_prime(z)) @ grad_y`, dropping an `n x n` allocation to
+      `O(n)`. Softmax: `grad_z = s * (grad_s - (s @ grad_s))` instead of forming
+      `diag(s) - np.outer(s, s)` — `O(n)` versus `O(n**2)`. Linear layer: keep `W.T @ grad_y` and
+      `np.outer(grad_y, x)`; there is no dense Jacobian to remove there. Verify each refactored VJP
+      against the old explicit-Jacobian path on small inputs within floating-point tolerance, then
+      against a finite-difference check. Add a fail-before-fix test that records peak memory (or the
+      largest intermediate shape) for a large feature dimension and asserts it drops from `O(n**2)`
+      to `O(n)`.
+quizzes:
+  - id: lmc-checkpoint
+    title: Checkpoint — matrix calculus
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lmc-cp-grad-shape
+        kind: mcq
+        prompt: The gradient of a scalar function of a matrix `X` has what shape?
+        options:
+          - {id: samex, text: The same shape as `X`}
+          - {id: flat, text: A flat vector of length `X.size` only}
+          - {id: square, text: "Square, of size `X.size` by `X.size`"}
+        answer: [samex]
+        explanation: Entry `(i, j)` of the gradient is `df/dX_ij`, so it matches `X`'s shape.
+        concepts: [gradient-shape]
+        points: 1
+      - id: lmc-cp-quadratic
+        kind: mcq
+        prompt: "`d(x.T A x)/dx` for a general (not necessarily symmetric) `A` is what?"
+        options:
+          - {id: sym, text: "`(A + A.T) @ x`"}
+          - {id: ax, text: "`A @ x`"}
+          - {id: two-ax, text: "`2 @ A @ x` always"}
+        answer: [sym]
+        explanation: "`2 A x` is only the symmetric special case; in general it is `(A + A.T) x`."
+        concepts: [quadratic-form]
+        points: 1
+      - id: lmc-cp-chain
+        kind: mcq
+        prompt: For `z = g(f(x))` with numerator-layout Jacobians, `dz/dx` equals what?
+        options:
+          - {id: gf, text: "`Jg @ Jf`"}
+          - {id: fg, text: "`Jf @ Jg`"}
+          - {id: had, text: "`Jg * Jf` elementwise"}
+        answer: [gf]
+        explanation: Jacobians multiply right to left, outer function first.
+        concepts: [chain-rule]
+        points: 1
+      - id: lmc-cp-broadcast
+        kind: multi
+        prompt: Which statements about broadcasting in the backward pass are true?
+        options:
+          - {id: copied-sums, text: Where the forward copied a value, the backward sums the gradient}
+          - {id: summed-copies, text: Where the forward summed, the backward broadcasts}
+          - {id: shape-magnitude, text: A missing broadcast sum can give the right shape but the wrong magnitude}
+          - {id: never-matters, text: Broadcasting never affects the backward pass}
+        answer: [copied-sums, summed-copies, shape-magnitude]
+        explanation: The forward and backward broadcast/sum operations are transposes of each other.
+        concepts: [broadcasting, backward-pass]
+        points: 1
+  - id: lmc-assessment
+    title: Assessment — Jacobians, gradients, and the chain rule
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lmc-as-shapes
+        kind: explain
+        prompt: |
+          State the gradient shape for a scalar-by-matrix derivative and the Jacobian shape for a
+          map from `R^n` to `R^m` in numerator layout.
+        modelAnswer: |
+          Scalar-by-matrix: the gradient has the same shape as the matrix argument, entry `(i, j)`
+          equal to `df/dX_ij`. Vector-by-vector: the Jacobian is `(m, n)` in numerator layout, with
+          `J_ij = dy_i/dx_j`; denominator layout is its transpose.
+        explanation: Gradients mirror the argument; Jacobians are outputs-by-inputs.
+        concepts: [gradient-shape, jacobian-shape]
+        points: 1
+      - id: lmc-as-quadratic
+        kind: write-function
+        prompt: Give `d(x.T A x)/dx` for general and symmetric `A`, with a one-line derivation.
+        modelAnswer: |
+          Expanding `(x + e).T A (x + e)` the first-order term is `x.T A e + e.T A x = x.T (A + A.T)
+          e`, so the gradient is `(A + A.T) x`. Symmetric `A`: `2 A x`.
+        explanation: Both cross terms contribute; they add to `(A + A.T) x`.
+        concepts: [quadratic-form]
+        points: 1
+      - id: lmc-as-identities
+        kind: scenario
+        prompt: Give `d(trace(A X))/dX`, `d(a.T X b)/dX`, and `d(log det X)/dX`.
+        modelAnswer: |
+          `d(trace(A X))/dX = A.T`. `d(a.T X b)/dX = a b.T` (an outer product). `d(log det X)/dX =
+          inv(X).T`.
+        explanation: These three cover most matrix-argument gradients in ML.
+        concepts: [matrix-identities]
+        points: 1
+      - id: lmc-as-chain
+        kind: explain
+        prompt: Write the chain rule for a composition of Jacobians and describe what changes for a scalar output.
+        modelAnswer: |
+          For `y_k = f_k(...f_1(x))`, `J_total = J_k @ ... @ J_1` (right to left). For a scalar
+          output the leftmost factor is a row vector, so you propagate vector-Jacobian products
+          backward and never form an intermediate Jacobian matrix.
+        explanation: A scalar output collapses the product into successive VJPs.
+        concepts: [chain-rule, vjp]
+        points: 1
+      - id: lmc-as-linear-grads
+        kind: write-function
+        prompt: For `y = W x` with upstream gradient `delta`, give `dL/dx` and `dL/dW` and name the structure of `dL/dW`.
+        modelAnswer: |
+          `dL/dx = W.T @ delta`. `dL/dW = delta x.T`, an outer product, shape `(m, n)` like `W`. Over
+          a batch, `dL/dW = Delta.T @ X`.
+        explanation: The weight gradient is rank 1 per example.
+        concepts: [linear-layer, outer-product]
+        points: 1
+      - id: lmc-as-softmax
+        kind: scenario
+        prompt: Give the softmax Jacobian and the VJP form of its backward pass.
+        modelAnswer: |
+          `J = diag(s) - s s.T`. Backward: `grad_z = s * (grad_s - (s @ grad_s))`, which is `O(n)`
+          and forms no `n x n` matrix.
+        explanation: The Jacobian is symmetric; its VJP simplifies to two elementwise ops.
+        concepts: [softmax, vjp]
+        points: 1
+      - id: lmc-as-reverse-forward
+        kind: scenario
+        prompt: You have a scalar loss and a million parameters. Which autodiff mode, and why?
+        modelAnswer: |
+          Reverse mode. Its cost is a constant times one forward pass regardless of the parameter
+          count, because it propagates one row vector (the loss gradient) backward. Forward mode
+          would cost one forward pass per parameter direction.
+        explanation: One output, many inputs favours reverse mode.
+        concepts: [reverse-mode, forward-mode]
+        points: 1
+      - id: lmc-as-broadcast
+        kind: find-bug
+        prompt: A hand-written bias backward returns the right shape but training diverges as the batch grows. What is the bug?
+        modelAnswer: |
+          The forward broadcast the bias over the batch (a copy), so the backward must sum the
+          gradient over the batch axis. Returning one row, or a reshape, gives a gradient that is a
+          factor of `batch` off, so the effective bias update scales with the batch and overshoots.
+          Fix: `grad_b = grad_out.sum(axis=0, keepdims=True)`.
+        explanation: Forward copied, backward must sum.
+        concepts: [broadcasting]
+        points: 1
+      - id: lmc-as-hvp
+        kind: scenario
+        prompt: How do you compute a Hessian-vector product `H @ v` for a scalar loss without forming `H`?
+        modelAnswer: |
+          Compute the gradient `g`, then take the gradient of the scalar `g @ v` with respect to the
+          parameters (a second backward); the result is `H @ v` exactly. Cost is a constant times
+          one gradient; memory is `O(p)`.
+        explanation: "`H @ v` is the directional derivative of the gradient along `v`."
+        concepts: [hessian-vector-product]
+        points: 1
+      - id: lmc-as-fd-check
+        kind: find-bug
+        prompt: A gradient check uses `h = 1e-12` and an absolute tolerance and fails on a correct gradient. Why?
+        modelAnswer: |
+          `h = 1e-12` causes catastrophic cancellation in `f(x + h) - f(x - h)`, destroying
+          precision. An absolute tolerance is scale-dependent. Use `h ~ 1e-6`, a symmetric
+          difference, and a relative error `|a - n| / (|a| + |n| + eps) < 1e-5`, sweeping `h` if
+          borderline.
+        explanation: Step size too small and the wrong error metric.
+        concepts: [finite-differences]
+        points: 1
+interview:
+  - id: lmc-iv-layout
+    level: basic
+    requiredForMastery: true
+    concepts: [numerator-layout, denominator-layout, jacobian-shape]
+    question: What is the layout convention for Jacobians, and why does it matter?
+    shortAnswer: |
+      Numerator layout makes `dy/dx` shape `(outputs, inputs)`; denominator layout is the transpose.
+      Both are valid, but every identity and chain-rule multiplication has to match the one you
+      chose, or your gradients come out transposed.
+    fullAnswer: |
+      For `y in R^m` a function of `x in R^n`, the Jacobian entry `dy_i/dx_j` has to be placed
+      somewhere. Numerator (or "Jacobian") layout puts it at `(i, j)`, giving an `(m, n)` matrix;
+      denominator layout puts it at `(j, i)`. The chain rule then reads `Jg @ Jf` in numerator
+      layout and `Jf @ Jg` in denominator layout. Autodiff frameworks are internally consistent but
+      expose VJPs (numerator-ish) and JVPs (denominator-ish); when you derive a gradient by hand and
+      it comes out transposed relative to a numerical check, a layout mismatch is the usual cause.
+      Pick numerator layout, write it in a comment, and keep the table of identities consistent.
+    commonWrongAnswer: There is only one correct Jacobian shape.
+    followUps:
+      - How does the chain rule differ between the two layouts?
+      - Which layout do vector-Jacobian products correspond to?
+  - id: lmc-iv-backprop-is-chain-rule
+    level: internals
+    requiredForMastery: true
+    concepts: [chain-rule, reverse-mode, vjp]
+    question: In what sense is backpropagation just the chain rule?
+    shortAnswer: |
+      Backprop evaluates `J = J_k @ ... @ J_1` right to left. Because the loss is scalar, the
+      leftmost factor is a row vector, so every step is a vector-Jacobian product `v.T @ J_i`, an
+      array times a vector, and no full Jacobian is built.
+    fullAnswer: |
+      The gradient of a scalar loss with respect to an input is a product of per-operation
+      Jacobians. Reverse-mode autodiff computes this product from the output end: it starts with
+      `dL/dL = 1`, and at each operation applies that operation's vector-Jacobian product to turn the
+      gradient with respect to the output into the gradient with respect to the input and
+      parameters. For a linear layer that VJP is `W.T @ v` and `outer(v, x)`; for an elementwise
+      map it is `v * phi'(z)`; for softmax it is `s * (v - s @ v)`. The total cost is a small
+      constant times one forward pass, independent of parameter count — that is the whole reason
+      large-scale training is feasible.
+    commonWrongAnswer: Backprop is a special algorithm unrelated to ordinary calculus.
+    followUps:
+      - Why is a full Jacobian never materialised?
+      - What is the forward-mode analogue?
+  - id: lmc-iv-linear-layer-grads
+    level: scenario
+    requiredForMastery: true
+    concepts: [linear-layer, outer-product, batch]
+    question: Derive the gradients of a linear layer and describe the weight gradient's structure.
+    shortAnswer: |
+      For `y = W x`: `dL/dx = W.T @ delta`, `dL/dW = delta x.T` (an outer product), `dL/db = delta`.
+      Over a batch, `dL/dW = Delta.T @ X`, a sum of rank-1 outer products.
+    fullAnswer: |
+      `y_i = sum_j W_ij x_j + b_i`. So `dy_i/dx_j = W_ij`, giving `dL/dx = W.T @ delta` by the chain
+      rule. `y_i` depends on `W_ij` only through `W_ij x_j`, so `dL/dW_ij = delta_i x_j`, i.e.
+      `dL/dW = delta x.T`, a rank-1 matrix. `dL/db = delta` directly. For a minibatch you sum the
+      per-example outer products, `Delta.T @ X`, which has rank at most the batch size — the reason a
+      small-batch gradient step is a low-rank update to `W`, and part of why LoRA-style low-rank
+      updates are natural.
+    commonWrongAnswer: The weight gradient is `W.T` times something.
+    followUps:
+      - What is the rank of a minibatch weight gradient?
+      - How does this connect to the outer-product view of matrix multiplication?
+  - id: lmc-iv-softmax-jacobian
+    level: output
+    requiredForMastery: true
+    concepts: [softmax, jacobian, vjp]
+    question: What is the Jacobian of softmax, and how do you use it efficiently?
+    shortAnswer: |
+      `J = diag(s) - s s.T`. You never form it for a large output; the backward pass is the VJP
+      `grad_z = s * (grad_s - (s @ grad_s))`, which is `O(n)`.
+    fullAnswer: |
+      With `s_i = exp(z_i) / sum_k exp(z_k)`, differentiating gives `ds_i/dz_j = s_i(delta_ij -
+      s_j)`, i.e. `J = diag(s) - outer(s, s)`. It is symmetric and rank-deficient (rows sum to
+      zero). For a vocabulary of tens of thousands the matrix is huge, so the backward pass uses the
+      vector-Jacobian product directly: `J @ v = s * v - s * (s @ v)`. When softmax is fused with
+      cross-entropy the gradient simplifies further to `s - onehot(label)`, which is why frameworks
+      provide a combined op.
+    commonWrongAnswer: Softmax has a diagonal Jacobian like other activations.
+    followUps:
+      - Why do rows of the softmax Jacobian sum to zero?
+      - What is the gradient of softmax fused with cross-entropy?
+  - id: lmc-iv-grad-check
+    level: debugging
+    requiredForMastery: true
+    concepts: [finite-differences, gradient-check, step-size]
+    question: How do you verify a hand-written gradient, and what are the pitfalls?
+    shortAnswer: |
+      Compare it to a symmetric finite difference `(f(x+h) - f(x-h)) / (2h)` with `h ~ 1e-6`, using
+      a relative-error threshold around `1e-5`. Pitfalls: `h` too small (cancellation), `h` too
+      large (truncation), absolute tolerances, and testing at non-differentiable points.
+    fullAnswer: |
+      For each parameter, perturb it by plus and minus `h`, take the central difference, and compare
+      to the analytic gradient with `|a - n| / (|a| + |n| + eps)`. The central difference has
+      `O(h**2)` truncation error and `O(eps/h)` rounding error, so `h` around `1e-6` in double
+      precision is the sweet spot; sweep it if a check is marginal. Use relative, not absolute,
+      error because gradient magnitudes vary. Avoid points where the function has a kink (ReLU at
+      zero) by jittering inputs. For analytic functions the complex-step derivative `imag(f(x + i
+      h)) / h` sidesteps cancellation and works for tiny `h`. Always check custom backwards before
+      training with them.
+    commonWrongAnswer: Just use the smallest `h` possible for the most accurate check.
+    followUps:
+      - Why does a very small `h` make the check worse?
+      - What is the complex-step derivative and when can you use it?
+  - id: lmc-iv-hessian-free
+    level: advanced
+    requiredForMastery: true
+    concepts: [hessian-vector-product, gauss-newton, double-backward]
+    question: How do second-order methods use derivatives without forming the Hessian?
+    shortAnswer: |
+      Through Hessian-vector products: `H @ v` is the gradient of `g @ v` where `g` is the gradient,
+      computed by a second backward pass at the cost of one gradient. Conjugate gradient then solves
+      `H p = -g` using only these products.
+    fullAnswer: |
+      The full Hessian is `p x p` and infeasible for large `p`, but `H @ v` is cheap: it is the
+      directional derivative of the gradient along `v`, obtained by differentiating `g(theta) @ v`
+      again, or by forward-over-reverse autodiff. Hessian-free / truncated-Newton optimisation runs
+      conjugate gradient on `H p = -g` using only HVPs. Gauss-Newton replaces `H` with `J.T J` (PSD
+      by construction) and also only needs `J @ v` and `J.T @ u`. The same primitive powers Lanczos
+      estimates of the curvature spectrum and influence-function computations. All of it is built
+      from VJPs and JVPs, never a materialised second-derivative matrix.
+    commonWrongAnswer: You have to compute and store the Hessian to do anything second-order.
+    followUps:
+      - What is the Gauss-Newton approximation and why is it PSD?
+      - How does Lanczos use Hessian-vector products?
+projects:
+  - id: lmc-project-matrix-calculus-autodiff
+    kind: major
+    title: Build a tiny reverse-mode autodiff engine with matrix ops
+    minutes: 260
+    summary: Implement a scalar-output reverse-mode autodiff supporting linear layers, elementwise activations, softmax, and log-det, with vector-Jacobian products, broadcast-aware backward, and a gradient-check harness.
+    problem: |
+      Build a minimal autodiff engine that makes the lesson concrete: a `Tensor` wrapper recording
+      operations, VJP rules for `matmul`, `add` (with broadcasting), elementwise `tanh` / `relu` /
+      `exp`, `sum`, `softmax`, `log det`, and a quadratic form; a `backward()` that walks the tape
+      in reverse accumulating gradients; broadcast-aware gradient reduction; and `check_grads` that
+      validates every rule against symmetric finite differences. It should train a small MLP on a
+      toy problem end to end.
+    requirements:
+      - Each op records a VJP closure mapping the output gradient to input (and parameter) gradients; no full Jacobian is ever allocated.
+      - "`add` and other broadcasting ops sum the gradient over broadcasted axes to restore input shapes."
+      - Softmax uses `grad_z = s * (grad_s - (s @ grad_s))`; log-det uses `inv(X).T`.
+      - "`backward()` accumulates gradients correctly when a tensor is used more than once."
+      - "`check_grads` compares every op's analytic gradient to a swept-`h` symmetric difference with a relative-error threshold and reports the worst offender."
+      - A training loop reduces the loss on a toy classification or regression task.
+    constraints:
+      - NumPy and the standard library only.
+      - Never materialise a Jacobian for an elementwise or softmax op.
+      - Never use an absolute tolerance in the gradient check.
+      - Handle at least one non-differentiable op (ReLU) by testing away from the kink.
+    expectedBehaviour:
+      - Every VJP passes the finite-difference check on random inputs.
+      - Broadcast-aware backward produces bias/scale gradients whose magnitude is batch-size independent.
+      - Re-using a tensor in two places sums the two gradient contributions.
+      - The toy MLP's loss decreases and matches a from-scratch hand-written backprop within tolerance.
+      - Softmax and log-det backward run in `O(n)` and `O(n**3)` respectively, not `O(n**2)` extra.
+    structure: |
+      microgradmat/
+        __init__.py
+        tensor.py
+        ops.py
+        softmax_logdet.py
+        gradcheck.py
+        train_demo.py
+      tests/
+        test_ops.py
+        test_broadcast.py
+        test_softmax_logdet.py
+        test_gradcheck.py
+        test_train.py
+    milestones:
+      - title: "1 — Tape and core ops"
+        detail: "`Tensor`, `matmul`, `add`, `sum`, elementwise ops, and `backward()`."
+      - title: "2 — Broadcasting"
+        detail: Gradient reduction over broadcasted axes, verified at multiple batch sizes.
+      - title: "3 — Softmax and log-det"
+        detail: VJP-form softmax backward and the `inv(X).T` log-det gradient.
+      - title: "4 — Gradient check and demo"
+        detail: Swept-`h` relative-error harness and a toy MLP training run.
+    testing:
+      - Finite-difference check for every op with relative error below `1e-5`.
+      - Bias-gradient magnitude equal across batch sizes 1 and 64.
+      - Diamond-shaped graph (one tensor feeding two ops) accumulates both gradients.
+      - Softmax backward matches `(diag(s) - outer(s, s)) @ v` on small inputs.
+      - Toy MLP loss decreases over training and matches a reference hand-coded backprop.
+    failureCases:
+      - An elementwise op builds `np.diag(phi_prime(z))` and blows memory on large `n`.
+      - The broadcast backward forgets to sum, so bias gradients scale with the batch.
+      - A tensor used twice overwrites rather than accumulates its gradient.
+      - The gradient check uses an absolute tolerance and passes a subtly wrong rule.
+    bonus:
+      - Add forward-mode (JVP) alongside reverse-mode and cross-check.
+      - Add a Hessian-vector product via double backward.
+      - Emit a gradient-check report as Markdown.
+    architectureHints:
+      - Store each op as `(inputs, vjp_fn)`; `backward()` topologically sorts and folds.
+      - Put the broadcast-reduction helper in one place and call it from every op with broadcasting.
+      - Keep the gradient-check harness independent of the engine so it can test hand-written backwards too.
+    referenceOutline: |
+      `Tensor` holds `data`, `grad`, and a list of `(parent, local_vjp)` edges. `ops.matmul` records
+      `lambda g: (g @ b.T, a.T @ g)`. `ops.add` records a VJP that calls `unbroadcast(g, shape)` per
+      input. `softmax_logdet.softmax_vjp` returns `s * (g - (s * g).sum())`. `gradcheck.check_grads`
+      loops entries, sweeps `h`, and compares relative error.
+  - id: lmc-final-custom-layer-audit
+    kind: final-challenge
+    title: Fix and verify a custom layer's backward pass
+    minutes: 90
+    summary: Given a custom fused layer whose backward has a layout error, a missing broadcast sum, and an explicit softmax Jacobian, correct each and prove it with gradient checks and a training run.
+    problem: |
+      A custom layer computes `y = softmax(X @ W + b)` for a batch `X` of shape `(batch, d_in)`,
+      `W` of shape `(d_in, d_out)`, `b` of shape `(1, d_out)`. Its hand-written backward has three
+      defects: it composes the layer Jacobians in the wrong order for the chosen layout; it returns
+      the incoming gradient for `b` without summing over the batch; and it forms the full
+      `d_out x d_out` softmax Jacobian per row. Produce an audit that: identifies each defect from a
+      failing gradient check; fixes the layout, adds the broadcast sum, and replaces the softmax
+      Jacobian with its VJP; and shows the corrected layer trains on a toy task and matches a
+      reference implementation, with a fail-before-fix test per defect.
+    requirements:
+      - Run a swept-`h` relative-error gradient check on `X`, `W`, and `b` and show which fail before the fix.
+      - Correct the Jacobian composition order to match the stated (numerator) layout.
+      - Replace the per-row softmax Jacobian with `grad_z = s * (grad_s - (s @ grad_s))` and show the memory drop.
+      - Add `grad_b = grad_out.sum(axis=0, keepdims=True)` and verify at two batch sizes.
+      - Provide one fail-before-fix regression per defect and a passing end-to-end training run.
+    constraints:
+      - Do not form the softmax Jacobian matrix in the fixed version.
+      - Do not use an absolute tolerance in the gradient check.
+      - Do not test the gradient at a point where a pre-activation is exactly zero if any non-smooth op is present.
+    expectedBehaviour:
+      - After the fix, all three gradient checks pass with relative error below `1e-5`.
+      - The bias gradient magnitude is identical at batch sizes 1 and 64.
+      - The softmax backward is `O(d_out)` per row, not `O(d_out**2)`.
+      - The corrected layer's training loss matches a reference implementation within tolerance.
+      - Each defect has a regression that failed before its fix.
+    milestones:
+      - title: "1 — Diagnose"
+        detail: Gradient-check every input, attribute each failure to a specific defect.
+      - title: "2 — Fix"
+        detail: Layout order, broadcast sum, softmax VJP; re-check after each.
+      - title: "3 — Validate"
+        detail: Batch-size-invariant bias gradient, memory drop, and a matching training run.
+    testing:
+      - Fail-before-fix gradient checks for `W` (layout), `b` (broadcast), and the softmax path (memory).
+      - Bias-gradient equality across batch sizes.
+      - A training run matching a reference within tolerance.
+    failureCases:
+      - The layout is "fixed" by transposing the final result instead of correcting the composition order.
+      - The broadcast sum is added for `b` but not for any per-channel scale in the same layer.
+      - The softmax VJP is correct but still allocates the Jacobian for a shape assertion.
+    bonus:
+      - Fuse softmax with cross-entropy and show the gradient simplifies to `s - onehot`.
+    architectureHints:
+      - Freeze the pre-fix failing gradient checks and the reference training curve as fixtures first.
+      - Fix one defect per commit and re-run the checks.
+    referenceOutline: |
+      Compose as `dL/dX = (dL/dz) @ W.T` with `dL/dz = softmax_vjp(s, dL/dy)`; `dL/dW = X.T @ dL/dz`;
+      `dL/db = dL/dz.sum(axis=0, keepdims=True)`. `softmax_vjp(s, v) = s * (v - (s * v).sum(axis=-1,
+      keepdims=True))`.
+resources:
+  - name: "Parr and Howard — The Matrix Calculus You Need For Deep Learning"
+    type: article
+    difficulty: core
+    url: "https://arxiv.org/abs/1802.01528"
+    usefulness: 5
+    why: A from-scratch, notation-careful treatment of exactly the derivatives deep learning uses — vector and matrix gradients, the Jacobian, layout, and the chain rule for a neuron and a layer.
+    covers: Scalar and vector derivatives, the Jacobian, element-wise and broadcasting rules, the chain rule, and the gradient of a single neural network layer.
+  - name: "Petersen and Pedersen — The Matrix Cookbook"
+    type: book
+    difficulty: deep
+    url: "https://www2.imm.dtu.dk/pubdb/pubs/3274-full.html"
+    usefulness: 4
+    why: The reference sheet for matrix-argument derivatives — `d(tr(AX))`, `d(log det X)`, `d(x.T A x)`, derivatives of inverses and eigenvalues — that this lesson's identity table is drawn from.
+    covers: Derivatives of traces, determinants, inverses, and quadratic forms with respect to vectors and matrices, plus layout conventions.
+  - name: "CS231n — Backpropagation and vector/matrix gradients"
+    type: university
+    difficulty: core
+    url: "https://cs231n.github.io/optimization-2/"
+    usefulness: 5
+    why: It builds backprop as the chain rule over a computational graph, works the linear-layer and softmax gradients explicitly, and stresses the "shapes must work out" and broadcast-sum heuristics used here.
+    covers: The computational graph, local gradients, the linear layer and softmax backward, staged computation, and common shape/broadcasting pitfalls.
+  - name: "JAX autodiff cookbook (VJP and JVP)"
+    type: docs
+    difficulty: core
+    url: "https://docs.jax.dev/en/latest/notebooks/autodiff_cookbook.html"
+    usefulness: 4
+    why: It defines vector-Jacobian and Jacobian-vector products precisely, shows how reverse and forward mode are built from them, and how to get Hessian-vector products without a Hessian — the computational side of this lesson.
+    covers: "`grad`, `vjp`, `jvp`, forward versus reverse mode, composing them for Hessians and HVPs, and per-example gradients."
+  - name: "Baydin, Pearlmutter, Radul, Siskind — Automatic Differentiation in Machine Learning: a Survey"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1502.05767"
+    usefulness: 4
+    why: The survey that pins down what autodiff is (and is not), the cost model of reverse versus forward mode, and why Jacobians are propagated as products rather than materialised.
+    covers: Forward and reverse accumulation, the complexity of each, the distinction from symbolic and numerical differentiation, and checkpointing.

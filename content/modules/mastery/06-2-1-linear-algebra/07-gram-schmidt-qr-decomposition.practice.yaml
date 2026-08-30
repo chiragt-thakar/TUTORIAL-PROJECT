@@ -1,0 +1,794 @@
+lessonId: "roadmap:phase-2-2.1:6"
+module: 2-1-linear-algebra
+lesson: 07-gram-schmidt-qr-decomposition
+title: "Gram–Schmidt, QR decomposition"
+summary: Orthonormalise a basis with classical and modified Gram-Schmidt, package it as A = QR, solve least squares through QR instead of the normal equations, and know when Householder or Givens or column pivoting is the right tool.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: lqr-read-classical-gs
+    tier: normal
+    kind: code-reading
+    title: Read a Gram-Schmidt loop
+    minutes: 10
+    requiredForMastery: true
+    concepts: [gram-schmidt, projection, orthonormal-basis]
+    prompt: |
+      Read this loop body and say what `R[j, k]` and `v` are after the inner loop, and which
+      Gram-Schmidt variant this is.
+      ```python
+      v = A[:, k].copy()
+      for j in range(k):
+          R[j, k] = Q[:, j] @ A[:, k]
+          v -= R[j, k] * Q[:, j]
+      R[k, k] = np.linalg.norm(v)
+      Q[:, k] = v / R[k, k]
+      ```
+    hints:
+      - The coefficient uses `A[:, k]`, the original column, not an updated one.
+      - After the inner loop `v` is the part of the column orthogonal to `q_0 ... q_{k-1}`.
+    solution: |
+      `R[j, k]` is the projection coefficient of the original column `A[:, k]` onto the already-built
+      basis vector `Q[:, j]`. After the inner loop, `v` is `A[:, k]` with all of its components
+      along `q_0, ..., q_{k-1}` removed, so it is orthogonal to the existing basis. It is then
+      normalised to `Q[:, k]` with `R[k, k]` the norm. Because each coefficient is taken against the
+      original `A[:, k]` rather than the running remainder, this is *classical* Gram-Schmidt, which
+      loses orthogonality on ill-conditioned input; the modified version updates the column before
+      each coefficient.
+  - id: lqr-write-modified-gs
+    tier: normal
+    kind: write-code
+    title: Modified Gram-Schmidt
+    minutes: 14
+    requiredForMastery: true
+    concepts: [modified-gram-schmidt, orthogonality, numerical-stability]
+    prompt: |
+      Write `mgs(A)` returning `Q, R` by modified Gram-Schmidt: normalise column `k`, then
+      immediately subtract its projection from every later column before moving on.
+    hints:
+      - Keep a working copy `V = A.copy()` and update its columns as you go.
+      - "`R[k, j] = Q[:, k] @ V[:, j]` uses the already-updated `V[:, j]`."
+    solution: |
+      Copy `V = A.astype(float).copy()`. For `k` in `range(n)`: set `R[k, k] = norm(V[:, k])` and
+      `Q[:, k] = V[:, k] / R[k, k]`; then for `j` in `range(k + 1, n)` set
+      `R[k, j] = Q[:, k] @ V[:, j]` and `V[:, j] -= R[k, j] * Q[:, k]`. Return `Q, R`. Because each
+      later column has the `q_k` component removed as soon as `q_k` exists, the coefficients for
+      subsequent basis vectors are computed from vectors whose earlier components are already near
+      zero, so rounding error does not reintroduce them. Algebraically it produces the same `Q, R`
+      as classical Gram-Schmidt.
+  - id: lqr-predict-qr-shapes
+    tier: normal
+    kind: predict-output
+    title: Economy versus full QR shapes
+    minutes: 10
+    requiredForMastery: true
+    concepts: [qr-decomposition, economy-qr, full-qr]
+    prompt: |
+      For `A` of shape `(100, 7)`, give the shapes of `Q` and `R` from economy QR and from full QR,
+      and say what the extra columns of the full `Q` span.
+    hints:
+      - Economy `Q` matches `A`'s shape; full `Q` is square.
+      - The extra directions are orthogonal to the column space.
+    solution: |
+      Economy QR: `Q` is `(100, 7)` with orthonormal columns, `R` is `(7, 7)` upper triangular. Full
+      QR: `Q` is `(100, 100)` orthogonal, `R` is `(100, 7)` with an upper-triangular top `7 x 7`
+      block and zeros below. The extra `100 - 7 = 93` columns of the full `Q` form an orthonormal
+      basis for the orthogonal complement of the column space of `A`, which is the left null space
+      of `A`.
+  - id: lqr-explain-r-upper-triangular
+    tier: normal
+    kind: explain
+    title: Why R is upper triangular
+    minutes: 10
+    requiredForMastery: true
+    concepts: [qr-decomposition, nested-subspaces]
+    prompt: |
+      Explain why the `R` factor is upper triangular, using the nested-subspace property of
+      Gram-Schmidt.
+    hints:
+      - "`q_k` is built from `a_1, ..., a_k` only."
+      - Equivalently `a_k` lies in `span(q_1, ..., q_k)`.
+    solution: |
+      Gram-Schmidt guarantees `span(q_1, ..., q_k) == span(a_1, ..., a_k)` for every `k`. So each
+      original column `a_k` lies in the span of `q_1, ..., q_k` and has zero component along
+      `q_{k+1}, ..., q_n`. Column `k` of `R` is the coordinates of `a_k` in the `q` basis, so its
+      entries below row `k` are zero. That is exactly the statement that `R` is upper triangular.
+      The diagonal entry `R[k, k]` is the norm of the part of `a_k` orthogonal to the earlier
+      columns.
+  - id: lqr-least-squares-via-qr
+    tier: intermediate
+    kind: write-code
+    title: Least squares through QR
+    minutes: 16
+    requiredForMastery: true
+    concepts: [least-squares, qr-decomposition, back-substitution]
+    prompt: |
+      Write `lstsq_qr(A, b)` for full-column-rank `A` using `np.linalg.qr` and a triangular solve,
+      and assert it matches `np.linalg.lstsq`. State why it does not square the condition number.
+    hints:
+      - "`Q, R = np.linalg.qr(A)`, then solve `R x = Q.T @ b`."
+      - Orthogonal factors leave singular values unchanged.
+    solution: |
+      `Q, R = np.linalg.qr(A)`; `x = scipy.linalg.solve_triangular(R, Q.T @ b)`; return `x`. It
+      matches `np.linalg.lstsq(A, b, rcond=None)[0]` for full-column-rank `A`. It does not square
+      the condition number because `cond(A) == cond(R)`: `Q` is orthogonal, and multiplying by an
+      orthogonal matrix does not change singular values, so the triangular solve works with a
+      matrix as well-conditioned as `A` itself. The normal equations instead solve with `A.T @ A`,
+      whose condition number is `cond(A)**2`, losing roughly twice the digits.
+  - id: lqr-reorthogonalise-twice
+    tier: intermediate
+    kind: write-code
+    title: Reorthogonalise twice
+    minutes: 14
+    requiredForMastery: true
+    concepts: [reorthogonalisation, orthogonality-loss]
+    prompt: |
+      Write `orthonormalise_against(Q, v)` that removes the components of `v` along the orthonormal
+      columns of `Q` and returns a unit vector, applying the subtraction twice. Explain the "twice
+      is enough" rule.
+    hints:
+      - First pass, `v -= Q @ (Q.T @ v)`; then repeat once on the result.
+      - A single pass leaves a second-order orthogonality error when `v` is nearly in the span.
+    solution: |
+      Compute `w = v - Q @ (Q.T @ v)`, then `w = w - Q @ (Q.T @ w)`, then return `w /
+      np.linalg.norm(w)` (guarding a near-zero norm as "already in the span"). One subtraction
+      leaves a residual component along `Q` of size proportional to the rounding error times the
+      ratio of norms, which is significant when `v` is almost in `span(Q)`. A second pass reduces
+      that residual to the square of the first, which is at machine-epsilon level, and a third pass
+      gains nothing — hence "twice is enough". This is cheaper and simpler than switching algorithms
+      for an incremental basis.
+  - id: lqr-column-pivoting-rank
+    tier: intermediate
+    kind: predict-output
+    title: Rank from pivoted QR
+    minutes: 12
+    requiredForMastery: true
+    concepts: [column-pivoted-qr, rank-revealing, numerical-rank]
+    prompt: |
+      A column-pivoted QR of a `6 x 6` matrix gives `abs(diag(R)) = [40, 12, 5, 2, 1e-13, 4e-14]`.
+      What is the numerical rank, and why does pivoting make this easy to read?
+    hints:
+      - Look for the large drop in the magnitude of the diagonal entries.
+      - Pivoting orders columns by remaining orthogonal norm.
+    solution: |
+      The numerical rank is 4: the diagonal magnitudes fall from `2` to `1e-13`, a drop of about 13
+      orders of magnitude, marking where signal ends and rounding noise begins. Column-pivoted QR
+      selects at each step the remaining column with the largest component orthogonal to the ones
+      already chosen, so `abs(diag(R))` comes out sorted in decreasing order and the near-dependent
+      columns are pushed to the bottom right. Without pivoting a small diagonal entry could appear
+      anywhere and be missed.
+  - id: lqr-householder-vs-gs
+    tier: intermediate
+    kind: explain
+    title: Householder versus Gram-Schmidt
+    minutes: 12
+    requiredForMastery: true
+    concepts: [householder, gram-schmidt, backward-stability]
+    prompt: |
+      Explain what a Householder reflection does in QR and why Householder QR does not lose
+      orthogonality the way classical Gram-Schmidt can.
+    hints:
+      - Each reflection zeroes an entire subdiagonal column at once.
+      - "`Q` is a product of exactly orthogonal reflections, formed implicitly."
+    solution: |
+      A Householder reflection is an orthogonal matrix `H = I - 2 v v.T / (v.T v)` chosen so that
+      applying it to the current column zeroes every entry below the diagonal. QR applies a sequence
+      of these, `H_{n} ... H_1 A = R`, and `Q = (H_n ... H_1).T` is their product. Because each
+      `H_k` is exactly orthogonal (to machine precision) and `Q` is assembled from them rather than
+      by subtracting projections, there is no step where a tiny remainder is divided out, which is
+      the source of Gram-Schmidt's drift. The method is backward stable: the computed `Q, R` are the
+      exact factorisation of a matrix very close to `A`.
+  - id: lqr-debug-classical-illcond
+    tier: tricky
+    kind: debug
+    title: Trusting classical GS on an ill-conditioned matrix
+    minutes: 16
+    requiredForMastery: true
+    concepts: [gram-schmidt, orthogonality-loss, condition-number]
+    prompt: |
+      This routine orthonormalises the columns of a Vandermonde matrix and asserts orthogonality,
+      but the assertion fails. The code is a correct classical Gram-Schmidt. Explain and fix.
+    code: |
+      def orthobasis(A):
+          Q, R = gram_schmidt_classical(A)
+          assert np.allclose(Q.T @ Q, np.eye(A.shape[1]))
+          return Q
+    solution: |
+      The code is not buggy; classical Gram-Schmidt is numerically unstable on an ill-conditioned
+      matrix like a Vandermonde, where later columns are nearly in the span of earlier ones. The
+      tiny orthogonal remainders are dominated by rounding error, so the computed `Q` columns drift
+      and `Q.T @ Q` departs from the identity by far more than `np.allclose` tolerates. Fixes: use
+      modified Gram-Schmidt; or reorthogonalise each column a second time; or call `np.linalg.qr`,
+      which uses Householder reflections and stays orthogonal to machine precision. Replace the hard
+      assertion with a logged `np.linalg.norm(Q.T @ Q - I)` so quality is measured rather than
+      assumed.
+    hints:
+      - The algorithm, not the implementation, is the problem here.
+      - Switch to modified GS, reorthogonalise, or use `np.linalg.qr`.
+  - id: lqr-debug-normal-equations
+    tier: tricky
+    kind: debug
+    title: Normal equations instead of QR
+    minutes: 16
+    requiredForMastery: true
+    concepts: [least-squares, normal-equations, conditioning, qr-decomposition]
+    prompt: |
+      This least-squares solver is accurate on toy data and loses about half its digits on a real
+      design matrix. Fix it without changing the maths.
+    code: |
+      def fit(A, b):
+          return np.linalg.solve(A.T @ A, A.T @ b)
+    solution: |
+      Forming `A.T @ A` squares the condition number: `cond(A.T @ A) == cond(A)**2`. A design matrix
+      with `cond(A) = 1e5` gives `cond(A.T @ A) = 1e10`, so `np.linalg.solve` loses about 10 digits
+      instead of the 5 that `A` alone would cost. Solve through QR instead:
+      `Q, R = np.linalg.qr(A); return scipy.linalg.solve_triangular(R, Q.T @ b)`. This works with a
+      matrix whose condition number is `cond(A)`, not its square, and gives the same least-squares
+      solution. Regression: build `A` with a moderate condition number, compare both solutions to a
+      high-precision reference, and assert the QR error is far smaller.
+    hints:
+      - "`cond(A.T @ A)` is `cond(A)` squared."
+      - Replace the normal equations with `qr` plus a triangular solve.
+  - id: lqr-debug-incremental-basis-drift
+    tier: tricky
+    kind: debug
+    title: An incremental basis that drifts
+    minutes: 16
+    requiredForMastery: true
+    concepts: [incremental-orthogonalisation, reorthogonalisation, span-detection]
+    prompt: |
+      This function extends an orthonormal basis `B` (columns) with a new vector. After hundreds of
+      calls, `B.T @ B` is visibly not the identity. Improve it.
+    code: |
+      def extend(B, v):
+          w = v - B @ (B.T @ v)
+          return np.column_stack([B, w / np.linalg.norm(w)])
+    solution: |
+      Two problems. First, a single projection subtraction leaves a second-order component of `w`
+      along `B` when `v` is nearly in the span, and these errors compound over hundreds of
+      appends. Reorthogonalise: apply `w = w - B @ (B.T @ w)` a second time before normalising.
+      Second, the function always appends, even when `v` was already essentially in `span(B)` and
+      `w` is pure rounding noise; that noise vector is what most corrupts orthogonality. Guard:
+      if `np.linalg.norm(w) < rel_tol * np.linalg.norm(v)`, return `B` unchanged. Optionally, when
+      `np.linalg.norm(B.T @ B - np.eye(B.shape[1]))` exceeds a threshold, rebuild from the stored
+      original vectors with `np.linalg.qr`. Regression: feed vectors drawn from a low-dimensional
+      subspace and assert the basis stops growing at the true dimension and stays orthonormal.
+    hints:
+      - One projection pass is not enough when the new vector is nearly in the span.
+      - Do not append a vector whose orthogonal remainder is just rounding noise.
+  - id: lqr-perf-thin-qr-cost
+    tier: tricky
+    kind: performance
+    title: Cost of QR versus normal equations
+    minutes: 16
+    requiredForMastery: true
+    concepts: [cost, qr-decomposition, normal-equations, least-squares]
+    prompt: |
+      For a least-squares problem with `A` of shape `(m, n)` and `m` much larger than `n`, compare
+      the flop cost of the QR route and the normal-equations route, and say why QR is still
+      preferred despite similar cost.
+    hints:
+      - Householder QR is about `2 m n^2`; forming `A.T @ A` is about `m n^2`.
+      - Cost is close; accuracy is not.
+    solution: |
+      Householder QR of `A` costs about `2 m n^2 - 2 n^3 / 3` flops, and the triangular solve adds
+      `O(n^2)`. The normal equations cost about `m n^2` to form `A.T @ A` (using symmetry) plus
+      `n^3 / 3` for Cholesky and `O(n^2)` for the solve. For `m` much larger than `n` both are
+      dominated by the `m n^2` term, so QR is only about twice the flops. QR is still preferred
+      because it works with `cond(A)` while the normal equations work with `cond(A)^2`, so QR keeps
+      roughly twice as many correct digits — a large accuracy gain for a small constant-factor cost.
+      Only when `m n^2` is prohibitive and `A` is known to be well conditioned is the normal-equations
+      shortcut defensible.
+  - id: lqr-design-orthonormal-basis-service
+    tier: challenge
+    kind: design
+    title: Design an orthonormal-basis service
+    minutes: 30
+    requiredForMastery: false
+    concepts: [orthonormal-basis, reorthogonalisation, rank, api-design]
+    prompt: |
+      Design `OrthoBasis` that maintains an orthonormal basis for the span of vectors added over
+      time, supports querying whether a vector is (numerically) in the span, and can return a clean
+      rebuild. State the methods, the numerical safeguards, and what it must not do silently.
+    hints:
+      - Store the original vectors as well as the orthonormal basis.
+      - "`add` should reorthogonalise twice and reject vectors whose remainder is below a relative threshold."
+    solution: |
+      Methods: `add(v)` returns whether the basis grew; `contains(v, rel_tol)` returns whether `v`
+      is within tolerance of the span, using the norm of `v` minus its projection relative to
+      `norm(v)`; `coordinates(v)` returns `Q.T @ v`; `rebuild()` recomputes `Q, R` from the stored
+      originals with `np.linalg.qr`; `orthogonality_error()` returns `norm(Q.T @ Q - I)`;
+      `rank()` returns the current basis size. Safeguards: modified Gram-Schmidt with a second
+      reorthogonalisation pass in `add`; a relative threshold below which a new vector is treated as
+      in the span and not appended; an automatic `rebuild` when `orthogonality_error()` exceeds a
+      limit; and keeping every original vector so a rebuild is always exact. It must not append a
+      near-zero remainder vector, must not report `contains` from an absolute threshold, must not
+      discard the originals, and must not hide that a rebuild occurred. Golden cases: vectors from a
+      known low-dimensional subspace (basis stops growing), a full-rank stream, and an
+      ill-conditioned stream that triggers a rebuild.
+  - id: lqr-refactor-orthinit
+    tier: challenge
+    kind: refactor
+    title: Refactor an orthogonal initialiser
+    minutes: 28
+    requiredForMastery: false
+    concepts: [orthogonal-initialisation, qr-decomposition, sign-convention]
+    prompt: |
+      A network initialiser builds a weight matrix with `Q, _ = np.linalg.qr(np.random.randn(n, n))`
+      and uses `Q` directly. Reviewers report that the effective gain drifts between runs and that
+      rectangular layers are handled inconsistently. Refactor it to be a correct, documented
+      orthogonal initialiser.
+    hints:
+      - "`np.linalg.qr` fixes signs arbitrarily; enforce `diag(R) > 0` for a reproducible `Q`."
+      - For a `(rows, cols)` layer, orthonormalise the larger dimension and slice.
+    solution: |
+      Draw `G = rng.standard_normal((max(rows, cols), max(rows, cols)))`, take `Q, R =
+      np.linalg.qr(G)`, and fix signs with `Q *= np.sign(np.diag(R))` so the result is the unique
+      `Q` with a non-negative `R` diagonal — this removes the run-to-run drift, which came from
+      the implementation's arbitrary sign choice. Slice `Q[:rows, :cols]` (or transpose
+      appropriately) so a rectangular layer gets a semi-orthogonal matrix whose smaller dimension is
+      orthonormal, and multiply by a documented `gain` (for example `sqrt(2)` for ReLU). Assert
+      `np.allclose(W.T @ W, gain**2 * np.eye(cols))` for `rows >= cols`. Add a fail-before-fix test
+      that runs the initialiser twice with the same seed and asserts identical `W`, which the old
+      code failed.
+quizzes:
+  - id: lqr-checkpoint
+    title: Checkpoint — Gram-Schmidt and QR
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: lqr-cp-gs-output
+        kind: mcq
+        prompt: Gram-Schmidt on independent columns `a_1..a_n` produces vectors that are what?
+        options:
+          - {id: onspan, text: Orthonormal and spanning the same nested subspaces}
+          - {id: eigen, text: The eigenvectors of `A`}
+          - {id: rows, text: An orthonormal basis for the row space}
+        answer: [onspan]
+        explanation: The output is orthonormal with `span(q_1..q_k) == span(a_1..a_k)` for every `k`.
+        concepts: [gram-schmidt]
+        points: 1
+      - id: lqr-cp-r-triangular
+        kind: mcq
+        prompt: Column `k` of `R` in `A = Q R` contains what?
+        options:
+          - {id: coords, text: The coordinates of `a_k` in the orthonormal basis `Q`}
+          - {id: proj, text: The projection matrix onto `q_k`}
+          - {id: sv, text: The singular values of `A`}
+        answer: [coords]
+        explanation: "`a_k == Q @ R[:, k]`, and `a_k` uses only `q_1..q_k`, so `R` is upper triangular."
+        concepts: [qr-decomposition]
+        points: 1
+      - id: lqr-cp-mgs
+        kind: mcq
+        prompt: Why is modified Gram-Schmidt more accurate than classical?
+        options:
+          - {id: updated, text: It computes each coefficient against the already-updated column}
+          - {id: faster, text: It uses fewer floating-point operations}
+          - {id: pivot, text: It pivots columns by norm}
+        answer: [updated]
+        explanation: Working with the running remainder keeps rounding errors from reintroducing removed components.
+        concepts: [modified-gram-schmidt]
+        points: 1
+      - id: lqr-cp-lstsq
+        kind: multi
+        prompt: Why solve least squares with QR rather than the normal equations?
+        options:
+          - {id: nocond2, text: "`cond(R) == cond(A)`, not `cond(A)**2`"}
+          - {id: noata, text: It never forms `A.T @ A`}
+          - {id: triangular, text: The final step is a cheap triangular solve}
+          - {id: faster, text: QR is asymptotically faster for tall matrices}
+        answer: [nocond2, noata, triangular]
+        explanation: QR and the normal equations have similar cost for tall `A`; the difference is accuracy.
+        concepts: [least-squares, qr-decomposition]
+        points: 1
+  - id: lqr-assessment
+    title: Assessment — Gram-Schmidt and QR
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: lqr-as-gs-goal
+        kind: explain
+        prompt: State precisely what Gram-Schmidt produces and the nesting property.
+        modelAnswer: |
+          From independent `a_1, ..., a_n` it produces orthonormal `q_1, ..., q_n` with
+          `span(q_1, ..., q_k) == span(a_1, ..., a_k)` for every `k`. Each `q_k` is the normalised
+          part of `a_k` orthogonal to all earlier `q`.
+        explanation: Orthonormal output plus equality of every leading span.
+        concepts: [gram-schmidt]
+        points: 1
+      - id: lqr-as-r-triangular
+        kind: explain
+        prompt: Why is `R` upper triangular in `A = Q R`?
+        modelAnswer: |
+          Because `a_k` lies in `span(q_1, ..., q_k)` by the nesting property, so its coordinates
+          along `q_{k+1}, ..., q_n` are zero. Column `k` of `R` is those coordinates, so entries
+          below the diagonal vanish.
+        explanation: Nesting forces zeros below the diagonal.
+        concepts: [qr-decomposition]
+        points: 1
+      - id: lqr-as-classical-fail
+        kind: find-bug
+        prompt: A correct classical Gram-Schmidt gives `Q.T @ Q` far from identity on a Vandermonde matrix. Bug or not?
+        modelAnswer: |
+          Not a bug — classical Gram-Schmidt is numerically unstable on ill-conditioned input. The
+          near-dependent later columns leave tiny remainders dominated by rounding, so `Q` drifts.
+          Use modified Gram-Schmidt, reorthogonalise twice, or use Householder QR.
+        explanation: The instability is in the algorithm, not the implementation.
+        concepts: [gram-schmidt, orthogonality-loss]
+        points: 1
+      - id: lqr-as-lstsq-qr
+        kind: write-function
+        prompt: Give the QR-based least-squares solution for full-column-rank `A` and `b`.
+        modelAnswer: |
+          `Q, R = np.linalg.qr(A)`; `x = scipy.linalg.solve_triangular(R, Q.T @ b)`. This solves
+          `R x = Q.T b`, equivalent to minimising `||A x - b||`, without forming `A.T @ A`.
+        explanation: Reduce to a triangular system in the orthonormal basis.
+        concepts: [least-squares, qr-decomposition]
+        points: 1
+      - id: lqr-as-conditioning
+        kind: scenario
+        prompt: "`A` has condition number `1e6`. Roughly how many digits does QR least squares keep versus the normal equations, in double precision?"
+        modelAnswer: |
+          Double precision has about 16 digits. QR works with `cond(A) = 1e6`, losing about 6, so
+          about 10 remain. The normal equations work with `cond(A)^2 = 1e12`, losing about 12, so
+          about 4 remain.
+        explanation: The normal equations square the condition number.
+        concepts: [conditioning, least-squares]
+        points: 1
+      - id: lqr-as-twice
+        kind: scenario
+        prompt: You orthogonalise a vector against a basis and it is still slightly non-orthogonal. What is the fix and why does it work?
+        modelAnswer: |
+          Subtract the projection a second time. One pass leaves a residual component proportional
+          to rounding error times the norm ratio, worst when the vector is nearly in the span. A
+          second pass squares that residual to machine-epsilon level; a third gains nothing — "twice
+          is enough".
+        explanation: Reorthogonalisation drives the residual to second order.
+        concepts: [reorthogonalisation]
+        points: 1
+      - id: lqr-as-pivoting
+        kind: scenario
+        prompt: A column-pivoted QR gives `abs(diag(R)) = [30, 8, 2, 3e-14, 1e-14]`. What is the numerical rank and why is it easy to read?
+        modelAnswer: |
+          Rank 3: the magnitudes drop from `2` to `3e-14`, marking the noise floor. Pivoting orders
+          the columns so `abs(diag(R))` is decreasing and the near-dependent columns are last, so
+          the drop is at the end and unmistakable.
+        explanation: Pivoting sorts the diagonal, exposing the rank gap.
+        concepts: [column-pivoted-qr, numerical-rank]
+        points: 1
+      - id: lqr-as-householder
+        kind: true-false
+        prompt: Householder QR can lose orthogonality on ill-conditioned matrices the way classical Gram-Schmidt does.
+        options:
+          - {id: "true", text: "True"}
+          - {id: "false", text: "False"}
+        answer: ["false"]
+        explanation: Householder QR is backward stable; `Q` is a product of exactly-orthogonal reflections.
+        concepts: [householder, backward-stability]
+        points: 1
+      - id: lqr-as-full-vs-economy
+        kind: scenario
+        prompt: For `A` of shape `(50, 4)`, what does the full QR give beyond the economy QR, and when do you need it?
+        modelAnswer: |
+          Full QR pads `Q` to `(50, 50)`; the extra 46 columns are an orthonormal basis for the
+          orthogonal complement of `col(A)`, i.e. the left null space. You need it when you want
+          that complement — for example projecting onto or away from the column space in the full
+          space.
+        explanation: The extra `Q` columns span what economy QR omits.
+        concepts: [full-qr, economy-qr]
+        points: 1
+      - id: lqr-as-orthinit
+        kind: scenario
+        prompt: Why does orthogonal weight initialisation use `Q` from a random matrix's QR, and how do you make it reproducible?
+        modelAnswer: |
+          `Q` has all singular values 1, so it preserves activation and gradient norms through a
+          layer, which keeps very deep or recurrent nets trainable at init. Reproducibility: fix
+          signs so `diag(R) > 0` (`Q *= np.sign(np.diag(R))`), since the QR implementation's sign
+          choice is otherwise arbitrary.
+        explanation: An orthogonal map is norm-preserving; sign-fixing removes run-to-run drift.
+        concepts: [orthogonal-initialisation, qr-decomposition]
+        points: 1
+interview:
+  - id: lqr-iv-what-is-qr
+    level: basic
+    requiredForMastery: true
+    concepts: [qr-decomposition, orthonormal-basis]
+    question: What is the QR decomposition and what is each factor?
+    shortAnswer: |
+      `A = Q R` with `Q` having orthonormal columns (an orthonormal basis for the column space of
+      `A`) and `R` upper triangular holding the coordinates of `A`'s columns in that basis. It comes
+      from orthonormalising the columns left to right.
+    fullAnswer: |
+      QR packages Gram-Schmidt (or Householder) as a factorisation. `Q`'s columns are an orthonormal
+      basis for `col(A)`, built so that the first `k` of them span the same space as the first `k`
+      columns of `A`; that nesting is why `R` is upper triangular. `R[:, k]` is `a_k` written in the
+      `Q` basis, and `R[k, k]` is the norm of the part of `a_k` orthogonal to the earlier columns.
+      Economy QR keeps `Q` the shape of `A`; full QR extends `Q` to square, adding a basis for the
+      orthogonal complement.
+    commonWrongAnswer: "`Q` and `R` are both triangular pieces of `A`."
+    followUps:
+      - Why is `R` upper triangular?
+      - What do the extra columns of a full `Q` represent?
+  - id: lqr-iv-classical-vs-modified
+    level: internals
+    requiredForMastery: true
+    concepts: [gram-schmidt, modified-gram-schmidt, numerical-stability]
+    question: What is the difference between classical and modified Gram-Schmidt, and why does it matter?
+    shortAnswer: |
+      Classical computes every projection coefficient against the original column; modified subtracts
+      each projection immediately and uses the updated column for the next coefficient. They are
+      algebraically identical, but modified keeps `Q` orthogonal on ill-conditioned input where
+      classical drifts.
+    fullAnswer: |
+      In classical Gram-Schmidt, when later columns are nearly in the span of earlier ones, the
+      orthogonal remainder is tiny and its rounding error is relatively large; because coefficients
+      are taken against the original column, that error is not cleaned up and `Q.T @ Q` departs from
+      the identity. Modified Gram-Schmidt threads the subtraction through: each subsequent
+      coefficient is computed from a vector that already has the earlier components removed, so the
+      dot products are between accurate quantities. In practice you still often prefer Householder
+      QR, which is backward stable and does not have this failure mode at all.
+    commonWrongAnswer: Modified Gram-Schmidt computes a different, better basis.
+    followUps:
+      - When would you still use Gram-Schmidt over Householder?
+      - What does reorthogonalising twice achieve?
+  - id: lqr-iv-lstsq
+    level: scenario
+    requiredForMastery: true
+    concepts: [least-squares, qr-decomposition, normal-equations]
+    question: How would you solve an overdetermined least-squares problem, and why not the normal equations?
+    shortAnswer: |
+      Factor `A = Q R` and solve `R x = Q.T b` by back-substitution. This avoids forming `A.T @ A`,
+      whose condition number is `cond(A)^2`, so QR keeps about twice as many correct digits.
+    fullAnswer: |
+      Least squares minimises `||A x - b||`, which is projection of `b` onto `col(A)`. With
+      `A = Q R`, `||A x - b||^2 = ||R x - Q.T b||^2 + ||(I - Q Q.T) b||^2`, so the minimiser solves
+      the triangular system `R x = Q.T b`. The normal equations `A.T A x = A.T b` give the same
+      answer in exact arithmetic but square the condition number and lose roughly twice the digits.
+      For rank-deficient or very ill-conditioned `A`, the SVD (via `np.linalg.lstsq` with `rcond`)
+      is the next step up in robustness.
+    commonWrongAnswer: Use `inv(A.T @ A) @ A.T @ b` — it is the textbook formula.
+    followUps:
+      - What is the cost comparison between QR and the normal equations for tall `A`?
+      - When would you move from QR to the SVD?
+  - id: lqr-iv-householder
+    level: comparison
+    requiredForMastery: true
+    concepts: [householder, givens, gram-schmidt]
+    question: Compare Householder reflections, Givens rotations, and Gram-Schmidt for computing a QR.
+    shortAnswer: |
+      Householder zeroes a whole subdiagonal column per step, is backward stable, and is the default
+      for dense matrices. Givens zeroes one entry at a time and suits sparse or nearly triangular
+      matrices. Gram-Schmidt builds `Q` explicitly by projection and is convenient for incremental
+      bases but less stable.
+    fullAnswer: |
+      Householder QR applies orthogonal reflections `I - 2 v v.T / (v.T v)`, each annihilating the
+      entries below a diagonal, and stores `Q` implicitly; it costs about `2 m n^2` and is backward
+      stable. Givens rotations act on two rows at a time to zero a single entry, so they preserve
+      sparsity and are used in updating factorisations and in the QR eigenvalue algorithm.
+      Gram-Schmidt produces `Q` column by column, which is natural when vectors arrive one at a time,
+      but classical GS loses orthogonality on ill-conditioned input and modified GS or
+      reorthogonalisation is needed. For a one-shot dense QR, use Householder via `np.linalg.qr`.
+    commonWrongAnswer: They all produce different decompositions, so the choice changes the answer.
+    followUps:
+      - Why are Givens rotations preferred for sparse matrices?
+      - Where do Givens rotations appear in eigenvalue computation?
+  - id: lqr-iv-orthinit
+    level: scenario
+    requiredForMastery: true
+    concepts: [orthogonal-initialisation, qr-decomposition, deep-networks]
+    question: Why is orthogonal initialisation useful for deep or recurrent networks?
+    shortAnswer: |
+      An orthogonal weight matrix has every singular value equal to 1, so it preserves the norm of
+      activations forward and gradients backward. That stops the exponential shrink or blow-up that
+      random matrices cause across many layers or time steps.
+    fullAnswer: |
+      Multiplying a signal through many layers compounds the singular values of the weight matrices;
+      unless they are close to 1, the activation and gradient norms vanish or explode exponentially
+      in depth. Initialising each weight matrix as `Q` from the QR of a random Gaussian matrix makes
+      the initial linear map norm-preserving, so training starts from a well-scaled regime. You fix
+      the QR signs for reproducibility, apply a gain for the nonlinearity, and for rectangular
+      layers orthonormalise the smaller dimension. Training then moves the weights off the exact
+      orthogonal set, but the starting point matters a lot for very deep and recurrent models.
+    commonWrongAnswer: It just makes the weights smaller so nothing overflows.
+    followUps:
+      - How do you handle a non-square layer?
+      - What does the gain factor account for?
+  - id: lqr-iv-orthogonality-metric
+    level: debugging
+    requiredForMastery: true
+    concepts: [orthogonality-loss, reorthogonalisation, diagnostics]
+    question: How do you tell whether a computed orthonormal basis has degraded, and what do you do about it?
+    shortAnswer: |
+      Compute `np.linalg.norm(Q.T @ Q - I)`. Near machine epsilon is healthy; anything much larger
+      means orthogonality has been lost. Fix it by reorthogonalising the columns, or rebuilding with
+      `np.linalg.qr` from the original vectors.
+    fullAnswer: |
+      The direct diagnostic is `||Q.T @ Q - I||` in the Frobenius or spectral norm. Householder QR
+      keeps this at `1e-15` level; classical Gram-Schmidt on an ill-conditioned matrix, or an
+      incrementally grown basis, can drift to `1e-6` or worse. Remedies: reorthogonalise each column
+      against the others a second time ("twice is enough"); refuse to append a new vector whose
+      orthogonal remainder is below a relative threshold, since that vector is mostly noise; and
+      periodically rebuild the whole basis with a Householder QR of the stored original vectors,
+      which is why you keep the originals and not just the basis.
+    commonWrongAnswer: If `np.linalg.qr` ran without error, the basis is fine.
+    followUps:
+      - Why keep the original vectors around?
+      - When does a single reorthogonalisation pass fail to be enough?
+projects:
+  - id: lqr-project-qr-toolkit
+    kind: major
+    title: Build a QR and orthonormalisation toolkit
+    minutes: 240
+    summary: Implement classical and modified Gram-Schmidt, a Householder QR, reorthogonalisation, column-pivoted rank revealing, and QR-based least squares, all validated against NumPy and measured for orthogonality loss.
+    problem: |
+      Build a toolkit that makes the orthogonalisation methods and their numerics concrete:
+      `gram_schmidt(A, variant, reortho)` supporting classical and modified with optional second
+      pass; `householder_qr(A)` returning `Q, R` from reflections; `pivoted_qr(A)` returning the
+      permutation and a numerical rank from the `R` diagonal; `lstsq_qr(A, b)`; and
+      `orthogonality_error(Q)`. Every routine returns the diagnostics used, and the test suite
+      compares against `np.linalg.qr` and `np.linalg.lstsq` and against a high-precision reference
+      on ill-conditioned inputs.
+    requirements:
+      - Implement classical and modified Gram-Schmidt sharing one interface, with an optional reorthogonalisation pass.
+      - Implement Householder QR from reflections, forming `Q` explicitly and also offering an apply-`Q.T`-to-`b` path that does not form `Q`.
+      - Implement column-pivoted QR that returns the permutation and a numerical rank read from `abs(diag(R))`.
+      - Implement `lstsq_qr` using a triangular solve, matching `np.linalg.lstsq` for full-column-rank inputs.
+      - Provide `orthogonality_error(Q)` returning `||Q.T @ Q - I||`.
+      - Return diagnostics (the `R` diagonal, the orthogonality error, the permutation) with every result.
+    constraints:
+      - NumPy and the standard library only; SciPy and `np.linalg.qr` allowed only in tests as references.
+      - Never solve least squares by forming `A.T @ A` in the toolkit's least-squares path.
+      - Never claim a numerical rank without showing the `abs(diag(R))` values it was read from.
+      - Keep tolerances explicit and returned.
+    expectedBehaviour:
+      - Modified Gram-Schmidt has a much smaller orthogonality error than classical on a Vandermonde matrix, and one reorthogonalisation pass brings classical close to Householder.
+      - Householder QR matches `np.linalg.qr` up to column signs.
+      - Pivoted QR reports the correct numerical rank on a matrix with a known rank gap.
+      - "`lstsq_qr` matches `np.linalg.lstsq` and beats a normal-equations solver on a mildly ill-conditioned design."
+      - Orthogonality error for Householder QR is at machine-epsilon level.
+    structure: |
+      qr_kit/
+        __init__.py
+        gram_schmidt.py
+        householder.py
+        pivoting.py
+        least_squares.py
+        diagnostics.py
+      tests/
+        test_gram_schmidt.py
+        test_householder.py
+        test_pivoting.py
+        test_least_squares.py
+        test_diagnostics.py
+    milestones:
+      - title: "1 — Gram-Schmidt"
+        detail: Classical and modified under one interface, with an optional reorthogonalisation pass.
+      - title: "2 — Householder QR"
+        detail: Reflection-based `Q, R`, plus an apply-`Q.T` path that skips forming `Q`.
+      - title: "3 — Pivoting and rank"
+        detail: Column-pivoted QR returning the permutation and a spectrum-read numerical rank.
+      - title: "4 — Least squares and diagnostics"
+        detail: QR-based `lstsq` and an orthogonality-error metric, cross-checked against NumPy.
+    testing:
+      - Orthogonality error of classical versus modified versus Householder on Vandermonde and Hilbert matrices.
+      - Householder `Q, R` versus `np.linalg.qr` up to signs on random matrices.
+      - Pivoted QR numerical rank on constructed rank-deficient matrices.
+      - "`lstsq_qr` versus `np.linalg.lstsq`, and versus a normal-equations baseline against a high-precision reference."
+      - Reorthogonalisation reduces the orthogonality error of classical GS by orders of magnitude.
+    failureCases:
+      - Classical Gram-Schmidt is used and its orthogonality error is asserted equal to zero.
+      - The least-squares path forms `A.T @ A` and inherits the squared condition number.
+      - Pivoted QR reports a rank without exposing the diagonal it was read from.
+      - Householder QR forms `Q` even when only `Q.T @ b` is needed, wasting `O(m n^2)`.
+    bonus:
+      - Add Givens-rotation QR and show it preserves a banded structure.
+      - Add rank-1 update and downdate of a QR factorisation.
+      - Emit a QR diagnostics report as Markdown.
+    architectureHints:
+      - Represent a factorisation result as an object carrying `Q`, `R`, an optional permutation, and the diagnostics.
+      - Keep the reflection-application code separate so both `householder_qr` and the `Q.T @ b` path use it.
+      - Put the orthogonality metric in one place and call it from every test.
+    referenceOutline: |
+      `gram_schmidt` shares a loop skeleton and branches on where the coefficient is taken; the
+      reortho flag repeats the subtraction. `householder.qr` builds each reflection vector from the
+      current column, applies it to the trailing submatrix, and accumulates `Q` if requested.
+      `pivoting.qr` selects the max-norm trailing column each step. `least_squares.lstsq_qr` calls
+      the QR and a triangular solve. `diagnostics.orthogonality_error` returns the norm of
+      `Q.T @ Q - I`.
+  - id: lqr-final-lstsq-pipeline-audit
+    kind: final-challenge
+    title: Replace a normal-equations pipeline with QR
+    minutes: 90
+    summary: Given a modelling pipeline that fits via the normal equations and orthogonalises features with classical Gram-Schmidt, replace both with numerically sound QR-based code and prove each change with fail-before-fix tests.
+    problem: |
+      A pipeline standardises features, orthogonalises them with a hand-written classical
+      Gram-Schmidt (asserting `Q.T @ Q == I`), then fits with `inv(A.T @ A) @ A.T @ y`, and reports
+      a "collinearity score" as `det(A.T @ A)`. On real data the Gram-Schmidt assertion fails
+      intermittently, the coefficients are unstable, and the score is uninterpretable. Produce an
+      audit that: replaces classical Gram-Schmidt with modified Gram-Schmidt plus reorthogonalisation
+      or `np.linalg.qr`; replaces the normal-equations fit with a QR triangular solve; replaces the
+      determinant score with a rank and condition number from the `R` diagonal or the singular
+      values; and provides a regression per change that fails before the fix.
+    requirements:
+      - Swap the orthogonalisation to a method whose orthogonality error is at machine-epsilon level, and log `||Q.T @ Q - I||` instead of asserting equality.
+      - Fit with `Q, R = np.linalg.qr(A)` and `solve_triangular(R, Q.T @ y)`, matching the old fit on well-conditioned data within tolerance.
+      - Replace `det(A.T @ A)` with the numerical rank and condition number read from `abs(diag(R))` (use column-pivoted QR).
+      - Detect any near-dependent feature group from the small `R` diagonal entries and name the columns.
+      - Provide one fail-before-fix test per change plus a clean end-to-end run.
+    constraints:
+      - Do not form `A.T @ A` in the fit or the diagnostics.
+      - Do not assert exact orthogonality; measure it.
+      - Do not report a determinant-based collinearity number.
+    expectedBehaviour:
+      - The refactored fit matches the original on a well-conditioned fixture within `rtol=1e-6`.
+      - The orthogonality error of the new basis is below `1e-12` on the ill-conditioned fixture where the old assertion failed.
+      - The numerical rank equals the column count minus the number of dependence relations.
+      - Scaling a feature does not change the rank verdict.
+      - Each of the three changes has a test that failed before it landed.
+    milestones:
+      - title: "1 — Orthogonalisation"
+        detail: Swap in modified Gram-Schmidt with reorthogonalisation or `np.linalg.qr`; log the orthogonality error.
+      - title: "2 — Fit"
+        detail: QR triangular solve replacing the normal equations, matched on clean data.
+      - title: "3 — Diagnostics"
+        detail: Rank and condition number from the pivoted `R` diagonal; name the dependent columns.
+    testing:
+      - Fail-before-fix regression for the Gram-Schmidt assertion, the normal-equations fit, and the determinant score.
+      - Scale-invariance of the rank verdict.
+      - A test that the named dependent group matches the constructed dependence.
+    failureCases:
+      - The new fit still forms `A.T @ A` somewhere in a helper.
+      - Orthogonality is asserted rather than logged and still flakes.
+      - The dependent columns are identified from the determinant rather than the `R` diagonal.
+    bonus:
+      - Return coefficient standard errors from the same `R` factor.
+    architectureHints:
+      - Freeze the clean-fixture outputs and the constructed dependence as fixtures first.
+      - Keep orthogonalisation, fit, and diagnostics in separate commits.
+    referenceOutline: |
+      Use `scipy.linalg.qr(A, pivoting=True)` for the fit and the diagnostics. Fitted coefficients
+      come from `solve_triangular(R, Q.T @ y)` followed by the inverse column permutation. Read
+      `abs(diag(R))` for the rank gap and condition number; for each small trailing diagonal, the
+      corresponding pivoted column plus the earlier ones it depends on form the near-dependent
+      group.
+resources:
+  - name: MIT 18.06 — Orthogonal matrices and Gram-Schmidt (OCW)
+    type: university
+    difficulty: core
+    url: "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-17-orthogonal-matrices-and-gram-schmidt/"
+    usefulness: 5
+    why: Strang derives Gram-Schmidt from projection and subtraction and shows directly how it becomes `A = Q R`, which is exactly the framing and notation this lesson uses.
+    covers: Orthogonal matrices, the Gram-Schmidt process, the `A = Q R` factorisation, and using `Q` for projection and least squares.
+  - name: "Trefethen and Bau — Numerical Linear Algebra (Lectures 7 to 10, 16 to 19)"
+    type: book
+    difficulty: deep
+    url: "https://people.maths.ox.ac.uk/trefethen/text.html"
+    usefulness: 5
+    why: These lectures cover classical versus modified Gram-Schmidt, Householder triangularisation, and the backward stability analysis that explains why Householder is the production method.
+    covers: Projectors, QR by Gram-Schmidt and by Householder, Givens rotations, stability of each, and QR-based least squares.
+  - name: "numpy.linalg.qr reference"
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.linalg.qr.html"
+    usefulness: 4
+    why: It documents the reduced and complete modes, the Householder-based algorithm, and the exact shapes returned, which are the practical details for using QR in real code.
+    covers: Reduced and complete QR, return shapes, the underlying LAPACK routines, and stacked-array behaviour.
+  - name: "scipy.linalg.qr reference (column pivoting)"
+    type: docs
+    difficulty: core
+    url: "https://docs.scipy.org/doc/scipy/reference/generated/scipy.linalg.qr.html"
+    usefulness: 4
+    why: It exposes the `pivoting` option that gives a rank-revealing QR, returning the permutation used to order columns by decreasing residual norm, which this lesson uses for numerical rank.
+    covers: Column-pivoted QR, the permutation output, economy and full modes, and options for not forming `Q`.
+  - name: "Saxe, McClelland, Ganguli — Exact solutions to the nonlinear dynamics of learning in deep linear networks"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1312.6120"
+    usefulness: 4
+    why: This is the paper behind orthogonal initialisation; it shows analytically why orthogonal weight matrices give depth-independent signal propagation, the ML payoff of QR highlighted here.
+    covers: Learning dynamics of deep linear networks, why orthogonal initialisation avoids vanishing and exploding signals, and the role of the weight singular values.

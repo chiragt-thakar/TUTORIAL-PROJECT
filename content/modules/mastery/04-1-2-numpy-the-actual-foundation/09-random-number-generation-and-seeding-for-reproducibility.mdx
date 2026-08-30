@@ -1,0 +1,271 @@
+---
+id: "roadmap:phase-1-1.2:8"
+title: "Random number generation and seeding for reproducibility"
+description: "Treat randomness as owned state with an explicit algorithm and stream topology, so experiments can be replayed without coupling every component to one fragile global call order."
+module: 1-2-numpy-the-actual-foundation
+order: 9
+estimatedMinutes: 120
+prerequisites: ["roadmap:phase-1-1.2:1", "roadmap:phase-1-1.2:3"]
+learningObjectives:
+  - Use Generator, BitGenerator, and SeedSequence as separate state, algorithm, and stream-derivation responsibilities
+  - Design reproducible serial and parallel sampling without shared global state or duplicated worker streams
+  - Define what reproducibility promises across reruns, refactors, versions, distributions, and execution order
+  - Test stochastic code through deterministic seams, statistical invariants, state capture, and failure replay
+---
+
+Randomness is deterministic state evolution. A seed initializes that state; it does not make a
+whole application reproducible by itself. Results also depend on the generator algorithm, draw
+order, distribution implementation, shapes, dtype, worker topology, and library versions.
+
+Own random state explicitly. Pass a `numpy.random.Generator` to the component that consumes it,
+derive independent child streams deliberately, and record enough metadata to replay failures.
+
+<TypeScriptComparison>
+
+- `Math.random()` resembles NumPy's legacy global state: convenient, ambient, and difficult to isolate.
+- Passing a `Generator` is dependency injection, just like passing a clock or database client in TypeScript tests.
+- A seed is configuration, while mutable generator state is runtime state; do not confuse them.
+- Parallel workers need distinct derived streams, not the same seed copied into every process.
+
+</TypeScriptComparison>
+
+## Generator, BitGenerator, and SeedSequence have separate jobs
+
+`Generator` implements distributions and sampling APIs. A `BitGenerator` such as `PCG64` advances
+the underlying pseudorandom state. `SeedSequence` mixes entropy and derives reproducible child
+sequences with a recorded spawn path.
+
+```python
+import numpy as np
+
+root = np.random.SeedSequence(20260830)
+train_seed, augment_seed = root.spawn(2)
+train_rng = np.random.default_rng(train_seed)
+augment_rng = np.random.default_rng(augment_seed)
+
+batch_order = train_rng.permutation(1_000)
+noise = augment_rng.normal(0.0, 0.01, size=(32, 128))
+```
+
+Separate streams stop an augmentation refactor from shifting training-data order. One shared stream
+couples unrelated components through call order even when every run begins from the same seed.
+
+<Concept>
+
+Reproducibility is a contract over algorithm, initial state, stream ownership, draw sequence,
+software environment, and output comparison. “We seeded NumPy” specifies only one part.
+
+</Concept>
+
+## Prefer `default_rng` over ambient legacy state
+
+`np.random.seed()` mutates a process-global legacy generator. Any imported code can consume it.
+`default_rng()` returns a local object whose ownership can be expressed in APIs and tests.
+
+```python
+def bootstrap_mean(values, *, rng, samples=2_000):
+    values = np.asarray(values)
+    if values.ndim != 1 or values.size == 0:
+        raise ValueError("values must be a non-empty vector")
+    indices = rng.integers(0, values.size, size=(samples, values.size))
+    return values[indices].mean(axis=1)
+```
+
+Tests can inject a fixed generator or a small fake exposing `integers`. Production owns generator
+construction at the experiment or request boundary rather than inside the function.
+
+## Parallel streams need topology
+
+Giving every worker seed `42` duplicates samples. Adding worker id to a seed is easy to collide or
+restructure incorrectly. Spawn child `SeedSequence` objects from one root and record each spawn key.
+
+```python
+root = np.random.SeedSequence([experiment_id, run_id])
+worker_sequences = root.spawn(worker_count)
+worker_rngs = [np.random.default_rng(seq) for seq in worker_sequences]
+```
+
+Stable worker ids reproduce a fixed topology. If scheduling or worker count may change, derive
+streams from stable task identifiers or pre-partition work. Decide whether reproducibility is tied
+to logical tasks, physical workers, or only aggregate statistical results.
+
+<CommonMistake>
+
+Do not create `default_rng(42)` inside a frequently called function. Every call restarts the stream
+and repeats the same sample, which is deterministic but usually wrong.
+
+</CommonMistake>
+
+## State capture enables exact failure replay
+
+The initial seed may be insufficient when a failure occurs after millions of draws. Capture the
+bit generator name and `rng.bit_generator.state` at a bounded checkpoint before the failing unit.
+Treat state as potentially sensitive metadata and version its serialization.
+
+```python
+checkpoint = rng.bit_generator.state
+candidate = rng.choice(pool, size=64, replace=False)
+
+replay = np.random.Generator(np.random.PCG64())
+replay.bit_generator.state = checkpoint
+np.testing.assert_array_equal(replay.choice(pool, 64, replace=False), candidate)
+```
+
+Exact sequence promises are narrower than statistical reproducibility. Distribution algorithms may
+change between versions even if a bit generator's raw stream remains stable. Pin versions when
+byte-for-byte replay is required.
+
+## Distribution contracts matter
+
+Choose distribution, parameters, dtype, shape, replacement, and endpoint behavior explicitly.
+`integers(low, high)` excludes `high` by default. `choice(..., replace=False)` has population limits.
+Sampling floating endpoints and casting to integers produces bias.
+
+For ML initialization, validate variance and fan scaling. For data splits, assert disjointness and
+coverage. Statistical tests should use tolerances and enough samples, but avoid brittle assertions
+that fail randomly at an unacceptable rate.
+
+<ProductionNote>
+
+Record root entropy, bit generator, NumPy version, stream derivation path, worker topology, and
+determinism settings from other frameworks. Never log large sampled data merely to claim replay.
+
+</ProductionNote>
+
+## Test stochastic systems at three layers
+
+At the deterministic seam, inject a generator and assert exact behavior for a pinned environment.
+At the invariant layer, assert shape, bounds, uniqueness, partition coverage, and independence.
+At the statistical layer, test distribution moments with declared false-positive risk and generous,
+derived thresholds.
+
+Test that adding draws to one component does not perturb another stream. Test serial and parallel
+partitioning. Retain the state from any randomized property-test failure so it can be replayed.
+
+## Exercises
+
+<Exercise id="numpy-rng-local-easy" difficulty="easy">
+
+Rewrite a function that calls global `np.random.normal` so callers own randomness.
+
+<Solution>
+
+Accept `rng: np.random.Generator` as a required or keyword-only dependency and call `rng.normal`.
+Construct it once at the experiment boundary. Tests inject `default_rng` with a known seed.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-rng-streams-medium" difficulty="medium">
+
+Create independent shuffle and augmentation streams from one recorded experiment seed.
+
+<Solution>
+
+Create a root `SeedSequence`, spawn two children in a documented order, and build one generator per
+child. Record root entropy and child spawn keys; verify extra augmentation draws do not change shuffle.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-rng-workers-hard" difficulty="hard">
+
+Design deterministic sampling for parallel logical shards whose execution order can change.
+
+<Solution>
+
+Derive each shard's seed sequence from root experiment identity plus stable shard identity, not
+completion order or process id. Each shard owns one generator. Test reordered scheduling and reject
+duplicate shard ids.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-rng-interview" difficulty="interview">
+
+Explain why setting a seed is not a complete reproducibility strategy.
+
+<Solution>
+
+A seed only initializes state. Results also depend on algorithm, mutable call order, distribution
+implementation, stream sharing, parallel topology, versions, and other nondeterministic systems. I
+make ownership explicit, derive streams, record metadata, and define whether exact or statistical
+reproduction is promised.
+
+</Solution>
+</Exercise>
+
+<Exercise id="numpy-rng-experiment-real-world" difficulty="real-world">
+
+Design RNG ownership and replay for training, augmentation, evaluation, and worker sampling.
+
+<Solution>
+
+Use one versioned root identity and named child sequences for subsystems, then task-derived children
+for workers. Persist algorithm, entropy, spawn paths, versions, topology, and bounded failure states.
+Test subsystem isolation, scheduling changes, split invariants, and exact replay inside the pinned
+support window.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. What responsibilities belong to Generator, BitGenerator, and SeedSequence?
+2. Why does one shared generator couple unrelated components?
+3. How should parallel child streams be derived?
+4. When is generator state more useful than the initial seed?
+5. Which metadata defines an honest reproducibility contract?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why do all my workers generate the same samples?">
+
+They restarted identical state. Spawn or derive distinct streams from stable logical identities.
+
+</Gotcha>
+<Gotcha question="Why did adding one random log sample change model training?">
+
+Logging consumed the shared stream and shifted every later draw. Give diagnostics a separate stream.
+
+</Gotcha>
+<Gotcha question="Why does my helper return the same noise every call?">
+
+It constructs a freshly seeded generator inside the call. Inject and advance one owned generator.
+
+</Gotcha>
+<Gotcha question="Why did the same seed change after a NumPy upgrade?">
+
+The distribution algorithm or surrounding code path may have changed. Pin the supported environment
+for exact replay.
+
+</Gotcha>
+<Gotcha question="Why is seed plus worker id a weak design?">
+
+Ad hoc arithmetic can collide and ties streams to topology. SeedSequence provides structured derivation.
+
+</Gotcha>
+<Gotcha question="Why is my statistical test flaky?">
+
+Its threshold ignores sampling variability or performs too many uncorrected checks. Derive error bounds.
+
+</Gotcha>
+<Gotcha question="Why did integer sampling never return the upper bound?">
+
+`Generator.integers` excludes `high` unless endpoint behavior is explicitly changed.
+
+</Gotcha>
+</Gotchas>
+
+## Summary
+
+Randomness is owned mutable state. Generator provides distributions, BitGenerator advances the raw
+stream, and SeedSequence derives reproducible stream families.
+
+Avoid global state and shared call-order coupling. Give subsystems and parallel logical tasks distinct
+streams, then record the topology and environment required by the promised replay level.
+
+Test deterministic seams, domain invariants, and statistical properties separately. The other tabs
+turn this model into a replayable experiment runner with safe parallel sampling.

@@ -1,0 +1,217 @@
+lessonId: "roadmap:phase-1-1.2:7"
+module: 1-2-numpy-the-actual-foundation
+lesson: 08-linear-algebra-ops-matmul-solve-inv-svd-eig
+title: "Linear algebra ops: matmul, solve, inv, svd, eig"
+summary: Choose the right numerical problem, derive shapes, and require conditioning, rank, residual, and decomposition evidence.
+mastery: {minAssessmentScore: 80, requireProject: true, requireInterview: true, requireDebug: true, revisitAfterDays: 21}
+exercises:
+  - id: nla-read-batched-matmul
+    tier: normal
+    kind: code-reading
+    title: Trace batched core dimensions
+    minutes: 10
+    requiredForMastery: true
+    concepts: [matmul, broadcasting, shape]
+    prompt: "Derive `(8,32,64) @ (1,64,16)` and explain every surviving, broadcast, and contracted dimension."
+    hints: ["Separate leading batch dimensions from the final two core dimensions.", "The shared core size 64 contracts."]
+    solution: "Batch 8 and 1 broadcast to 8; core `(32,64) @ (64,16)` yields `(32,16)`. Result is `(8,32,16)`."
+  - id: nla-choose-operation
+    tier: normal
+    kind: explain
+    title: Select the mathematical question
+    minutes: 12
+    requiredForMastery: true
+    concepts: [solve, least-squares, svd, eig]
+    prompt: "Choose solve, least-squares, SVD, or eig for a square full-rank system, an overdetermined fit, rank diagnosis, and invariant directions."
+    hints: ["Match each API to its mathematical objective.", "A desired output shape is not a selection rule."]
+    solution: "Use solve for square Ax=b, lstsq for minimizing a rectangular residual, SVD for rank and singular directions, and eig or eigh for invariant directions under a square map."
+  - id: nla-solve-with-evidence
+    tier: normal
+    kind: write-code
+    title: Build a checked solve
+    minutes: 16
+    requiredForMastery: true
+    concepts: [solve, condition, residual]
+    prompt: "Implement a square solve boundary returning condition number and relative residual."
+    hints: ["Validate dimensions before factorization.", "Scale the residual by the right-hand-side norm."]
+    solution: "Validate finite float arrays, square A, and compatible b; reject a domain condition limit, call solve, and return x with `cond(A)` and `norm(A@x-b)/max(norm(b),1)`."
+  - id: nla-reduced-svd-shapes
+    tier: normal
+    kind: predict-output
+    title: Derive reduced SVD
+    minutes: 10
+    requiredForMastery: true
+    concepts: [svd, shape, reconstruction]
+    prompt: "For A `(40,12)`, derive reduced U, s, Vh shapes and the reconstruction."
+    hints: ["K is min(M,N).", "Singular values scale columns of U before Vh."]
+    solution: "K=12, so U `(40,12)`, s `(12,)`, Vh `(12,12)`, with reconstruction `(U*s)@Vh`."
+  - id: nla-lstsq-diagnostics
+    tier: intermediate
+    kind: write-code
+    title: Audit a least-squares fit
+    minutes: 20
+    requiredForMastery: true
+    concepts: [least-squares, rank, singular-values]
+    prompt: "Fit an overdetermined calibration system and reject an unidentifiable design."
+    hints: ["Use `lstsq(..., rcond=None)`.", "Rank and singular values belong in the result contract."]
+    solution: "Call lstsq, compare reported rank with the number of fitted columns, and return coefficients only with residual, rank, singular values, scaling metadata, and held-out prediction evidence."
+  - id: nla-truncated-pinv
+    tier: intermediate
+    kind: write-code
+    title: Implement a thresholded pseudoinverse
+    minutes: 22
+    requiredForMastery: true
+    concepts: [pseudoinverse, svd, threshold]
+    prompt: "Implement a reduced-SVD pseudoinverse that returns cutoff and effective rank."
+    hints: ["Reciprocate only retained singular values.", "The output is `V @ diag(1/s) @ U.T`."]
+    solution: "Compute reduced SVD, set cutoff from rcond times largest singular value, zero reciprocals below cutoff, form `(Vh.T*reciprocal)@U.T`, and return policy metadata."
+  - id: nla-symmetric-eigen
+    tier: intermediate
+    kind: write-code
+    title: Extract principal covariance directions
+    minutes: 18
+    requiredForMastery: true
+    concepts: [eigh, symmetry, eigenpairs]
+    prompt: "Validate a covariance matrix, use the structure-aware solver, and sort eigenpairs descending."
+    hints: ["Check symmetry within a scale-aware tolerance.", "Eigenvectors are columns and must follow the same permutation."]
+    solution: "Validate square symmetry, call eigh, compute one descending argsort, apply it to values and vector columns, and test `A@V≈V*values` plus orthonormality."
+  - id: nla-perturbation-test
+    tier: intermediate
+    kind: design
+    title: Test sensitivity, not residual alone
+    minutes: 18
+    requiredForMastery: true
+    concepts: [conditioning, perturbation, trust]
+    prompt: "Design a test showing two systems can have small residuals but different solution stability."
+    hints: ["Compare a well-conditioned and nearly dependent matrix.", "Perturb b by a controlled relative amount."]
+    solution: "Solve both baseline and perturbed systems, record relative input and solution changes plus condition numbers, and show the ill-conditioned system amplifies perturbation despite small residuals."
+  - id: nla-debug-explicit-inverse
+    tier: tricky
+    kind: debug
+    title: Remove an inverse solve
+    minutes: 16
+    requiredForMastery: true
+    concepts: [inverse, solve, stability]
+    prompt: "Repair `x = np.linalg.inv(A) @ b` and add evidence beyond equality on an identity matrix."
+    hints: ["Target Ax=b directly.", "Use a nontrivial well-conditioned fixture and residual."]
+    solution: "Replace with solve(A,b); test a known nonsymmetric system, relative residual, and comparison under a mild perturbation. Keep inv only when the inverse itself is the requested object."
+  - id: nla-debug-sorted-values
+    tier: tricky
+    kind: debug
+    title: Keep eigenpairs coupled
+    minutes: 16
+    requiredForMastery: true
+    concepts: [eigenpairs, sorting]
+    prompt: "Code sorts eigenvalues but leaves eigenvectors unchanged. Diagnose and repair its PCA directions."
+    hints: ["One permutation owns both outputs.", "Apply it to vector columns."]
+    solution: "Compute `order=argsort(values)[::-1]`, then use `values[order]` and `vectors[:,order]`; prove each repaired pair with `A@v≈lambda*v`."
+  - id: nla-debug-exact-eigenvectors
+    tier: tricky
+    kind: debug
+    title: Fix a brittle eigenvector test
+    minutes: 16
+    requiredForMastery: true
+    concepts: [sign-ambiguity, eigenspace, testing]
+    prompt: "A test requires exact eigenvector arrays and fails after a BLAS change. Replace it with mathematical invariants."
+    hints: ["Sign and phase are arbitrary.", "Repeated values require subspace comparison."]
+    solution: "Test eigenpair residuals, orthonormality for eigh, reconstruction, and projection matrices for repeated-eigenvalue subspaces rather than exact columns."
+  - id: nla-debug-square-orientation
+    tier: tricky
+    kind: debug
+    title: Expose a transposed square weight
+    minutes: 16
+    requiredForMastery: true
+    concepts: [orientation, semantic-shape]
+    prompt: "A square weight transposition passes every shape test. Design a regression that proves the intended map orientation."
+    hints: ["Use a nonsymmetric matrix.", "Assert a hand-derived mapped basis vector."]
+    solution: "Choose a nonsymmetric weight and distinct basis inputs with manually derived outputs, name input/output feature axes, and assert values rather than mechanical shape."
+  - id: nla-design-calibration-api
+    tier: challenge
+    kind: design
+    title: Design a numerical calibration boundary
+    minutes: 30
+    requiredForMastery: false
+    concepts: [api, diagnostics, policy]
+    prompt: "Design an API supporting exact and least-squares calibration without hiding rank or conditioning."
+    hints: ["Separate problem selection from numerical policy.", "Return diagnostics with the solution."]
+    solution: "Use explicit problem modes, shape/unit validation, scaling metadata, dtype and threshold policy, solve or lstsq dispatch, and a result object containing residual, condition, rank, singular spectrum, warnings, and reproducibility metadata."
+  - id: nla-benchmark-decompositions
+    tier: challenge
+    kind: performance
+    title: Benchmark decomposition policy
+    minutes: 28
+    requiredForMastery: false
+    concepts: [benchmark, blas, accuracy]
+    prompt: "Compare solve, inverse multiplication, and SVD-based solutions across size and conditioning."
+    hints: ["Control BLAS threads and warm each path.", "Measure error and memory beside latency."]
+    solution: "Generate matrices with controlled singular spectra, time repeated warmed runs, measure peak memory, residual and forward error, record dtype and BLAS settings, and never use the inverse path as the truth oracle."
+quizzes:
+  - id: nla-checkpoint
+    title: Checkpoint — choose and trust operations
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - {id: nla-cp-solve, kind: mcq, prompt: "Best default for square Ax=b?", options: [{id: solve, text: "solve(A,b)"}, {id: inv, text: "inv(A) at b"}], answer: [solve], explanation: "Solve targets the system directly.", concepts: [solve], points: 1}
+      - {id: nla-cp-svd, kind: mcq, prompt: "Reduced SVD K equals what?", options: [{id: minimum, text: "min(M,N)"}, {id: maximum, text: "max(M,N)"}], answer: [minimum], explanation: "Reduced factors retain min(M,N) singular directions.", concepts: [svd], points: 1}
+      - {id: nla-cp-eigh, kind: mcq, prompt: "Which routine exploits real symmetric structure?", options: [{id: eigh, text: eigh}, {id: eig, text: eig}], answer: [eigh], explanation: "eigh targets Hermitian or symmetric matrices.", concepts: [eigh], points: 1}
+      - {id: nla-cp-trust, kind: multi, prompt: "Which evidence helps judge a solve?", options: [{id: residual, text: "Relative residual"}, {id: condition, text: "Condition estimate"}, {id: finite, text: "Finite values only"}], answer: [residual, condition], explanation: "Finite output alone proves almost nothing.", concepts: [trust], points: 1}
+  - id: nla-assessment
+    title: Assessment — numerical linear algebra contracts
+    kind: assessment
+    passScore: 80
+    questions:
+      - {id: nla-as-matmul, kind: predict-output, prompt: "Shape of `(5,7,9) @ (9,3)`?", modelAnswer: "(5,7,3); 9 contracts.", explanation: "Leading 5 batches the matrix product.", concepts: [matmul], points: 1}
+      - {id: nla-as-inv, kind: explain, prompt: "Why avoid inverse for solves?", modelAnswer: "It materializes unnecessary columns, costs more, and compounds rounding; solve factors and applies directly.", explanation: "The inverse is a different requested object.", concepts: [solve], points: 1}
+      - {id: nla-as-residual, kind: explain, prompt: "What can a small residual not prove?", modelAnswer: "It cannot prove solution sensitivity is small or the model is identifiable.", explanation: "Conditioning addresses perturbation amplification.", concepts: [condition], points: 1}
+      - {id: nla-as-lstsq, kind: scenario, prompt: "Which operation fits overdetermined Ax approximately?", modelAnswer: "lstsq, with rank and singular-value diagnostics.", explanation: "An exact square solve is not the problem.", concepts: [least-squares], points: 1}
+      - {id: nla-as-rank, kind: scenario, prompt: "How derive numerical rank from SVD?", modelAnswer: "Count singular values above a documented scale and dtype-aware cutoff.", explanation: "Rank is threshold-dependent numerically.", concepts: [rank], points: 1}
+      - {id: nla-as-pinv, kind: explain, prompt: "What policy does pseudoinverse embed?", modelAnswer: "It reciprocates retained singular directions and truncates others according to rcond.", explanation: "The threshold changes effective model rank.", concepts: [pseudoinverse], points: 1}
+      - {id: nla-as-eigen, kind: find-bug, prompt: "Why can exact eigenvector equality fail?", modelAnswer: "Sign or phase is arbitrary and repeated eigenvalues admit different bases.", explanation: "Test residuals and subspaces.", concepts: [eigenvectors], points: 1}
+      - {id: nla-as-sort, kind: find-bug, prompt: "What must follow an eigenvalue sort?", modelAnswer: "Apply the identical permutation to eigenvector columns.", explanation: "Eigenpairs must remain coupled.", concepts: [eigenpairs], points: 1}
+      - {id: nla-as-float64, kind: true-false, prompt: "Does float64 repair rank deficiency?", options: [{id: "true", text: "True"}, {id: "false", text: "False"}], answer: ["false"], explanation: "Precision cannot create missing information.", concepts: [rank], points: 1}
+      - {id: nla-as-testing, kind: refactor, prompt: "Replace a finite-only decomposition test.", modelAnswer: "Assert reconstruction, residuals, orthogonality, rank policy, sensitivity, and semantic shapes on adversarial matrices.", explanation: "Invariants test the mathematical contract.", concepts: [testing], points: 1}
+interview:
+  - {id: nla-iv-operation, level: basic, requiredForMastery: true, concepts: [selection], question: "How do you choose a linear algebra routine?", shortAnswer: "I start from the mathematical question and assumptions, then derive shapes.", fullAnswer: "Composition, exact solve, least squares, rank analysis, and invariant directions are different problems. I validate shape and structure before execution.", commonWrongAnswer: "Choose whichever returns the wanted shape.", followUps: ["When is lstsq right?", "When is eigh valid?"]}
+  - {id: nla-iv-solve, level: intermediate, requiredForMastery: true, concepts: [solve], question: "Why solve instead of inverse?", shortAnswer: "Solve targets Ax=b directly with less work and better numerical behavior.", fullAnswer: "It avoids materializing and rounding every inverse column; I still inspect residual and condition.", commonWrongAnswer: "They are computationally identical.", followUps: ["What does residual prove?", "What does condition add?"]}
+  - {id: nla-iv-condition, level: advanced, requiredForMastery: true, concepts: [condition], question: "How do you judge solution trust?", shortAnswer: "I combine scale-aware residual, condition, rank, dtype, and perturbation behavior.", fullAnswer: "A small residual can coexist with a sensitive solution. Domain thresholds and input uncertainty determine acceptance.", commonWrongAnswer: "Finite output and small residual are enough.", followUps: ["Can float64 fix the problem?", "How would you perturb inputs?"]}
+  - {id: nla-iv-svd, level: advanced, requiredForMastery: true, concepts: [svd], question: "What does SVD reveal?", shortAnswer: "It exposes orthogonal input/output directions, gains, numerical rank, and conditioning.", fullAnswer: "Reduced SVD reconstructs A as U diag(s) Vh and supports rank, pseudoinverse, compression, and least squares with explicit thresholds.", commonWrongAnswer: "SVD is only a slower eigenvalue routine.", followUps: ["How choose rank cutoff?", "What shapes are reduced factors?"]}
+  - {id: nla-iv-eigen, level: tricky, requiredForMastery: true, concepts: [eigen], question: "How do you test eigenvectors?", shortAnswer: "Test Av≈lambda v, structure, and subspaces rather than exact signs.", fullAnswer: "Signs or phases are arbitrary and repeated eigenvalues allow different bases. For eigh I also test orthonormality and reconstruction.", commonWrongAnswer: "Exact column equality is required.", followUps: ["Why use eigh?", "How compare repeated eigenspaces?"]}
+  - {id: nla-iv-production, level: scenario, requiredForMastery: true, concepts: [observability], question: "What belongs in a production solve result?", shortAnswer: "Value plus residual, condition, rank or factor evidence, dtype, thresholds, and warnings.", fullAnswer: "The caller needs enough evidence to reject weak numerical answers and reproduce policy decisions across versions.", commonWrongAnswer: "Returning x is sufficient if no exception occurred.", followUps: ["Which metrics would you alert on?", "How do BLAS changes affect reproducibility?"]}
+projects:
+  - id: nla-project-calibration-engine
+    kind: major
+    title: Build a trustworthy calibration engine
+    minutes: 280
+    summary: Solve exact and least-squares calibration problems with explicit assumptions and numerical evidence.
+    problem: "Build a NumPy package accepting square and rectangular calibration systems, selecting solve or lstsq, diagnosing rank and conditioning, and producing an auditable result."
+    requirements: ["Validate semantic shapes, units, finiteness, and dtype.", "Support solve and least-squares modes without inverse-based solves.", "Return residual, condition, rank, singular values, thresholds, and scaling metadata.", "Add SVD pseudoinverse as an explicit policy, not silent fallback.", "Test symmetric eigendecomposition for covariance diagnostics."]
+    constraints: ["NumPy and standard library only.", "No exception suppression as numerical policy.", "No exact eigenvector-array tests."]
+    expectedBehaviour: ["Well-conditioned known systems recover solutions.", "Rank-deficient designs are observable.", "Perturbation evidence distinguishes sensitive systems.", "Every decomposition passes reconstruction invariants."]
+    structure: "calibration/ contracts.py scaling.py solve.py decompose.py report.py; tests/"
+    milestones: [{title: "1 — Contracts", detail: "Freeze mathematical modes and evidence."}, {title: "2 — Algorithms", detail: "Implement solve, lstsq, SVD, and eigh boundaries."}, {title: "3 — Adversarial tests", detail: "Exercise conditioning, rank, orientation, and perturbations."}]
+    testing: ["Use known, nearly singular, deficient, symmetric, and nonsymmetric fixtures.", "Assert residual, forward error, rank, reconstruction, and subspaces."]
+    failureCases: ["Inverse used for solve.", "Small residual accepted without condition.", "Eigenvalues sorted without vectors."]
+    bonus: ["Benchmark BLAS thread configurations."]
+    architectureHints: ["Return immutable result objects with evidence.", "Separate scaling from solvers."]
+    referenceOutline: "Validate and scale, select the declared problem, execute the matching routine, compute diagnostics, and finalize only if policy thresholds pass."
+  - id: nla-final-audit
+    kind: final-challenge
+    title: Repair eight numerical linear algebra defects
+    minutes: 90
+    summary: Expose inverse, orientation, rank, conditioning, dtype, and eigenpair testing failures.
+    problem: "Find eight independent causes in a calibration pipeline before making focused repairs."
+    requirements: ["Include inverse solve, transposed weight, residual-only trust, ignored rank, fixed rank cutoff, wrong eigenpair sort, exact eigenvector test, and narrow dtype.", "Retain fail-before-fix evidence."]
+    constraints: ["Do not change domain semantics.", "Do not use one faulty routine as its own oracle."]
+    expectedBehaviour: ["Eight causes are independently proven.", "All repairs pass invariant and perturbation tests."]
+    milestones: [{title: "1 — Diagnose", detail: "Write the eight-cause report."}, {title: "2 — Prove", detail: "Add adversarial regressions."}, {title: "3 — Repair", detail: "Apply narrow fixes and report evidence."}]
+    testing: ["Use asymmetric and controlled-spectrum matrices.", "Assert numerical evidence, not finiteness."]
+    failureCases: ["Treating float64 as a rank repair.", "Comparing eigenvectors exactly."]
+    bonus: ["Generate a numerical trust report."]
+    architectureHints: ["Separate problem, algorithm, and acceptance policy."]
+    referenceOutline: "Freeze intended equations, build independent solutions, expose each failure, then repair operation choice, thresholds, pairing, and evidence."
+resources:
+  - {name: NumPy linear algebra reference, type: docs, difficulty: core, url: "https://numpy.org/doc/stable/reference/routines.linalg.html", usefulness: 5, why: "It is the primary index of NumPy matrix products, solves, decompositions, norms, rank, and condition routines.", covers: "Routine selection, broadcasting, decompositions, solving, and diagnostics."}
+  - {name: NumPy solve reference, type: docs, difficulty: core, url: "https://numpy.org/doc/stable/reference/generated/numpy.linalg.solve.html", usefulness: 5, why: "It defines square-system requirements, batched behavior, and failure semantics for direct solves.", covers: "Core shapes, right-hand sides, LAPACK backend, and singular failures."}
+  - {name: NumPy least-squares reference, type: docs, difficulty: deep, url: "https://numpy.org/doc/stable/reference/generated/numpy.linalg.lstsq.html", usefulness: 5, why: "It documents the residual, rank, and singular-value evidence returned by rectangular fitting.", covers: "Least-squares objective, rcond, residuals, rank, and singular values."}
+  - {name: NumPy SVD reference, type: docs, difficulty: deep, url: "https://numpy.org/doc/stable/reference/generated/numpy.linalg.svd.html", usefulness: 5, why: "It is the primary contract for reduced versus full factors, stacked operation, and reconstruction orientation.", covers: "U, singular values, Vh, shapes, Hermitian mode, and batching."}
+  - {name: NumPy eigh reference, type: docs, difficulty: deep, url: "https://numpy.org/doc/stable/reference/generated/numpy.linalg.eigh.html", usefulness: 4, why: "It specifies the structure-aware eigenproblem and eigenvector column conventions needed for covariance work.", covers: "Hermitian assumptions, eigenvalue order, eigenvector columns, and batching."}

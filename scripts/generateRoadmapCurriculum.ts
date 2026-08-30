@@ -295,7 +295,7 @@ async function writeJson(file: string, value: unknown): Promise<void> {
 /**
  * What a regeneration must not destroy.
  *
- * Lessons are now authored *in place* under `content/modules/mastery/` (see `PRACTICE_SYSTEM.md`),
+ * Lessons are authored *in place* under `content/modules/mastery/` (see `CLAUDE.md`),
  * so this script can no longer treat that directory as disposable. Before the rebuild it snapshots
  * every hand-written file and every hand-written lesson field; afterwards it restores them.
  *

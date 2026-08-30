@@ -1,0 +1,810 @@
+lessonId: "roadmap:phase-2-2.2:3"
+module: 2-2-calculus-optimisation
+lesson: 04-jacobian-hessian-what-the-hessian-tells-you-about
+title: "Jacobian, Hessian; what the Hessian tells you about curvature"
+summary: The Jacobian as first partials of a vector function, the Hessian as second partials of a scalar function and Jacobian of the gradient, its eigenvalues as curvatures that classify critical points and bound the step size, and Hessian-vector products that give curvature without forming the matrix.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: ljhp-read-hvp
+    tier: normal
+    kind: code-reading
+    title: Read a Hessian-vector product
+    minutes: 10
+    requiredForMastery: true
+    concepts: [hessian-vector-product, directional-derivative, autodiff]
+    prompt: |
+      Read this and say what it returns, why it works, and its cost relative to one gradient.
+      ```python
+      def hvp(grad, x, v, h=1e-6):
+          return (grad(x + h * v) - grad(x - h * v)) / (2 * h)
+      ```
+    hints:
+      - "`H v` is the directional derivative of the gradient along `v`."
+      - Autodiff computes the same thing exactly.
+    solution: |
+      It returns an approximation of `H @ v`, the Hessian of the scalar `f` (whose gradient is
+      `grad`) applied to `v`. It works because `H` is the Jacobian of `grad`, so
+      `H @ v = d/dt grad(x + t v)` at `t = 0`, and a central difference of `grad` along `v`
+      estimates that. Cost is two gradient evaluations here; the exact autodiff version
+      (forward-over-reverse, or a second backward on `grad(x) @ v`) also costs a small constant times
+      one gradient and has no truncation error. Neither forms the `n x n` Hessian.
+  - id: ljhp-write-hessian
+    tier: normal
+    kind: write-code
+    title: Numerical Hessian, symmetrised
+    minutes: 12
+    requiredForMastery: true
+    concepts: [numerical-hessian, symmetry, clairaut]
+    prompt: |
+      Write `hessian(grad, x, h=1e-5)` that builds the Hessian as the Jacobian of `grad` by central
+      differences, then symmetrises it. Explain why the symmetrisation is needed in floating point.
+    hints:
+      - Column `j` is the central difference of `grad` along `e_j`.
+      - Clairaut guarantees exact symmetry; rounding does not.
+    solution: |
+      For each `j`, set `e = np.zeros_like(x); e[j] = h`, and `H[:, j] = (grad(x + e) - grad(x - e))
+      / (2 * h)`. Then `return 0.5 * (H + H.T)`. Mathematically the mixed partials of a `C^2`
+      function are equal (Clairaut), so the true Hessian is symmetric; but the finite-difference
+      estimates of `d2f/dx_i dx_j` and `d2f/dx_j dx_i` come from different subtractions and differ by
+      rounding, so the raw `H` is only approximately symmetric. Symmetrising removes the antisymmetric
+      error, and downstream you use `np.linalg.eigvalsh` (symmetric solver) rather than `eigvals`.
+  - id: ljhp-predict-classify
+    tier: normal
+    kind: predict-output
+    title: Classify critical points by the Hessian
+    minutes: 10
+    requiredForMastery: true
+    concepts: [critical-point, definiteness, saddle]
+    prompt: |
+      At three critical points the Hessians have eigenvalue sets `{2, 5}`, `{-1, -4}`, `{3, -2}`,
+      and `{0, 4}`. Classify each.
+    hints:
+      - All positive is a minimum; all negative a maximum; mixed a saddle.
+      - A zero eigenvalue makes the second-order test inconclusive.
+    solution: |
+      `{2, 5}`: positive definite — strict local minimum. `{-1, -4}`: negative definite — strict
+      local maximum. `{3, -2}`: indefinite — saddle point (curves up along one eigenvector, down
+      along the other). `{0, 4}`: positive semidefinite but singular — the direction of the zero
+      eigenvalue is flat to second order, so the second-order test is inconclusive and higher-order
+      terms decide whether it is a minimum, a ridge, or a monkey-saddle-like point.
+  - id: ljhp-explain-jacobian-of-gradient
+    tier: normal
+    kind: explain
+    title: Hessian as the Jacobian of the gradient
+    minutes: 10
+    requiredForMastery: true
+    concepts: [hessian, jacobian, gradient]
+    prompt: |
+      Explain precisely what "the Hessian is the Jacobian of the gradient" means, and how it gives
+      you a Hessian-vector product.
+    hints:
+      - The gradient is a map `R^n -> R^n`.
+      - Its Jacobian entry `(i, j)` is the derivative of component `i` with respect to input `j`.
+    solution: |
+      The gradient `grad f: R^n -> R^n` is itself a vector-valued function. Its Jacobian has entry
+      `(i, j)` equal to `d(grad f)_i / dx_j = d2f / dx_j dx_i`, which is exactly `H_ij`. So `H` is
+      the Jacobian of `grad f`. A Jacobian-vector product of that map is `H @ v = d/dt grad f(x + t
+      v)` at `t = 0` — the directional derivative of the gradient along `v` — which autodiff
+      computes by pushing a tangent `v` through the backward pass (forward-over-reverse), at the cost
+      of a constant times one gradient, without forming `H`.
+  - id: ljhp-taylor-curvature
+    tier: intermediate
+    kind: predict-output
+    title: Curvature along an eigenvector
+    minutes: 12
+    requiredForMastery: true
+    concepts: [taylor-model, eigenvalue, curvature]
+    prompt: |
+      At a minimum, `f(x* + dx) ~ f(x*) + 0.5 dx^T H dx` with `H` eigenvalues `{4, 100}` and unit
+      eigenvectors `q1, q2`. Give `f(x* + t q1) - f(x*)` and `f(x* + t q2) - f(x*)` to leading order,
+      and the ratio of step sizes that produce the same loss increase.
+    hints:
+      - Along `q_i` the quadratic term is `0.5 lambda_i t^2`.
+      - Equal loss increase means `lambda_1 t1^2 = lambda_2 t2^2`.
+    solution: |
+      Along `q1`: `f(x* + t q1) - f(x*) ~ 0.5 * 4 * t^2 = 2 t^2`. Along `q2`: `~ 0.5 * 100 * t^2 =
+      50 t^2`. For the same loss increase `c`, `2 t1^2 = 50 t2^2 = c`, so `t1 / t2 = sqrt(50 / 2) =
+      5`. You can move 5 times further along the flat direction `q1` than along the steep direction
+      `q2` for the same rise in loss — the anisotropy the condition number `100 / 4 = 25` measures,
+      and the reason a single learning rate is a poor fit.
+  - id: ljhp-newton-rescales
+    tier: intermediate
+    kind: write-code
+    title: Newton step rescales by inverse curvature
+    minutes: 14
+    requiredForMastery: true
+    concepts: [newton-step, inverse-curvature, quadratic]
+    prompt: |
+      Write `newton_step(H, g)` returning `-H^{-1} g` via a solve, and show that for the quadratic
+      `f(x) = 0.5 x^T H x` it lands at the minimum in one step from any `x`.
+    hints:
+      - Use `np.linalg.solve`, not `inv`.
+      - For that `f`, `grad f(x) = H x`.
+    solution: |
+      `return -np.linalg.solve(H, g)`. For `f(x) = 0.5 x^T H x` (with `H` symmetric positive
+      definite), `grad f(x) = H x`, so the Newton step from `x` is `p = -H^{-1}(H x) = -x`, giving
+      `x + p = 0`, the exact minimiser, in one step regardless of `x`. In the eigenbasis, `p`
+      multiplies each component of `-g` by `1 / lambda_i`, exactly undoing the per-direction
+      curvature so every direction is scaled to reach the bottom simultaneously. Real losses are not
+      exactly quadratic, so Newton is damped `(H + tau I)^{-1}` and, at scale, approximated.
+  - id: ljhp-hutchinson-trace
+    tier: intermediate
+    kind: write-code
+    title: Hutchinson trace estimator
+    minutes: 14
+    requiredForMastery: true
+    concepts: [trace-estimator, hutchinson, hessian-vector-product]
+    prompt: |
+      Write `trace_estimate(hvp, n, samples=100, rng=None)` estimating `tr(H)` from Hessian-vector
+      products with random plus-minus-one vectors, and explain why the expectation is `tr(H)`.
+    hints:
+      - Draw `v` with independent entries in {-1, +1}.
+      - "`E[v^T H v]` expands to a sum over `i, j` of `H_ij E[v_i v_j]`."
+    solution: |
+      Draw `v` with i.i.d. Rademacher entries (`rng.integers(0, 2, n) * 2 - 1`), compute
+      `v @ hvp(v)`, average over `samples`. The expectation:
+      `E[v^T H v] = sum_{i,j} H_ij E[v_i v_j]`, and `E[v_i v_j] = 1` if `i == j` (since `v_i^2 = 1`)
+      and `0` otherwise (independence, zero mean), so it collapses to `sum_i H_ii = tr(H)`. The
+      estimator is unbiased; its variance is `2 * (||H||_F^2 - sum H_ii^2)`, reduced by averaging.
+      `tr(H)` is the sum of the eigenvalues, a scalar sharpness proxy, computed with only `samples`
+      HVPs and no `n x n` matrix.
+  - id: ljhp-gauss-newton
+    tier: intermediate
+    kind: explain
+    title: Gauss-Newton and Fisher as PSD surrogates
+    minutes: 12
+    requiredForMastery: true
+    concepts: [gauss-newton, fisher-information, psd-approximation]
+    prompt: |
+      Explain what the Gauss-Newton matrix is, why it is always PSD, and when it equals the Hessian.
+    hints:
+      - For a least-squares loss the Hessian splits into a `J^T J` term and a residual-weighted term.
+      - The residual term vanishes at a perfect fit.
+    solution: |
+      For a loss `L = 0.5 sum r_k(theta)^2` (residuals `r`), the exact Hessian is
+      `H = J^T J + sum_k r_k * H_{r_k}`, where `J` is the Jacobian of `r`. The Gauss-Newton matrix
+      keeps only the first term, `G = J^T J`, dropping the residual-weighted second-derivative term.
+      `G` is PSD by construction (`x^T J^T J x = ||J x||^2 >= 0`), so a step `-(G + tau I)^{-1} g` is
+      always a descent direction, unlike a possibly-indefinite Newton step. `G` equals the Hessian
+      exactly when every residual is zero (a perfect fit) and approximately when residuals are
+      small. The generalised Gauss-Newton extends this to non-squared losses via the loss Hessian in
+      output space; for exponential-family losses it coincides with the Fisher information, the
+      matrix natural gradient uses.
+  - id: ljhp-jacobian-cost-modes
+    tier: intermediate
+    kind: predict-output
+    title: Jacobian cost by autodiff mode
+    minutes: 12
+    requiredForMastery: true
+    concepts: [jacobian, forward-mode, reverse-mode, cost]
+    prompt: |
+      For each map, say which autodiff mode builds the full Jacobian in fewer passes and how many
+      passes: (a) a scalar loss over 1e6 parameters; (b) a map from 4 inputs to 500 outputs; (c) a
+      map from 500 inputs to 4 outputs.
+    hints:
+      - Reverse mode costs one pass per output; forward mode one pass per input.
+      - Pick the mode matching the smaller dimension.
+    solution: |
+      (a) Scalar loss, `m = 1`: reverse mode, 1 pass — this is just the gradient; forward mode would
+      need 1e6 passes. (b) 4 inputs, 500 outputs: forward mode, 4 passes (one Jacobian-vector
+      product per input basis vector); reverse mode would need 500. (c) 500 inputs, 4 outputs:
+      reverse mode, 4 passes (one vector-Jacobian product per output); forward mode would need 500.
+      Rule: cost is proportional to the number of seeds, so seed the smaller of the input and output
+      dimensions.
+  - id: ljhp-debug-eigvals-nonsym
+    tier: tricky
+    kind: debug
+    title: Wrong eigenvalue routine for the Hessian
+    minutes: 12
+    requiredForMastery: true
+    concepts: [hessian-symmetry, eigvalsh, complex-eigenvalues]
+    prompt: |
+      This classifies a critical point but sometimes reports tiny imaginary parts and an unstable
+      verdict. Fix it.
+    code: |
+      def classify(H):
+          w = np.linalg.eigvals(H)
+          if np.all(w > 0): return "min"
+          if np.all(w < 0): return "max"
+          return "saddle"
+    solution: |
+      The Hessian is symmetric in theory, but a finite-difference or autodiff-assembled `H` is only
+      approximately symmetric due to rounding, and `np.linalg.eigvals` (the general nonsymmetric
+      solver) then returns eigenvalues with small spurious imaginary parts, which break `w > 0`
+      comparisons and make the verdict flip near boundaries. Fix: symmetrise and use the symmetric
+      solver: `w = np.linalg.eigvalsh(0.5 * (H + H.T))`, which returns real, sorted eigenvalues.
+      Add a tolerance for the "zero eigenvalue -> degenerate/inconclusive" case rather than a strict
+      sign test. Regression: build an `H` with a deliberate antisymmetric perturbation of `1e-9` and
+      assert the fixed classifier is stable.
+    hints:
+      - The Hessian should be symmetrised before an eigenvalue computation.
+      - Use `eigvalsh`, not `eigvals`.
+  - id: ljhp-debug-inv-hessian-loop
+    tier: tricky
+    kind: debug
+    title: Inverting the Hessian in a training loop
+    minutes: 16
+    requiredForMastery: true
+    concepts: [newton-method, hessian-free, indefinite, cost]
+    prompt: |
+      This "Newton optimiser" is unusably slow for a 5-million-parameter model and sometimes steps
+      uphill. Diagnose and give a scalable replacement.
+    code: |
+      def newton_update(loss_fn, theta, lr=1.0):
+          g = grad(loss_fn, theta)
+          H = hessian(loss_fn, theta)          # (5e6, 5e6)
+          return theta - lr * np.linalg.solve(H, g)
+    solution: |
+      Two fatal problems. Cost: `H` is `5e6 x 5e6` — 25 trillion entries, `O(n^2)` memory and
+      `O(n^3)` to factor — completely infeasible; even assembling it by finite differences is `O(n)`
+      gradient evaluations. Correctness: far from the optimum `H` is typically indefinite, so
+      `-H^{-1} g` can have a positive inner product with `g` and increase the loss. Replacement:
+      Hessian-free / truncated Newton — solve `H p = -g` with a few conjugate-gradient iterations
+      using only Hessian-vector products (each an autodiff `jvp` of the gradient), and add damping
+      `(H + tau I)` or terminate CG on negative curvature so the step stays a descent direction.
+      Alternatively use a quasi-Newton method (L-BFGS) that builds a PSD inverse-Hessian
+      approximation from gradient differences, or a Gauss-Newton / K-FAC approximation. Regression:
+      assert `g @ p < 0` for the new step on an indefinite fixture and that no `n x n` matrix is
+      allocated.
+    hints:
+      - Forming and inverting `H` is `O(n^2)` memory and `O(n^3)` time.
+      - Far from the optimum `H` is indefinite, so the raw Newton step is not a descent direction.
+  - id: ljhp-debug-condition-number-noise
+    tier: tricky
+    kind: debug
+    title: Condition number dominated by noise
+    minutes: 14
+    requiredForMastery: true
+    concepts: [condition-number, numerical-rank, hessian-spectrum]
+    prompt: |
+      A diagnostic reports the Hessian condition number as `4e13` and concludes the problem is
+      unsolvable, but training converges fine. Explain and fix the diagnostic.
+    code: |
+      def condition_number(H):
+          w = np.linalg.eigvalsh(0.5 * (H + H.T))
+          return w.max() / w.min()
+    solution: |
+      Deep-network Hessians have a spectrum of a few large eigenvalues and a dense bulk very close
+      to zero, plus numerical noise; `w.min()` picks up a near-zero (or slightly negative) value
+      that is a flat direction or rounding, not a real curvature, so the ratio explodes and is
+      meaningless. Fix: quote the condition number at the numerical rank — the smallest eigenvalue
+      above a tolerance relative to `w.max()` (for example `tol = w.max() * 1e-8`), i.e.
+      `w_sig = w[w > tol]; return w.max() / w_sig.min()`. Report the full sorted spectrum (or its
+      histogram) alongside, and treat near-zero and negative eigenvalues as flat/negative-curvature
+      directions to be handled (damping, trust region), not as a fatal condition number. Regression:
+      build an `H` with eigenvalues `[100, 10, 1, 1e-14, -1e-15]` and assert the effective condition
+      number is `100`, not `1e16`.
+    hints:
+      - Near-zero eigenvalues are flat directions or noise, not real curvature.
+      - Use the smallest significant eigenvalue for the ratio.
+  - id: ljhp-design-curvature-monitor
+    tier: challenge
+    kind: design
+    title: Design a curvature monitor for training
+    minutes: 28
+    requiredForMastery: false
+    concepts: [lanczos, power-iteration, hutchinson, monitoring]
+    prompt: |
+      Design `curvature_report(hvp, n, budget)` that, given a Hessian-vector-product operator and a
+      budget of HVPs, estimates the top eigenvalue, a spectrum sketch, the trace, and a sharpness
+      flag. State the methods, the budget split, and what it must not do.
+    hints:
+      - Power iteration for `lambda_max`; Lanczos for a spectrum sketch; Hutchinson for the trace.
+      - Split the HVP budget across the three and report uncertainty.
+    solution: |
+      Inputs: an `hvp(v)` callable, the parameter dimension `n`, an HVP budget, and thresholds.
+      Split the budget, e.g. 20% power iteration for `lambda_max` (Rayleigh quotient of the final
+      vector), 50% a `k`-step Lanczos for a Ritz-value spectrum sketch (top and bottom of the
+      spectrum, the near-zero bulk fraction), 30% Hutchinson for `tr(H)` over random Rademacher
+      vectors with a reported standard error. Output: `lambda_max` and its convergence proxy, the
+      Ritz values, an estimated effective condition number (at the numerical rank), `tr(H)` with
+      error bars, and a sharpness flag when `lambda_max` or `tr(H)/n` exceeds a rolling-quantile
+      threshold. It must not run a full eigendecomposition, must not use `A^T A` power iteration
+      (that gives a singular value, not a curvature), must report low confidence when an estimate
+      has not converged within budget, must quote the condition number at the numerical rank, and
+      must not block training on a slow estimate (run it every `k` steps, asynchronously if
+      possible). Golden traces: a healthy run, a run sharpening toward divergence, and a run
+      entering a region of negative curvature.
+  - id: ljhp-refactor-full-hessian-newton
+    tier: challenge
+    kind: refactor
+    title: Refactor a full-Hessian Newton solver to Hessian-free
+    minutes: 26
+    requiredForMastery: false
+    concepts: [hessian-free, conjugate-gradient, damping, negative-curvature]
+    prompt: |
+      An optimiser forms the dense Hessian each step and does `np.linalg.solve(H + tau*I, -g)`. It
+      works on toy problems and blows up in memory on real ones. Refactor to a matrix-free
+      truncated-Newton step, keeping the damping and adding negative-curvature handling.
+    hints:
+      - Replace the dense solve with conjugate gradients that call an `hvp` operator.
+      - Stop CG early, and bail to the gradient direction if CG hits negative curvature.
+    solution: |
+      Replace `H` with an `hvp(v)` closure (autodiff `jvp` of the gradient). Solve `(H + tau I) p =
+      -g` with conjugate gradients that only ever call `hvp`, capped at a small iteration count (5
+      to 20). Keep the Levenberg-Marquardt damping `tau`, adapted by a trust-ratio (increase `tau`
+      when the actual decrease is much worse than the model's prediction, decrease it when they
+      agree). Detect negative curvature inside CG: if a search direction `d` gives `d^T (H + tau I)
+      d <= 0`, terminate CG and return the current iterate (or the steepest-descent direction if it
+      is the first iteration), guaranteeing a descent step. Memory drops from `O(n^2)` to `O(n)`;
+      each step costs a handful of HVPs. Add a fail-before-fix test recording the old peak memory
+      and asserting the refactor allocates no `n x n` array and that `g @ p < 0` on an indefinite
+      fixture.
+quizzes:
+  - id: ljhp-checkpoint
+    title: Checkpoint — Jacobian, Hessian, curvature
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: ljhp-cp-hessian-sym
+        kind: mcq
+        prompt: Why is the Hessian of a `C^2` function symmetric?
+        options:
+          - {id: clairaut, text: Mixed partial derivatives commute (Clairaut's theorem)}
+          - {id: always, text: Every square matrix is symmetric}
+          - {id: convex, text: Only convex functions have a symmetric Hessian}
+        answer: [clairaut]
+        explanation: "`d2f/dx_i dx_j = d2f/dx_j dx_i` when the second partials are continuous."
+        concepts: [hessian, clairaut]
+        points: 1
+      - id: ljhp-cp-eigenvalues
+        kind: mcq
+        prompt: In the second-order Taylor model, the Hessian's eigenvalues are what?
+        options:
+          - {id: curvatures, text: The curvatures of `f` along the corresponding eigenvectors}
+          - {id: gradients, text: The gradient components}
+          - {id: steps, text: The optimal step sizes}
+        answer: [curvatures]
+        explanation: Along eigenvector `q_i` the quadratic term is `0.5 lambda_i t^2`.
+        concepts: [curvature, eigenvalue]
+        points: 1
+      - id: ljhp-cp-classify
+        kind: mcq
+        prompt: At a critical point the Hessian has eigenvalues `{5, -2}`. The point is what?
+        options:
+          - {id: saddle, text: A saddle point}
+          - {id: min, text: A local minimum}
+          - {id: max, text: A local maximum}
+        answer: [saddle]
+        explanation: Mixed signs mean up in one direction, down in another.
+        concepts: [critical-point]
+        points: 1
+      - id: ljhp-cp-hvp
+        kind: multi
+        prompt: Which are true of a Hessian-vector product?
+        options:
+          - {id: dirderiv, text: It is the directional derivative of the gradient along `v`}
+          - {id: cost, text: It costs about one gradient evaluation via autodiff}
+          - {id: nomatrix, text: It does not require forming the Hessian}
+          - {id: needsinv, text: It requires inverting the Hessian first}
+        answer: [dirderiv, cost, nomatrix]
+        explanation: "`H v = d/dt grad(x + t v)`, computed by forward-over-reverse autodiff."
+        concepts: [hessian-vector-product]
+        points: 1
+  - id: ljhp-assessment
+    title: Assessment — Jacobian, Hessian, and curvature
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: ljhp-as-jacobian-hessian
+        kind: explain
+        prompt: Define the Jacobian and the Hessian and state the relationship between them.
+        modelAnswer: |
+          For `f: R^n -> R^m`, the Jacobian `J` is `(m, n)` with `J_ij = df_i/dx_j`; its rows are the
+          output gradients. For `f: R^n -> R`, the Hessian `H` is `(n, n)` with `H_ij = d2f/dx_i
+          dx_j`; it is symmetric (Clairaut) and equals the Jacobian of `grad f`.
+        explanation: The Hessian is the first-derivative object of the gradient map.
+        concepts: [jacobian, hessian]
+        points: 1
+      - id: ljhp-as-curvature
+        kind: scenario
+        prompt: The Hessian at a minimum has eigenvalues `{1, 1, 400}`. What does this say about the loss surface and about gradient descent?
+        modelAnswer: |
+          The surface is a bowl that is 400 times steeper along one eigenvector than the other two —
+          a narrow curved valley. Condition number `400`, so the largest stable learning rate is
+          about `2/400` and the flat directions then improve by only about `2/400` per step;
+          convergence is slow and gradient descent zig-zags across the steep direction. Momentum or
+          preconditioning is needed.
+        explanation: The eigenvalue ratio is the anisotropy that slows first-order methods.
+        concepts: [condition-number, curvature]
+        points: 1
+      - id: ljhp-as-classify
+        kind: scenario
+        prompt: "`grad f = 0` and the Hessian is positive semidefinite with one zero eigenvalue. What can you conclude?"
+        modelAnswer: |
+          The second-order test is inconclusive. Every direction curves up or is flat, so it is not
+          a maximum or a saddle in the strict sense, but along the zero-eigenvalue direction the
+          behaviour is decided by third- and higher-order terms — it could be a minimum, a ridge, or
+          a degenerate flat valley.
+        explanation: A zero eigenvalue means second order says nothing along that direction.
+        concepts: [critical-point, degenerate]
+        points: 1
+      - id: ljhp-as-newton
+        kind: write-function
+        prompt: Give the Newton step and show it reaches the minimum of `f(x) = 0.5 x^T A x` in one step.
+        modelAnswer: |
+          Newton step `p = -H^{-1} grad f`. For that `f`, `H = A` and `grad f(x) = A x`, so
+          `p = -A^{-1}(A x) = -x` and `x + p = 0`, the minimiser, from any `x`. Newton rescales each
+          eigen-direction by `1/lambda_i`, exactly undoing the curvature.
+        explanation: On an exact quadratic Newton is exact.
+        concepts: [newton-step]
+        points: 1
+      - id: ljhp-as-hvp
+        kind: scenario
+        prompt: How do you compute a Hessian-vector product for a 100M-parameter model, and why does it not need the Hessian?
+        modelAnswer: |
+          `H v = d/dt grad L(theta + t v)` at `t = 0` — the directional derivative of the gradient.
+          Autodiff computes it as forward-over-reverse (a `jvp` of the `grad` function) or a second
+          backward on the scalar `grad L . v`, at the cost of a constant times one gradient and
+          `O(n)` memory. No `n x n` matrix is formed.
+        explanation: The Hessian is the Jacobian of the gradient, and JVPs need no matrix.
+        concepts: [hessian-vector-product]
+        points: 1
+      - id: ljhp-as-hutchinson
+        kind: write-function
+        prompt: Give the Hutchinson estimator for `tr(H)` and explain why it is unbiased.
+        modelAnswer: |
+          Average `v^T (H v)` over random vectors `v` with i.i.d. entries in `{-1, +1}`. Then
+          `E[v^T H v] = sum_{i,j} H_ij E[v_i v_j] = sum_i H_ii = tr(H)`, since `E[v_i v_j]` is 1 on
+          the diagonal and 0 off it.
+        explanation: Rademacher vectors have identity second-moment matrix.
+        concepts: [trace-estimator, hutchinson]
+        points: 1
+      - id: ljhp-as-gauss-newton
+        kind: explain
+        prompt: What is the Gauss-Newton matrix, why is it PSD, and when does it equal the Hessian?
+        modelAnswer: |
+          For `L = 0.5 sum r_k^2`, the Hessian is `J^T J + sum_k r_k H_{r_k}`; Gauss-Newton keeps
+          `G = J^T J`. It is PSD because `x^T J^T J x = ||J x||^2 >= 0`, so `-(G + tau I)^{-1} g` is
+          always a descent direction. It equals the Hessian exactly when all residuals are zero.
+        explanation: Dropping the residual-weighted term leaves a PSD matrix.
+        concepts: [gauss-newton]
+        points: 1
+      - id: ljhp-as-symmetrise
+        kind: find-bug
+        prompt: A classifier uses `np.linalg.eigvals` on a finite-difference Hessian and its verdict flips near boundaries. Why?
+        modelAnswer: |
+          The finite-difference Hessian is only approximately symmetric (rounding in the two mixed-
+          partial estimates), and `eigvals` (nonsymmetric solver) then returns small spurious
+          imaginary parts that break sign comparisons. Symmetrise with `0.5*(H + H.T)` and use
+          `eigvalsh`.
+        explanation: Symmetric input plus the symmetric solver gives real, stable eigenvalues.
+        concepts: [hessian-symmetry, eigvalsh]
+        points: 1
+      - id: ljhp-as-condition-noise
+        kind: find-bug
+        prompt: A report gives the Hessian condition number as `1e13` and calls the problem unsolvable, but training converges. What is wrong?
+        modelAnswer: |
+          Deep-net Hessians have a near-zero bulk plus noise; `w.min()` grabs a flat direction or
+          rounding value, not a real curvature, inflating the ratio. Quote the condition number at
+          the numerical rank — `w.max()` over the smallest eigenvalue above a relative tolerance —
+          and report the spectrum, treating near-zero directions as flat, not fatal.
+        explanation: The literal minimum eigenvalue is not a meaningful curvature.
+        concepts: [condition-number, numerical-rank]
+        points: 1
+      - id: ljhp-as-sharpness
+        kind: scenario
+        prompt: Two models reach the same train loss; one generalises worse. How would you check whether it converged to a sharper minimum?
+        modelAnswer: |
+          Estimate `lambda_max` by power-iteration HVPs and `tr(H)` by Hutchinson at each solution;
+          a larger `lambda_max` or `tr(H)` indicates a sharper minimum. Also perturb the parameters
+          by fixed-radius Gaussian noise and measure the average train-loss increase — it rises
+          faster for a sharper minimum. Correlate with the val gap across seeds; consider SAM or a
+          smaller batch / higher LR to flatten.
+        explanation: Sharpness is measured via curvature estimates and perturbation sensitivity.
+        concepts: [sharpness, generalisation]
+        points: 1
+interview:
+  - id: ljhp-iv-hessian-meaning
+    level: basic
+    requiredForMastery: true
+    concepts: [hessian, curvature, taylor-model]
+    question: What does the Hessian tell you about a function that the gradient does not?
+    shortAnswer: |
+      Curvature. The gradient is the local slope; the Hessian is how that slope changes. Its
+      eigenvalues are the curvatures along its eigenvectors, so it says whether a critical point is a
+      minimum, maximum, or saddle, and how anisotropic the surface is.
+    fullAnswer: |
+      In the second-order Taylor model `f(x + dx) ~ f(x) + grad f . dx + 0.5 dx^T H dx`, the Hessian
+      is the quadratic term. Diagonalising `H = Q diag(lambda) Q^T`, along eigenvector `q_i` the
+      function looks like a parabola of curvature `lambda_i`: positive is a bowl wall, near zero is a
+      flat valley, negative curves down. At a critical point the signs classify it (all positive =
+      min, all negative = max, mixed = saddle, a zero = inconclusive). The ratio `lambda_max /
+      lambda_min` is the condition number that bounds the safe step size and sets how slowly gradient
+      descent converges.
+    commonWrongAnswer: The Hessian is just a bigger gradient.
+    followUps:
+      - How does the condition number of the Hessian affect training speed?
+      - What does a negative Hessian eigenvalue at a critical point mean?
+  - id: ljhp-iv-hvp
+    level: internals
+    requiredForMastery: true
+    concepts: [hessian-vector-product, autodiff, cost]
+    question: How do you get curvature for a large model without forming the Hessian?
+    shortAnswer: |
+      Hessian-vector products. `H v` is the directional derivative of the gradient along `v`,
+      computed by autodiff (forward-over-reverse) at the cost of a constant times one gradient. From
+      HVPs you get `lambda_max` (power iteration), the spectrum (Lanczos), the trace (Hutchinson),
+      and Newton-like steps (CG).
+    fullAnswer: |
+      Because the Hessian is the Jacobian of the gradient, `H v = d/dt grad L(theta + t v)` at
+      `t = 0`, which a framework computes by pushing a tangent `v` through the backward pass or by a
+      second backward on `grad L . v` — `O(n)` memory, one-gradient cost, no matrix. Power iteration
+      on the HVP operator gives the top eigenvalue and eigenvector; a short Lanczos iteration gives a
+      spectrum sketch including the near-zero bulk; the Hutchinson estimator `mean(v^T H v)` over
+      Rademacher `v` gives the trace; and conjugate gradients using only HVPs solves `H p = -g` for a
+      truncated-Newton step. For a guaranteed-PSD surrogate, use the Gauss-Newton matrix or the
+      Fisher information, which similarly need only JVPs and VJPs.
+    commonWrongAnswer: You have to build the Hessian, so it is impossible for big models.
+    followUps:
+      - How does power iteration on the HVP operator work?
+      - Why prefer Gauss-Newton over the true Hessian in an optimiser?
+  - id: ljhp-iv-newton-scale
+    level: scenario
+    requiredForMastery: true
+    concepts: [newton-method, hessian-free, quasi-newton]
+    question: Why do we not use Newton's method directly for large-scale deep learning?
+    shortAnswer: |
+      Forming and inverting the Hessian is `O(n^2)` memory and `O(n^3)` time, and far from the
+      optimum the Hessian is indefinite so the raw Newton step can go uphill. At scale we use
+      Hessian-free CG, quasi-Newton (L-BFGS), or Gauss-Newton / K-FAC approximations, or just
+      first-order methods with adaptive scaling.
+    fullAnswer: |
+      A modern model has `10^8` to `10^12` parameters; an `n x n` Hessian is out of the question, and
+      even a matrix-free exact Newton step needs many HVPs per iteration. Deep-net Hessians are also
+      highly indefinite away from minima (many negative eigenvalues at saddles), so `-H^{-1} g` is
+      often an ascent direction and must be damped or trust-region-constrained. Practical second-order
+      methods are: truncated Newton (a few CG iterations on `H p = -g` via HVPs, with
+      negative-curvature detection); L-BFGS (a low-rank PSD inverse-Hessian estimate from gradient
+      differences, common in full-batch settings); Gauss-Newton / generalised GN and K-FAC (PSD
+      block approximations); and natural gradient (Fisher). In stochastic mini-batch training the
+      curvature estimates are noisy, which further favours cheap diagonal preconditioners like Adam.
+    commonWrongAnswer: Newton is just slower to code, otherwise it would be used.
+    followUps:
+      - How does truncated Newton handle negative curvature?
+      - What does L-BFGS store instead of the Hessian?
+  - id: ljhp-iv-condition-number
+    level: scenario
+    requiredForMastery: true
+    concepts: [condition-number, ill-conditioning, preconditioning]
+    question: How does the condition number of the Hessian affect optimisation, and what reduces it?
+    shortAnswer: |
+      Gradient descent's iteration count scales with `kappa = lambda_max / lambda_min`, and the
+      stable step size is bounded by `2/lambda_max`, so a high `kappa` means slow, zig-zagging
+      progress. Preconditioning, momentum, and adaptive per-coordinate scaling reduce the effective
+      `kappa`.
+    fullAnswer: |
+      On a quadratic with Hessian `H`, steepest descent contracts the error by `(kappa - 1)/(kappa +
+      1)` per step in the worst direction, so `kappa = 1000` needs on the order of a thousand
+      iterations. The steep direction forces a small learning rate (`< 2/lambda_max`), and the flat
+      direction then barely moves. Remedies: momentum / heavy-ball and Nesterov acceleration improve
+      the rate to roughly `sqrt(kappa)`; a preconditioner `M ~ H` transforms the problem to
+      `M^{-1} H ~ I`; diagonal adaptive methods (Adam, RMSProp) approximate a diagonal preconditioner
+      from the running second moment; batch/layer normalisation reshapes the loss so `kappa` is
+      smaller; and a well-chosen parametrisation (weight scaling, residual connections) does the
+      same. K-FAC and natural gradient are block preconditioners.
+    commonWrongAnswer: A high condition number just means you need more epochs, nothing else.
+    followUps:
+      - How does momentum change the dependence on the condition number?
+      - In what sense is Adam a preconditioner?
+  - id: ljhp-iv-sharpness
+    level: advanced
+    requiredForMastery: true
+    concepts: [sharpness, flat-minima, generalisation, sam]
+    question: What is the connection between Hessian-based sharpness and generalisation?
+    shortAnswer: |
+      Empirically, minima with a smaller `lambda_max` or `tr(H)` (flatter) tend to generalise
+      better; sharp minima are more sensitive to parameter and distribution shift. SAM explicitly
+      minimises the worst-case loss in a small parameter ball to seek flat minima.
+    fullAnswer: |
+      A flat minimum has low curvature in most directions, so small parameter perturbations — from
+      the train/test distribution shift, from finite-sample noise, or from quantisation — change the
+      loss little, which is a rough argument for better generalisation. Measures include `lambda_max`
+      (top HVP power iteration), `tr(H)` (Hutchinson), and empirical loss increase under fixed-radius
+      parameter noise. The correlation is real but imperfect: it is not reparametrisation-invariant,
+      and there are counterexamples. Sharpness-Aware Minimisation adds an inner ascent step to
+      approximate `min_theta max_{||eps|| <= rho} L(theta + eps)`, biasing toward flat regions at
+      roughly double the per-step cost. Smaller batches, higher learning rates for longer, weight
+      decay, and augmentation also tend to flatten; larger batches tend to sharpen.
+    commonWrongAnswer: Sharper minima always generalise worse, it is a theorem.
+    followUps:
+      - Why is sharpness not reparametrisation-invariant?
+      - How does SAM change the update rule?
+  - id: ljhp-iv-jacobian-modes
+    level: comparison
+    requiredForMastery: true
+    concepts: [jacobian, forward-mode, reverse-mode]
+    question: How do you compute a Jacobian, and which autodiff mode is cheaper?
+    shortAnswer: |
+      Reverse mode builds it row by row (`m` vector-Jacobian products, one per output); forward mode
+      builds it column by column (`n` Jacobian-vector products, one per input). Use reverse mode when
+      `m < n`, forward mode when `n < m`.
+    fullAnswer: |
+      The full Jacobian of `f: R^n -> R^m` is `m x n`. Reverse mode seeds each output basis vector
+      and back-propagates, so a full Jacobian costs `m` reverse passes; it is ideal for a scalar
+      loss (`m = 1`, one pass = the gradient). Forward mode seeds each input basis vector and pushes
+      forward, costing `n` passes; it is ideal when the output dimension is much larger than the
+      input (e.g. sensitivity of many outputs to a few parameters). For a Jacobian-vector product
+      you only need one forward pass; for a vector-Jacobian product, one reverse pass. Many curvature
+      computations (Gauss-Newton, Fisher) are built from exactly these two primitives without ever
+      forming `J`.
+    commonWrongAnswer: There is only one way to compute a Jacobian.
+    followUps:
+      - How many passes for the Jacobian of a map from `R^3` to `R^1000`?
+      - How is the Gauss-Newton matrix applied to a vector using only JVPs and VJPs?
+projects:
+  - id: ljhp-project-curvature-toolkit
+    kind: major
+    title: Build a matrix-free curvature toolkit
+    minutes: 240
+    summary: Implement an autodiff Hessian-vector product, power iteration and Lanczos for the spectrum, a Hutchinson trace estimator, a critical-point classifier, and a truncated-Newton step with negative-curvature handling, all validated against dense references on small problems.
+    problem: |
+      Build a toolkit that operationalises curvature without forming the Hessian: `hvp(f, x, v)`
+      (autodiff, with a finite-difference fallback and a cross-check); `top_eigen(hvp, n, iters)`
+      (power iteration, returning value, vector, and a convergence proxy); `lanczos(hvp, n, k)` (Ritz
+      values as a spectrum sketch); `hutchinson_trace(hvp, n, samples)`; `classify(hvp_at_critical)`
+      (min / max / saddle / degenerate from a Lanczos spectrum); and `truncated_newton_step(grad,
+      hvp, damping)` (CG on `(H + tau I) p = -g` with negative-curvature bail-out).
+    requirements:
+      - "`hvp` (autodiff) matches a dense `H @ v` within tolerance on small problems, and matches the finite-difference `hvp` within its accuracy."
+      - "`top_eigen` recovers `lambda_max` and its eigenvector for a constructed spectrum, with a reported Rayleigh-quotient convergence proxy."
+      - "`lanczos` Ritz values approximate the extreme eigenvalues of a constructed spectrum."
+      - "`hutchinson_trace` is unbiased: its mean over many runs converges to `tr(H)` with the theoretical variance."
+      - "`classify` labels constructed min / max / saddle / degenerate Hessians correctly, using a tolerance for the zero eigenvalue."
+      - "`truncated_newton_step` returns a descent direction (`g @ p < 0`) even for an indefinite `H`, and allocates no `n x n` array."
+    constraints:
+      - NumPy and the standard library for the core; a small autodiff (from lesson 2) or a framework for the exact HVP.
+      - Never form or invert an `n x n` Hessian in any function meant for scale.
+      - Never use `A^T A` power iteration for a curvature eigenvalue.
+      - Symmetrise any assembled Hessian before an eigenvalue computation and use `eigvalsh`.
+    expectedBehaviour:
+      - Autodiff and finite-difference HVPs agree within the finite-difference accuracy on smooth `f`.
+      - Power iteration converges to `lambda_max` for a well-separated spectrum and reports low confidence for a degenerate top pair.
+      - Lanczos Ritz values bracket the true extremes.
+      - Hutchinson trace error shrinks like `1/sqrt(samples)`.
+      - Truncated Newton solves a well-conditioned quadratic in a few CG steps and bails to the gradient direction on negative curvature.
+    structure: |
+      curvekit/
+        __init__.py
+        hvp.py
+        eigen.py
+        trace.py
+        classify.py
+        newton.py
+      tests/
+        test_hvp.py
+        test_eigen.py
+        test_trace.py
+        test_classify.py
+        test_newton.py
+    milestones:
+      - title: "1 — HVP"
+        detail: Autodiff HVP with a finite-difference fallback and a dense cross-check.
+      - title: "2 — Spectrum"
+        detail: Power iteration for `lambda_max` and Lanczos for a Ritz-value sketch.
+      - title: "3 — Trace and classification"
+        detail: Hutchinson trace with error bars; critical-point classifier from the spectrum.
+      - title: "4 — Truncated Newton"
+        detail: CG on `(H + tau I) p = -g` via HVPs, with damping adaptation and negative-curvature bail-out.
+    testing:
+      - Autodiff HVP versus dense `H @ v` on small problems.
+      - Power-iteration `lambda_max` versus a dense `eigvalsh` on constructed spectra.
+      - Lanczos Ritz values bracketing the extremes.
+      - Hutchinson trace mean and variance versus theory.
+      - Classifier correct on min / max / saddle / degenerate fixtures.
+      - Truncated Newton descent condition on an indefinite fixture; no `n x n` allocation.
+    failureCases:
+      - An assembled Hessian is not symmetrised and `eigvals` returns spurious imaginary parts.
+      - Power iteration uses `A^T A` and returns a singular value instead of a curvature.
+      - The Newton path forms a dense Hessian and runs out of memory.
+      - The classifier uses a strict sign test and flips near a zero eigenvalue.
+    bonus:
+      - Add a Gauss-Newton-vector product built from JVPs and VJPs and compare with the true HVP near and far from a fit.
+      - Add a SAM-style ascent step and measure its effect on a toy sharp minimum.
+      - Emit a curvature report as Markdown.
+    architectureHints:
+      - Represent the HVP as a closure so power iteration, Lanczos, Hutchinson, and CG all share it.
+      - Keep the numerical-rank tolerance in one place for condition-number reporting.
+      - Make `truncated_newton_step` take an `hvp` callable, never a matrix.
+    referenceOutline: |
+      `hvp.autodiff` uses `jvp(grad_fn, (x,), (v,))`. `eigen.top_eigen` iterates `v <- hvp(v);
+      v /= norm(v)` and returns the Rayleigh quotient. `eigen.lanczos` builds a `k x k` tridiagonal
+      from HVPs and takes its eigenvalues. `trace.hutchinson_trace` averages `v @ hvp(v)` over
+      Rademacher `v`. `newton.truncated_newton_step` runs CG with an `(H + tau I)` operator and a
+      curvature check.
+  - id: ljhp-final-sharpness-audit
+    kind: final-challenge
+    title: Explain a generalisation gap with curvature
+    minutes: 90
+    summary: Given two checkpoints at equal training loss with a validation gap, use matrix-free curvature estimates to test the sharp-minimum hypothesis and propose a mitigation, with fail-before-fix measurements.
+    problem: |
+      You have two trained checkpoints A and B at the same training loss; B's validation accuracy is
+      several points lower. You are given a Hessian-vector-product operator for each and a small
+      validation set. Produce an audit that: estimates `lambda_max` (power iteration), a spectrum
+      sketch (Lanczos), and `tr(H)` (Hutchinson) for each checkpoint within a fixed HVP budget;
+      measures the average training-loss increase under fixed-radius Gaussian parameter perturbations
+      for each; tests whether B is at a sharper minimum; and proposes and validates a mitigation
+      (SAM, smaller batch / higher LR, stronger weight decay), showing the validation gap narrows and
+      the sharpness metrics move.
+    requirements:
+      - Estimate `lambda_max`, a Ritz-value spectrum sketch, and `tr(H)` for A and B under a stated HVP budget, with convergence/uncertainty reported.
+      - Quote the effective condition number at the numerical rank, not the literal minimum eigenvalue.
+      - Measure the mean training-loss increase over several perturbation radii for A and B (average over many random directions).
+      - State whether the evidence supports "B is sharper", with the specific numbers.
+      - Apply one mitigation, retrain or fine-tune B, and show the sharpness metrics and the validation gap after, with a fail-before-fix measurement.
+    constraints:
+      - Do not form or eigendecompose a full Hessian.
+      - Do not use `A^T A` power iteration for the curvature eigenvalue.
+      - Do not claim causation from the sharpness correlation; report it as evidence.
+    expectedBehaviour:
+      - The curvature estimates converge within the HVP budget or are flagged low-confidence.
+      - The condition number is finite and meaningful at the numerical rank.
+      - The perturbation curve rises faster for the sharper checkpoint.
+      - After the mitigation, `lambda_max` and/or `tr(H)` for B decrease and the validation gap narrows.
+      - Each claim has a measurement, and the mitigation has a fail-before-fix comparison.
+    milestones:
+      - title: "1 — Curvature estimates"
+        detail: "`lambda_max`, spectrum sketch, and trace for A and B with uncertainty."
+      - title: "2 — Perturbation sensitivity"
+        detail: Mean train-loss increase versus perturbation radius for A and B.
+      - title: "3 — Mitigate and re-measure"
+        detail: Apply SAM or a batch/LR/weight-decay change to B; re-measure sharpness and the val gap.
+    testing:
+      - "Fail-before-fix fixtures record B's pre-mitigation validation gap and its pre-mitigation `lambda_max`."
+      - Hutchinson trace error shrinking with sample count on a synthetic Hessian.
+      - A test that the condition number uses the numerical rank.
+    failureCases:
+      - The power iteration has not converged but its estimate is reported without a caveat.
+      - The condition number is quoted from a near-zero noise eigenvalue.
+      - The mitigation lowers training loss too, confounding the comparison at equal loss.
+    bonus:
+      - Add a Lanczos spectral-density estimate and compare the bulk-plus-outlier shape for A and B.
+    architectureHints:
+      - Freeze B's pre-mitigation val gap and `lambda_max` as fixtures first.
+      - Keep estimation, perturbation measurement, and mitigation in separate commits.
+    referenceOutline: |
+      Power iteration: `v <- hvp(v); v /= norm(v)`, Rayleigh quotient for `lambda_max`. Lanczos:
+      `k`-step tridiagonalisation from HVPs, eigenvalues as Ritz values. Hutchinson:
+      `mean(v @ hvp(v))` over Rademacher `v`. Perturbation curve: for each radius `r`, average
+      `L_train(theta + r * u) - L_train(theta)` over unit-Gaussian directions `u`.
+resources:
+  - name: "3Blue1Brown — Taylor series and the second-order picture"
+    type: video
+    difficulty: intro
+    url: "https://www.3blue1brown.com/lessons/taylor-series"
+    usefulness: 4
+    why: It builds the quadratic approximation of a function and the meaning of the second-derivative term, which in several variables is the Hessian and its curvature interpretation used here.
+    covers: The first- and second-order Taylor approximation, the role of the second derivative as curvature, and the multivariable generalisation.
+  - name: "Nocedal and Wright — Numerical Optimization (Chapters 3, 6, 7)"
+    type: book
+    difficulty: deep
+    url: "https://link.springer.com/book/10.1007/978-0-387-40065-5"
+    usefulness: 5
+    why: It covers Newton and quasi-Newton methods, the Hessian's role in step-size and convergence-rate analysis, damping and trust regions for indefinite Hessians, and Hessian-free / truncated-Newton CG.
+    covers: The second-order model, Newton's method and its modifications, condition number and convergence rates, L-BFGS, and truncated-Newton with CG.
+  - name: "Pearlmutter — Fast Exact Multiplication by the Hessian"
+    type: article
+    difficulty: deep
+    url: "https://direct.mit.edu/neco/article/6/1/147/5776/Fast-Exact-Multiplication-by-the-Hessian"
+    usefulness: 5
+    why: The original method for computing `H v` at the cost of a gradient without forming `H`, which is the basis of every modern Hessian-free and curvature-monitoring technique.
+    covers: The R-operator, exact Hessian-vector products via an augmented forward/backward pass, and applications to second-order optimisation.
+  - name: "Ghorbani, Krishnan, Xiao — An Investigation into Neural Net Optimization via Hessian Eigenvalue Density"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1901.10159"
+    usefulness: 4
+    why: It shows how the deep-network Hessian spectrum (a near-zero bulk plus a few large outliers) is estimated with stochastic Lanczos on HVPs and what its shape implies for step size and conditioning.
+    covers: Stochastic Lanczos quadrature for the Hessian spectral density, outlier eigenvalues, the near-zero bulk, and implications for optimisation.
+  - name: "Foret, Kleiner, Mobahi, Neyshabur — Sharpness-Aware Minimization"
+    type: article
+    difficulty: core
+    url: "https://arxiv.org/abs/2010.01412"
+    usefulness: 4
+    why: It formalises sharpness via the worst-case loss in a parameter ball, connects it to the Hessian and to generalisation, and gives the SAM update — the mitigation this lesson references.
+    covers: The min-max sharpness objective, its relation to the Hessian, the SAM gradient approximation, and empirical generalisation gains.

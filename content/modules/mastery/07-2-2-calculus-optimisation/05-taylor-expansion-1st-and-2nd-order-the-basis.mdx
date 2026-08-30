@@ -1,0 +1,387 @@
+---
+id: "roadmap:phase-2-2.2:4"
+title: "Taylor expansion (1st and 2nd order) — the basis of every optimiser"
+description: The local polynomial model of a function — linear (gradient) and quadratic (gradient plus Hessian) — with its remainder term. Minimising the linear model gives gradient descent; minimising the quadratic model gives Newton; the remainder is why the step size is bounded.
+module: 2-2-calculus-optimisation
+order: 5
+estimatedMinutes: 110
+prerequisites: []
+learningObjectives:
+  - Write the first- and second-order multivariate Taylor expansions with the remainder and state how the error scales with step size
+  - Derive gradient descent as minimising the linear model over a trust ball and Newton as minimising the quadratic model
+  - Use the descent lemma (L-smoothness) to justify the learning rate bound η ≤ 1/L and backtracking line search
+  - Explain when the quadratic model is unreliable and how a trust region adapts to that
+---
+
+Every optimiser is a rule for choosing a step, and every such rule comes from replacing the function
+near the current point with a low-degree polynomial and minimising that. Gradient descent uses the
+linear (first-order) model; Newton and trust-region methods use the quadratic (second-order) model.
+
+The remainder term — everything the polynomial omits — is not a nuisance to ignore. It is exactly
+what bounds how far you can trust the model, which is where the learning rate comes from.
+
+<TypeScriptComparison>
+
+- The first-order Taylor polynomial `f(a) + f'(a)*(x - a)` is the tangent-line function you already plot; the second-order one adds `+ 0.5*f''(a)*(x - a)**2`.
+- A backtracking line search is a `while` loop in any language: halve the step until `f(x + t*p) <= f(x) + c*t*(∇f·p)`.
+- Neither language gives you the Lagrange remainder; you bound it with a Lipschitz constant `L` you estimate empirically (largest observed `||∇f(x) - ∇f(y)|| / ||x - y||`).
+- `math.expm1(x)` / `Math.expm1` exist precisely because the naive `exp(x) - 1` loses precision for small `x` — a numerically careful use of `exp(x) ≈ 1 + x + x²/2`.
+
+</TypeScriptComparison>
+
+## The expansions
+
+Single variable, with the Lagrange remainder:
+`f(x + h) = f(x) + f'(x) h + ½ f''(x) h² + ... + (1/k!) f⁽ᵏ⁾(ξ) hᵏ` for some `ξ` between `x` and
+`x + h`.
+
+Multivariate, to second order:
+`f(x + p) = f(x) + ∇f(x)·p + ½ pᵀ H(x) p + R(p)`,
+with `R(p) = o(||p||²)` (and `R(p) = O(||p||³)` if `f` is `C³`). The linear part is the tangent
+plane; the quadratic part adds curvature.
+
+```python
+import numpy as np
+
+def f(x): return np.sin(x[0]) * x[1]**2
+x0 = np.array([0.5, 1.0])
+grad = np.array([np.cos(x0[0]) * x0[1]**2, 2 * np.sin(x0[0]) * x0[1]])
+H = np.array([[-np.sin(x0[0]) * x0[1]**2, 2 * np.cos(x0[0]) * x0[1]],
+              [2 * np.cos(x0[0]) * x0[1], 2 * np.sin(x0[0])]])
+
+for scale in (1e-1, 1e-2, 1e-3):
+    p = scale * np.array([1.0, -1.0])
+    lin = f(x0) + grad @ p
+    quad = lin + 0.5 * p @ H @ p
+    e_lin = abs(f(x0 + p) - lin)
+    e_quad = abs(f(x0 + p) - quad)
+    # linear error ~ scale**2, quadratic error ~ scale**3
+    assert e_quad < e_lin
+```
+
+## Gradient descent = minimise the linear model in a ball
+
+The linear model `m₁(p) = f(x) + ∇f(x)·p` has no minimum (it decreases forever along `−∇f`). Add a
+trust constraint `||p|| ≤ Δ`: the minimiser is `p = −Δ · ∇f/||∇f||`, and writing `Δ/||∇f|| = η`
+gives the familiar `p = −η ∇f`.
+
+So a gradient step is "go as far as I trust the tangent plane, straight downhill". The learning
+rate `η` is the size of the region where the linear model is a good enough guide.
+
+```python
+def grad_step(x, grad_f, eta):
+    return x - eta * grad_f(x)
+```
+
+## Newton = minimise the quadratic model exactly
+
+The quadratic model `m₂(p) = f(x) + ∇f·p + ½ pᵀ H p` has a stationary point where its gradient
+`∇f + H p = 0`, i.e. `p = −H⁻¹ ∇f` — the Newton step. If `H` is positive definite this is the
+model's minimum, and on an exact quadratic it is the true minimum in one step.
+
+When `H` is indefinite the quadratic model has no minimum, so practical methods either add a
+multiple of the identity (`(H + τI)⁻¹`, Levenberg–Marquardt) or minimise `m₂` subject to `||p|| ≤ Δ`
+(a trust region), which stays well-defined regardless of curvature.
+
+```python
+def newton_step(grad, H, tau=0.0):
+    n = grad.shape[0]
+    return -np.linalg.solve(H + tau * np.eye(n), grad)
+```
+
+## The remainder gives the learning rate
+
+Suppose `∇f` is `L`-Lipschitz: `||∇f(x) − ∇f(y)|| ≤ L ||x − y||`. Then the **descent lemma** bounds
+the remainder of the *linear* model:
+
+`f(x + p) ≤ f(x) + ∇f(x)·p + (L/2) ||p||²`.
+
+Substitute the gradient step `p = −η ∇f`:
+`f(x − η∇f) ≤ f(x) − η(1 − Lη/2) ||∇f||²`. The right side decreases as long as `0 < η < 2/L`, and
+the guaranteed decrease per step is largest at `η = 1/L`. That is where "set the learning rate to
+about `1/L`" comes from — `L` is roughly `λ_max(H)`.
+
+```python
+# empirical L: largest observed gradient-Lipschitz ratio
+def estimate_L(grad_f, xs):
+    ratios = []
+    for a, b in zip(xs[:-1], xs[1:]):
+        ratios.append(np.linalg.norm(grad_f(a) - grad_f(b)) / (np.linalg.norm(a - b) + 1e-12))
+    return max(ratios)
+```
+
+<Concept>
+
+First order tells you the direction and a rate; second order tells you how big a step that rate
+survives. Optimisers differ in how much of the Taylor model they use and how they bound the
+remainder — a fixed `η ≈ 1/L`, a line search, or an adaptive trust radius.
+
+</Concept>
+
+## Line search: model the 1-D restriction
+
+Restrict `f` to the ray `φ(t) = f(x + t p)`. Its Taylor expansion is `φ(t) = f(x) + t (∇f·p) +
+½ t² (pᵀ H p) + ...`. A backtracking (Armijo) line search accepts the first `t` in a shrinking
+sequence for which
+
+`φ(t) ≤ φ(0) + c₁ t φ'(0)`, with `φ'(0) = ∇f·p` and `c₁` small (e.g. `1e-4`).
+
+This is "take a step that achieves at least a fixed fraction of the decrease the linear model
+promised". Adding a curvature (Wolfe) condition `|φ'(t)| ≤ c₂ |φ'(0)|` prevents steps that are too
+short.
+
+```python
+def backtracking(f, x, p, grad, c1=1e-4, rho=0.5, t=1.0):
+    f0, slope = f(x), grad @ p
+    while f(x + t * p) > f0 + c1 * t * slope:
+        t *= rho
+    return t
+```
+
+## When the quadratic model is bad
+
+The quadratic model is exact for a quadratic and good in a neighbourhood whose size shrinks as the
+third derivative grows. Far from the optimum, near a sharp ridge, or where the loss has a plateau
+then a cliff, `m₂` can predict a decrease and deliver an increase.
+
+A **trust region** handles this adaptively: solve `min m₂(p) s.t. ||p|| ≤ Δ`, then compare the
+actual decrease to the predicted one via the ratio `ρ = (f(x) − f(x + p)) / (m₂(0) − m₂(p))`. If
+`ρ` is close to 1 the model is good — accept the step and grow `Δ`; if `ρ` is small or negative,
+reject the step and shrink `Δ`.
+
+```python
+def trust_ratio(f, x, p, m2_pred_decrease):
+    actual = f(x) - f(x + p)
+    return actual / (m2_pred_decrease + 1e-30)
+```
+
+<WhyItMatters>
+
+`η ≈ 1/L` (or `η < 2/λ_max`) is the Taylor-remainder bound in disguise, and warmup exists partly
+because `L` is large early in training. Backtracking and Wolfe line searches are Taylor conditions.
+Trust-region and cubic-regularised Newton are what you use when the plain quadratic model
+overreaches, as it does around the saddles and sharp curvature of deep-net losses.
+
+</WhyItMatters>
+
+## Doing this in floating point
+
+Truncating the series introduces a *truncation error* that shrinks with the step (`O(hᵏ⁺¹)` for a
+degree-`k` model); evaluating the polynomial introduces *rounding error*. For tiny steps the
+rounding error wins, which is the same trade-off as finite differences.
+
+For specific functions, use the numerically stable specialised form of the low-order expansion:
+`expm1(x)` for `exp(x) − 1`, `log1p(x)` for `log(1 + x)`, and the log-sum-exp trick for
+`log Σ exp(x_i)` (its own lesson, 13). Naively evaluating `exp(x) − 1` for `x ≈ 1e-8` loses eight
+digits.
+
+<ProductionNote>
+
+If training diverges after a learning-rate increase, you crossed the `2/L` boundary — the linear
+model's remainder overwhelmed the promised decrease. Lower `η`, add warmup, or clip. If a
+second-order method takes a bad step, check the trust ratio `ρ`; a small or negative `ρ` means the
+quadratic model overreached and `Δ` (or `τ`) should increase.
+
+</ProductionNote>
+
+## Cost
+
+Evaluating the linear model is one gradient. The quadratic model needs the Hessian action: one HVP
+per `pᵀ H p`, or a full solve for the Newton step. A backtracking line search costs one extra `f`
+evaluation per halving (usually 1–5). A trust-region subproblem is a small iterative solve (a few
+HVPs) per outer step.
+
+## Exercises
+
+<Exercise id="lte-taylor-scalar" difficulty="easy">
+
+Write the second-order Taylor expansion of `f(x) = ln(x)` about `x = 1`, and use it to estimate
+`ln(1.2)`. Compare to the true value.
+
+<Solution>
+
+`f(1) = 0`. `f'(x) = 1/x`, so `f'(1) = 1`. `f''(x) = −1/x²`, so `f''(1) = −1`.
+
+Second-order polynomial: `ln(x) ≈ 0 + 1·(x − 1) + ½·(−1)·(x − 1)² = (x − 1) − ½(x − 1)²`.
+
+At `x = 1.2`: `(0.2) − ½(0.04) = 0.2 − 0.02 = 0.18`. True `ln(1.2) ≈ 0.18232`, so the error is about
+`0.0023`, roughly `(0.2)³/3 = 0.0027` as the `O(h³)` remainder predicts.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lte-gd-from-linear-model" difficulty="medium">
+
+Derive the gradient-descent step by minimising the first-order model over `||p|| ≤ Δ`, and show the
+learning rate is `Δ/||∇f||`.
+
+<Solution>
+
+The model is `m₁(p) = f(x) + ∇f·p`. Minimise `∇f·p` subject to `||p|| ≤ Δ`. By Cauchy–Schwarz,
+`∇f·p ≥ −||∇f|| ||p|| ≥ −||∇f|| Δ`, with equality when `p` points exactly opposite to `∇f` and has
+maximal length: `p = −Δ ∇f/||∇f||`.
+
+Write `p = −η ∇f`; matching magnitudes, `η ||∇f|| = Δ`, so `η = Δ/||∇f||`. The trust radius `Δ` and
+the learning rate `η` are two names for the same quantity, related by the current gradient norm. A
+constant `η` therefore corresponds to a trust radius that scales with `||∇f||`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lte-descent-lemma" difficulty="hard">
+
+Assume `∇f` is `L`-Lipschitz. Prove the descent lemma
+`f(y) ≤ f(x) + ∇f(x)·(y − x) + (L/2)||y − x||²`, and use it to find the `η` that maximises the
+guaranteed decrease of a gradient step.
+
+<Solution>
+
+Let `p = y − x` and `g(t) = f(x + t p)` for `t ∈ [0, 1]`, so `g'(t) = ∇f(x + t p)·p`. Then
+
+`f(y) − f(x) = g(1) − g(0) = ∫₀¹ g'(t) dt = ∫₀¹ ∇f(x + t p)·p dt`.
+
+Add and subtract `∇f(x)·p`:
+`f(y) − f(x) = ∇f(x)·p + ∫₀¹ (∇f(x + t p) − ∇f(x))·p dt`.
+
+Bound the integral by Cauchy–Schwarz and Lipschitz:
+`|(∇f(x + t p) − ∇f(x))·p| ≤ L ||t p|| · ||p|| = L t ||p||²`, so
+`∫₀¹ ... dt ≤ L ||p||² ∫₀¹ t dt = (L/2) ||p||²`. This gives the descent lemma.
+
+Now put `y = x − η ∇f`, so `p = −η ∇f`:
+`f(x − η∇f) ≤ f(x) − η ||∇f||² + (L/2) η² ||∇f||² = f(x) − η(1 − Lη/2) ||∇f||²`.
+
+The coefficient `η(1 − Lη/2)` is a downward parabola in `η`, maximised at `η = 1/L`, giving a
+guaranteed decrease of `(1/(2L)) ||∇f||²`. The step stays a descent step for any `η ∈ (0, 2/L)`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lte-interview-lr" difficulty="interview">
+
+In an interview: "How would you pick a learning rate for a new model, and why does warmup exist?"
+
+<Solution>
+
+The principled target is `η ≈ 1/L`, where `L` is the Lipschitz constant of the gradient —
+essentially the largest curvature, `λ_max(H)`. The descent lemma says a gradient step is guaranteed
+to decrease the loss for `η ∈ (0, 2/L)` and decreases it most at `1/L`; above `2/L` the linear
+model's remainder can overwhelm the predicted decrease and training diverges.
+
+In practice you estimate the scale, not `L` exactly: a learning-rate range test (increase `η`
+geometrically for a few hundred steps and watch where the loss stops improving / starts blowing up),
+or the largest `η` for which a short run is stable. Adaptive methods (Adam) fold a per-coordinate
+`1/sqrt(E[g²])` scaling into the step, so their nominal `η` is more forgiving.
+
+Warmup exists because `L` is not constant. Early in training the parameters are far from any good
+region, the Hessian's top eigenvalue is large and volatile, and a big step immediately violates
+`2/L`.
+
+Ramping `η` from near zero over the first hundreds to thousands of steps keeps steps inside the
+trust region until the curvature settles, after which the main schedule (often cosine decay) takes
+over. Large-batch training needs longer warmup because less gradient noise lets the curvature bite
+sooner.
+
+</Solution>
+</Exercise>
+
+<Exercise id="lte-trust-region-real-world" difficulty="real-world">
+
+A second-order optimiser you wrote (quadratic model, Newton step with damping `τ`) sometimes takes a
+step that *increases* the loss. Redesign the step acceptance using Taylor-model reasoning.
+
+<Solution>
+
+The quadratic model `m₂(p) = f + g·p + ½ pᵀ H p` is only trustworthy in a neighbourhood, and a
+Newton step can leave it — especially far from the optimum, at a saddle where `H` is indefinite, or
+where the third derivative is large. Blindly applying the step is the bug.
+
+Wrap the step in a trust-region loop:
+
+1. Compute the step `p` by (approximately) minimising `m₂(p)` subject to `||p|| ≤ Δ` — either a
+   dogleg/CG-Steihaug subproblem or, cheaply, the damped Newton step `−(H + τI)⁻¹ g` with `τ` tied
+   to `Δ`.
+2. Evaluate the ratio `ρ = (f(x) − f(x + p)) / (m₂(0) − m₂(p))` — actual decrease over predicted
+   decrease.
+3. Accept `p` only if `ρ > η₁` (e.g. `0.1`). Update the radius: if `ρ > 0.75` and the step hit the
+   boundary, `Δ ← 2Δ`; if `ρ < 0.25`, `Δ ← Δ/4`; otherwise keep `Δ`.
+4. If the step is rejected, `x` is unchanged and the loop retries with the smaller `Δ`.
+
+This guarantees monotone decrease (rejected steps do nothing), self-tunes `Δ` to the region where
+the model is accurate, and handles indefinite `H` because the constrained subproblem always has a
+solution. Also detect negative curvature inside the subproblem solver and follow it to the boundary
+rather than inverting an indefinite matrix. Add a minimum `Δ` and a failure exit so a pathological
+region cannot loop forever.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Write the second-order multivariate Taylor expansion with its remainder, and how the linear and
+   quadratic errors scale with `||p||`.
+2. How does minimising the linear model over `||p|| ≤ Δ` produce the gradient step, and what is `η`
+   in trust-region terms?
+3. Give the Newton step as the minimiser of the quadratic model, and what to do when `H` is
+   indefinite.
+4. State the descent lemma and the `η` it recommends.
+5. What does the trust ratio `ρ` measure, and how does it drive the radius?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="The first-order Taylor model has a minimum I can step to.">
+
+It does not — a nonzero linear function decreases without bound. You need a trust constraint
+(`||p|| ≤ Δ`) or a regulariser to get a finite step; that constraint is what the learning rate
+encodes.
+
+</Gotcha>
+
+<Gotcha question="The Newton step always goes toward the minimum.">
+
+Only when `H` is positive definite and the quadratic model is accurate. With indefinite `H` the
+quadratic model has no minimum and `−H⁻¹∇f` can point uphill. Use damping or a trust region.
+
+</Gotcha>
+
+<Gotcha question="If `η < 2/L` I am guaranteed to converge.">
+
+The descent lemma guarantees the loss *decreases* each step for `η ∈ (0, 2/L)`, not that you reach
+the global minimum — that also needs convexity (or a PL/gradient-dominance condition). And `L` is
+usually estimated, so leave margin.
+
+</Gotcha>
+
+<Gotcha question="A bigger trust radius means faster progress.">
+
+Only while the model stays accurate. Grow `Δ` only when the trust ratio `ρ` is near 1; if `ρ` is
+small or negative the model overreached and `Δ` must shrink, or you take a step that increases the
+loss.
+
+</Gotcha>
+
+<Gotcha question="`exp(x) - 1` for small `x` is fine, it's just `x` to first order.">
+
+The *math* is fine; the *computation* is not. `exp(1e-8)` rounds to `1.00000001`, and subtracting 1
+keeps only a few digits. Use `expm1(x)`, which evaluates the series stably.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Near a point, `f(x + p) = f(x) + ∇f·p + ½ pᵀ H p + R(p)`, with `R(p) = O(||p||³)` for a `C³`
+function. Minimising the linear part over a trust ball gives the gradient step `p = −η∇f`;
+minimising the quadratic part gives the Newton step `p = −H⁻¹∇f`, damped or trust-constrained when
+`H` is indefinite.
+
+The remainder is what bounds the step. If `∇f` is `L`-Lipschitz, the descent lemma gives
+`f(x − η∇f) ≤ f(x) − η(1 − Lη/2)||∇f||²`, so the loss decreases for `η ∈ (0, 2/L)` and decreases
+most at `η = 1/L` — the origin of "set `η` to about `1/λ_max`" and of warmup. Line searches (Armijo,
+Wolfe) and trust regions (via the ratio `ρ`) enforce the Taylor conditions adaptively.
+
+Use numerically stable low-order expansions (`expm1`, `log1p`, log-sum-exp) where they apply. The
+Practice, Debug, Interview, Test, Project, and Review tabs build the models, the descent lemma, a
+line search, and a trust-region loop.

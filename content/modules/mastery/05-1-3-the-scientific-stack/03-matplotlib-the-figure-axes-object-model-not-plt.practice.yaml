@@ -1,0 +1,396 @@
+lessonId: "roadmap:phase-1-1.3:2"
+module: 1-3-the-scientific-stack
+lesson: 03-matplotlib-the-figure-axes-object-model-not-plt
+title: "matplotlib Figure/Axes object model"
+summary: Practise explicit object ownership, transforms, scales, layout, accessibility, and deterministic export.
+mastery: {minAssessmentScore: 80, requireProject: true, requireInterview: true, requireDebug: true, revisitAfterDays: 21}
+
+exercises:
+  - id: mpl-create-objects
+    tier: normal
+    kind: write-code
+    title: Create explicit plot objects
+    minutes: 8
+    requiredForMastery: true
+    concepts: [Figure, Axes]
+    prompt: Create one Figure and Axes, draw x against y, and label both axes.
+    hints: [Use plt.subplots as a constructor., Call methods on ax.]
+    solution: Hold both objects explicitly so later layout, rendering, and cleanup target known owners.
+    solutionCode: |
+      fig, ax = plt.subplots()
+      ax.plot(x, y)
+      ax.set(xlabel="Time (s)", ylabel="Power (W)")
+
+  - id: mpl-object-tree
+    tier: normal
+    kind: code-reading
+    title: Read the artist hierarchy
+    minutes: 9
+    requiredForMastery: true
+    concepts: [Artist, Axis]
+    prompt: Explain what objects are returned by fig, ax = plt.subplots() and (line,) = ax.plot(x, y).
+    hints: [Separate canvas from coordinate system., A visible line is an Artist.]
+    solution: fig owns the overall canvas, ax owns one plotting coordinate system and its x/y Axis objects, and line is a Line2D Artist attached to that Axes.
+
+  - id: mpl-reusable-helper
+    tier: normal
+    kind: refactor
+    title: Refactor a plotting helper
+    minutes: 11
+    requiredForMastery: true
+    concepts: [composition, dependency]
+    prompt: Refactor a helper that creates a figure, calls plt.plot, saves, and shows so it composes in dashboards.
+    hints: [Let the caller own lifecycle., Accept the destination object.]
+    solution: Accept an Axes, draw and return useful Artists; the caller creates layout, adds shared context, saves, shows, and closes.
+    solutionCode: |
+      def draw_power(ax, x, y):
+          (line,) = ax.plot(x, y, label="Power")
+          ax.set_ylabel("Power (W)")
+          return line
+
+  - id: mpl-fixed-label
+    tier: normal
+    kind: write-code
+    title: Place a panel label
+    minutes: 9
+    requiredForMastery: true
+    concepts: [transform, axes-coordinates]
+    prompt: Place A in the upper-left corner so zooming data does not move it.
+    hints: [Use coordinates relative to the Axes rectangle., Supply the transform explicitly.]
+    solution: Axes coordinates remain fixed from zero to one as data limits change.
+    solutionCode: |
+      ax.text(0.02, 0.98, "A", transform=ax.transAxes, ha="left", va="top")
+
+  - id: mpl-shared-layout
+    tier: intermediate
+    kind: write-code
+    title: Compose shared-x panels
+    minutes: 13
+    requiredForMastery: true
+    concepts: [subplots, shared-axis, layout]
+    prompt: Create two vertically stacked panels sharing time on x with constrained layout.
+    hints: [Pass row and column counts to subplots., Sharing is a constructor option.]
+    solution: The two Axes share the same x view while retaining independent y units and labels.
+    solutionCode: |
+      fig, axes = plt.subplots(2, 1, sharex=True, layout="constrained")
+      axes[0].set_ylabel("Power (W)")
+      axes[1].set(xlabel="Time (s)", ylabel="Voltage (V)")
+
+  - id: mpl-log-policy
+    tier: intermediate
+    kind: design
+    title: Define logarithmic scale behavior
+    minutes: 14
+    requiredForMastery: true
+    concepts: [log-scale, domain]
+    prompt: A positive metric spans six orders of magnitude but includes zeros from offline devices. Design the plot policy.
+    hints: [Logarithms do not accept zero., Offline may be a category rather than a tiny magnitude.]
+    solution: Separate or annotate offline observations, validate positive plotted values, use a log scale for magnitude, and state filtering or alternative symmetric-log policy instead of adding an arbitrary epsilon.
+
+  - id: mpl-tick-format
+    tier: intermediate
+    kind: design
+    title: Configure honest ticks
+    minutes: 12
+    requiredForMastery: true
+    concepts: [locator, formatter]
+    prompt: Replace unreadable timestamp labels without manually setting a list of strings.
+    hints: [Tick positions and text are separate responsibilities., Date axes have dedicated locators.]
+    solution: Configure a date locator and matching formatter, reduce tick density, and let them respond to limits; avoid labels detached from tick positions.
+
+  - id: mpl-accessible-series
+    tier: intermediate
+    kind: refactor
+    title: Add redundant encodings
+    minutes: 12
+    requiredForMastery: true
+    concepts: [accessibility, color, line-style]
+    prompt: Two critical series differ only by red and green. Improve accessibility.
+    hints: [Color should not carry the only distinction., Add direct semantic labels.]
+    solution: Use a colorblind-safe palette plus different line styles or markers, readable contrast, a clear legend or direct labels, and text describing the result.
+
+  - id: mpl-current-axes-bug
+    tier: tricky
+    kind: debug
+    title: Fix a misplaced title
+    minutes: 14
+    requiredForMastery: true
+    concepts: [pyplot-state, Axes]
+    prompt: In a two-panel figure, plt.title("Voltage") labels the wrong panel. Fix the ownership bug.
+    hints: [The current Axes may have changed., Target the panel reference directly.]
+    solution: Replace the state-machine call with voltage_ax.set_title("Voltage"); keep explicit Axes variables throughout composition.
+
+  - id: mpl-ticklabel-bug
+    tier: tricky
+    kind: debug
+    title: Repair detached tick labels
+    minutes: 15
+    requiredForMastery: true
+    concepts: [ticks, locator, formatter]
+    prompt: ax.set_xticklabels(names) warns and labels drift after zooming. Repair it.
+    hints: [Labels need matching locations., Use a locator/formatter or categorical positions together.]
+    solution: Define fixed positions and labels together for truly fixed categories, or install an appropriate formatter/locator so tick text remains coupled to the scale.
+
+  - id: mpl-figure-leak-bug
+    tier: tricky
+    kind: debug
+    title: Stop batch memory growth
+    minutes: 14
+    requiredForMastery: true
+    concepts: [lifecycle, close, batch]
+    prompt: A report worker saves thousands of plots and its memory grows continuously.
+    hints: [Saving does not release the Figure., pyplot retains registered figures.]
+    solution: Create each Figure inside a bounded iteration, save through fig.savefig, release large data references, and call plt.close(fig) in a guaranteed cleanup path.
+
+  - id: mpl-dual-axis-risk
+    tier: tricky
+    kind: explain
+    title: Challenge a dual y-axis
+    minutes: 16
+    requiredForMastery: false
+    concepts: [dual-axis, visual-integrity]
+    prompt: Explain how independent y limits can manufacture apparent correlation and propose alternatives.
+    hints: [Each scale can be tuned independently., Shared position suggests comparability.]
+    solution: Arbitrary limits can align unrelated slopes or peaks. Prefer aligned small multiples, normalized values with explicit meaning, or a table; use twin axes only with strong justification and unmistakable labels.
+
+  - id: mpl-export-contract
+    tier: challenge
+    kind: design
+    title: Specify deterministic export
+    minutes: 22
+    requiredForMastery: false
+    concepts: [backend, dpi, vector, reproducibility]
+    prompt: Define a headless export contract for reports generated in CI.
+    hints: [Size and DPI determine raster dimensions., Fonts and styles affect layout.]
+    solution: Pin Matplotlib and fonts, use a noninteractive backend, scoped styles, fixed figure size and DPI, deterministic data/seeds, explicit vector or raster format, metadata policy, save through Figure, and close it.
+
+  - id: mpl-visual-test
+    tier: challenge
+    kind: performance
+    title: Design plot verification
+    minutes: 25
+    requiredForMastery: false
+    concepts: [testing, artists, image-diff]
+    prompt: Test a complex plot without making every harmless antialiasing difference fail CI.
+    hints: [Test semantics before pixels., Image tests should be selective and controlled.]
+    solution: Assert prepared data, labels, limits, scales, line counts, and series coordinates first; add a pinned-environment image comparison only for critical layout with a justified tolerance.
+
+quizzes:
+  - id: mpl-checkpoint
+    title: Matplotlib checkpoint
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: mpl-cp-canvas
+        kind: mcq
+        prompt: Which object owns the whole canvas?
+        options: [{id: mpl-cp-canvas-fig, text: Figure}, {id: mpl-cp-canvas-axis, text: Axis}]
+        answer: [mpl-cp-canvas-fig]
+        explanation: Figure is the top-level rendering container.
+        concepts: [Figure]
+      - id: mpl-cp-data
+        kind: mcq
+        prompt: Which transform maps data coordinates to display space?
+        options: [{id: mpl-cp-data-trans, text: ax.transData}, {id: mpl-cp-data-axes, text: ax.transAxes}]
+        answer: [mpl-cp-data-trans]
+        explanation: transData includes scales and view limits.
+        concepts: [transforms]
+      - id: mpl-cp-helper
+        kind: mcq
+        prompt: What should a reusable plotting helper usually accept?
+        options: [{id: mpl-cp-helper-ax, text: Axes}, {id: mpl-cp-helper-current, text: hidden current state}]
+        answer: [mpl-cp-helper-ax]
+        explanation: Explicit Axes ownership makes composition predictable.
+        concepts: [composition]
+      - id: mpl-cp-close
+        kind: true-false
+        prompt: Saving a Figure automatically closes it.
+        options: [{id: mpl-cp-close-true, text: "true"}, {id: mpl-cp-close-false, text: "false"}]
+        answer: [mpl-cp-close-false]
+        explanation: Batch code must close figures explicitly.
+        concepts: [lifecycle]
+
+  - id: mpl-assessment
+    title: Matplotlib mastery assessment
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: mpl-as-axis
+        kind: explain
+        prompt: Distinguish Axes from Axis.
+        modelAnswer: Axes is one plotting coordinate system; each x or y Axis manages its scale, ticks, and tick labels.
+        explanation: The singular names refer to different levels of the object tree.
+        concepts: [hierarchy]
+      - id: mpl-as-artist
+        kind: mcq
+        prompt: Which is an Artist?
+        options: [{id: mpl-as-artist-line, text: Line2D}, {id: mpl-as-artist-array, text: NumPy dtype}]
+        answer: [mpl-as-artist-line]
+        explanation: Visible scene elements derive from Artist.
+        concepts: [Artist]
+      - id: mpl-as-coords
+        kind: scenario
+        prompt: Which coordinates keep a watermark in one Axes corner?
+        modelAnswer: Axes coordinates using ax.transAxes, typically values between zero and one.
+        explanation: They remain fixed relative to the Axes rectangle.
+        concepts: [transforms]
+      - id: mpl-as-bars
+        kind: explain
+        prompt: Why is truncating a bar-chart baseline risky?
+        modelAnswer: Bar length encodes magnitude from a baseline, so truncation exaggerates small differences and must be avoided or unmistakably justified.
+        explanation: Visual geometry is part of quantitative meaning.
+        concepts: [integrity]
+      - id: mpl-as-share
+        kind: mcq
+        prompt: When should panels share a y-axis?
+        options: [{id: mpl-as-share-same, text: same units and comparable scale}, {id: mpl-as-share-any, text: whenever both contain numbers}]
+        answer: [mpl-as-share-same]
+        explanation: Shared coordinates imply direct comparability.
+        concepts: [layout]
+      - id: mpl-as-ticks
+        kind: explain
+        prompt: Distinguish locator and formatter.
+        modelAnswer: A locator chooses tick positions; a formatter converts those positions into displayed text.
+        explanation: Configuring only labels can detach them from the scale.
+        concepts: [ticks]
+      - id: mpl-as-vector
+        kind: mcq
+        prompt: Which format best preserves lines and text as vectors?
+        options: [{id: mpl-as-vector-svg, text: SVG}, {id: mpl-as-vector-png, text: PNG}]
+        answer: [mpl-as-vector-svg]
+        explanation: SVG retains vector paths while PNG is raster.
+        concepts: [export]
+      - id: mpl-as-pixels
+        kind: predict-output
+        prompt: Approximate pixels for a 6 by 4 inch Figure saved at 150 DPI.
+        modelAnswer: About 900 by 600 pixels before bounding-box adjustments.
+        explanation: Raster dimensions are inches multiplied by dots per inch.
+        concepts: [dpi]
+      - id: mpl-as-access
+        kind: scenario
+        prompt: How should two critical categories differ besides color?
+        modelAnswer: Use line style, marker, position, direct label, or another redundant encoding and provide textual interpretation.
+        explanation: Color alone excludes some viewers and fails in grayscale.
+        concepts: [accessibility]
+      - id: mpl-as-test
+        kind: scenario
+        prompt: What should a semantic plot test assert?
+        modelAnswer: Prepared values, labels, units, scales, limits, artist counts, and key artist coordinates before optional image comparison.
+        explanation: Object-level evidence is more stable than pixels alone.
+        concepts: [testing]
+
+interview:
+  - id: mpl-iv-model
+    level: basic
+    question: Explain Matplotlib's object model.
+    shortAnswer: Figure owns the canvas, Axes owns a plot, Axis owns scales and ticks, and Artists are visible elements.
+    fullAnswer: Plotting calls create and attach Artists into an explicit hierarchy that transforms data coordinates into backend display output.
+    commonWrongAnswer: Axes means the x and y lines.
+    followUps: [Where does a legend live?]
+    concepts: [object-model]
+    requiredForMastery: true
+  - id: mpl-iv-state
+    level: comparison
+    question: Why avoid pyplot state in library code?
+    shortAnswer: Hidden current Figure/Axes state makes ownership, composition, tests, and concurrent workflows fragile.
+    fullAnswer: Explicit objects let callers control layout and lifecycle and prevent helpers from targeting whichever plot was most recently active.
+    commonWrongAnswer: Pyplot always produces lower-quality graphics.
+    followUps: [Is plt.subplots still acceptable?]
+    concepts: [state]
+    requiredForMastery: true
+  - id: mpl-iv-transform
+    level: internals
+    question: Explain data versus Axes coordinates.
+    shortAnswer: Data coordinates follow scales and limits; Axes coordinates are normalized to the panel rectangle.
+    fullAnswer: Matplotlib composes transforms into display space, so selecting a transform determines whether an Artist moves when limits or layout change.
+    commonWrongAnswer: Every coordinate is a pixel.
+    followUps: [What is a blended transform?]
+    concepts: [transforms]
+    requiredForMastery: true
+  - id: mpl-iv-scale
+    level: tricky
+    question: What must you decide before using a log scale?
+    shortAnswer: Whether ratios are meaningful and how zero, negative, and missing values are represented.
+    fullAnswer: The scale changes visual distance and domain support. Filtering or transformations need a documented analytical meaning, not a cosmetic epsilon.
+    commonWrongAnswer: Use log whenever values are large.
+    followUps: [When is symlog appropriate?]
+    concepts: [scale]
+    requiredForMastery: false
+  - id: mpl-iv-access
+    level: scenario
+    question: How do you make an operational plot accessible?
+    shortAnswer: Use readable contrast, redundant encodings, units, direct labels, bounded density, and a textual summary.
+    fullAnswer: Accessibility spans color vision, grayscale, screen readers, typography, cognitive load, and the ability to interpret the underlying evidence.
+    commonWrongAnswer: Use a brighter palette.
+    followUps: [How would you document alt text?]
+    concepts: [accessibility]
+    requiredForMastery: false
+  - id: mpl-iv-repro
+    level: advanced
+    question: What makes a plot reproducible?
+    shortAnswer: Explicit data, code, versions, fonts, styles, seeds, dimensions, backend, and export settings.
+    fullAnswer: Reproducibility includes analytical inputs and rendering environment; semantic tests protect meaning while controlled image tests protect critical layout.
+    commonWrongAnswer: Saving a PNG is enough.
+    followUps: [Why can platforms render text differently?]
+    concepts: [reproducibility]
+    requiredForMastery: false
+
+projects:
+  - id: mpl-project-report-engine
+    kind: major
+    title: Headless operational report renderer
+    summary: Build a reusable four-panel report with explicit Axes ownership and deterministic exports.
+    problem: Produce daily device-health reports from prepared tables without pyplot-state bugs, misleading scales, inaccessible categories, or leaked Figures.
+    requirements: [Typed Axes-level helpers return Artists, Units and scale policies are explicit, Layout works for missing panels, PNG and SVG exports are deterministic, Semantic plot tests verify each panel]
+    constraints: [No helper calls show or save, No color-only critical distinction, No global style mutation]
+    expectedBehaviour: [Headless execution succeeds, Figures close after export, Shared axes use compatible units, Empty data renders an honest message]
+    milestones:
+      - title: Visual contract
+        detail: Specify panels, units, scales, encodings, accessibility, and export dimensions.
+      - title: Renderer
+        detail: Implement composable Axes helpers and one Figure-level orchestrator.
+      - title: Verification
+        detail: Add semantic tests, a selected image baseline, and a memory-loop test.
+    testing: [Empty series, negative log input, long labels, missing category, repeated batch renders]
+    failureCases: [Wrong current Axes, detached ticks, clipped legend, unclosed Figure]
+    bonus: [HTML alt-text generator, configurable theme through rc_context]
+    architectureHints: [Prepare all plotting tables before rendering., Keep Figure lifecycle in one function.]
+    referenceOutline: A plots package with data contracts, panel helpers, layout orchestration, styles, export, and tests.
+    minutes: 260
+
+resources:
+  - name: Matplotlib Axes and subplots
+    type: docs
+    difficulty: core
+    url: https://matplotlib.org/stable/users/explain/axes/index.html
+    why: The primary guide explains Axes creation, plotting methods, limits, scales, ticks, legends, layouts, and shared coordinate systems.
+    covers: Axes ownership and subplot composition.
+    usefulness: 5
+  - name: Matplotlib Artist tutorial
+    type: tutorial
+    difficulty: deep
+    url: https://matplotlib.org/stable/tutorials/artists.html
+    why: The official Artist tutorial exposes the hierarchy and properties underlying lines, text, patches, axes, and figures.
+    covers: Artist tree and object-oriented customization.
+    usefulness: 5
+  - name: Matplotlib Transformations tutorial
+    type: tutorial
+    difficulty: deep
+    url: https://matplotlib.org/stable/users/explain/artists/transforms_tutorial.html
+    why: The maintained primary tutorial maps data, Axes, Figure, blended, and display coordinate systems to concrete transforms.
+    covers: Coordinate systems, transform composition, and annotations.
+    usefulness: 5
+  - name: Matplotlib Arranging multiple Axes
+    type: docs
+    difficulty: core
+    url: https://matplotlib.org/stable/users/explain/axes/arranging_axes.html
+    why: The project guide compares subplots, mosaic, GridSpec, nested layouts, and spacing for reliable multi-panel figures.
+    covers: Figure layout and Axes arrangement.
+    usefulness: 4
+  - name: Matplotlib Performance guide
+    type: docs
+    difficulty: deep
+    url: https://matplotlib.org/stable/users/explain/artists/performance.html
+    why: The official performance notes describe simplification, chunking, and style tradeoffs for large paths and rendering workloads.
+    covers: Rendering performance and large datasets.
+    usefulness: 4

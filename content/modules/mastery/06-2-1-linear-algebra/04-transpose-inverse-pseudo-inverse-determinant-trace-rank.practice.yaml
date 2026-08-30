@@ -1,0 +1,776 @@
+lessonId: "roadmap:phase-2-2.1:3"
+module: 2-1-linear-algebra
+lesson: 04-transpose-inverse-pseudo-inverse-determinant-trace-rank
+title: "Transpose, inverse, pseudo-inverse, determinant, trace, rank"
+summary: Six summaries of a linear map — transpose as adjoint, inverse and pseudo-inverse as undo and best-undo, determinant as volume factor, trace as eigenvalue sum, rank as image dimension — with the numerically safe way to compute each.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: ltir-read-solve-vs-inv
+    tier: normal
+    kind: code-reading
+    title: Read two ways to solve a system
+    minutes: 10
+    requiredForMastery: true
+    concepts: [inverse, linear-solve, stability]
+    prompt: |
+      Both functions return `x` with `A @ x approx b`. State which is preferred and give two
+      concrete reasons.
+      ```python
+      def solve_a(A, b):
+          return np.linalg.inv(A) @ b
+
+      def solve_b(A, b):
+          return np.linalg.solve(A, b)
+      ```
+    hints:
+      - One forms the whole inverse; the other stops after an LU factorisation.
+      - Count the operations and think about accumulated rounding for an ill-conditioned `A`.
+    solution: |
+      `solve_b` is preferred. First, cost: `np.linalg.solve` does one LU factorisation (about
+      `n**3 / 3` operations) plus a back-substitution, while `np.linalg.inv` computes the full
+      inverse (about `n**3`) and then an `n**2` matrix-vector product — roughly three times the
+      work. Second, accuracy: forming the inverse accumulates extra rounding, and multiplying by it
+      is less stable than back-substitution, especially when `A` is ill-conditioned. `solve_a` is
+      justified only when the entries of the inverse are themselves the deliverable.
+  - id: ltir-write-transpose-adjoint-check
+    tier: normal
+    kind: write-code
+    title: Test the adjoint identity
+    minutes: 12
+    requiredForMastery: true
+    concepts: [transpose, adjoint, dot-product]
+    prompt: |
+      Write `adjoint_holds(A, tol=1e-9)` that draws random `x` and `y` of the right sizes and checks
+      `dot(A @ x, y)` equals `dot(x, A.T @ y)` within `tol`. Explain why this is the definition of
+      transpose.
+    hints:
+      - "`x` has length `A.shape[1]`; `y` has length `A.shape[0]`."
+      - The transpose is the unique matrix making that identity hold for all `x`, `y`.
+    solution: |
+      Draw `x = rng.standard_normal(A.shape[1])` and `y = rng.standard_normal(A.shape[0])`, then
+      return `abs(np.dot(A @ x, y) - np.dot(x, A.T @ y)) <= tol * (1 + abs(np.dot(A @ x, y)))`. The
+      transpose is defined as the adjoint of `A` with respect to the dot product: the matrix `B`
+      such that `dot(A @ x, y) == dot(x, B @ y)` for every `x` and `y`. That matrix is unique and
+      its entries are `B[i, j] = A[j, i]`. Passing the check on several random pairs is strong
+      evidence the identity holds; it holds exactly in exact arithmetic.
+  - id: ltir-predict-det-trace-rank
+    tier: normal
+    kind: predict-output
+    title: Read off det, trace, rank
+    minutes: 10
+    requiredForMastery: true
+    concepts: [determinant, trace, rank, eigenvalues]
+    prompt: |
+      A 3x3 matrix has eigenvalues `3, 0, -2`. Give its determinant, its trace, and its rank, and
+      say whether it is invertible.
+    hints:
+      - Determinant is the product of eigenvalues; trace is their sum.
+      - A zero eigenvalue means a nontrivial null space.
+    solution: |
+      Determinant is `3 * 0 * (-2) = 0`. Trace is `3 + 0 + (-2) = 1`. Because one eigenvalue is
+      zero, the matrix has a nontrivial null space, so its rank is at most 2; assuming the other two
+      eigenvalues give independent directions, the rank is exactly 2. A zero determinant means the
+      matrix is singular and not invertible.
+  - id: ltir-explain-pinv-solves
+    tier: normal
+    kind: explain
+    title: What the pseudo-inverse computes
+    minutes: 10
+    requiredForMastery: true
+    concepts: [pseudo-inverse, least-squares, minimum-norm]
+    prompt: |
+      Explain in words what `np.linalg.pinv(A) @ b` returns when `A` is tall with full column rank,
+      and when `A` is wide with full row rank.
+    hints:
+      - "Tall system: usually no exact solution, so best means smallest residual."
+      - "Wide system: many exact solutions, so best means the smallest-norm one."
+    solution: |
+      For a tall `A` with full column rank, `A x = b` is usually overdetermined with no exact
+      solution, and `pinv(A) @ b` returns the least-squares solution: the `x` minimising
+      `norm(A @ x - b)`. Here `pinv(A)` acts as a left inverse, `pinv(A) @ A == I`. For a wide `A`
+      with full row rank, `A x = b` is underdetermined with infinitely many exact solutions, and
+      `pinv(A) @ b` returns the one with the smallest `norm(x)`. Here `pinv(A)` is a right inverse,
+      `A @ pinv(A) == I`. Both cases come from the SVD construction `V S_plus U.T`.
+  - id: ltir-inverse-of-product
+    tier: intermediate
+    kind: write-code
+    title: Inverse of a product, and reuse a factorisation
+    minutes: 16
+    requiredForMastery: true
+    concepts: [inverse, product-rule, factorisation-reuse]
+    prompt: |
+      Given invertible `A` and `B`, write `apply_AB_inverse(A, B, rhs_list)` that computes
+      `(A @ B)^{-1} @ r` for each `r` in `rhs_list` without forming any inverse and without
+      refactorising per right-hand side. State the identity you use.
+    hints:
+      - "`(A @ B)^{-1} == B^{-1} @ A^{-1}`, so undo `A` first, then `B`."
+      - "`scipy.linalg.lu_factor` once per matrix, then `lu_solve` per right-hand side."
+    solution: |
+      Use `(A @ B)^{-1} @ r == B^{-1} @ (A^{-1} @ r)`. Factor both matrices once:
+      `luA = scipy.linalg.lu_factor(A)` and `luB = scipy.linalg.lu_factor(B)`. For each `r`,
+      compute `y = scipy.linalg.lu_solve(luA, r)` then `x = scipy.linalg.lu_solve(luB, y)` and
+      collect `x`. This never forms `A^{-1}`, `B^{-1}`, or `(A @ B)^{-1}`, does the `O(n**3)` work
+      twice total instead of per right-hand side, and is more accurate than multiplying by an
+      explicit inverse.
+  - id: ltir-slogdet-underflow
+    tier: intermediate
+    kind: write-code
+    title: Stable log-determinant
+    minutes: 16
+    requiredForMastery: true
+    concepts: [determinant, slogdet, underflow, cholesky]
+    prompt: |
+      Write `logdet_spd(S)` for a symmetric positive definite `S` that returns `log(det(S))` without
+      underflow, using the Cholesky factor, and say why `np.log(np.linalg.det(S))` fails for large
+      `S`.
+    hints:
+      - "`det(S)` is a product of many eigenvalues and underflows to 0 in float64."
+      - If `S == L @ L.T` then `det(S) == prod(diag(L))**2`.
+    solution: |
+      Compute `L = np.linalg.cholesky(S)` and return `2.0 * np.sum(np.log(np.diag(L)))`. Because
+      `S == L @ L.T` with `L` lower triangular, `det(S) == prod(diag(L))**2`, so
+      `log(det(S)) == 2 * sum(log(diag(L)))`, a sum of moderate numbers that never underflows.
+      `np.linalg.det(S)` forms the actual product of hundreds of sub-unit eigenvalues, which rounds
+      to `0.0`, and then `np.log(0.0)` is `-inf`. `np.linalg.slogdet(S)` is the general-matrix
+      version of the same fix.
+  - id: ltir-trace-cyclic-cost
+    tier: intermediate
+    kind: performance
+    title: Trace of a product without the product
+    minutes: 14
+    requiredForMastery: true
+    concepts: [trace, cyclic-property, efficiency]
+    prompt: |
+      You need `trace(A @ B)` for `A` of shape `(n, m)` and `B` of shape `(m, n)` with `n` large.
+      Give an expression that avoids the `(n, n)` product and state the cost difference.
+    hints:
+      - "`trace(A @ B) == sum over i,j of A[i, j] * B[j, i]`."
+      - That is the elementwise product of `A` and `B.T`, summed.
+    solution: |
+      `trace(A @ B) == np.sum(A * B.T)`, or `np.einsum('ij,ji->', A, B)`. Forming `A @ B` costs
+      `n*m*n` multiply-adds and allocates an `(n, n)` matrix; the elementwise form costs `n*m`
+      multiply-adds and allocates nothing beyond a temporary. For `n` in the thousands and `m`
+      small this is a factor-of-`n` saving and often the difference between fitting in memory and
+      not. It follows from the definition of trace plus the cyclic property.
+  - id: ltir-rank-of-product-bound
+    tier: intermediate
+    kind: predict-output
+    title: Rank bounds through a product
+    minutes: 12
+    requiredForMastery: true
+    concepts: [rank, product-bound, bottleneck]
+    prompt: |
+      "`A` is `(1000, 50)` with rank 50 and `B` is `(50, 1000)` with rank 40." Give the maximum
+      possible rank of `A @ B` and of `B @ A`, and explain the difference.
+    hints:
+      - "`rank(A @ B) <= min(rank(A), rank(B))`."
+      - "`A @ B` is `(1000, 1000)`; `B @ A` is `(50, 50)`."
+    solution: |
+      `rank(A @ B) <= min(50, 40) = 40`, even though `A @ B` is a `1000 x 1000` matrix — the shared
+      dimension and `B`'s rank cap it. `rank(B @ A) <= min(40, 50) = 40` as well, and since
+      `B @ A` is only `50 x 50` the bound of 40 is the binding constraint. Both products are capped
+      at 40 by `B`'s rank; the outer shape does not raise the ceiling. This is why a rank-40
+      factor anywhere in a chain forces the whole chain to rank 40 or less.
+  - id: ltir-debug-inv-for-conditioning
+    tier: tricky
+    kind: debug
+    title: Determinant used as a conditioning gate
+    minutes: 16
+    requiredForMastery: true
+    concepts: [determinant, condition-number, scaling]
+    prompt: |
+      This guard rejects "unstable" matrices before a solve. It rejects harmless ones and passes
+      dangerous ones. Fix the criterion.
+    code: |
+      def stable_enough(A):
+          return abs(np.linalg.det(A)) > 1e-6
+    solution: |
+      The determinant scales with the entries: multiplying an `n x n` matrix by `c` multiplies
+      `det` by `c**n`, so a perfectly well-conditioned matrix scaled down fails the test, and a
+      matrix with entries near 1 can be badly conditioned while `det` stays above `1e-6`. Use the
+      scale-free condition number:
+      `s = np.linalg.svd(A, compute_uv=False); return s[0] / s[-1] < 1e10` (choose the limit from
+      how many digits you can lose). Regression: `1e-3 * np.eye(4)` must pass and
+      `[[1, 1], [1, 1 + 1e-11]]` must fail.
+    hints:
+      - Scale a well-conditioned matrix down and watch `det` collapse without any real change.
+      - Condition number is a ratio of singular values and is scale-invariant.
+  - id: ltir-debug-normal-equations
+    tier: tricky
+    kind: debug
+    title: Normal equations on collinear features
+    minutes: 18
+    requiredForMastery: true
+    concepts: [normal-equations, pseudo-inverse, conditioning, ridge]
+    prompt: |
+      This least-squares solver returns wild coefficients on a design matrix with two near-duplicate
+      columns. Explain why and give two fixes.
+    code: |
+      def fit(X, y):
+          return np.linalg.inv(X.T @ X) @ X.T @ y
+    solution: |
+      Forming `X.T @ X` squares the condition number of `X`, so near-duplicate columns that make
+      `X` mildly ill-conditioned make `X.T @ X` severely so, and `np.linalg.inv` of that amplifies
+      noise into huge, sign-unstable coefficients. Fix one: solve the least-squares problem
+      directly with `np.linalg.lstsq(X, y, rcond=None)` or `np.linalg.pinv(X) @ y`, which work from
+      `X` via its SVD and never square the conditioning. Fix two: add ridge regularisation,
+      `np.linalg.solve(X.T @ X + lam * np.eye(X.shape[1]), X.T @ y)`, which lifts every singular
+      value of `X.T @ X` away from zero. Regression: build `X` with a column equal to another plus
+      `1e-8 * noise` and assert the coefficients stay bounded.
+    hints:
+      - "`X.T @ X` has the square of `X`'s condition number."
+      - Either avoid forming it (lstsq / pinv) or regularise it (ridge).
+  - id: ltir-debug-plain-transpose-complex
+    tier: tricky
+    kind: debug
+    title: Plain transpose on complex data
+    minutes: 14
+    requiredForMastery: true
+    concepts: [transpose, conjugate-transpose, hermitian]
+    prompt: |
+      `energy` should return the real, non-negative squared norm `x^H x` of a complex vector, but it
+      sometimes returns a complex number with a nonzero imaginary part. Fix it.
+    code: |
+      def energy(x):
+          return x.T @ x
+    solution: |
+      For a complex `x`, `x.T @ x` computes `sum x_i**2`, which is generally complex and can even be
+      negative. The squared norm is `x^H x == sum |x_i|**2`, which needs the conjugate transpose:
+      `return np.vdot(x, x).real`, or `x.conj().T @ x`. The transpose that acts as the adjoint for
+      the complex (Hermitian) inner product includes conjugation; plain `.T` is only correct for
+      real data. Regression: `x = np.array([1 + 1j, 2 - 1j])` should give `7.0`, not `(3 + 2j)`.
+    hints:
+      - The complex inner product conjugates the first argument.
+      - "`.T` alone does not conjugate; use `.conj().T` or `np.vdot`."
+  - id: ltir-debug-rank-default-tol
+    tier: tricky
+    kind: debug
+    title: Full rank by the default tolerance
+    minutes: 14
+    requiredForMastery: true
+    concepts: [rank, tolerance, condition-number]
+    prompt: |
+      A check clears a weight matrix as "healthy" whenever it is full rank by the default tolerance,
+      but a matrix it cleared has a condition number of `3e9`. Fix the health check.
+    code: |
+      def healthy(W):
+          return np.linalg.matrix_rank(W) == min(W.shape)
+    solution: |
+      `np.linalg.matrix_rank` with its default tolerance only rejects singular values at the
+      rounding-noise level, so a matrix with a tiny-but-not-that-tiny smallest singular value counts
+      as full rank while being numerically almost singular. Base the check on the condition number
+      and the spectrum: `s = np.linalg.svd(W, compute_uv=False); return s[0] / s[-1] < 1e6` (limit
+      chosen from tolerable digit loss), and return `s` so a human can inspect. Regression: build
+      `W` with a deliberately small smallest singular value (scale one column of an orthogonal
+      matrix by `1e-9`) and assert the new check fails while the old one passed.
+    hints:
+      - The default tolerance guards against rounding noise, not near-singularity.
+      - Report and threshold `s[0] / s[-1]`, not just the integer rank.
+  - id: ltir-design-map-summary-report
+    tier: challenge
+    kind: design
+    title: Design a "map summary" report
+    minutes: 30
+    requiredForMastery: false
+    concepts: [invariants, svd, reporting, numerical-stability]
+    prompt: |
+      Design `summarise_map(A)` that returns a review-ready summary of the linear map `A`:
+      shape, rank at a stated tolerance, condition number, `slogdet` (if square), trace (if
+      square), and whether a true inverse or only a pseudo-inverse is available. State inputs,
+      outputs, and what it must not compute the naive way.
+    hints:
+      - One SVD gives rank, condition number, and the pseudo-inverse; reuse it.
+      - Square-only quantities (trace, determinant) must be guarded by a shape check.
+    solution: |
+      Input: the matrix `A` and an optional relative tolerance. Compute one SVD. Report: shape;
+      singular value spectrum; numerical rank as the count above `tol * s[0]`; condition number
+      `s[0] / s[-1]`; for square `A`, `np.linalg.slogdet(A)` and `np.trace(A)`; a flag for
+      "invertible" (square and full rank at tolerance) versus "pseudo-inverse only"; and the
+      recommended solve routine (`solve`, `cho_solve`, `lstsq`). It must not call `np.linalg.det`
+      for likelihoods (use `slogdet`), must not form `np.linalg.inv` (report the factorisation to
+      use instead), must not use the default rank tolerance without recording the chosen one, and
+      must not compute trace or determinant for a non-square input. Include golden summaries for an
+      orthogonal matrix, a rank-deficient matrix, and a tall full-column-rank matrix.
+  - id: ltir-refactor-regression-solver
+    tier: challenge
+    kind: refactor
+    title: Refactor a fragile regression solver
+    minutes: 28
+    requiredForMastery: false
+    concepts: [normal-equations, pseudo-inverse, ridge, conditioning]
+    prompt: |
+      A library's `linear_fit(X, y)` computes `np.linalg.inv(X.T @ X) @ X.T @ y` and separately
+      returns `np.linalg.det(X.T @ X)` as a "confidence" number. Refactor it to be numerically
+      sound and to report honest diagnostics, keeping the same function signature.
+    hints:
+      - Solve from `X` directly; forming `X.T @ X` squares the conditioning.
+      - The determinant of `X.T @ X` is scale-dependent and near-zero for collinear features; report conditioning instead.
+    solution: |
+      Replace the normal-equation inverse with `beta, residuals, rank, s = np.linalg.lstsq(X, y,
+      rcond=None)`, which works from `X` via its SVD. Offer an optional `ridge` parameter that adds
+      `lam * I` and solves `X.T @ X + lam * I` when the caller wants regularisation. Drop the
+      determinant "confidence" and instead return: the singular value spectrum `s`, the condition
+      number `s[0] / s[-1]`, the numerical rank versus the column count, and a warning when the
+      condition number exceeds a threshold or the rank is deficient. Keep `linear_fit(X, y)`
+      returning `beta` first for compatibility, with the diagnostics in a second return value or an
+      attached object. Add fixtures: an orthogonal design (clean), a collinear design (flagged),
+      and a scaled design (condition number unchanged, old determinant "confidence" wildly
+      different).
+quizzes:
+  - id: ltir-checkpoint
+    title: Checkpoint — the six summaries of a map
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: ltir-cp-transpose
+        kind: mcq
+        prompt: The transpose `A.T` is defined by which identity?
+        options:
+          - {id: adjoint, text: "`dot(A @ x, y) == dot(x, A.T @ y)` for all `x`, `y`"}
+          - {id: inverse, text: "`A @ A.T == I` for all `A`"}
+          - {id: commute, text: "`A @ A.T == A.T @ A` for all `A`"}
+        answer: [adjoint]
+        explanation: The transpose is the adjoint of `A` for the dot product; the other two are false in general.
+        concepts: [transpose, adjoint]
+        points: 1
+      - id: ltir-cp-invertible
+        kind: multi
+        prompt: Which conditions are each equivalent to "the square matrix `A` is invertible"?
+        options:
+          - {id: det, text: "`det(A)` is nonzero"}
+          - {id: rank, text: "`rank(A)` equals `n`"}
+          - {id: nullsp, text: "The null space of `A` is the zero subspace"}
+          - {id: sym, text: "`A` is symmetric"}
+        answer: [det, rank, nullsp]
+        explanation: Nonzero determinant, full rank, and trivial null space are equivalent; symmetry is unrelated to invertibility.
+        concepts: [inverse, rank, determinant]
+        points: 1
+      - id: ltir-cp-pinv
+        kind: mcq
+        prompt: For a tall full-column-rank `A`, `np.linalg.pinv(A) @ b` returns what?
+        options:
+          - {id: ls, text: The least-squares solution minimising `norm(A @ x - b)`}
+          - {id: exact, text: An exact solution to `A @ x == b`, always}
+          - {id: zero, text: The zero vector when no exact solution exists}
+        answer: [ls]
+        explanation: With more equations than unknowns there is usually no exact solution; the pseudo-inverse gives the least-squares one.
+        concepts: [pseudo-inverse, least-squares]
+        points: 1
+      - id: ltir-cp-det-logdet
+        kind: mcq
+        prompt: Why prefer `np.linalg.slogdet(A)` over `np.log(np.linalg.det(A))` for a large matrix?
+        options:
+          - {id: underflow, text: "`det(A)` can underflow to 0, making the log `-inf`, while slogdet accumulates the log directly"}
+          - {id: faster, text: slogdet is asymptotically faster than det}
+          - {id: sign, text: det cannot handle negative determinants}
+        answer: [underflow]
+        explanation: The determinant magnitude may be unrepresentable even when its logarithm is moderate.
+        concepts: [determinant, slogdet]
+        points: 1
+  - id: ltir-assessment
+    title: Assessment — transpose, inverse, pseudo-inverse, determinant, trace, rank
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: ltir-as-transpose-props
+        kind: explain
+        prompt: State the defining identity of the transpose and derive `(A @ B).T == B.T @ A.T` from the adjoint view.
+        modelAnswer: |
+          Transpose is the adjoint: `dot(M @ x, y) == dot(x, M.T @ y)` for all `x, y`. For `M = A @ B`,
+          `dot(A @ B @ x, y) == dot(B @ x, A.T @ y) == dot(x, B.T @ A.T @ y)`. Since the adjoint is
+          unique, `(A @ B).T == B.T @ A.T`.
+        explanation: Peeling `A` then `B` across the dot product reverses their order.
+        concepts: [transpose, adjoint]
+        points: 1
+      - id: ltir-as-solve-not-inv
+        kind: find-bug
+        prompt: What is wrong with `np.linalg.inv(A) @ b` as a way to solve `A x = b`?
+        modelAnswer: |
+          It computes the full inverse (about `n**3` work) then a matrix-vector product, versus one
+          LU factorisation and a back-substitution for `np.linalg.solve` (about `n**3 / 3`). It is
+          slower and accumulates more rounding error, worse when `A` is ill-conditioned. Only
+          compute the inverse if its entries are the actual output.
+        explanation: Solving stops after elimination; inverting does extra, less stable work.
+        concepts: [inverse, linear-solve]
+        points: 1
+      - id: ltir-as-pinv-from-svd
+        kind: write-function
+        prompt: Given the SVD `A = U @ np.diag(s) @ Vt`, write the pseudo-inverse in terms of `U`, `s`, `Vt`, handling zero singular values.
+        modelAnswer: |
+          `s_plus = np.array([1/si if si > tol else 0.0 for si in s])`, then
+          `A_pinv = Vt.T @ np.diag(s_plus) @ U.T` (with `s_plus` shaped as the transpose of the
+          `S` block for non-square `A`). Zero (or below-tolerance) singular values map to zero.
+        explanation: Invert the invertible part of the spectrum and annihilate the rest.
+        concepts: [pseudo-inverse, svd]
+        points: 1
+      - id: ltir-as-det-scale
+        kind: scenario
+        prompt: You scale a well-conditioned `4x4` matrix by `0.01`. What happens to its determinant and to its condition number?
+        modelAnswer: |
+          The determinant is multiplied by `0.01**4 = 1e-8`, so it becomes tiny. The condition
+          number is unchanged, because scaling multiplies every singular value by `0.01` and the
+          ratio `s[0] / s[-1]` is unaffected. This is why the determinant is a bad near-singularity
+          test and the condition number is the right one.
+        explanation: Determinant magnitude is scale-dependent; conditioning is not.
+        concepts: [determinant, condition-number]
+        points: 1
+      - id: ltir-as-trace-cyclic
+        kind: write-function
+        prompt: Give an expression for `trace(A @ B)` that does not form `A @ B`, and name the property it uses.
+        modelAnswer: |
+          `np.sum(A * B.T)` (or `np.einsum('ij,ji->', A, B)`). It uses the definition of trace plus
+          the cyclic property, and costs `m*n` instead of `m*n*m` with no large intermediate.
+        explanation: The diagonal of `A @ B` is the row-wise dot of `A` with `B.T`.
+        concepts: [trace, cyclic-property]
+        points: 1
+      - id: ltir-as-rank-bound
+        kind: scenario
+        prompt: "`A` is `(800, 30)` and `B` is `(30, 800)`. What is the largest possible rank of `A @ B`, and why does the `800 x 800` output shape not help?"
+        modelAnswer: |
+          At most 30. `A @ B` is a sum of 30 rank-1 outer products (one per shared index), so its
+          rank cannot exceed 30 no matter how large the outer dimensions are. Rank is the dimension
+          of the image, and the image lies in the span of `A`'s 30 columns.
+        explanation: The shared dimension caps the rank of the product.
+        concepts: [rank, outer-product-view]
+        points: 1
+      - id: ltir-as-normal-eq
+        kind: find-bug
+        prompt: Why does `np.linalg.inv(X.T @ X) @ X.T @ y` behave badly when two columns of `X` are near-duplicates?
+        modelAnswer: |
+          Forming `X.T @ X` squares the condition number of `X`, so mild near-collinearity in `X`
+          becomes severe ill-conditioning in `X.T @ X`, and inverting that amplifies noise into
+          huge, unstable coefficients. Use `lstsq` or `pinv` on `X` directly, or add ridge
+          regularisation.
+        explanation: The Gram matrix squares the conditioning; work from `X` or regularise.
+        concepts: [normal-equations, conditioning]
+        points: 1
+      - id: ltir-as-complex-transpose
+        kind: find-bug
+        prompt: For a complex vector `x`, `x.T @ x` is used as the squared norm. What is wrong?
+        modelAnswer: |
+          `x.T @ x` is `sum x_i**2`, generally complex and possibly negative. The squared norm is
+          `x^H x == sum |x_i|**2`, which requires the conjugate transpose: `x.conj().T @ x` or
+          `np.vdot(x, x).real`. Plain `.T` omits the conjugation the Hermitian inner product needs.
+        explanation: The complex adjoint conjugates; `.T` alone does not.
+        concepts: [transpose, conjugate-transpose]
+        points: 1
+      - id: ltir-as-logdet-underflow
+        kind: scenario
+        prompt: "`np.log(np.linalg.det(Sigma))` returns `-inf` for a valid `500x500` covariance. What happened and what do you use?"
+        modelAnswer: |
+          `det(Sigma)` is a product of 500 sub-unit-ish eigenvalues and underflows to `0.0` in
+          float64, so its log is `-inf`. Use `np.linalg.slogdet(Sigma)` and take the log-magnitude
+          term, or `2 * sum(log(diag(L)))` from the Cholesky factor `L`. Both accumulate the log
+          and never form the underflowing product.
+        explanation: The determinant is unrepresentable though its logarithm is moderate.
+        concepts: [determinant, slogdet, cholesky]
+        points: 1
+      - id: ltir-as-when-inv
+        kind: scenario
+        prompt: Name a legitimate case for actually computing `A_inv`, and how you might still avoid it.
+        modelAnswer: |
+          When the entries of the inverse are the deliverable — for example the parameter
+          covariance `sigma^2 * (X.T X)^{-1}`, where the diagonal gives standard errors. Even then
+          you can get the diagonal from a Cholesky or QR factorisation of `X` without forming the
+          full inverse.
+        explanation: You need the inverse only when its numbers are the answer, and often a factorisation still suffices.
+        concepts: [inverse, factorisation]
+        points: 1
+interview:
+  - id: ltir-iv-transpose-meaning
+    level: basic
+    requiredForMastery: true
+    concepts: [transpose, adjoint]
+    question: What does the transpose of a matrix mean, beyond "swap rows and columns"?
+    shortAnswer: |
+      It is the adjoint of the map for the dot product: the unique matrix with
+      `dot(A @ x, y) == dot(x, A.T @ y)`. That identity is why `(A @ B).T == B.T @ A.T` and why a
+      symmetric matrix has orthogonal eigenvectors.
+    fullAnswer: |
+      Swapping indices is the formula; the meaning is that `A.T` moves `A` from one side of an inner
+      product to the other. This makes it the right object whenever a dot product with `A @ x`
+      appears — least squares, gradients of `norm(A @ x - b)**2`, and the normal equations all come
+      from it. For complex data the corresponding object is the conjugate transpose, because the
+      inner product conjugates. The transpose also swaps column space and row space, so
+      `rank(A) == rank(A.T)`.
+    commonWrongAnswer: It just reflects the matrix across its diagonal, nothing more.
+    followUps:
+      - Why do you need the conjugate transpose for complex vectors?
+      - How does the adjoint identity produce the normal equations?
+  - id: ltir-iv-inverse-conditions
+    level: intermediate
+    requiredForMastery: true
+    concepts: [inverse, rank, determinant, singular-values]
+    question: When does a matrix have an inverse, and how should you use it in code?
+    shortAnswer: |
+      Only a square, full-rank matrix has an inverse — equivalently nonzero determinant, no zero
+      singular value, trivial null space. In code you almost never form it: use `solve` for one
+      system, a reused LU or Cholesky factor for many.
+    fullAnswer: |
+      Invertibility means the map loses no information and can be run backwards, which requires it
+      to be square and full rank. All the usual conditions — nonzero determinant, rank `n`, trivial
+      null space, all singular values positive, independent columns — are the same statement. But
+      `inv(A) @ b` is slower and less stable than `solve(A, b)`, and for many right-hand sides you
+      factor once and back-substitute. The only time to build `A_inv` is when its entries are the
+      output, such as a covariance matrix, and even then a factorisation often gives what you need.
+    commonWrongAnswer: Any matrix has an inverse as long as it is not all zeros.
+    followUps:
+      - How do you solve efficiently for 500 right-hand sides against one `A`?
+      - What is the safe alternative to `det(A) == 0` as a singularity test?
+  - id: ltir-iv-pseudo-inverse
+    level: intermediate
+    requiredForMastery: true
+    concepts: [pseudo-inverse, least-squares, svd, ridge]
+    question: What is the Moore-Penrose pseudo-inverse and what does it give you?
+    shortAnswer: |
+      From `A = U S V.T` it is `V S_plus U.T`, inverting the nonzero singular values and zeroing the
+      rest. `A_pinv @ b` is the least-squares solution, and among least-squares solutions the one
+      of smallest norm.
+    fullAnswer: |
+      The pseudo-inverse is the best available stand-in when `A` is non-square or rank-deficient. It
+      solves `min norm(A @ x - b)` and breaks ties by smallest `norm(x)`. For full column rank it is
+      a left inverse; for full row rank a right inverse. It is exactly what linear regression's
+      normal-equation formula computes, and its instability under multicollinearity is the small
+      singular values in `S_plus` blowing up — which is why ridge regression, by flooring those
+      singular values, stabilises the solution.
+    commonWrongAnswer: It is just a slower inverse that works on any matrix the same way.
+    followUps:
+      - What does `S_plus` do with a zero singular value, and why?
+      - How does ridge regression relate to the pseudo-inverse?
+  - id: ltir-iv-determinant-trace
+    level: comparison
+    requiredForMastery: true
+    concepts: [determinant, trace, eigenvalues, invariants]
+    question: Compare the determinant and the trace as summaries of a matrix.
+    shortAnswer: |
+      Both are basis-invariant. The determinant is the product of the eigenvalues and the signed
+      volume factor; it is zero for singular matrices but scale-dependent. The trace is the sum of
+      the eigenvalues and of the diagonal; it is cyclic and linear.
+    fullAnswer: |
+      The determinant answers "does this map collapse space, and by how much does it scale volume,
+      with what orientation". It multiplies under products and equals the product of eigenvalues or
+      pivots. Its weakness is scale: it changes by `c**n` under scaling, so it is a poor conditioning
+      gauge. The trace answers "what is the sum of the eigenvalues"; it is invariant under
+      similarity, satisfies `trace(A @ B) == trace(B @ A)`, and appears all over matrix calculus.
+      Neither should be computed naively: use LU for the determinant (or `slogdet`), and the cyclic
+      identity to avoid forming products for the trace.
+    commonWrongAnswer: The trace and determinant are basically the same kind of number.
+    followUps:
+      - Why is `trace(A @ B) != trace(A) * trace(B)` in general?
+      - Which of the two changes when you scale the matrix, and by how much?
+  - id: ltir-iv-left-right-inverse
+    level: advanced
+    requiredForMastery: true
+    concepts: [left-inverse, right-inverse, rank, pseudo-inverse]
+    question: What are left and right inverses, and when does each exist?
+    shortAnswer: |
+      A left inverse `L` has `L @ A == I` and exists when `A` has full column rank (tall or square).
+      A right inverse `R` has `A @ R == I` and exists when `A` has full row rank (wide or square).
+      Both exist together only for a square full-rank matrix, and then they coincide with the true
+      inverse.
+    fullAnswer: |
+      For a tall `A` with independent columns, `A.T @ A` is invertible and `L = (A.T @ A)^{-1} @ A.T`
+      satisfies `L @ A == I`; this is the pseudo-inverse and it gives the least-squares solution.
+      For a wide `A` with independent rows, `A @ A.T` is invertible and `R = A.T @ (A @ A.T)^{-1}`
+      satisfies `A @ R == I`; the pseudo-inverse again, giving the minimum-norm solution. A one-sided
+      inverse is not unique in the deficient direction. Only when `A` is square and full rank do the
+      two sides agree and equal `A^{-1}`.
+    commonWrongAnswer: Every matrix has both a left and a right inverse.
+    followUps:
+      - How does the left inverse relate to the normal equations?
+      - Why is a one-sided inverse not unique?
+  - id: ltir-iv-rank-numerical
+    level: debugging
+    requiredForMastery: true
+    concepts: [rank, tolerance, condition-number]
+    question: How do you decide the rank of a matrix built from measured data?
+    shortAnswer: |
+      Compute the singular values and count how many exceed a tolerance you set from the spectrum's
+      noise floor, not the default. Report the condition number alongside, since near-rank-deficient
+      is what usually matters.
+    fullAnswer: |
+      Exact rank is not decidable from noisy data, and `np.linalg.matrix_rank`'s default tolerance
+      only filters rounding-level singular values. I take the SVD, look at the sorted singular
+      values on a log scale, and set the cutoff just above where they flatten into noise. I count
+      values above that as the numerical rank and record the tolerance and the condition number.
+      For feature screening or weight-health checks, a matrix that is "full rank" by the default but
+      has a condition number of `1e9` is effectively rank-deficient and should be flagged.
+    commonWrongAnswer: Just trust `np.linalg.matrix_rank` with its default settings.
+    followUps:
+      - What evidence would you log alongside the rank?
+      - How does this connect to multicollinearity in regression?
+projects:
+  - id: ltir-project-map-invariants-toolkit
+    kind: major
+    title: Build a linear-map invariants toolkit
+    minutes: 240
+    summary: Implement transpose checks, safe solves, an SVD-based pseudo-inverse, stable log-determinant, cyclic-trace, and tolerant rank, each returning the evidence used and each avoiding the fragile naive route.
+    problem: |
+      Teams keep shipping `inv(A) @ b`, `det == 0` gates, and `inv(X.T @ X)` regressions that break
+      on real data. Build a toolkit that provides the correct, stable version of each operation in
+      this lesson: `adjoint_check`, `safe_solve` (single and multi-RHS via a reused factor),
+      `pinv_svd`, `logdet` (via slogdet or Cholesky), `trace_product` (cyclic, no product formed),
+      and `numerical_rank` (spectrum-based). Every function returns its answer plus the evidence:
+      residuals, singular values, condition number, chosen tolerance.
+    requirements:
+      - "`safe_solve` handles one and many right-hand sides by factoring once and reusing; it never forms an inverse."
+      - "`pinv_svd` builds the pseudo-inverse from the SVD with a caller-visible tolerance on the singular values."
+      - "`logdet` never forms an underflowing product; it uses slogdet for general matrices and Cholesky for SPD ones."
+      - "`trace_product` computes `trace(A @ B)` without materialising `A @ B`."
+      - "`numerical_rank` sets its tolerance from the spectrum and returns the singular values and condition number."
+      - Every result is a small object carrying the answer and its evidence.
+    constraints:
+      - NumPy and the standard library for the core; SciPy allowed for LU and Cholesky helpers.
+      - Never use `np.linalg.inv` in a solve path.
+      - Never use `np.linalg.det` where a log-determinant is wanted.
+      - Never rely on the default `matrix_rank` tolerance without recording an explicit one.
+    expectedBehaviour:
+      - "`safe_solve` matches `np.linalg.solve` on well-conditioned systems and beats `inv @ b` on ill-conditioned ones."
+      - "`pinv_svd` equals `np.linalg.pinv` within tolerance and matches `lstsq` on tall systems."
+      - "`logdet` agrees with `slogdet` and stays finite where `log(det(...))` returns `-inf`."
+      - "`trace_product` matches `np.trace(A @ B)` without allocating the product."
+      - Scaling inputs by a large or small constant does not change any rank or invertibility verdict.
+    structure: |
+      map_invariants/
+        __init__.py
+        adjoint.py
+        solve.py
+        pseudo_inverse.py
+        determinant.py
+        trace_rank.py
+      tests/
+        test_adjoint.py
+        test_solve.py
+        test_pseudo_inverse.py
+        test_determinant.py
+        test_trace_rank.py
+    milestones:
+      - title: "1 — Transpose and safe solve"
+        detail: Adjoint identity check and a factor-once multi-RHS solver.
+      - title: "2 — Pseudo-inverse"
+        detail: SVD-based pinv with tolerance, matching lstsq on tall and wide systems.
+      - title: "3 — Determinant"
+        detail: slogdet and Cholesky log-determinant, with underflow regression tests.
+      - title: "4 — Trace and rank"
+        detail: Cyclic trace-of-product and spectrum-based numerical rank with evidence.
+    testing:
+      - Adjoint identity on random rectangular matrices and random vector pairs.
+      - Multi-RHS solve timing and accuracy versus `inv @ b` on ill-conditioned systems.
+      - Pseudo-inverse equals `pinv` and matches `lstsq` on tall and wide fixtures.
+      - Log-determinant stays finite for a `500 x 500` SPD matrix where the naive route fails.
+      - Scale-invariance of rank and invertibility verdicts under multiplication by `1e-6` and `1e6`.
+    failureCases:
+      - A solve path quietly calls `np.linalg.inv` and loses accuracy on ill-conditioned input.
+      - "`logdet` calls `np.linalg.det` and returns `-inf` for a large covariance."
+      - "`numerical_rank` uses the default tolerance and clears a matrix with condition number `1e10`."
+      - "`trace_product` forms `A @ B` and runs out of memory on a large outer dimension."
+    bonus:
+      - Add a Cholesky-based solve path for SPD systems and benchmark it against LU.
+      - Return parameter standard errors from a factorisation without forming `(X.T X)^{-1}`.
+      - Emit the map summary as Markdown for pull requests.
+    architectureHints:
+      - Keep one SVD helper and feed rank, condition number, and pseudo-inverse from it.
+      - Represent every result as a dataclass with `.value` and `.evidence`.
+      - Put tolerance selection in one place and thread the chosen value everywhere.
+    referenceOutline: |
+      `adjoint.check` samples vectors and compares the two sides of the identity. `solve.factor`
+      wraps `lu_factor`; `solve.apply` back-substitutes per right-hand side. `pseudo_inverse.pinv`
+      runs the SVD, thresholds `s` at `tol * s[0]`, and assembles `V S_plus U.T`.
+      `determinant.logdet` dispatches to `slogdet` or Cholesky. `trace_rank.trace_product` returns
+      `np.sum(A * B.T)`; `trace_rank.numerical_rank` thresholds the spectrum and reports evidence.
+  - id: ltir-final-regression-audit
+    kind: final-challenge
+    title: Make a broken regression pipeline numerically sound
+    minutes: 90
+    summary: Given a regression that uses `inv(X.T @ X)` and a determinant "confidence" score, diagnose every numerical fault, replace each with the stable equivalent, and prove the fix with fail-before-fix tests.
+    problem: |
+      A pipeline fits `beta = inv(X.T @ X) @ X.T @ y`, reports `det(X.T @ X)` as confidence, tests
+      singularity with `det(X.T @ X) == 0`, and logs `log(det(Sigma))` for the residual covariance.
+      The design matrix has one exact linear dependence among three columns, one near-duplicate
+      pair, and columns on very different scales. Produce an audit that names each fault, replaces
+      it with the sound method (lstsq or pinv, condition number, slogdet or Cholesky), and shows a
+      regression per fault that fails before the fix.
+    requirements:
+      - Replace the normal-equation inverse with a solve from `X` directly (lstsq or pinv), keeping outputs equal within tolerance on a well-conditioned fixture.
+      - Replace the determinant "confidence" and the `det == 0` singularity test with condition number and spectrum-based rank.
+      - Replace `log(det(Sigma))` with `slogdet` or a Cholesky log-determinant and show it stays finite.
+      - Detect the exact dependence and the near-duplicate pair from the singular values and name the columns.
+      - Provide one fail-before-fix test per fault and a clean run afterwards.
+    constraints:
+      - Do not form `X.T @ X` for the solve or the conditioning check.
+      - Do not use `np.linalg.det` anywhere a log-determinant or a conditioning number is wanted.
+      - Do not use the default rank tolerance without recording the chosen one.
+    expectedBehaviour:
+      - The refactored fit matches the original on the well-conditioned fixture within `rtol=1e-6`.
+      - The numerical rank equals the column count minus the number of independent dependence relations.
+      - The near-duplicate pair and the exact combination are each identified by right-singular-vector loadings.
+      - Scaling any column does not change the rank verdict or the condition-number-based flag.
+      - The log-determinant of the residual covariance is finite where the old code returned `-inf`.
+    milestones:
+      - title: "1 — Inventory the faults"
+        detail: List each numerical anti-pattern in the pipeline and the stable replacement for it.
+      - title: "2 — Replace and verify"
+        detail: Swap in lstsq/pinv, condition number, slogdet/Cholesky; match the clean fixture within tolerance.
+      - title: "3 — Localise the dependence"
+        detail: Use the SVD to name the columns in the exact relation and the near-duplicate pair, with failing-first tests.
+    testing:
+      - Fail-before-fix regression for the inverse-based solve, the determinant confidence, the singularity test, and the log-determinant.
+      - Scale-invariance check on the rank verdict and the conditioning flag.
+      - Assertion that the exact dependence and the near-duplicate are reported as distinct groups.
+    failureCases:
+      - The refactor still forms `X.T @ X` and inherits the squared condition number.
+      - The exact dependence is missed because the rank tolerance was left at the default.
+      - The residual-covariance log-determinant is still computed as `log(det(...))` and underflows.
+    bonus:
+      - Return parameter standard errors from the same factorisation used for the fit.
+      - Emit the audit as a Markdown report with the spectrum shown as text.
+    architectureHints:
+      - Freeze the expected dependence relations and the clean-fixture outputs as fixtures first.
+      - Keep fault inventory, replacement, and localisation in separate commits.
+    referenceOutline: |
+      Fit with `np.linalg.lstsq(X, y, rcond=None)`. Diagnose conditioning from
+      `s = np.linalg.svd(X, compute_uv=False)` and `s[0] / s[-1]`. Set the rank tolerance from the
+      spectrum gap. For each below-tolerance right-singular vector, list the columns with large
+      loadings as a dependence group and classify exact versus near from the singular value size.
+      Use `np.linalg.slogdet` for the residual-covariance log-determinant.
+resources:
+  - name: MIT 18.06 — Inverse matrices, column space and null space (OCW)
+    type: university
+    difficulty: core
+    url: "https://ocw.mit.edu/courses/18-06-linear-algebra-spring-2010/resources/lecture-7-solving-ax-0-pivot-variables-special-solutions/"
+    usefulness: 5
+    why: Strang ties invertibility, rank, null space, and the determinant together as one picture and shows why elimination, not the inverse, is how systems are solved in practice.
+    covers: Existence of the inverse, rank and null space, pivots and the determinant, and solving systems by elimination rather than inversion.
+  - name: "numpy.linalg.pinv reference"
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.linalg.pinv.html"
+    usefulness: 4
+    why: It documents the SVD construction of the pseudo-inverse, the `rcond` cutoff on small singular values, and the least-squares and minimum-norm properties this lesson relies on.
+    covers: The Moore-Penrose pseudo-inverse via SVD, the singular-value cutoff, and the relationship to least-squares solutions.
+  - name: "numpy.linalg.slogdet reference"
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/generated/numpy.linalg.slogdet.html"
+    usefulness: 4
+    why: It explains why the sign-and-log-magnitude form avoids the overflow and underflow that make `np.log(np.linalg.det(A))` unusable for large matrices, which is the fix taught here.
+    covers: The sign and log-absolute-value of a determinant, its stability versus a raw determinant, and its use in log-likelihoods.
+  - name: "Petersen and Pedersen — The Matrix Cookbook"
+    type: book
+    difficulty: deep
+    url: "https://www2.imm.dtu.dk/pubdb/pubs/3274-full.html"
+    usefulness: 4
+    why: It is the reference sheet for transpose, inverse, trace, and determinant identities — the product rule, the cyclic trace, derivatives of log-determinant — that recur constantly in ML derivations.
+    covers: Identities and derivatives for transpose, inverse, pseudo-inverse, trace, and determinant, including matrix-calculus results used in optimisation.
+  - name: "Trefethen and Bau — Numerical Linear Algebra"
+    type: book
+    difficulty: deep
+    url: "https://people.maths.ox.ac.uk/trefethen/text.html"
+    usefulness: 5
+    why: Lectures 1 to 6 and the conditioning chapters explain precisely why you solve rather than invert, why the Gram matrix squares the condition number, and how the SVD underlies rank and the pseudo-inverse.
+    covers: The SVD, conditioning and stability, why forming inverses and normal equations loses accuracy, and rank through singular values.

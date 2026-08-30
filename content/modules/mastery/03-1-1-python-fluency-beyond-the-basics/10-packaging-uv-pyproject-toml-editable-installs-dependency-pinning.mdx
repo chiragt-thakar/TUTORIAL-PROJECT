@@ -1,0 +1,312 @@
+---
+id: "roadmap:phase-1-1.1:9"
+title: "Packaging: uv, pyproject.toml, editable installs, dependency pinning"
+description: "Build reproducible Python projects by separating package metadata, environment resolution, editable development, and application locking into explicit contracts."
+module: 1-1-python-fluency-beyond-the-basics
+order: 10
+estimatedMinutes: 120
+prerequisites: []
+learningObjectives:
+  - Explain the roles of pyproject.toml, build backends, wheels, source distributions, environments, and lockfiles
+  - Use uv to create, lock, sync, run, and build a project without confusing declared constraints with resolved versions
+  - Choose dependency bounds and pinning policies appropriate to applications, reusable libraries, and published artifacts
+  - Diagnose editable-install, import-layout, index, platform-marker, and reproducibility failures at their real boundary
+---
+
+A Python project is reproducible only when three contracts agree: what the source declares, what the resolver selected, and what the environment actually contains. `pyproject.toml`, `uv.lock`, and `.venv` represent those three layers.
+
+Packaging is therefore not “making imports work.” It is the engineering boundary that turns a directory into an installable distribution, gives tools one source of metadata, and makes an environment reconstructible on another machine.
+
+`uv` can manage the whole workflow, but it cannot repair an ambiguous dependency policy. First decide whether you are shipping an application, which should lock a complete environment, or a library, whose published metadata must remain compatible with many environments.
+
+<TypeScriptComparison>
+
+- `pyproject.toml` combines roles spread across `package.json` and tool-specific configuration, while `[build-system]` also selects the code that builds the package.
+- `uv.lock` is closer to a package-manager lockfile than to `requirements.txt`: it records a resolved graph, including conditional choices, rather than only a flat declaration.
+- An editable install resembles a workspace link, but Python imports still depend on the selected build backend and package layout.
+- Python distributions and import packages can have different names: installing `scikit-learn` provides the `sklearn` import.
+- Both ecosystems should commit application lockfiles and avoid publishing one consumer's exact transitive versions as a reusable library's compatibility contract.
+
+</TypeScriptComparison>
+
+## The four objects people collapse into “the package”
+
+The source tree is where you edit code. A distribution package is the versioned artifact uploaded to an index. A wheel is an installable built distribution; an sdist is a source archive from which a build frontend can request a wheel. An environment is the interpreter plus installed distributions used for one execution context.
+
+Those objects can disagree. A local import can succeed because the repository root is on `sys.path`, while the wheel silently omits the package. A clean build-and-install test catches that boundary error; running tests from the checkout may not.
+
+```text
+project/
+  pyproject.toml
+  README.md
+  src/
+    inference_service/
+      __init__.py
+      cli.py
+  tests/
+```
+
+The `src` layout intentionally prevents accidental imports from the checkout root. Tests must exercise an installed package, making missing package-data and build configuration visible earlier.
+
+## `pyproject.toml` declares build and project metadata
+
+`[build-system]` says which backend builds the distribution and which requirements are needed to run that backend. `[project]` carries standardized metadata such as name, version, Python requirement, dependencies, scripts, and optional dependencies.
+
+```toml title="pyproject.toml"
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "inference-service"
+version = "0.1.0"
+description = "Batch and online inference boundaries"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+  "httpx>=0.27,<1",
+  "pydantic>=2.8,<3",
+]
+
+[project.optional-dependencies]
+postgres = ["psycopg[binary]>=3.2,<4"]
+
+[project.scripts]
+inference-service = "inference_service.cli:main"
+
+[dependency-groups]
+dev = [
+  "pytest>=8.3,<9",
+  "ruff>=0.12,<1",
+  "mypy>=1.17,<2",
+]
+```
+
+Build-system requirements are not runtime dependencies. Optional project dependencies describe installable features exposed to consumers. Dependency groups describe local development activities and are not included in built package metadata.
+
+Keep tool configuration in the same file when the tool supports it, but do not mistake one file for one semantic namespace. `[tool.ruff]` configures Ruff; it does not affect the metadata a package index sees.
+
+## Frontend, backend, and isolated builds
+
+A build frontend such as `uv build` asks the declared backend to produce artifacts. The backend decides how source files become a wheel and sdist. Build isolation creates a temporary environment containing the declared build requirements, preventing undeclared tools from leaking in from your development environment.
+
+```bash
+uv build
+uv run python -m build_inspector dist/*.whl
+```
+
+If an isolated build fails but a local build succeeds, suspect an undeclared build requirement or ambient state. Adding the entire development environment to `[build-system].requires` hides the defect and makes builds slower and less trustworthy.
+
+Inspect both artifacts. The sdist must contain everything needed to build; the wheel must contain everything needed to run. Tests should install the wheel into a clean environment and import the public package from outside the repository.
+
+<ProductionNote>
+
+Build once, then promote the same immutable wheel through environments. Rebuilding from the same commit can select different dependencies, use a different backend, or include different generated files.
+
+</ProductionNote>
+
+## Declared constraints are not resolved versions
+
+`httpx>=0.27,<1` describes an allowed set. It does not say which release was installed today. Resolution chooses one compatible graph from every direct and transitive constraint; locking records that decision so it can be recreated.
+
+An application owns a complete deployable environment. Commit its lockfile, review changes to it, and sync CI and production from it. A reusable library publishes compatibility constraints because its consumers must resolve it alongside their own graph.
+
+Pinning every library dependency to `==` exports one test environment as if it were the only valid environment. Leaving application dependencies unconstrained makes every deployment a fresh integration experiment. The policy follows the artifact's ownership.
+
+Constraints are promises. A lower bound claims the library works with that version; an upper bound excludes versions you have reason to reject. Do not add speculative upper bounds to every dependency, but do cap known incompatible major versions when the ecosystem's versioning and your tests justify it.
+
+## The `uv` project loop
+
+`uv lock` resolves project metadata into `uv.lock`. `uv sync` makes the project environment agree with that lock. `uv run` runs a command in the project environment and normally checks that the lock and environment are current first.
+
+```bash
+uv add httpx
+uv add --dev pytest
+uv lock --check
+uv sync --locked
+uv run pytest
+uv build
+```
+
+Use `--locked` in CI when a stale lockfile is an error rather than something automation should rewrite. Use a frozen mode only when you intentionally want to use an existing lock without checking whether project metadata changed; that is a narrower and riskier promise.
+
+By default, project synchronization is exact: packages no longer represented by the selected project groups and extras may be removed. This is desirable for reproducibility and surprising when someone treats one `.venv` as a shared toolbox. Give each project its own environment.
+
+`uv pip` offers lower-level pip-compatible environment operations. Those commands do not replace the project-level meaning of `uv lock` and `uv sync`. Pick one ownership model instead of mixing ad hoc installs into a locked project and then trusting the mutated environment.
+
+## Editable installs expose source without becoming deployment artifacts
+
+An editable install lets imports reflect source edits without rebuilding after each change. Modern editable installs are produced through the build backend's editable hook, often by installing a small indirection such as a `.pth` file.
+
+```bash
+uv pip install -e .
+python -c "import inference_service; print(inference_service.__file__)"
+```
+
+Editable does not mean “all repository files are importable,” and it does not prove the wheel is correct. New package modules often appear immediately, while changes to entry points, metadata, compiled extensions, or package discovery may require reinstalling.
+
+Do not deploy editable installs. Build the wheel, install it cleanly, and test that artifact. The development convenience and the release proof solve different problems.
+
+<CommonMistake>
+
+Setting `PYTHONPATH=.` until an import succeeds bypasses the package contract. It can conceal a missing `src` configuration, a wrong distribution name, or a wheel that excludes production code.
+
+</CommonMistake>
+
+## Locking across platforms and indexes
+
+A dependency graph can contain Python-version markers, operating-system markers, extras, and platform-specific wheels. A lockfile can record alternatives, but installation still selects artifacts compatible with the target interpreter and platform.
+
+Reproducibility has limits unless you also control indexes and artifacts. A version constraint does not prevent a package index from disappearing, an untrusted index from supplying a colliding name, or an sdist from requiring an unavailable compiler.
+
+Use authenticated indexes deliberately, separate private and public package trust, retain hashes or immutable artifacts where policy requires them, and test the deployment platform. Never place index credentials directly in committed `pyproject.toml` or lockfiles.
+
+For ML systems, wheel availability matters. NumPy, PyTorch, GPU runtimes, and native tokenizers vary by Python, operating system, architecture, accelerator, and index. Resolve and build in a matrix that represents deployment rather than assuming one developer laptop proves portability.
+
+## Reproducibility is a verification workflow
+
+A useful CI sequence checks that declarations and the lock agree, creates or syncs a clean environment, runs quality gates through that environment, builds artifacts, inspects them, then installs and tests the wheel in another clean environment.
+
+```bash title="ci/verify.sh"
+set -eu
+
+uv lock --check
+uv sync --locked --all-groups
+uv run ruff check .
+uv run mypy src tests
+uv run pytest
+uv build
+```
+
+Cache downloaded artifacts, not an undocumented mutable environment. Cache keys should include the lockfile, Python version, platform, and any accelerator dimension that changes compatible wheels.
+
+The lockfile is necessary evidence, not proof by itself. Record the command, tool version, interpreter, platform, selected extras and groups, index policy, and artifact digest. Then periodically re-resolve in a controlled change so security and compatibility updates do not arrive accidentally during deployment.
+
+<WhyItMatters>
+
+An inference service can pass tests yet fail to deploy because its wheel omits model templates, its GPU package resolves from the wrong index, or the container rebuild selects a new transitive release. Packaging is part of production correctness.
+
+</WhyItMatters>
+
+## Exercises
+
+<Exercise id="packaging-three-layers-easy" difficulty="easy">
+
+Explain the different promises made by `pyproject.toml`, `uv.lock`, and `.venv`.
+
+<Solution>
+
+`pyproject.toml` declares allowed project and build requirements. `uv.lock` records one resolved dependency graph, including conditional alternatives. `.venv` is mutable installed state. Reproducibility requires checking that the declaration, resolution, and environment agree rather than treating any one layer as the whole truth.
+
+</Solution>
+</Exercise>
+
+<Exercise id="packaging-library-bounds-medium" difficulty="medium">
+
+A reusable library declares `pydantic==2.10.4`. Explain the consumer problem and propose a better policy.
+
+<Solution>
+
+The exact pin prevents consumers from choosing any other compatible Pydantic release and can make unrelated dependency graphs unsatisfiable. Publish the range the library genuinely supports, such as a tested lower bound and justified major-version cap. Lock exact versions only in the library's own test environments.
+
+</Solution>
+</Exercise>
+
+<Exercise id="packaging-wheel-boundary-hard" difficulty="hard">
+
+Tests pass from the repository, but importing the installed wheel fails because `inference_service.prompts` is absent. Diagnose why the original test was weak and define the release check.
+
+<Solution>
+
+The checkout placed source files on the import path and never exercised artifact contents. Build the wheel in isolation, install it into a fresh environment, run tests from outside the repository, and inspect the wheel. Configure package discovery or package-data inclusion at the build-backend boundary.
+
+</Solution>
+</Exercise>
+
+<Exercise id="packaging-lock-policy-interview" difficulty="interview">
+
+In an interview, explain why “always pin every dependency” is incomplete advice.
+
+<Solution>
+
+Applications should lock the full deployable graph because they own an environment. Libraries publish compatible constraints because consumers resolve many libraries together; exact transitive pins unnecessarily destroy compatibility. I would test a library's lower bounds and current resolved set, while committing and reviewing lockfiles for applications and development environments.
+
+</Solution>
+</Exercise>
+
+<Exercise id="packaging-ml-release-real-world" difficulty="real-world">
+
+Design the release boundary for a CPU/GPU inference package used as both a library and a deployed service.
+
+<Solution>
+
+Keep reusable core metadata compatible and accelerator choices explicit through extras or separately documented install targets. Lock each deployed CPU/GPU environment, including platform and index policy. Build immutable wheels, test them in clean representative environments, record artifact digests, and promote the same service artifact rather than resolving again in production.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+Without looking back, distinguish a source tree, import package, distribution, wheel, sdist, environment, declared constraint, and resolved lock entry.
+
+Explain why `[build-system]`, `[project.optional-dependencies]`, and `[dependency-groups]` are three separate contracts. Then state when an editable install must be reinstalled and why it cannot validate a release wheel.
+
+Finally, describe the CI checks that prevent a stale lock, ambient dependency, missing artifact file, or incompatible deployment platform from reaching production.
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why does import work from the repository but fail after installation?">
+
+The repository root may be on `sys.path`, masking package-discovery or artifact-content mistakes. Test an installed wheel from outside the checkout.
+
+</Gotcha>
+
+<Gotcha question="Does an editable install update every packaging change immediately?">
+
+No. Source edits usually appear, but metadata, console scripts, package discovery, and compiled artifacts can require reinstalling the editable distribution.
+
+</Gotcha>
+
+<Gotcha question="Is uv.lock the metadata consumers install from my published library?">
+
+No. Consumers resolve the dependency constraints published in the wheel metadata. The lockfile controls your project environments and verification.
+
+</Gotcha>
+
+<Gotcha question="Does uv sync only add missing packages?">
+
+Project synchronization is normally exact and can remove packages outside the selected lock, groups, and extras. Do not use the project environment as a global toolbox.
+
+</Gotcha>
+
+<Gotcha question="Are requirements.txt and pyproject.toml interchangeable?">
+
+No. A requirements file commonly describes an environment installation, while project metadata describes the distributable project's direct dependency contract. Tools can export between representations, but their ownership differs.
+
+</Gotcha>
+
+<Gotcha question="Does a lockfile make an environment portable to every platform?">
+
+No. Markers and artifacts are platform-specific, and native wheels may not exist for a target. Test each supported interpreter and deployment platform.
+
+</Gotcha>
+
+<Gotcha question="Should I put private-index credentials in pyproject.toml?">
+
+No. Keep secrets in the CI or runtime credential mechanism, and keep index trust and precedence explicit without committing tokens.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+`pyproject.toml` declares how a project is built and what dependency compatibility it promises. A frontend invokes the selected backend to create wheels and source distributions; a clean artifact test proves more than an import from the checkout.
+
+`uv.lock` records a resolution, while a project environment is mutable installed state. Applications lock complete deployable graphs. Libraries publish honest compatibility ranges and test those ranges without forcing one exact transitive environment onto consumers.
+
+Editable installs optimize the development loop, not deployment. Platform markers, native wheels, indexes, credentials, and cache keys belong in the release design because reproducibility ends where those assumptions become implicit.
+
+Use the Practice and Debug tabs to repair broken project boundaries, the Interview tab to defend a pinning policy, and the Project tab to ship and verify an installable inference package.

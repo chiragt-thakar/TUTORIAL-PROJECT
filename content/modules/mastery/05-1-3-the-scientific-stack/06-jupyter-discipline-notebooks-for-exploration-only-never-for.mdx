@@ -1,0 +1,190 @@
+---
+id: "roadmap:phase-1-1.3:5"
+title: "Jupyter discipline: notebooks for exploration only, never for production logic"
+description: "Use notebooks as reproducible exploration interfaces while moving tested, reusable, deployable logic into Python packages."
+module: 1-3-the-scientific-stack
+order: 6
+estimatedMinutes: 100
+prerequisites: ["roadmap:phase-1-1.1:9", "roadmap:phase-1-1.1:10", "roadmap:phase-1-1.3:0"]
+learningObjectives:
+  - Explain notebook kernel state, execution-order hazards, and reproducibility requirements
+  - Separate narrative exploration from importable, tested production logic
+  - Design deterministic notebook inputs, outputs, environments, and execution checks
+  - Review notebooks for security, provenance, accessibility, and version-control quality
+---
+
+A notebook is a document attached to a long-lived Python kernel. Cells display one order in the file but may have executed in another order in memory. That gap makes exploration fluid and makes hidden state dangerous.
+
+Use notebooks to ask questions, inspect intermediate results, and communicate evidence. Move reusable transformations, models, validation, and I/O contracts into importable modules that tests and production entry points can execute.
+
+<TypeScriptComparison>
+
+A notebook kernel resembles a Node REPL that retains every variable and module import while editable cells pretend to be a source file. Restart-and-run-all is the equivalent of launching a clean process. Production logic belongs in modules, not in a remembered REPL session.
+
+</TypeScriptComparison>
+
+## The kernel is not the document
+
+Editing a cell does not undo earlier side effects. Deleting a cell does not delete variables already defined. Re-running a mutation can append twice, train twice, or overwrite output.
+
+```python
+# Hidden-state bug: running this cell twice changes the result twice.
+samples.extend(load_more_samples())
+
+# Prefer an idempotent expression derived from explicit inputs.
+samples = load_samples(DATA_PATH)
+```
+
+Execution counts reveal some disorder but do not prove a clean run. The minimum reproducibility check is: restart the kernel, clear outputs when appropriate, run all cells top-to-bottom, and fail on the first exception.
+
+## One-way dependency flow
+
+Organize a notebook as configuration, imports, data loading, validation, analysis, results, and conclusions. Later cells may depend on earlier cells; earlier cells must not depend on later accidental state.
+
+Keep parameters together and immutable where practical. Use small datasets or durable references, never a developer's untracked desktop path.
+
+```python
+from pathlib import Path
+from project.analysis import daily_summary
+from project.io import load_readings
+
+DATA_PATH = Path("../data/sample-readings.parquet")
+readings = load_readings(DATA_PATH)
+summary = daily_summary(readings)
+```
+
+The notebook orchestrates and presents. The imported functions own validation and transformation logic.
+
+## The extraction rule
+
+Extract code when it is reused, difficult to test visually, domain-critical, longer than a focused cell, or needed by another execution environment. Give it a typed function with explicit inputs and outputs, unit tests, and documentation.
+
+Do not copy a “working” cell into a service. Refactor it into a package, make the notebook import the same function, then test a clean notebook run and the production path against shared fixtures.
+
+Useful notebook-local code includes a short display helper, a one-off query, or an exploratory comparison. Even there, avoid hidden globals and surprising mutation.
+
+## Data and artifact provenance
+
+A reproducible analysis records source identifiers, query or snapshot version, schema, row counts, time range, filters, units, and checksums for critical inputs. Large or sensitive data should not be embedded in Git.
+
+Generated charts and tables need the code and environment that produced them. Avoid hand-editing outputs after generation. Save durable artifacts through explicit paths and metadata.
+
+## Environment and execution
+
+The kernel must use the project's locked environment. Display the interpreter path and key package versions during diagnosis, not as noisy permanent output.
+
+Automated execution tools can run notebooks from a clean kernel and parameterize approved inputs. The exact tool may be `jupyter execute`, nbclient, nbconvert, or a project wrapper; the principle is deterministic clean-process execution in CI.
+
+Set random generators explicitly and account for nondeterministic native libraries. Network calls should be isolated, cached or mocked, timeout-bounded, and never required for a basic unit test.
+
+## Version control and review
+
+Notebook JSON mixes source, metadata, outputs, and binary payloads. This creates noisy diffs and merge conflicts. Use a deliberate output policy: clear routine outputs before commit, or retain only evidence that reviewers need.
+
+Text-based notebook representations can improve diffs, but the generated `.ipynb` and text source need one declared authority and synchronization checks. Never resolve a notebook conflict by accepting a whole side without inspecting cells and metadata.
+
+Keep secrets out of cells, outputs, tracebacks, widget state, and environment dumps. Revoking a leaked credential is necessary even after clearing Git history.
+
+## Narrative and accessibility
+
+A useful notebook states its question, assumptions, method, results, limitations, and next action. Each chart needs labels, units, a readable palette, and a nearby interpretation. Tables should not be unexplained output dumps.
+
+Avoid enormous cell outputs that freeze browsers or hide the relevant evidence. Display bounded samples and aggregate diagnostics while retaining reproducible artifact paths.
+
+## From exploration to production
+
+The graduation path is deliberate:
+
+```text
+question -> exploratory notebook -> stable function -> tests -> package API
+         -> reproducible notebook using that API -> production entry point
+```
+
+The notebook may remain as an analysis report, tutorial, experiment record, or incident investigation. It should not become the only executable definition of a business rule.
+
+<ProductionNote>
+
+CI should lint or validate notebook structure, scan for secrets, and execute critical notebooks from clean state using small fixtures. Production jobs must call package or CLI entry points rather than notebook cells.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="jupyter-state-easy" difficulty="easy">
+
+Why can a notebook display correct output but fail after restart?
+
+<Solution>
+
+The live kernel may contain variables, imports, mutations, or files produced by cells executed earlier or now deleted. A clean top-to-bottom run exposes those undeclared dependencies.
+
+</Solution>
+</Exercise>
+
+<Exercise id="jupyter-extract-medium" difficulty="medium">
+
+A 40-line cell cleans telemetry and is copied into two notebooks. What should change?
+
+<Solution>
+
+Extract a typed function into the project package, add fixture-based tests, import it from both notebooks, and leave the cells responsible only for configuration and presentation.
+
+</Solution>
+</Exercise>
+
+<Exercise id="jupyter-provenance-hard" difficulty="hard">
+
+Design the provenance record for a database-backed experiment.
+
+<Solution>
+
+Record query text or version, immutable snapshot or extraction timestamp, database/source identity, schema, row count, time bounds, filters, code revision, environment lock, seeds, and checksums for exported inputs.
+
+</Solution>
+</Exercise>
+
+<Exercise id="jupyter-production-interview" difficulty="interview">
+
+Why should production logic not live only in notebooks?
+
+<Solution>
+
+Notebook behavior depends on mutable kernel state and weak module boundaries. Packages provide importable APIs, tests, typing, clean-process execution, reuse, deployment entry points, and reviewable diffs while notebooks remain valuable consumers.
+
+</Solution>
+</Exercise>
+
+<Exercise id="jupyter-ci-real-world" difficulty="real-world">
+
+Design CI for an experiment notebook that generates a release report.
+
+<Solution>
+
+Use a locked environment and fixture snapshot, scan secrets, clear or normalize outputs, execute from a fresh kernel, fail on errors, assert expected artifacts and schemas, cap runtime/output size, and keep production calculations in tested modules.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+  <Gotcha question="Does Run All prove reproducibility?">
+    Only after a restart with explicit inputs and the locked environment. A warm kernel can still supply hidden state.
+  </Gotcha>
+  <Gotcha question="Is clearing outputs enough after exposing a secret?">
+    No. The credential may remain in Git history, caches, logs, or remote copies. Revoke it and follow incident cleanup procedures.
+  </Gotcha>
+  <Gotcha question="Why is a notebook merge conflict unusually risky?">
+    JSON combines source, outputs, execution metadata, and IDs. Whole-file conflict choices can silently discard cells or retain stale output.
+  </Gotcha>
+</Gotchas>
+
+## Checkpoint
+
+You are ready when you can explain kernel/document divergence, perform a clean-run check, decide when to extract a cell, record provenance, and define a safe notebook CI and output policy.
+
+## Summary
+
+- Notebook kernels retain hidden state independently of visible cell order.
+- Restart-and-run-all from explicit inputs is the minimum reproducibility test.
+- Tested package functions own reusable and production logic.
+- Provenance includes data, code, environment, parameters, and artifacts.
+- Review policies must handle outputs, secrets, diffs, and clean execution.

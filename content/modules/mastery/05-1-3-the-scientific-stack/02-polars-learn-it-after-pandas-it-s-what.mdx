@@ -1,0 +1,210 @@
+---
+id: "roadmap:phase-1-1.3:1"
+title: "polars — learn it after pandas; it's what you'll actually reach for on large data"
+description: "Use Polars expressions, lazy query plans, Arrow-style columnar memory, streaming, and schema-aware validation for large analytical pipelines."
+module: 1-3-the-scientific-stack
+order: 2
+estimatedMinutes: 125
+prerequisites: ["roadmap:phase-1-1.3:0", "roadmap:phase-1-1.2:0"]
+learningObjectives:
+  - Build Polars transformations from expressions rather than row-oriented Python callbacks
+  - Explain lazy optimization, projection and predicate pushdown, streaming, and materialization
+  - Handle nulls, dtypes, joins, groups, and window expressions with explicit schemas
+  - Choose pandas or Polars from workload evidence instead of fashion
+---
+
+Polars is a multithreaded columnar query engine with Python bindings. Its central abstraction is not a mutable spreadsheet; it is an expression graph evaluated against a schema.
+
+That difference matters more than API spelling. Write transformations that expose intent to the optimizer, delay materialization when useful, and keep Python callbacks outside hot paths.
+
+<TypeScriptComparison>
+
+Polars expressions resemble a typed SQL query builder more than `Array.map`. `pl.col("watts").mean().over("device")` describes work; it does not immediately loop over values. A `LazyFrame` resembles a database query plan whose execution starts at `collect()`.
+
+</TypeScriptComparison>
+
+## Expressions are reusable query fragments
+
+`select`, `with_columns`, `filter`, `group_by`, and window operations accept expressions. Expressions are parallelizable and can be optimized because Polars understands their dependencies.
+
+```python
+import polars as pl
+
+readings = pl.DataFrame(
+    {"device": ["a", "a", "b"], "watts": [120.0, 135.0, 90.0]}
+)
+
+clean = readings.with_columns(
+    pl.col("device").cast(pl.Categorical),
+    pl.col("watts").cast(pl.Float64),
+    (pl.col("watts") / 1000).alias("kilowatts"),
+)
+```
+
+Expressions run in contexts. `select` determines the output columns, `with_columns` retains existing columns, `filter` evaluates a Boolean expression, and `group_by(...).agg(...)` reduces groups.
+
+Avoid Python `lambda` work when native expressions exist. Crossing from Rust's columnar engine into Python per element sacrifices optimizer visibility, parallel execution, and predictable typing.
+
+## Lazy execution is an optimization boundary
+
+`scan_csv` and `scan_parquet` produce lazy plans. Polars can push filters toward the data source, read only referenced columns, reorder compatible operations, and sometimes stream batches through the plan.
+
+```python
+plan = (
+    pl.scan_parquet("readings/*.parquet")
+    .filter(pl.col("timestamp") >= pl.datetime(2026, 1, 1))
+    .group_by("device")
+    .agg(pl.col("watts").mean().alias("mean_watts"))
+)
+
+print(plan.explain())
+result = plan.collect()
+```
+
+Calling `collect()` too early freezes an intermediate table in memory and blocks cross-step optimization. Inspect the optimized plan when performance is surprising.
+
+Streaming is not magic out-of-core execution for every operator. Global sorts, some joins, or operations needing all rows may require materialization. Verify whether the actual plan can stream and measure peak memory.
+
+## Schemas, nulls, and missing values
+
+Polars uses Arrow-inspired columnar buffers with a validity bitmap for nulls. Floating-point `NaN` is a value and is distinct from null. Therefore `is_null()` and `is_nan()` answer different questions.
+
+Define schemas when inference could vary across files or batches. A stable input contract prevents an early integer value from causing later decimals or identifiers to be misinterpreted.
+
+```python
+schema = {"device": pl.String, "timestamp": pl.Datetime("us", "UTC"), "watts": pl.Float64}
+events = pl.read_csv("events.csv", schema_overrides=schema, try_parse_dates=True)
+```
+
+Check the installed Polars documentation for exact reader arguments because APIs evolve. The durable principle is to make dtype and time-unit assumptions explicit.
+
+## Groups and windows
+
+Aggregation reduces groups. Window expressions compute using groups while retaining each row. This makes per-device normalization direct and optimizer-visible.
+
+```python
+normalized = readings.with_columns(
+    (
+        pl.col("watts") - pl.col("watts").mean().over("device")
+    ).alias("delta_from_device_mean")
+)
+
+summary = readings.group_by("device").agg(
+    pl.len().alias("samples"),
+    pl.col("watts").mean().alias("mean_watts"),
+)
+```
+
+Ordering is not implicit. Sort when a rolling or sequence calculation depends on order, and include deterministic tie-breakers.
+
+## Joins need the same relational discipline
+
+Polars does not remove the need to reason about key cardinality. Check uniqueness on dimension keys, compare unmatched keys, and assert output row bounds.
+
+```python
+devices = pl.DataFrame({"device": ["a", "b"], "site": ["north", "south"]})
+assert devices.select(pl.col("device").n_unique()).item() == devices.height
+joined = readings.join(devices, on="device", how="left")
+assert joined.filter(pl.col("site").is_null()).is_empty()
+```
+
+Join validation features vary by version and execution mode. Even when an API offers cardinality validation, keep domain-level coverage checks.
+
+## pandas interoperability and ownership
+
+Conversion may copy buffers, change categorical or timezone representation, or materialize a lazy plan. Arrow can enable zero-copy exchange only when representations are compatible.
+
+Keep one engine in charge of the main pipeline. Convert at a deliberate boundary for a library that requires pandas, then verify schema and null behavior. Repeated pandas–Polars conversion inside a workflow erases many performance benefits.
+
+## When Polars wins—and when it does not
+
+Polars is compelling for large columnar scans, parallel expression workloads, Parquet pipelines, and memory pressure. pandas may be better for small data, a dependency ecosystem that requires pandas, or a team whose workload gains nothing from migration.
+
+Benchmark the full pipeline with representative data. Include read time, conversions, peak memory, output checks, and developer complexity. A faster group-by is irrelevant if conversion or an unsupported downstream operation dominates.
+
+<ProductionNote>
+
+Persist input and output schemas, inspect representative lazy plans, pin library versions, and test row counts, null counts, key uniqueness, and numeric tolerances. Performance tests should report both elapsed time and peak memory.
+
+</ProductionNote>
+
+## Exercises
+
+<Exercise id="polars-expression-easy" difficulty="easy">
+
+Add a `kilowatts` column without a Python loop.
+
+<Solution>
+
+Use `df.with_columns((pl.col("watts") / 1000).alias("kilowatts"))`. The native expression keeps the work columnar and visible to Polars.
+
+</Solution>
+</Exercise>
+
+<Exercise id="polars-lazy-medium" difficulty="medium">
+
+Explain why `scan_parquet(...).select(...).filter(...).collect()` may read less data than an eager load.
+
+<Solution>
+
+The lazy optimizer can push referenced columns and filters into the scan, reducing I/O and intermediate memory before execution begins at `collect()`.
+
+</Solution>
+</Exercise>
+
+<Exercise id="polars-null-nan-hard" difficulty="hard">
+
+A float column contains both null and `NaN`. Design an explicit cleaning rule.
+
+<Solution>
+
+Measure each separately with `is_null` and `is_nan`, decide their domain meaning, then apply targeted `fill_null` and `fill_nan` rules. Do not assume one operation handles both states.
+
+</Solution>
+</Exercise>
+
+<Exercise id="polars-plan-interview" difficulty="interview">
+
+What is the benefit of Polars lazy execution beyond postponing work?
+
+<Solution>
+
+It exposes a complete logical plan that can be optimized through projection and predicate pushdown, expression simplification, and compatible streaming. It also provides an explainable boundary for diagnosing execution.
+
+</Solution>
+</Exercise>
+
+<Exercise id="polars-benchmark-real-world" difficulty="real-world">
+
+Design a fair pandas-versus-Polars benchmark for a daily telemetry transform.
+
+<Solution>
+
+Use representative files and cold/warm runs; include parsing, transformations, joins, output, conversions, peak memory, and correctness assertions. Pin versions, repeat runs, and compare complete pipelines rather than one isolated operator.
+
+</Solution>
+</Exercise>
+
+<Gotchas>
+  <Gotcha question="Why did lazy execution not reduce memory?">
+    An operator may require global materialization, or the plan may have been collected early. Inspect the optimized plan and streaming compatibility.
+  </Gotcha>
+  <Gotcha question="Why did fill_null leave bad floats behind?">
+    `NaN` is a floating value, not a null validity bit. Handle it with an explicit NaN policy.
+  </Gotcha>
+  <Gotcha question="Why did a Python UDF make the pipeline slow?">
+    Per-element Python execution blocks native optimization and parallel columnar kernels. Rewrite it as expressions when possible.
+  </Gotcha>
+</Gotchas>
+
+## Checkpoint
+
+You should be able to describe a Polars expression context, read a lazy plan, distinguish null from NaN, write grouped windows, and explain where streaming or zero-copy conversion can fail.
+
+## Summary
+
+- Polars programs are expression graphs over columnar data.
+- Lazy plans enable pushdown and optimization until `collect()`.
+- Native expressions preserve speed, typing, and optimizer visibility.
+- Schemas, key cardinality, ordering, and null policy remain correctness contracts.
+- Choose engines by end-to-end evidence, including conversions and maintainability.

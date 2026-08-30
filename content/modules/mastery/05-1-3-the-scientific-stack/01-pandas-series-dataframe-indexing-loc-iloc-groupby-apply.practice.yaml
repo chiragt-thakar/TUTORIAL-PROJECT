@@ -1,0 +1,424 @@
+lessonId: "roadmap:phase-1-1.3:0"
+module: 1-3-the-scientific-stack
+lesson: 01-pandas-series-dataframe-indexing-loc-iloc-groupby-apply
+title: "pandas: Series/DataFrame, indexing, grouping, joins, reshaping, time series, MultiIndex"
+summary: Practise label-aware, cardinality-safe and timezone-correct pandas pipelines.
+
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+
+exercises:
+  - id: pandas-select-labels
+    tier: normal
+    kind: write-code
+    title: Select by labels
+    minutes: 8
+    requiredForMastery: true
+    concepts: [loc, labels]
+    prompt: Select rows whose device is a and return only watts using loc.
+    hints: [Build the Boolean mask from the same frame., Put the row selector and column selector inside one loc.]
+    solution: Use one label-aware selection so the mask aligns with the source frame and the result has an explicit column schema.
+    solutionCode: |
+      result = df.loc[df["device"].eq("a"), ["watts"]]
+
+  - id: pandas-position-window
+    tier: normal
+    kind: predict-output
+    title: Predict positional slicing
+    minutes: 8
+    requiredForMastery: true
+    concepts: [iloc, slicing]
+    prompt: With index labels [10, 20, 30], which row labels does df.iloc[1:3] return?
+    hints: [Ignore the label values., Python positional slices exclude the stop.]
+    solution: It returns rows at positions 1 and 2, whose labels are 20 and 30; iloc never interprets those integers as labels.
+
+  - id: pandas-align-series
+    tier: normal
+    kind: code-reading
+    title: Read an aligned assignment
+    minutes: 10
+    requiredForMastery: true
+    concepts: [Series, alignment, index]
+    prompt: "Predict the values after assigning pd.Series({2: 50, 1: 40}) into a frame indexed [1, 2, 3]."
+    hints: [Series assignment matches labels., Ask which frame label has no Series value.]
+    solution: Labels 1 and 2 receive 40 and 50 respectively, independent of Series display order; label 3 receives NaN because no matching value exists.
+
+  - id: pandas-named-aggregation
+    tier: normal
+    kind: write-code
+    title: Build a stable summary
+    minutes: 12
+    requiredForMastery: true
+    concepts: [groupby, agg]
+    prompt: Produce device, samples, and mean_watts, one row per device.
+    hints: [Use as_index=False., Named aggregation fixes output names.]
+    solution: Named aggregation makes the reduction and resulting schema explicit while retaining the group key as a normal column.
+    solutionCode: |
+      summary = df.groupby("device", as_index=False).agg(
+          samples=("watts", "size"),
+          mean_watts=("watts", "mean"),
+      )
+
+  - id: pandas-group-transform
+    tier: intermediate
+    kind: write-code
+    title: Normalize within groups
+    minutes: 13
+    requiredForMastery: true
+    concepts: [groupby, transform, alignment]
+    prompt: Add watts_centered, subtracting each device's mean without changing row count.
+    hints: [The result must align to original rows., Use transform, not agg.]
+    solution: transform returns one value per source row, so subtraction preserves index and row count without a join-back step.
+    solutionCode: |
+      df["watts_centered"] = df["watts"] - df.groupby("device")["watts"].transform("mean")
+
+  - id: pandas-validated-merge
+    tier: intermediate
+    kind: write-code
+    title: Enforce join cardinality
+    minutes: 15
+    requiredForMastery: true
+    concepts: [merge, cardinality, indicator]
+    prompt: Left-join readings to a unique device table and fail if the right key is duplicated.
+    hints: [State the relationship from left to right., Keep evidence for unmatched rows.]
+    solution: A many-to-one validation rejects duplicated dimension keys, while the indicator supports an explicit coverage assertion.
+    solutionCode: |
+      joined = readings.merge(
+          devices, on="device", how="left", validate="many_to_one", indicator=True
+      )
+      assert joined["_merge"].eq("both").all()
+
+  - id: pandas-melt-wide
+    tier: intermediate
+    kind: refactor
+    title: Reshape repeated metric columns
+    minutes: 14
+    requiredForMastery: true
+    concepts: [melt, tidy-data]
+    prompt: Refactor columns voltage and current into metric and reading, retaining device.
+    hints: [The identifier is not measured., Pass measured column names through value_vars.]
+    solution: melt produces one observation row per device/metric pair and names the variable and value columns deliberately.
+    solutionCode: |
+      long = wide.melt(
+          id_vars=["device"],
+          value_vars=["voltage", "current"],
+          var_name="metric",
+          value_name="reading",
+      )
+
+  - id: pandas-time-bins
+    tier: intermediate
+    kind: write-code
+    title: Resample UTC events
+    minutes: 14
+    requiredForMastery: true
+    concepts: [datetime, timezone, resample]
+    prompt: Parse timestamp as UTC and calculate a five-minute mean of watts.
+    hints: [Parsing and indexing are separate steps., Resampling needs a datetime-like index.]
+    solution: Parse with an explicit UTC policy, index by time, then use a time-bin reduction whose meaning is documented as mean power, not energy.
+    solutionCode: |
+      events["timestamp"] = pd.to_datetime(events["timestamp"], utc=True)
+      five_minute = events.set_index("timestamp")["watts"].resample("5min").mean()
+
+  - id: pandas-chained-assignment-bug
+    tier: tricky
+    kind: debug
+    title: Repair chained assignment
+    minutes: 15
+    requiredForMastery: true
+    concepts: [assignment, copy-on-write, loc]
+    prompt: Debug df[df["device"] == "a"]["watts"] = 0.
+    hints: [The first selection may create an intermediate object., Express row and column targeting in one operation.]
+    solution: Chained assignment has ambiguous ownership and may not update the source. Use a single .loc assignment against the original frame.
+    solutionCode: |
+      df.loc[df["device"].eq("a"), "watts"] = 0
+
+  - id: pandas-merge-explosion-bug
+    tier: tricky
+    kind: debug
+    title: Diagnose row multiplication
+    minutes: 18
+    requiredForMastery: true
+    concepts: [merge, duplicates, many-to-many]
+    prompt: A left join doubles some readings even though total output count seems plausible. Diagnose and prevent it.
+    hints: [Count keys on both sides before joining., Total row count can hide offsetting loss and expansion.]
+    solution: Inspect per-key frequencies and unmatched keys, declare the intended relationship with validate, and reject duplicate dimension keys before the merge.
+    solutionCode: |
+      assert devices["device"].is_unique
+      joined = readings.merge(devices, on="device", how="left", validate="many_to_one")
+
+  - id: pandas-mask-alignment-bug
+    tier: tricky
+    kind: debug
+    title: Fix a foreign Boolean mask
+    minutes: 16
+    requiredForMastery: true
+    concepts: [mask, alignment, reindex]
+    prompt: A Boolean mask from a differently indexed frame selects the wrong rows or raises an alignment error. Repair the design.
+    hints: [A mask is a labelled Series., Derive the predicate from the target frame when possible.]
+    solution: Build the mask directly from the target frame. If cross-frame logic is required, join on an explicit key or deliberately reindex and validate missing mask labels.
+
+  - id: pandas-multiindex-slice
+    tier: tricky
+    kind: write-code
+    title: Slice a compound index
+    minutes: 17
+    requiredForMastery: false
+    concepts: [MultiIndex, sort-index, tuple-key]
+    prompt: Select every device and timestamp under site north from a sorted (site, device, timestamp) MultiIndex.
+    hints: [A MultiIndex key is a tuple., Use slice(None) for unconstrained levels.]
+    solution: Sort the compound index, then use one tuple selector whose first component fixes the site and whose remaining components accept all labels.
+    solutionCode: |
+      indexed = df.set_index(["site", "device", "timestamp"]).sort_index()
+      north = indexed.loc[("north", slice(None), slice(None)), :]
+
+  - id: pandas-pivot-duplicates
+    tier: challenge
+    kind: design
+    title: Define duplicate reshape semantics
+    minutes: 22
+    requiredForMastery: false
+    concepts: [pivot, duplicates, aggregation]
+    prompt: Long data has multiple readings for one device/metric pair. Decide whether and how it may become wide.
+    hints: [Plain pivot encodes a uniqueness claim., An aggregation function is a domain decision.]
+    solution: First decide whether duplicates are errors, repeated samples, or separate dimensions. Add the missing key, reject duplicates, or use pivot_table with a justified estimator and count checks; never default silently to first.
+
+  - id: pandas-energy-pipeline
+    tier: challenge
+    kind: performance
+    title: Design a site-energy pipeline
+    minutes: 30
+    requiredForMastery: false
+    concepts: [time-series, integration, joins, invariants]
+    prompt: Design a memory-aware pipeline that turns irregular device power samples into hourly site energy.
+    hints: [Energy depends on elapsed duration., Validate joins and interval gaps before aggregation.]
+    solution: Load selected columns with stable dtypes, parse UTC, validate device metadata cardinality, sort per device, compute bounded elapsed intervals, integrate power over duration, group site-hour totals, and assert units, coverage, uniqueness, nulls, and gap policy.
+
+quizzes:
+  - id: pandas-checkpoint
+    title: pandas checkpoint
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: pandas-cp-loc
+        kind: mcq
+        prompt: Which selector is label-based?
+        options: [{id: pandas-cp-loc-a, text: iloc}, {id: pandas-cp-loc-b, text: loc}]
+        answer: [pandas-cp-loc-b]
+        explanation: loc uses labels; iloc uses positions.
+        concepts: [indexing]
+      - id: pandas-cp-transform
+        kind: mcq
+        prompt: Which grouped operation normally preserves one result per input row?
+        options: [{id: pandas-cp-transform-a, text: agg}, {id: pandas-cp-transform-b, text: transform}]
+        answer: [pandas-cp-transform-b]
+        explanation: transform returns a like-indexed result suitable for row-aligned calculations.
+        concepts: [groupby]
+      - id: pandas-cp-merge
+        kind: mcq
+        prompt: What validates a readings-to-unique-devices join?
+        options: [{id: pandas-cp-merge-a, text: many_to_one}, {id: pandas-cp-merge-b, text: many_to_many}]
+        answer: [pandas-cp-merge-a]
+        explanation: Many readings may reference one unique device record.
+        concepts: [merge]
+      - id: pandas-cp-pivot
+        kind: true-false
+        prompt: Plain pivot requires each index-column pair to identify at most one value.
+        options: [{id: pandas-cp-pivot-true, text: "true"}, {id: pandas-cp-pivot-false, text: "false"}]
+        answer: [pandas-cp-pivot-true]
+        explanation: Duplicate pairs make pivot ambiguous.
+        concepts: [reshape]
+
+  - id: pandas-assessment
+    title: pandas mastery assessment
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: pandas-as-label-slice
+        kind: mcq
+        prompt: Is the stop label normally included in a loc label slice?
+        options: [{id: pandas-as-label-yes, text: "yes"}, {id: pandas-as-label-no, text: "no"}]
+        answer: [pandas-as-label-yes]
+        explanation: Label slices generally include both endpoints.
+        concepts: [loc]
+      - id: pandas-as-alignment
+        kind: explain
+        prompt: Explain index alignment during Series assignment.
+        modelAnswer: Values match destination index labels; unmatched labels become missing, and display order does not define placement.
+        explanation: Label identity, not position, is the default contract.
+        concepts: [alignment]
+      - id: pandas-as-group-apply
+        kind: mcq
+        prompt: Prefer which operation for several scalar summaries per group?
+        options: [{id: pandas-as-group-agg, text: named agg}, {id: pandas-as-group-apply-opt, text: arbitrary apply}]
+        answer: [pandas-as-group-agg]
+        explanation: Named aggregation is clearer and usually more efficient.
+        concepts: [groupby]
+      - id: pandas-as-null-key
+        kind: scenario
+        prompt: What must a merge policy say about null keys?
+        modelAnswer: It must decide whether null keys are rejected, normalized, unmatched, or intentionally matched and validate that behavior explicitly.
+        explanation: pandas null-key behavior should not be assumed to mirror SQL.
+        concepts: [merge, "null"]
+      - id: pandas-as-pivot-table
+        kind: mcq
+        prompt: What extra decision does pivot_table require when duplicates exist?
+        options: [{id: pandas-as-pivot-agg, text: aggregation policy}, {id: pandas-as-pivot-sort, text: filename order}]
+        answer: [pandas-as-pivot-agg]
+        explanation: Duplicate observations must be reduced deliberately.
+        concepts: [reshape]
+      - id: pandas-as-timezone
+        kind: mcq
+        prompt: Which storage comparison policy is safest across timezones?
+        options: [{id: pandas-as-time-utc, text: timezone-aware UTC}, {id: pandas-as-time-naive, text: naive local strings}]
+        answer: [pandas-as-time-utc]
+        explanation: UTC-aware timestamps avoid ambiguous cross-zone comparison.
+        concepts: [time-series]
+      - id: pandas-as-energy
+        kind: explain
+        prompt: Why is mean power not automatically energy?
+        modelAnswer: Energy is the time integral of power, so elapsed intervals, gaps, and units must participate in the calculation.
+        explanation: Irregular sampling invalidates naive row-based conversion.
+        concepts: [time-series, units]
+      - id: pandas-as-multiindex
+        kind: scenario
+        prompt: When should a MultiIndex remain ordinary columns instead?
+        modelAnswer: Prefer columns when tuple-key selection is rare or data frequently crosses SQL, Arrow, JSON, plotting, or serialization boundaries.
+        explanation: Hierarchical indexes add value only for workloads that use them.
+        concepts: [MultiIndex]
+      - id: pandas-as-copy
+        kind: find-bug
+        prompt: Find the flaw in df[df.x > 0].y = 1.
+        modelAnswer: It is chained assignment against an ambiguous intermediate; use df.loc[df.x > 0, "y"] = 1.
+        explanation: One assignment operation identifies the owner explicitly.
+        concepts: [assignment]
+      - id: pandas-as-performance
+        kind: performance
+        prompt: Name three evidence-based ways to reduce a pandas pipeline's resource use.
+        modelAnswer: Read required columns with stable dtypes, use vectorized/grouped kernels instead of row apply, use appropriate categorical types, chunk at safe boundaries, and measure deep memory and runtime.
+        explanation: Optimization begins with measured I/O, dtype, and algorithm costs.
+        concepts: [performance]
+
+interview:
+  - id: pandas-iv-alignment
+    level: internals
+    question: What makes pandas different from a two-dimensional NumPy array?
+    shortAnswer: pandas adds labelled axes, heterogeneous column dtypes, missing-data semantics, and automatic alignment.
+    fullAnswer: A DataFrame is a collection of labelled columns sharing a row index. Operations may align labels and manage per-column representations, so positional NumPy intuition is incomplete.
+    commonWrongAnswer: It is just NumPy with column names.
+    followUps: [When would you deliberately convert to NumPy?]
+    concepts: [DataFrame, alignment]
+    requiredForMastery: true
+  - id: pandas-iv-groupby
+    level: comparison
+    question: Compare agg, transform, filter, and apply.
+    shortAnswer: Reduce groups, broadcast group results, retain whole groups, and run general custom logic respectively.
+    fullAnswer: Choose the narrowest shape contract. Built-in aggregation and transform expose intent and optimized paths; general apply is appropriate only when those contracts cannot express the result.
+    commonWrongAnswer: They differ only in syntax.
+    followUps: [Why can apply be slower?]
+    concepts: [groupby]
+    requiredForMastery: true
+  - id: pandas-iv-merge
+    level: scenario
+    question: How do you make a merge trustworthy?
+    shortAnswer: Assert key cardinality, validate the join, audit unmatched keys, and check output invariants.
+    fullAnswer: Define the relational relationship before joining, normalize key types and null policy, use validate, inspect indicators or anti-joins, and assert domain-specific row and key constraints afterward.
+    commonWrongAnswer: Compare only the final row count.
+    followUps: [How does a many-to-many join expand rows?]
+    concepts: [merge]
+    requiredForMastery: true
+  - id: pandas-iv-time
+    level: advanced
+    question: What is your pandas timezone policy?
+    shortAnswer: Parse with source-zone knowledge, store and compare timezone-aware UTC, and convert only for presentation.
+    fullAnswer: Handle ambiguous and nonexistent local times explicitly, retain source semantics where needed, and distinguish clock-time resampling from duration integration.
+    commonWrongAnswer: Strip timezones so comparisons work.
+    followUps: [What happens during daylight-saving transitions?]
+    concepts: [datetime]
+    requiredForMastery: false
+  - id: pandas-iv-multiindex
+    level: tricky
+    question: When is MultiIndex the right representation?
+    shortAnswer: When hierarchical tuple-key selection and grouped alignment dominate the workload.
+    fullAnswer: It expresses a compound axis key elegantly, but sorting and interoperability costs argue for normal columns when data travels across systems often.
+    commonWrongAnswer: Whenever there is more than one identifier column.
+    followUps: [Why sort before range slicing?]
+    concepts: [MultiIndex]
+    requiredForMastery: false
+  - id: pandas-iv-performance
+    level: advanced
+    question: How do you diagnose a slow pandas pipeline?
+    shortAnswer: Profile I/O, dtypes, memory, row-wise Python, joins, copies, and algorithmic shape changes.
+    fullAnswer: Measure representative steps, inspect intermediate shapes and deep memory, remove unnecessary columns, replace Python loops with vectorized operations, and validate that optimization preserves semantics.
+    commonWrongAnswer: Add multiprocessing immediately.
+    followUps: [When would Polars be a better choice?]
+    concepts: [performance]
+    requiredForMastery: false
+
+projects:
+  - id: pandas-project-telemetry-audit
+    kind: major
+    title: Auditable telemetry-to-energy pipeline
+    summary: Build a package that converts raw device samples and metadata into verified hourly site energy tables.
+    problem: Source files contain duplicated keys, missing metadata, irregular UTC timestamps, gaps, and mixed dtypes. Produce deterministic output without hiding bad observations.
+    requirements:
+      - Validate schemas, dtypes, units, nulls, and key uniqueness before transformation
+      - Join metadata with an executable many-to-one cardinality claim and unmatched-key report
+      - Integrate power over bounded elapsed intervals and aggregate unique site-hour keys
+      - Emit data-quality metrics and a machine-readable provenance record
+    constraints: [No row-wise apply for core calculations, Never silently drop invalid rows, Production logic must be importable and tested]
+    expectedBehaviour: [Duplicate dimension keys fail, Gaps follow a documented policy, Output keys are unique, Energy units are explicit]
+    milestones:
+      - title: Contracts
+        detail: Define typed input schemas, invariants, fixtures, and failure messages.
+      - title: Transform
+        detail: Implement join, interval integration, grouping, and output validation.
+      - title: Evidence
+        detail: Add unit, property, and adversarial tests plus performance measurements.
+    testing: [Duplicate and null keys, DST-crossing input, irregular gaps, shuffled input order, known hand-calculated energy]
+    failureCases: [Many-to-many metadata join, Negative or excessive intervals, Unknown devices, Non-finite power]
+    bonus: [Chunked processing with identical output, Parquet schema contract]
+    architectureHints: [Separate loading, validation, transformation, and reporting., Keep timestamps UTC and sort per device before intervals.]
+    referenceOutline: A package with schema, io, transform, quality, and cli modules; pure transforms receive DataFrames and return data plus diagnostics.
+    minutes: 300
+
+resources:
+  - name: pandas User Guide
+    type: docs
+    difficulty: core
+    url: https://pandas.pydata.org/docs/user_guide/
+    why: The primary guide connects indexing, joins, reshaping, time series, MultiIndex, and performance in one maintained reference.
+    covers: Complete pandas conceptual and operational reference.
+    usefulness: 5
+  - name: pandas GroupBy guide
+    type: docs
+    difficulty: core
+    url: https://pandas.pydata.org/docs/user_guide/groupby.html
+    why: The official split-apply-combine guide distinguishes aggregation, transformation, filtration, and general apply with executable examples.
+    covers: GroupBy shape contracts and efficient built-in operations.
+    usefulness: 5
+  - name: pandas Merge guide
+    type: docs
+    difficulty: core
+    url: https://pandas.pydata.org/docs/user_guide/merging.html
+    why: The maintained project documentation covers relational join forms, validation, indicators, concatenation, and ordered or as-of matching.
+    covers: Merge semantics, cardinality, and auditing.
+    usefulness: 5
+  - name: pandas Time Series guide
+    type: docs
+    difficulty: deep
+    url: https://pandas.pydata.org/docs/user_guide/timeseries.html
+    why: The primary time-series reference explains timestamp indexes, offsets, resampling, timezone operations, and representation limits.
+    covers: DatetimeIndex, resampling, offsets, and timezones.
+    usefulness: 5
+  - name: pandas MultiIndex guide
+    type: docs
+    difficulty: deep
+    url: https://pandas.pydata.org/docs/user_guide/advanced.html
+    why: The official advanced-indexing chapter demonstrates construction, sorting, tuple selection, slicing, and hierarchical reshaping behavior.
+    covers: MultiIndex representation and advanced label selection.
+    usefulness: 4

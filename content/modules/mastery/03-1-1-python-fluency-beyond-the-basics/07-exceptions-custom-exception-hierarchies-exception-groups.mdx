@@ -1,0 +1,428 @@
+---
+id: "roadmap:phase-1-1.1:6"
+title: "Exceptions, custom exception hierarchies, exception groups"
+description: "Treat exceptions as a typed failure API: preserve causes and tracebacks, design recoverable domain hierarchies, and handle multiple independent failures safely with ExceptionGroup and except*."
+module: 1-1-python-fluency-beyond-the-basics
+order: 7
+estimatedMinutes: 110
+prerequisites: ["roadmap:phase-1-1.1:0", "roadmap:phase-1-1.1:3"]
+learningObjectives:
+  - Trace exception matching, propagation, cleanup, chaining, and traceback preservation precisely
+  - Design a small domain exception hierarchy that lets callers recover without parsing messages
+  - Translate low-level failures at architectural boundaries with explicit causes, notes, and useful context
+  - Use ExceptionGroup and except* to handle independent concurrent failures without losing unmatched errors
+---
+
+An exception is a non-local return carrying a typed object, a traceback, and failure context. It is not merely an error message. Raising transfers control up the call stack until a matching handler accepts that type.
+
+That model changes how you design failures. A useful exception API tells callers what they may recover from, preserves why the operation failed, and never mistakes “we logged it” for “we handled it.”
+
+Exception groups extend the same model from one failure to a tree of independent failures. They matter when structured concurrency or batch work can fail in several branches before control returns to one caller.
+
+<TypeScriptComparison>
+
+- JavaScript can throw any value; Python requires an instance or subclass of `BaseException`.
+- TypeScript catch variables reveal no runtime hierarchy to the compiler. Python handlers select by class and subclass.
+- JavaScript `Error.cause` resembles Python's explicit `raise ... from ...`; Python also records implicit context.
+- `finally` has the same cleanup role in both languages, including the same danger of a return masking an active failure.
+- `AggregateError` is a flat error collection. Python `ExceptionGroup` preserves a nested tree and supports typed subgroup handling.
+
+</TypeScriptComparison>
+
+## Read the control flow before the message
+
+Python evaluates `except` clauses from top to bottom. A clause matches when the raised object's class is the named class or its subclass. Only the first matching ordinary clause runs.
+
+```python
+class ModelLoadError(Exception):
+    pass
+
+
+class MissingWeightsError(ModelLoadError):
+    pass
+
+
+try:
+    raise MissingWeightsError("encoder weights not found")
+except MissingWeightsError:
+    print("download or choose another model")
+except ModelLoadError:
+    print("model loading failed")
+```
+
+Put specific handlers before broad ones. Reversing those clauses makes the `MissingWeightsError` branch unreachable because `ModelLoadError` already matches its subclass.
+
+`else` runs only when the `try` suite completes without an exception. Keep the protected region narrow, then put success-only work in `else`. Otherwise a broad handler may accidentally catch a bug in code that did not need protection.
+
+`finally` runs whether control leaves by success, exception, `return`, `break`, or `continue`. It is for unconditional cleanup, not for deciding whether an error succeeded.
+
+```python
+def load_manifest(path: str) -> dict[str, object]:
+    handle = open(path, encoding="utf-8")
+    try:
+        text = handle.read()
+    finally:
+        handle.close()
+
+    return parse_manifest(text)
+```
+
+A context manager is usually clearer for one resource, but the underlying rule is the same. Never `return` from `finally`: it discards a pending return value and can silently suppress an active exception.
+
+## Catch only what you can finish handling
+
+The question is not “could this block fail?” It is “can this layer make a correct decision for this failure?” Catch where you can retry, substitute, translate, compensate, or produce the boundary response.
+
+```python
+def cached_embedding(key: str) -> list[float]:
+    try:
+        return cache.read(key)
+    except CacheMiss:
+        vector = embedder.embed(key)
+        cache.write(key, vector)
+        return vector
+```
+
+That handler completes a specific recovery. By contrast, `except Exception: logger.error(...); return []` changes an unknown defect into plausible empty data. A RAG system can then return “no relevant documents” when its database is actually unavailable.
+
+Catch `Exception` only at deliberate containment boundaries such as a worker loop, request adapter, or command-line entry point. Log with traceback information, map to a failure result if the boundary owns that policy, and avoid continuing with invented success values.
+
+Do not normally catch `BaseException`. `KeyboardInterrupt`, `SystemExit`, and `GeneratorExit` inherit directly from it so that `except Exception` does not intercept process control and generator shutdown.
+
+<ProductionNote>
+
+Cancellation is control flow in async systems. Do cleanup and re-raise `asyncio.CancelledError`; swallowing cancellation can make shutdown, timeouts, and `TaskGroup` coordination hang or misreport success.
+
+</ProductionNote>
+
+## Raise precise built-ins before inventing classes
+
+Use a standard exception when its meaning is already exact. `TypeError` means an unsupported kind of object. `ValueError` means the type is acceptable but the value is not. `KeyError`, `LookupError`, `FileNotFoundError`, and `TimeoutError` let ordinary Python callers use familiar recovery logic.
+
+```python
+def batch(items: list[str], size: int) -> list[list[str]]:
+    if not isinstance(size, int):
+        raise TypeError("size must be an int")
+    if size < 1:
+        raise ValueError("size must be positive")
+    return [items[index:index + size] for index in range(0, len(items), size)]
+```
+
+Reserve custom exceptions for domain meaning callers need to distinguish: quota exhaustion, a rejected model artifact, an unsupported schema version, or a retryable inference backend failure.
+
+Assertions are not input validation. `assert` communicates an internal invariant to developers and may be disabled with optimization. Raise a real exception for malformed requests, configuration, files, model output, or any condition a caller must handle.
+
+## Design a hierarchy around recovery policy
+
+An exception hierarchy is a public interface. Its useful nodes correspond to decisions a caller can make, not every function that could fail.
+
+```python
+class InferenceError(Exception):
+    """Base class for failures exposed by the inference service."""
+
+
+class RetryableInferenceError(InferenceError):
+    """The same operation may succeed after delay or failover."""
+
+
+class BackendUnavailable(RetryableInferenceError):
+    def __init__(self, backend: str, retry_after: float | None = None) -> None:
+        self.backend = backend
+        self.retry_after = retry_after
+        super().__init__(f"backend {backend!r} is unavailable")
+
+
+class InvalidInferenceRequest(InferenceError):
+    """The caller must change the request before retrying."""
+```
+
+A scheduler can catch `RetryableInferenceError`. An HTTP adapter can catch `InvalidInferenceRequest`. Monitoring can group all `InferenceError` instances without parsing text.
+
+Keep the tree shallow. Multiple inheritance between exception classes can create surprising method-resolution and constructor behavior, especially among built-ins implemented in C. Prefer one semantic base and attributes for structured detail.
+
+Store stable fields such as `backend`, `job_id`, or `retry_after`. The message is for humans and may change. Callers must not decide recovery with `if "timeout" in str(exc)`.
+
+## Translate at boundaries and preserve the cause
+
+Infrastructure exceptions should not leak through every layer. Translate them where one abstraction becomes another, and chain the original explicitly.
+
+```python
+def fetch_model(model_id: str) -> bytes:
+    try:
+        return object_store.download(model_id)
+    except TimeoutError as exc:
+        error = BackendUnavailable("model-store", retry_after=2.0)
+        error.add_note(f"model_id={model_id}")
+        raise error from exc
+```
+
+`raise error from exc` sets `error.__cause__` and produces a traceback that says the new failure was the direct result of the old one. This preserves both the domain contract and the diagnostic evidence.
+
+If an exception arises while another is being handled, Python records the first as `__context__` automatically. Explicit chaining says the relationship is intentional. `raise ... from None` hides the old exception from the displayed traceback while retaining it in `__context__`; use that only when the lower-level detail is genuinely noise for the audience.
+
+`add_note()` attaches context without replacing the exception type or traceback. It is useful when each layer knows one more identifier. Keep secrets, full prompts, access tokens, and personal data out of messages and notes because tracebacks enter logs and observability systems.
+
+<CommonMistake>
+
+Inside a handler, bare `raise` preserves the original traceback. `raise exc` raises again from the current line and adds a misleading frame. Use bare `raise` when you are not translating to a new exception.
+
+</CommonMistake>
+
+## Exceptions are values with traceback state
+
+An exception instance carries `args`, `__traceback__`, `__context__`, `__cause__`, `__suppress_context__`, and optional `__notes__`. Custom attributes are better than stuffing machine-readable state into `args`.
+
+Avoid reusing the same exception instance across calls. Raising mutates traceback state, so a shared instance can retain confusing history and references to stack frames. Construct a fresh exception at the failure point.
+
+Tracebacks retain frames, and frames retain local variables. Holding caught exceptions in long-lived collections can therefore retain large tensors, requests, or model objects. Serialize the small diagnostics you need instead of caching exception objects indefinitely.
+
+Exceptions are relatively expensive when raised because stack unwinding and traceback construction do work. They are appropriate for exceptional paths and boundary rejection. Do not use repeated raises as the normal inner-loop branch of tokenization or numerical kernels when an ordinary conditional expresses the outcome.
+
+## One failure is not enough for concurrent work
+
+Suppose three independent model warmups fail. Raising only the first loses evidence. Returning a list of exceptions abandons normal propagation and forces every caller to remember a custom convention.
+
+```python
+failures = [
+    FileNotFoundError("reranker weights"),
+    TimeoutError("embedding backend"),
+    ValueError("invalid tokenizer config"),
+]
+
+raise ExceptionGroup("model warmup failed", failures)
+```
+
+`ExceptionGroup` is an exception whose `exceptions` form a tree. Nested groups preserve where failures were combined. It accepts only `Exception` instances; `BaseExceptionGroup` can also contain direct `BaseException` subclasses and chooses the narrower group type when possible.
+
+Groups are not the default for sequential code. Raising a group is part of an API contract and can be breaking because callers that previously caught `TimeoutError` now receive a group containing one.
+
+## `except*` partitions a failure tree by type
+
+An ordinary `except TimeoutError` does not reach inside an exception group. `except*` recursively selects the matching subgroup while preserving the original nesting.
+
+```python
+try:
+    raise ExceptionGroup(
+        "startup",
+        [
+            TimeoutError("vector store"),
+            ValueError("bad model config"),
+            ExceptionGroup(
+                "plugins",
+                [TimeoutError("reranker"), LookupError("tokenizer")],
+            ),
+        ],
+    )
+except* TimeoutError as group:
+    report_retryable(group)
+except* (ValueError, LookupError) as group:
+    report_configuration(group)
+```
+
+Each clause runs at most once and receives a group containing all its matches, not one leaf at a time. Several `except*` clauses may run for one raised group. Clause order still matters: the first compatible clause claims each matching leaf.
+
+Unmatched leaves are automatically re-raised after the clauses finish. This is the safety property: handling timeouts does not silently consume a sibling programming error.
+
+You cannot mix `except` and `except*` clauses in one `try`. Nest `try` statements when you need an outer handler for the resulting whole group. You also cannot use `return`, `break`, or `continue` inside an `except*` suite.
+
+The subgroup bound by `except*` is an ephemeral derived object. Treat it as the failures to inspect or report in that clause, not as a mutable handle to the original tree.
+
+## Structured concurrency is the production use case
+
+`asyncio.TaskGroup` waits for its tasks, cancels siblings after a non-cancellation failure, and raises remaining failures together as an `ExceptionGroup` or `BaseExceptionGroup`.
+
+```python
+import asyncio
+
+
+async def warm_all() -> None:
+    try:
+        async with asyncio.TaskGroup() as tasks:
+            tasks.create_task(warm_embeddings())
+            tasks.create_task(warm_reranker())
+            tasks.create_task(warm_tokenizer())
+    except* BackendUnavailable as group:
+        for error in group.exceptions:
+            logger.warning("retryable warmup failure: %s", error)
+        raise
+```
+
+The bare `raise` means the failures remain failures after logging. Recovery must be explicit. If the service can start in degraded mode, record exactly which capability is unavailable and prove that every request path respects that state.
+
+Exception groups also fit batch validation when all items should be checked before rejecting the batch. Preserve an item index or stable identifier in each leaf. Do not aggregate dependent failures where the first invalid state makes every later result meaningless.
+
+<WhyItMatters>
+
+Model serving fans out to stores, tokenizers, rerankers, and policy services. Typed failures let orchestration retry only transient branches, map invalid requests to client errors, and still crash loudly on defects. Groups keep simultaneous failures observable without flattening away their origin.
+
+</WhyItMatters>
+
+## Exercises
+
+<Exercise id="exceptions-api-easy" difficulty="easy">
+
+Order handlers for `InvalidInferenceRequest`, `InferenceError`, and `Exception`. Explain the rule.
+
+<Solution>
+
+Order them from most specific to broadest: `InvalidInferenceRequest`, then `InferenceError`, then `Exception`. Ordinary handlers are tested top to bottom, and the first compatible class wins. Putting a base class first makes later subclass handlers unreachable.
+
+</Solution>
+</Exercise>
+
+<Exercise id="exceptions-api-medium" difficulty="medium">
+
+Translate an `OSError` raised while reading model metadata into `ModelLoadError`. Preserve the cause and attach the model identifier without parsing it into the message later.
+
+<Solution>
+
+Store the identifier as an attribute, chain the original, and optionally add a safe diagnostic note.
+
+```python
+class ModelLoadError(Exception):
+    def __init__(self, model_id: str) -> None:
+        self.model_id = model_id
+        super().__init__(f"could not load model {model_id!r}")
+
+
+try:
+    metadata = read_metadata(model_id)
+except OSError as exc:
+    error = ModelLoadError(model_id)
+    error.add_note("operation=read_metadata")
+    raise error from exc
+```
+
+The caller catches the domain type and reads `model_id`; diagnostics retain the original `OSError` and traceback.
+
+</Solution>
+</Exercise>
+
+<Exercise id="exceptions-api-hard" difficulty="hard">
+
+A batch validator must report every invalid item but must not hide an unexpected database failure. Design the raised errors and handler.
+
+<Solution>
+
+Collect only expected independent validation failures, each with the item index. Let unexpected failures propagate immediately, or add them only if the API explicitly promises grouped operational failures.
+
+```python
+errors: list[Exception] = []
+for index, item in enumerate(items):
+    try:
+        validate_item(item)
+    except (TypeError, ValueError) as exc:
+        exc.add_note(f"item_index={index}")
+        errors.append(exc)
+
+if errors:
+    raise ExceptionGroup("batch validation failed", errors)
+
+try:
+    validate_batch(items)
+except* (TypeError, ValueError) as group:
+    render_validation_errors(group)
+```
+
+A database exception is not in the narrow collection clause, so it keeps its normal failure semantics.
+
+</Solution>
+</Exercise>
+
+<Exercise id="exceptions-api-interview" difficulty="interview">
+
+“Where should exceptions be caught in a layered service?” Answer as you would in the room.
+
+<Solution>
+
+I catch an exception at the lowest layer that can make a complete recovery decision. A cache adapter can recover from a cache miss; a repository boundary can translate a driver error; an HTTP adapter can map domain failures to status codes. I keep protected regions narrow and preserve causes when translating.
+
+I do not catch broadly in every function. Unknown defects should reach a deliberate containment boundary with their traceback intact. That boundary may log and terminate one job or request, but it should not manufacture a success value.
+
+</Solution>
+</Exercise>
+
+<Exercise id="exceptions-api-real-world" difficulty="real-world">
+
+An inference gateway calls three backends in a `TaskGroup`. Retryable backend failures should be reported together, invalid configuration should prevent startup, and cancellation must remain cancellation. Sketch the policy and name what must not be swallowed.
+
+<Solution>
+
+Each adapter translates transport timeouts into `BackendUnavailable` using explicit chaining. Invalid configuration becomes a separate non-retryable domain type. Task bodies re-raise `CancelledError` after cleanup.
+
+The coordinator uses `except* BackendUnavailable` to record the retryable subgroup, then either re-raises it or enters an explicitly tested degraded state. A following `except* InvalidConfiguration` records and leaves those failures unhandled so startup fails. Unknown leaves also propagate automatically. Never catch `BaseException`, discard unmatched leaves, or return success merely because one subgroup was logged.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Why should an `except` suite protect the smallest practical region?
+2. When do you use bare `raise`, `raise NewError from exc`, and `raise NewError from None`?
+3. Which direct subclasses of `BaseException` should ordinary application handlers avoid catching?
+4. What does one `except* T` clause receive, and what happens to unmatched leaves?
+5. When is changing an API from one exception to an `ExceptionGroup` a breaking change?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Why did my subclass handler never run?">
+
+An earlier handler named its base class. Ordinary clauses use first-match order, so place the most specific exception classes first.
+
+</Gotcha>
+
+<Gotcha question="Why did my traceback start at the handler?">
+
+You used `raise exc`. Use bare `raise` to re-raise the active exception with its original traceback path intact.
+
+</Gotcha>
+
+<Gotcha question="Why did returning from finally make the failure disappear?">
+
+`finally` controls how the statement exits. A return there overrides an active exception or an earlier return value. Perform cleanup, then let control continue.
+
+</Gotcha>
+
+<Gotcha question="Why does except Exception not stop Ctrl+C?">
+
+`KeyboardInterrupt` inherits directly from `BaseException`, not `Exception`, so routine catch-all handlers leave process control alone.
+
+</Gotcha>
+
+<Gotcha question="Why did except TimeoutError not catch the timeout inside a group?">
+
+Ordinary `except` does not recursively match group leaves. Use `except* TimeoutError` when the API raises an exception group.
+
+</Gotcha>
+
+<Gotcha question="Why did another failure escape after my except* handler ran?">
+
+An `except*` clause handles only its matching subgroup. Unmatched leaves are recombined and re-raised automatically; that prevents accidental loss.
+
+</Gotcha>
+
+<Gotcha question="Why can I not combine except and except* in one try?">
+
+Their matching models differ. Use nested `try` statements if one layer needs typed subgroup handling and another needs to inspect the resulting whole group.
+
+</Gotcha>
+
+<Gotcha question="Why is my process retaining objects after I saved exceptions for metrics?">
+
+Tracebacks retain frames, and frames retain locals. Extract safe, small diagnostic fields instead of keeping exception objects in long-lived storage.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Exceptions are typed control flow with diagnostic state. Catch only where a layer can recover, translate, or produce its owned boundary response. Keep the protected region narrow and cleanup unconditional.
+
+A useful custom hierarchy exposes caller decisions. Prefer precise built-ins first, then small domain trees with stable attributes. Chain translations with `raise ... from ...`, use notes for safe context, and preserve tracebacks with bare `raise`.
+
+`ExceptionGroup` represents a tree of independent failures. `except*` partitions that tree by type, runs each clause once for its subgroup, and automatically propagates unmatched leaves. Structured concurrency and complete batch validation are its natural homes.
+
+Use the Practice tab to exercise control-flow predictions and hierarchy design, the Debug tab to repair swallowed failures, and the Project tab to build an error boundary that stays honest under concurrent failure.

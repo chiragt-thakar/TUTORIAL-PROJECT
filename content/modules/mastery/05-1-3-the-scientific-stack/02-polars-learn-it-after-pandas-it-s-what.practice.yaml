@@ -1,0 +1,414 @@
+lessonId: "roadmap:phase-1-1.3:1"
+module: 1-3-the-scientific-stack
+lesson: 02-polars-learn-it-after-pandas-it-s-what
+title: "polars for large data"
+summary: Practise expression-driven, lazy, schema-safe and measurable Polars pipelines.
+
+mastery: {minAssessmentScore: 80, requireProject: true, requireInterview: true, requireDebug: true, revisitAfterDays: 21}
+
+exercises:
+  - id: polars-expression-column
+    tier: normal
+    kind: write-code
+    title: Add a derived column
+    minutes: 8
+    requiredForMastery: true
+    concepts: [expressions, with-columns]
+    prompt: Add kilowatts as watts / 1000 using a native expression.
+    hints: [Start with pl.col., Name the expression with alias.]
+    solution: Keep computation inside the engine with one expression so Polars retains dtype and optimization visibility.
+    solutionCode: |
+      result = df.with_columns((pl.col("watts") / 1000).alias("kilowatts"))
+
+  - id: polars-select-context
+    tier: normal
+    kind: code-reading
+    title: Read expression context
+    minutes: 9
+    requiredForMastery: true
+    concepts: [select, expression-context]
+    prompt: Explain why df.select(pl.col("watts").mean()) returns one column and one row.
+    hints: [The expression is a reduction., select defines the complete output schema.]
+    solution: mean reduces the selected column to a scalar, and the select context contains only that expression, so the result is a one-by-one DataFrame.
+
+  - id: polars-filter-native
+    tier: normal
+    kind: write-code
+    title: Filter without callbacks
+    minutes: 8
+    requiredForMastery: true
+    concepts: [filter, Boolean-expression]
+    prompt: Keep finite positive watts values.
+    hints: [Combine Boolean expressions with &., Use the expression method for finiteness.]
+    solution: The native Boolean expression stays columnar and handles both domain and numeric-validity rules explicitly.
+    solutionCode: |
+      clean = df.filter(pl.col("watts").is_finite() & (pl.col("watts") > 0))
+
+  - id: polars-group-summary
+    tier: normal
+    kind: write-code
+    title: Aggregate by device
+    minutes: 11
+    requiredForMastery: true
+    concepts: [group-by, aggregation]
+    prompt: Return sample count and mean watts per device.
+    hints: [Aggregation expressions belong in agg., Give stable aliases to outputs.]
+    solution: Grouping plus native aggregations exposes a compact query plan with a stable result schema.
+    solutionCode: |
+      summary = df.group_by("device").agg(
+          pl.len().alias("samples"),
+          pl.col("watts").mean().alias("mean_watts"),
+      )
+
+  - id: polars-window-center
+    tier: intermediate
+    kind: write-code
+    title: Center values with a window
+    minutes: 13
+    requiredForMastery: true
+    concepts: [window, over, alignment]
+    prompt: Add the deviation of each reading from its device mean.
+    hints: [The output must retain every row., Apply the group context with over.]
+    solution: A window expression computes each group mean and broadcasts it to the corresponding rows without a separate join.
+    solutionCode: |
+      centered = df.with_columns(
+          (pl.col("watts") - pl.col("watts").mean().over("device")).alias("watts_centered")
+      )
+
+  - id: polars-lazy-scan
+    tier: intermediate
+    kind: refactor
+    title: Delay a Parquet pipeline
+    minutes: 14
+    requiredForMastery: true
+    concepts: [lazy-frame, scan, pushdown]
+    prompt: Refactor eager read/filter/select into a lazy plan that materializes once.
+    hints: [Replace read_parquet with its scan counterpart., Call collect only after the plan is complete.]
+    solution: Scanning and deferring collection lets the optimizer push filtering and column selection into the source read.
+    solutionCode: |
+      result = (
+          pl.scan_parquet("readings/*.parquet")
+          .filter(pl.col("site") == "north")
+          .select("timestamp", "device", "watts")
+          .collect()
+      )
+
+  - id: polars-schema-contract
+    tier: intermediate
+    kind: design
+    title: Stabilize ingestion dtypes
+    minutes: 14
+    requiredForMastery: true
+    concepts: [schema, dtype, ingestion]
+    prompt: A CSV column is integer in one file and decimal in another. Define a stable ingestion approach.
+    hints: [Inference depends on observed samples., Put the expected dtype at the reader boundary.]
+    solution: Supply a schema or schema override that declares the column as floating point, validate parse failures and null counts, and test representative files against the same contract.
+
+  - id: polars-join-audit
+    tier: intermediate
+    kind: write-code
+    title: Audit missing dimension keys
+    minutes: 14
+    requiredForMastery: true
+    concepts: [join, anti-join, cardinality]
+    prompt: Find reading device keys missing from a dimension table before joining.
+    hints: [You need keys from the left with no match., Polars provides a join strategy for this set difference.]
+    solution: An anti join exposes unmatched reading keys directly; uniqueness checks on the dimension table separately enforce many-to-one cardinality.
+    solutionCode: |
+      missing = readings.select("device").unique().join(
+          devices.select("device"), on="device", how="anti"
+      )
+
+  - id: polars-early-collect-bug
+    tier: tricky
+    kind: debug
+    title: Remove an optimization barrier
+    minutes: 16
+    requiredForMastery: true
+    concepts: [collect, materialization, lazy-plan]
+    prompt: A pipeline calls collect after scanning and then filters a huge DataFrame. Diagnose its memory use.
+    hints: [Execution starts at collect., Ask which operations the scan can no longer see.]
+    solution: Move filtering, selection, grouping, and other compatible expressions before the final collection so pushdown and cross-operation optimization remain possible.
+
+  - id: polars-null-nan-bug
+    tier: tricky
+    kind: debug
+    title: Clean both missing representations
+    minutes: 16
+    requiredForMastery: true
+    concepts: ["null", NaN, validity-bitmap]
+    prompt: fill_null(0) leaves invalid floating readings. Find the cause and implement a deliberate rule.
+    hints: [A floating NaN is still a present value., Count is_null and is_nan separately.]
+    solution: The column contains NaN values as well as nulls. Measure both populations, then use separate fill_null and fill_nan policies justified by their domain meanings.
+
+  - id: polars-python-udf-bug
+    tier: tricky
+    kind: debug
+    title: Replace a Python UDF
+    minutes: 18
+    requiredForMastery: true
+    concepts: [UDF, expressions, performance]
+    prompt: A per-element Python lambda converts watts to a status string and dominates runtime. Repair it.
+    hints: [Express branches as column predicates., Use when, then, and otherwise.]
+    solution: Replace the Python callback with a native conditional expression, preserving parallel kernels, optimizer visibility, and predictable output dtype.
+    solutionCode: |
+      status = pl.when(pl.col("watts") > 1000).then(pl.lit("high")).otherwise(pl.lit("normal"))
+      result = df.with_columns(status.alias("status"))
+
+  - id: polars-streaming-limit
+    tier: tricky
+    kind: explain
+    title: Explain a materializing operator
+    minutes: 15
+    requiredForMastery: false
+    concepts: [streaming, global-sort]
+    prompt: Why can a global sort prevent a plan from behaving like a bounded-memory stream?
+    hints: [The earliest row is unknown before seeing later rows., Some operators need global knowledge.]
+    solution: A full sort must compare values across the complete input and may need large state or external sorting; streaming compatibility must be inspected per physical plan rather than assumed globally.
+
+  - id: polars-engine-boundary
+    tier: challenge
+    kind: design
+    title: Design a pandas interoperability boundary
+    minutes: 22
+    requiredForMastery: false
+    concepts: [Arrow, conversion, ownership]
+    prompt: A downstream library accepts only pandas. Decide where conversion belongs and what to verify.
+    hints: [Keep one engine responsible for the main transform., Conversion can change representation or copy memory.]
+    solution: Finish filtering and aggregation lazily in Polars, collect once, convert at a narrow adapter, validate schema, nulls, categoricals, timestamps, and memory behavior, then avoid converting back and forth inside the pipeline.
+
+  - id: polars-fair-benchmark
+    tier: challenge
+    kind: performance
+    title: Benchmark complete pipelines
+    minutes: 28
+    requiredForMastery: false
+    concepts: [benchmark, peak-memory, correctness]
+    prompt: Compare pandas and Polars for a 30 GB Parquet workload without creating a misleading microbenchmark.
+    hints: [Include I/O and conversion boundaries., A fast wrong result is not a result.]
+    solution: Pin environments, use representative partitioning and queries, measure cold and warm repeated end-to-end runs plus peak memory, include outputs and conversions, and assert identical schemas, keys, nulls, and numeric tolerances.
+
+quizzes:
+  - id: polars-checkpoint
+    title: Polars checkpoint
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: polars-cp-execution
+        kind: mcq
+        prompt: What starts execution of a lazy query?
+        options: [{id: polars-cp-execution-a, text: alias}, {id: polars-cp-execution-b, text: collect}]
+        answer: [polars-cp-execution-b]
+        explanation: A LazyFrame describes work until materialization is requested.
+        concepts: [lazy]
+      - id: polars-cp-pushdown
+        kind: multi
+        prompt: Which are common lazy optimizations?
+        options: [{id: polars-cp-pushdown-predicate, text: predicate pushdown}, {id: polars-cp-pushdown-projection, text: projection pushdown}, {id: polars-cp-pushdown-python, text: automatic Python UDF compilation}]
+        answer: [polars-cp-pushdown-predicate, polars-cp-pushdown-projection]
+        explanation: Filters and referenced columns can move toward scans; arbitrary Python is opaque.
+        concepts: [optimizer]
+      - id: polars-cp-null
+        kind: true-false
+        prompt: Null and floating NaN are the same representation.
+        options: [{id: polars-cp-null-true, text: "true"}, {id: polars-cp-null-false, text: "false"}]
+        answer: [polars-cp-null-false]
+        explanation: Null uses validity information; NaN is a floating value.
+        concepts: ["null"]
+      - id: polars-cp-window
+        kind: mcq
+        prompt: Which operation keeps rows while computing per-device means?
+        options: [{id: polars-cp-window-over, text: mean over device}, {id: polars-cp-window-group, text: group aggregation only}]
+        answer: [polars-cp-window-over]
+        explanation: A window expression broadcasts group context to original rows.
+        concepts: [window]
+
+  - id: polars-assessment
+    title: Polars mastery assessment
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: polars-as-context
+        kind: explain
+        prompt: What is an expression context?
+        modelAnswer: It is the operation such as select, with_columns, filter, group aggregation, or window that determines how expressions are evaluated and shaped.
+        explanation: The same expression can have meaning only within a context.
+        concepts: [expressions]
+      - id: polars-as-select
+        kind: mcq
+        prompt: Which context retains unspecified existing columns?
+        options: [{id: polars-as-select-a, text: select}, {id: polars-as-select-b, text: with_columns}]
+        answer: [polars-as-select-b]
+        explanation: with_columns augments or replaces while select defines output columns.
+        concepts: [contexts]
+      - id: polars-as-explain
+        kind: mcq
+        prompt: What should you inspect when a lazy plan is unexpectedly slow?
+        options: [{id: polars-as-explain-a, text: optimized explain plan}, {id: polars-as-explain-b, text: DataFrame display colors}]
+        answer: [polars-as-explain-a]
+        explanation: The plan reveals scans, pushdown, joins, and materialization boundaries.
+        concepts: [lazy]
+      - id: polars-as-schema
+        kind: scenario
+        prompt: Why provide schemas for heterogeneous input files?
+        modelAnswer: Stable schemas prevent sample-dependent inference, parsing drift, accidental nulls, and incompatible batches.
+        explanation: Ingestion is a typed boundary.
+        concepts: [schema]
+      - id: polars-as-join
+        kind: mcq
+        prompt: Which join finds left keys with no right match?
+        options: [{id: polars-as-join-anti, text: anti}, {id: polars-as-join-cross, text: cross}]
+        answer: [polars-as-join-anti]
+        explanation: Anti joins implement a useful key-set difference.
+        concepts: [join]
+      - id: polars-as-order
+        kind: explain
+        prompt: Why must rolling sequence work define order?
+        modelAnswer: DataFrame row order is not a semantic time guarantee; sort by group, time, and deterministic ties before order-dependent operations.
+        explanation: Sequence calculations require an explicit ordering key.
+        concepts: [ordering]
+      - id: polars-as-stream
+        kind: true-false
+        prompt: Every lazy Polars plan can execute with constant memory.
+        options: [{id: polars-as-stream-true, text: "true"}, {id: polars-as-stream-false, text: "false"}]
+        answer: [polars-as-stream-false]
+        explanation: Some global operators require substantial state or materialization.
+        concepts: [streaming]
+      - id: polars-as-udf
+        kind: performance
+        prompt: Why are native expressions usually faster than Python UDFs?
+        modelAnswer: Native expressions run in optimized parallel columnar kernels and remain visible to the query planner, while Python callbacks cross language boundaries and obscure semantics.
+        explanation: Engine visibility enables both execution and planning improvements.
+        concepts: [performance]
+      - id: polars-as-conversion
+        kind: scenario
+        prompt: What must be checked after converting to pandas?
+        modelAnswer: Validate schema, null and NaN behavior, categorical encoding, timestamp timezone and units, row keys, copies, and peak memory.
+        explanation: Interchange is not automatically zero-copy or representation-identical.
+        concepts: [interoperability]
+      - id: polars-as-choice
+        kind: explain
+        prompt: Give a sound reason to keep pandas.
+        modelAnswer: Small data, pandas-only dependencies, team familiarity, or measured end-to-end results may make migration cost exceed any speed or memory benefit.
+        explanation: Tool choice follows workload evidence and ownership costs.
+        concepts: [tradeoffs]
+
+interview:
+  - id: polars-iv-expression
+    level: basic
+    question: What is a Polars expression?
+    shortAnswer: A reusable description of a column computation evaluated inside a context.
+    fullAnswer: Expressions compose into query graphs and do not independently contain data. Contexts such as select, filter, aggregation, and windows determine their output shape.
+    commonWrongAnswer: It is a Python lambda over each row.
+    followUps: [How does alias affect the result?]
+    concepts: [expressions]
+    requiredForMastery: true
+  - id: polars-iv-lazy
+    level: internals
+    question: Why prefer the lazy API?
+    shortAnswer: It exposes a complete plan for pushdown, simplification, and compatible streaming before execution.
+    fullAnswer: Deferring execution lets Polars reduce source I/O and intermediates, combine operations, explain the optimized plan, and execute once at an intentional materialization boundary.
+    commonWrongAnswer: It merely waits so the program feels faster.
+    followUps: [When is eager execution reasonable?]
+    concepts: [lazy]
+    requiredForMastery: true
+  - id: polars-iv-null
+    level: tricky
+    question: Distinguish null from NaN in Polars.
+    shortAnswer: Null marks absence through validity; NaN is a present floating-point value.
+    fullAnswer: They need separate detection and often separate domain policies. Filling nulls will not necessarily clean NaNs, and aggregates may treat them differently.
+    commonWrongAnswer: Both are just missing values.
+    followUps: [How would you validate both?]
+    concepts: ["null", NaN]
+    requiredForMastery: true
+  - id: polars-iv-stream
+    level: advanced
+    question: Does lazy mean out-of-core?
+    shortAnswer: No; lazy describes planning, while physical operators determine memory and streaming behavior.
+    fullAnswer: Pushdown can reduce data and some plans stream batches, but global sorting, joins, or unsupported operators can require large state. Inspect and measure the actual plan.
+    commonWrongAnswer: LazyFrames never load data into memory.
+    followUps: [Which operators are likely to materialize?]
+    concepts: [streaming]
+    requiredForMastery: false
+  - id: polars-iv-arrow
+    level: internals
+    question: When is pandas conversion zero-copy?
+    shortAnswer: Only when compatible Arrow-style buffers and representations can be shared.
+    fullAnswer: Dtype, categorical, timezone, mutability, chunking, and library-version differences can require conversion or copies. Verify instead of assuming.
+    commonWrongAnswer: Polars always converts to pandas for free.
+    followUps: [Why can peak memory briefly double?]
+    concepts: [Arrow, memory]
+    requiredForMastery: false
+  - id: polars-iv-benchmark
+    level: scenario
+    question: How would you justify adopting Polars?
+    shortAnswer: Benchmark a representative full pipeline and include correctness, memory, integration, and maintenance costs.
+    fullAnswer: Compare pinned implementations over real data and queries, measure I/O through output and conversions, validate equivalent results, then assess ecosystem and team ownership.
+    commonWrongAnswer: Cite a group-by benchmark from a blog.
+    followUps: [What would make you reject migration?]
+    concepts: [benchmark]
+    requiredForMastery: false
+
+projects:
+  - id: polars-project-lake-transform
+    kind: major
+    title: Lazy Parquet telemetry transform
+    summary: Build and benchmark a schema-validated Polars pipeline over partitioned telemetry data.
+    problem: Process multi-gigabyte Parquet partitions into per-device and per-site summaries while keeping bad schemas, missing dimensions, and memory regressions visible.
+    requirements:
+      - Scan selected partitions lazily with explicit schema expectations
+      - Use native expressions for cleaning, windows, joins, and aggregation
+      - Explain representative optimized plans and audit unmatched keys
+      - Emit equivalent reference results on a small fixture and benchmark peak memory
+    constraints: [One final collection boundary, No Python per-row UDF in the core path, No silent dtype coercion or dropped key]
+    expectedBehaviour: [Partition filters push into scans, Duplicate dimensions fail, Output keys are unique, Results match the reference within tolerance]
+    milestones:
+      - title: Contract
+        detail: Create data fixtures, schemas, invariants, and an eager correctness reference.
+      - title: Lazy plan
+        detail: Implement expressions and validate explain-plan properties without overfitting textual output.
+      - title: Benchmark
+        detail: Measure end-to-end time and peak memory against pandas on representative data.
+    testing: [Schema drift, null versus NaN, duplicate dimensions, shuffled ordering, empty partitions]
+    failureCases: [Early materialization, accidental Python UDF, unmatched keys, global operation exceeds memory]
+    bonus: [Streaming-compatible variant, narrow pandas adapter]
+    architectureHints: [Keep expressions in pure builder functions., Return quality metrics beside output.]
+    referenceOutline: Separate schema, plan, quality, benchmark, and cli modules; tests inspect results and selected logical-plan invariants.
+    minutes: 280
+
+resources:
+  - name: Polars Concepts
+    type: docs
+    difficulty: core
+    url: https://docs.pola.rs/user-guide/concepts/
+    why: The primary guide organizes data structures, expressions, lazy execution, and streaming around the engine's actual mental model.
+    covers: Core Polars concepts and execution model.
+    usefulness: 5
+  - name: Polars Expressions and Contexts
+    type: docs
+    difficulty: core
+    url: https://docs.pola.rs/user-guide/concepts/expressions-and-contexts/
+    why: The official chapter explains how reusable expressions behave differently in selection, column, filtering, grouping, and window contexts.
+    covers: Expression construction and output-shape contexts.
+    usefulness: 5
+  - name: Polars Lazy API
+    type: docs
+    difficulty: deep
+    url: https://docs.pola.rs/user-guide/concepts/lazy-api/
+    why: The maintained documentation demonstrates deferred execution, predicate and projection pushdown, collection, and query-plan explanation.
+    covers: LazyFrame optimization and plan inspection.
+    usefulness: 5
+  - name: Polars Streaming
+    type: docs
+    difficulty: deep
+    url: https://docs.pola.rs/user-guide/concepts/streaming/
+    why: The primary streaming guide clarifies how compatible query plans can process batches and where execution constraints matter.
+    covers: Streaming execution and memory-aware plans.
+    usefulness: 4
+  - name: Polars Joins
+    type: docs
+    difficulty: core
+    url: https://docs.pola.rs/user-guide/transformations/joins/
+    why: The official transformation guide compares equi, semi, anti, non-equi, as-of, and cross joins with current syntax.
+    covers: Join strategies, matching behavior, and key auditing.
+    usefulness: 5

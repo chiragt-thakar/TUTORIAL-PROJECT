@@ -1,0 +1,382 @@
+lessonId: "roadmap:phase-1-1.3:5"
+module: 1-3-the-scientific-stack
+lesson: 06-jupyter-discipline-notebooks-for-exploration-only-never-for
+title: "Jupyter discipline"
+summary: Practise clean-state execution, extraction, provenance, security, review, and production boundaries.
+mastery: {minAssessmentScore: 80, requireProject: true, requireInterview: true, requireDebug: true, revisitAfterDays: 21}
+
+exercises:
+  - id: jupyter-hidden-state
+    tier: normal
+    kind: explain
+    title: Explain hidden state
+    minutes: 8
+    requiredForMastery: true
+    concepts: [kernel, state]
+    prompt: Explain how a deleted cell can still affect visible output.
+    hints: [The document and process are separate., Deleting source does not mutate kernel variables.]
+    solution: The long-lived kernel retains variables, imports, side effects, files, and mutations from executed cells even when their source cells are edited or removed.
+
+  - id: jupyter-idempotent-cell
+    tier: normal
+    kind: refactor
+    title: Make a cell repeatable
+    minutes: 9
+    requiredForMastery: true
+    concepts: [idempotence, mutation]
+    prompt: Refactor samples.extend(load_more()) so repeated execution derives the same value from explicit input.
+    hints: [Replace incremental mutation with assignment., Make the source path or query visible.]
+    solution: Recompute the value from declared inputs, making the cell independent of how often it previously executed.
+    solutionCode: |
+      samples = load_samples(DATA_PATH)
+
+  - id: jupyter-clean-run
+    tier: normal
+    kind: write-code
+    title: Define a clean execution gate
+    minutes: 10
+    requiredForMastery: true
+    concepts: [restart, run-all, CI]
+    prompt: State the automated command contract for executing a notebook in CI.
+    hints: [Use a fresh kernel process., Fail on cell exceptions and bound runtime.]
+    solution: Execute from the locked environment in a fresh kernel, top-to-bottom, with approved parameters, timeouts, no tolerated errors, bounded output, and assertions on produced artifacts.
+
+  - id: jupyter-cell-order
+    tier: normal
+    kind: code-reading
+    title: Read an execution-order failure
+    minutes: 9
+    requiredForMastery: true
+    concepts: [dependency, execution-count]
+    prompt: Cell 3 reads clean, but only cell 8 defines it. Why can the notebook still look successful?
+    hints: [A previous kernel session may contain the name., File order does not force execution order interactively.]
+    solution: Cell 8 may have run earlier in the live kernel, leaving clean available. Restart and top-to-bottom execution reveals the backward dependency.
+
+  - id: jupyter-extract-function
+    tier: intermediate
+    kind: refactor
+    title: Extract production logic
+    minutes: 14
+    requiredForMastery: true
+    concepts: [package, tests, boundary]
+    prompt: A 50-line cell validates and calculates billing totals used by a scheduled job. Refactor the ownership.
+    hints: [The notebook should consume the same API as production., Give logic explicit inputs and outputs.]
+    solution: Move the calculation into a typed package function with validation and tests, call it from both notebook and job, and leave the notebook responsible for parameters, display, and interpretation.
+
+  - id: jupyter-parameter-block
+    tier: intermediate
+    kind: design
+    title: Centralize parameters
+    minutes: 11
+    requiredForMastery: true
+    concepts: [parameters, determinism]
+    prompt: Design notebook parameters for date range, input snapshot, seed, and output directory.
+    hints: [Put configuration before dependent cells., Validate rather than mutating parameters later.]
+    solution: Define one early, typed or validated parameter block, reject invalid ranges and unsafe paths, record resolved values, and keep later cells from redefining them.
+
+  - id: jupyter-provenance
+    tier: intermediate
+    kind: design
+    title: Record data lineage
+    minutes: 15
+    requiredForMastery: true
+    concepts: [provenance, snapshot, checksum]
+    prompt: Specify provenance for a database extract used in an experiment.
+    hints: [A timestamp alone may not identify changing data., Include code and environment identity.]
+    solution: Record source and immutable snapshot or transaction identity, query/version, schema, row counts, filters, time bounds, checksums, code revision, locked environment, parameters, seeds, and artifact paths.
+
+  - id: jupyter-output-policy
+    tier: intermediate
+    kind: design
+    title: Define a Git output policy
+    minutes: 12
+    requiredForMastery: true
+    concepts: [outputs, diff, version-control]
+    prompt: Decide which notebook outputs belong in commits.
+    hints: [Outputs create noise and may leak data., Some reports need reviewable evidence.]
+    solution: Clear routine and sensitive outputs; retain only small, deterministic evidence required for review under an explicit policy, cap output size, and regenerate artifacts through clean execution.
+
+  - id: jupyter-stale-variable-bug
+    tier: tricky
+    kind: debug
+    title: Find a stale variable
+    minutes: 14
+    requiredForMastery: true
+    concepts: [kernel, restart]
+    prompt: A renamed variable still works on one laptop but fails in CI. Diagnose and prevent it.
+    hints: [The old name remains in a warm kernel., CI starts clean.]
+    solution: Restart and execute all cells to expose the missing definition, repair dependency order, and add clean notebook execution to CI so stale globals cannot certify changes.
+
+  - id: jupyter-wrong-kernel-bug
+    tier: tricky
+    kind: debug
+    title: Diagnose environment drift
+    minutes: 15
+    requiredForMastery: true
+    concepts: [kernel, environment, lock]
+    prompt: Imports succeed in a terminal environment but fail in the notebook. Diagnose it.
+    hints: [Kernel selection may reference another interpreter., Inspect sys.executable during diagnosis.]
+    solution: Verify the kernel's interpreter and package versions, install/register the project kernel from the locked environment, select it explicitly, and avoid notebook-local ad hoc installs.
+
+  - id: jupyter-secret-output-bug
+    tier: tricky
+    kind: debug
+    title: Respond to a leaked credential
+    minutes: 16
+    requiredForMastery: true
+    concepts: [security, outputs, incident]
+    prompt: An API token appears in committed cell output. Is clearing the output sufficient?
+    hints: [Assume copies and history exist., Credential validity is the immediate risk.]
+    solution: Revoke and rotate the token, assess access logs and exposure, remove it from current files and history through approved incident procedures, scan related outputs/caches, and add secret prevention controls.
+
+  - id: jupyter-merge-conflict
+    tier: tricky
+    kind: design
+    title: Resolve notebook conflicts safely
+    minutes: 16
+    requiredForMastery: false
+    concepts: [JSON, merge, nbdime]
+    prompt: Two branches changed different cells and generated outputs. Define the merge process.
+    hints: [Whole-file ours/theirs can discard cells., Separate source intent from generated output.]
+    solution: Use notebook-aware diff/merge or a declared text representation, inspect cell source and IDs, discard regenerated output according to policy, execute cleanly, and review the rendered result and JSON validity.
+
+  - id: jupyter-graduation
+    tier: challenge
+    kind: design
+    title: Graduate an experiment
+    minutes: 24
+    requiredForMastery: false
+    concepts: [package, production, reproducibility]
+    prompt: Turn a successful forecasting notebook into a scheduled production workflow while keeping the notebook useful.
+    hints: [Extract one implementation shared by both paths., Define data and artifact contracts before scheduling.]
+    solution: Move features, validation, model I/O, and evaluation into tested package APIs; add a CLI/job entry point, locked environment, observable artifacts and provenance, then refactor the notebook into a clean reproducible report consuming those APIs.
+
+  - id: jupyter-ci-scale
+    tier: challenge
+    kind: performance
+    title: Keep notebook CI bounded
+    minutes: 22
+    requiredForMastery: false
+    concepts: [fixtures, timeout, cache]
+    prompt: A research notebook takes four hours on production data. Design meaningful CI coverage.
+    hints: [Core logic should already have unit tests., Use a small representative immutable fixture.]
+    solution: Test extracted functions thoroughly, execute the notebook on a versioned fixture with timeouts and mocked/bounded network access, assert schemas and artifacts, and run the full-data workflow in a separately monitored acceptance pipeline.
+
+quizzes:
+  - id: jupyter-checkpoint
+    title: Jupyter checkpoint
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: jupyter-cp-state
+        kind: true-false
+        prompt: Visible cell order always equals execution order.
+        options: [{id: jupyter-cp-state-true, text: "true"}, {id: jupyter-cp-state-false, text: "false"}]
+        answer: [jupyter-cp-state-false]
+        explanation: Interactive kernels allow arbitrary execution order.
+        concepts: [state]
+      - id: jupyter-cp-clean
+        kind: mcq
+        prompt: Minimum state check before sharing?
+        options: [{id: jupyter-cp-clean-restart, text: restart and run all}, {id: jupyter-cp-clean-last, text: rerun only last cell}]
+        answer: [jupyter-cp-clean-restart]
+        explanation: A fresh kernel exposes undeclared dependencies.
+        concepts: [reproducibility]
+      - id: jupyter-cp-production
+        kind: mcq
+        prompt: Where should shared billing logic live?
+        options: [{id: jupyter-cp-production-package, text: tested package}, {id: jupyter-cp-production-output, text: saved cell output}]
+        answer: [jupyter-cp-production-package]
+        explanation: Both notebook and production should call one tested implementation.
+        concepts: [boundary]
+      - id: jupyter-cp-secret
+        kind: true-false
+        prompt: Clearing output makes a committed secret safe again.
+        options: [{id: jupyter-cp-secret-true, text: "true"}, {id: jupyter-cp-secret-false, text: "false"}]
+        answer: [jupyter-cp-secret-false]
+        explanation: Revoke it and perform incident cleanup.
+        concepts: [security]
+
+  - id: jupyter-assessment
+    title: Jupyter mastery assessment
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: jupyter-as-kernel
+        kind: explain
+        prompt: Distinguish a notebook document from its kernel.
+        modelAnswer: The document stores JSON cells, metadata, and outputs; the kernel is a separate process holding live execution state.
+        explanation: Their divergence creates hidden-state hazards.
+        concepts: [architecture]
+      - id: jupyter-as-delete
+        kind: scenario
+        prompt: What happens to a variable when its defining cell is deleted?
+        modelAnswer: It remains in the current kernel until restart or explicit deletion, though a clean run can no longer define it.
+        explanation: Editing source does not rewind process state.
+        concepts: [state]
+      - id: jupyter-as-extract
+        kind: multi
+        prompt: Which signals require extraction?
+        options: [{id: jupyter-as-extract-reuse, text: reused logic}, {id: jupyter-as-extract-critical, text: domain-critical calculation}, {id: jupyter-as-extract-display, text: one short display-only call}]
+        answer: [jupyter-as-extract-reuse, jupyter-as-extract-critical]
+        explanation: Reuse and correctness need package boundaries and tests.
+        concepts: [package]
+      - id: jupyter-as-path
+        kind: find-bug
+        prompt: Find the reproducibility flaw in /home/alice/Desktop/latest.csv.
+        modelAnswer: It is a developer-specific mutable path without a shared immutable data identity or validated configuration.
+        explanation: Inputs must be portable and versioned or resolvable.
+        concepts: [inputs]
+      - id: jupyter-as-seed
+        kind: explain
+        prompt: Is setting one seed always enough?
+        modelAnswer: No; identify every RNG and nondeterministic native operation, pass explicit generators, and record environment and execution settings.
+        explanation: Reproducibility spans more than one global RNG.
+        concepts: [randomness]
+      - id: jupyter-as-provenance
+        kind: scenario
+        prompt: Name four required provenance categories.
+        modelAnswer: Data identity and query, code revision, locked environment, parameters/seeds, validation counts, and artifact metadata are valid categories.
+        explanation: Results need traceable inputs and execution context.
+        concepts: [provenance]
+      - id: jupyter-as-output
+        kind: mcq
+        prompt: Why can outputs be dangerous in Git?
+        options: [{id: jupyter-as-output-leak, text: noise, size, stale evidence, and secret leakage}, {id: jupyter-as-output-safe, text: outputs are always harmless text}]
+        answer: [jupyter-as-output-leak]
+        explanation: Rich output can embed data and binary payloads.
+        concepts: [version-control]
+      - id: jupyter-as-network
+        kind: scenario
+        prompt: How should CI handle a notebook network call?
+        modelAnswer: Isolate it behind an adapter and use a fixture, cache, or mock with explicit timeouts; reserve live calls for separate acceptance tests.
+        explanation: Core reproducibility cannot depend on an unstable network.
+        concepts: [CI]
+      - id: jupyter-as-review
+        kind: explain
+        prompt: Why use notebook-aware diff tools?
+        modelAnswer: They separate cell source, metadata, and outputs and reduce the risk of losing logical changes inside noisy JSON.
+        explanation: Ordinary line diffs obscure notebook structure.
+        concepts: [review]
+      - id: jupyter-as-production
+        kind: scenario
+        prompt: What should a production scheduler execute?
+        modelAnswer: A tested package API, CLI, or job entry point with explicit configuration, not interactive notebook cells.
+        explanation: Production requires clean-process and observable contracts.
+        concepts: [production]
+
+interview:
+  - id: jupyter-iv-hidden
+    level: basic
+    question: What is hidden state in a notebook?
+    shortAnswer: Kernel values and side effects not reproducibly defined by a clean top-to-bottom execution.
+    fullAnswer: Arbitrary cell order, deletion, mutation, imports, files, caches, and external calls can make visible source diverge from the live process.
+    commonWrongAnswer: Hidden state means collapsed cells.
+    followUps: [How do you detect it?]
+    concepts: [state]
+    requiredForMastery: true
+  - id: jupyter-iv-boundary
+    level: intermediate
+    question: What belongs in a notebook versus a package?
+    shortAnswer: Notebook owns exploration and narrative; package owns reusable, testable, deployable logic.
+    fullAnswer: Notebooks orchestrate explicit inputs and display evidence while typed modules provide validation, transformations, model code, and production entry points.
+    commonWrongAnswer: Move only very long functions.
+    followUps: [Can any helper stay local?]
+    concepts: [architecture]
+    requiredForMastery: true
+  - id: jupyter-iv-repro
+    level: scenario
+    question: What makes a notebook reproducible?
+    shortAnswer: Clean execution, explicit immutable inputs, locked environment, parameters, seeds, provenance, and asserted outputs.
+    fullAnswer: "Reproduction requires both computation and evidence: state isolation, data identity, code/version identity, bounded external dependencies, and artifact validation."
+    commonWrongAnswer: It runs on my machine after Run All.
+    followUps: [How would CI prove it?]
+    concepts: [reproducibility]
+    requiredForMastery: true
+  - id: jupyter-iv-security
+    level: debugging
+    question: Why are notebook outputs a security boundary?
+    shortAnswer: Rich outputs and tracebacks can store secrets, sensitive data, HTML, JavaScript, files, and environment details.
+    fullAnswer: Trust, sanitization, output policy, secret scanning, least privilege, and incident response matter because the document bundles code and rendered results.
+    commonWrongAnswer: Only source cells can leak information.
+    followUps: [What do you do after a token leak?]
+    concepts: [security]
+    requiredForMastery: false
+  - id: jupyter-iv-git
+    level: comparison
+    question: Why are notebook diffs difficult?
+    shortAnswer: JSON interleaves source, outputs, metadata, execution counts, and cell IDs.
+    fullAnswer: Generated noise hides logical changes and makes conflicts risky; output policies and notebook-aware or paired-text tools improve review.
+    commonWrongAnswer: Git cannot store JSON.
+    followUps: [Which representation is authoritative?]
+    concepts: [version-control]
+    requiredForMastery: false
+  - id: jupyter-iv-graduate
+    level: advanced
+    question: How does exploration graduate to production?
+    shortAnswer: Extract and test stable APIs, add explicit job configuration and observability, then make the notebook a consumer and report.
+    fullAnswer: Preserve one implementation across research and production, formalize data/model/artifact contracts, validate clean runs, and retain the notebook for evidence and interpretation.
+    commonWrongAnswer: Schedule the notebook unchanged.
+    followUps: [How do you prevent training-serving skew?]
+    concepts: [production]
+    requiredForMastery: false
+
+projects:
+  - id: jupyter-project-repro-lab
+    kind: major
+    title: Reproducible experiment laboratory
+    summary: Convert a stateful analysis notebook into a clean report backed by a tested package and CI.
+    problem: The starting notebook has out-of-order cells, copied transformations, local paths, stale outputs, a live API call, secrets risk, and no provenance.
+    requirements: [Extract reusable logic into typed modules, Add unit and integration fixtures, Parameterize explicit immutable inputs, Execute the notebook cleanly in CI, Emit provenance and validated artifacts]
+    constraints: [Production logic cannot exist only in the notebook, No live secret or uncontrolled network dependency, CI runtime under ten minutes]
+    expectedBehaviour: [Restart-run-all succeeds, Repeated runs are idempotent, Package and notebook results agree, Output policy and security scan pass]
+    milestones:
+      - title: Audit
+        detail: Map cell dependencies, side effects, inputs, outputs, duplication, and security exposure.
+      - title: Extract
+        detail: Build package APIs, fixtures, tests, and a CLI from stable domain logic.
+      - title: Reproduce
+        detail: Rewrite narrative flow, automate clean execution, and verify artifacts and provenance.
+    testing: [Wrong kernel, missing input, stale output, changed schema, network timeout, random seed drift]
+    failureCases: [Backward cell dependency, leaked credential, developer-only path, unbounded output]
+    bonus: [Notebook-aware diff setup, deterministic HTML report]
+    architectureHints: [Treat the notebook as an adapter over package APIs., Make data identity a required parameter.]
+    referenceOutline: A src package, tests and fixtures, notebooks/report.ipynb, environment lock, execution script, artifact schema, and CI job.
+    minutes: 300
+
+resources:
+  - name: Project Jupyter documentation
+    type: docs
+    difficulty: intro
+    url: https://docs.jupyter.org/en/latest/
+    why: The primary project documentation explains notebooks, kernels, architecture, applications, standards, and links to maintained execution and format tools.
+    covers: Jupyter ecosystem, notebook documents, kernels, and architecture.
+    usefulness: 5
+  - name: Jupyter Notebook format
+    type: docs
+    difficulty: deep
+    url: https://nbformat.readthedocs.io/en/latest/format_description.html
+    why: The official format specification shows exactly how cells, outputs, execution counts, metadata, attachments, and identifiers live in notebook JSON.
+    covers: .ipynb structure and validation-relevant fields.
+    usefulness: 5
+  - name: nbclient execution
+    type: docs
+    difficulty: core
+    url: https://nbclient.readthedocs.io/en/latest/client.html
+    why: The maintained Jupyter execution library documents fresh-kernel notebook execution, errors, timeouts, hooks, and working-directory behavior.
+    covers: Programmatic clean execution and failure handling.
+    usefulness: 5
+  - name: nbconvert executing notebooks
+    type: docs
+    difficulty: core
+    url: https://nbconvert.readthedocs.io/en/latest/execute_api.html
+    why: The primary conversion documentation demonstrates command-line and API execution workflows suitable for automated report generation and CI.
+    covers: ExecutePreprocessor, CLI execution, timeouts, and errors.
+    usefulness: 4
+  - name: Jupyter Notebook trust and security
+    type: docs
+    difficulty: deep
+    url: https://jupyter-notebook.readthedocs.io/en/v7.6.0/notebook.html
+    why: The official security guide explains trust, signatures, sanitization, rich output risks, and why notebook documents require careful handling.
+    covers: Notebook trust model and output security.
+    usefulness: 5

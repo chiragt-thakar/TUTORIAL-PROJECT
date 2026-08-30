@@ -1,0 +1,360 @@
+---
+id: "roadmap:phase-1-1.1:7"
+title: "asyncio: event loop, tasks, gather, semaphores, backpressure"
+description: "Build bounded async systems: understand cooperative scheduling, own task lifetimes, preserve cancellation, and turn overload into explicit backpressure instead of hidden memory growth."
+module: 1-1-python-fluency-beyond-the-basics
+order: 8
+estimatedMinutes: 115
+prerequisites: ["roadmap:phase-1-1.1:1", "roadmap:phase-1-1.1:3", "roadmap:phase-1-1.1:6"]
+learningObjectives:
+  - Explain how the event loop advances coroutines and identify code that blocks every task
+  - Choose deliberately among direct await, create_task, gather, TaskGroup, wait, and as_completed
+  - Preserve cancellation and design timeouts and cleanup as part of a task's public contract
+  - Bound concurrency and queued work with semaphores and queues that express an overload policy
+---
+
+`asyncio` is cooperative concurrency for work that spends time waiting. One event-loop thread runs one Python task at a time; a task keeps control until it suspends at an operation that actually waits.
+
+That sentence explains both the power and the main failure mode. Thousands of sockets can share one thread because most are idle. One blocking function, CPU-heavy loop, or coroutine that never yields can freeze all of them.
+
+The production question is therefore not “how do I make this async?” It is “who owns each task, where may it wait, how much work may exist, and what happens when demand exceeds capacity?”
+
+<TypeScriptComparison>
+
+- A Python coroutine object resembles a JavaScript promise recipe more than an already-running Promise. Calling `async def` does not start it.
+- `asyncio.create_task()` schedules a coroutine, roughly where calling a JavaScript async function starts its work.
+- `asyncio.gather()` resembles `Promise.all`, but cancellation and sibling-failure behavior differ.
+- `TaskGroup` gives Python structured concurrency: child tasks cannot silently outlive the block that owns them.
+- `asyncio.Queue(maxsize=n)` provides backpressure. A JavaScript array used as a work queue usually does not.
+
+</TypeScriptComparison>
+
+## The event loop is a cooperative scheduler
+
+An `async def` call creates a coroutine object. It runs only when awaited directly, wrapped in a scheduled task, or driven by another asyncio primitive.
+
+```python
+import asyncio
+
+
+async def fetch(name: str, delay: float) -> str:
+    print(f"start {name}")
+    await asyncio.sleep(delay)
+    print(f"done {name}")
+    return name
+
+
+async def main() -> None:
+    first = fetch("a", 0.2)          # coroutine; not running
+    second = asyncio.create_task(fetch("b", 0.1))  # scheduled Task
+    print(await first)               # direct await drives a
+    print(await second)              # b has progressed while a slept
+
+
+asyncio.run(main())
+```
+
+`await` does not automatically mean “yield now.” It asks the awaitable to advance. If that awaitable completes immediately, the current task can continue without giving other ready tasks a turn.
+
+The loop is normally fair enough for I/O, but it is not preemptive. A loop doing CPU work does not yield merely because it sits inside `async def`.
+
+```python
+async def bad_hashing(blobs: list[bytes]) -> list[str]:
+    return [expensive_hash(blob) for blob in blobs]  # blocks the loop
+```
+
+Use ordinary synchronous code for small CPU fragments. For blocking library calls, use `await asyncio.to_thread(callable, ...)`. For sustained CPU-bound work, use processes or a service designed for it. Threads prevent loop blockage; they do not make Python CPU work scale across cores.
+
+<CommonMistake>
+
+Replacing `time.sleep(1)` with `await asyncio.sleep(1)` fixes one blocking call. It does not make every database driver, file operation, SDK, model invocation, or compression routine non-blocking. Audit the whole call path.
+
+</CommonMistake>
+
+## Coroutines are computations; tasks are owned lifetimes
+
+Direct `await` means the caller does not proceed until that operation finishes. A `Task` schedules a coroutine independently and stores its result, exception, and cancellation state.
+
+```python
+async def load_request(request_id: str) -> Response:
+    profile_task = asyncio.create_task(fetch_profile(request_id), name="profile")
+    policy_task = asyncio.create_task(fetch_policy(request_id), name="policy")
+
+    profile = await profile_task
+    policy = await policy_task
+    return build_response(profile, policy)
+```
+
+Creating a task is a lifetime decision, not a performance decoration. If `fetch_profile` fails before `policy_task` is awaited, the second task still needs an owner. Hand-written task management quickly becomes subtle.
+
+Keep strong references to background tasks. Arrange to observe their exceptions. Better, place related tasks inside a lexical scope with `TaskGroup` so ownership is obvious.
+
+```python
+async def load_request(request_id: str) -> Response:
+    async with asyncio.TaskGroup() as group:
+        profile_task = group.create_task(fetch_profile(request_id))
+        policy_task = group.create_task(fetch_policy(request_id))
+
+    return build_response(profile_task.result(), policy_task.result())
+```
+
+The block exits only after every child is finished. When a child fails with a non-cancellation exception, the group cancels the remaining children, waits for cleanup, and raises the failures as an exception group.
+
+<ProductionNote>
+
+Name long-lived tasks and include stable request or job identifiers in logs. Never put prompts, tokens, credentials, or sensitive payloads in task names because debuggers and observability tools expose them.
+
+</ProductionNote>
+
+## Choose the result-collection primitive by policy
+
+`gather(*aws)` returns results in input order, not completion order. With default arguments, the first propagated exception wakes the waiter, but the other submitted awaitables are not automatically cancelled.
+
+```python
+results = await asyncio.gather(
+    embed("first"),
+    embed("second"),
+    embed("third"),
+)
+```
+
+`return_exceptions=True` puts exception objects into the result list. That is appropriate only when failure is expected data and every caller checks each slot. It is dangerous when it turns an infrastructure failure into a value that travels through the success path.
+
+Use `TaskGroup` when operations form one unit and sibling failure should cancel the rest. Use `gather` when you genuinely want ordered aggregation with its exact failure policy. Use `as_completed` when downstream work should begin in completion order.
+
+```python
+tasks = [asyncio.create_task(fetch(url)) for url in urls]
+for completed in asyncio.as_completed(tasks):
+    item = await completed
+    await persist(item)
+```
+
+Use `wait` when you need sets such as done and pending, or a first-completed race. `wait` does not raise task exceptions for you and does not cancel pending tasks on timeout. You still own both sets.
+
+## Cancellation is a request, not a kill signal
+
+`task.cancel()` arranges for `CancelledError` to be raised in the task at its next suspension point. The task may run cleanup before it finishes, and badly written code may suppress the cancellation.
+
+```python
+async def consume(queue: asyncio.Queue[Job]) -> None:
+    while True:
+        job = await queue.get()
+        try:
+            await handle(job)
+        finally:
+            queue.task_done()
+```
+
+Use `try/finally` or async context managers for cleanup. If you catch `CancelledError`, finish only cancellation-safe cleanup and re-raise it. Structured tools use cancellation internally; swallowing it breaks their guarantees.
+
+Timeouts are cancellation policies. `asyncio.timeout(2.0)` cancels the current task inside its block and translates the escaping cancellation into `TimeoutError` outside the context.
+
+```python
+async def query_with_deadline(query: str) -> Result:
+    try:
+        async with asyncio.timeout(2.0):
+            return await vector_store.search(query)
+    except TimeoutError as exc:
+        raise SearchUnavailable("vector-store deadline exceeded") from exc
+```
+
+`asyncio.wait_for()` applies a timeout to one awaitable. It cancels that awaitable on expiry and waits for cancellation cleanup, so wall-clock duration may exceed the nominal timeout.
+
+`shield()` protects an inner awaitable from cancellation by its current waiter. It is rarely the first answer. Shielding detaches lifetimes: the outer request can end while the inner operation continues, so somebody must retain, await, and report that operation.
+
+## A semaphore limits activity, not demand
+
+Launching one task per input can exhaust memory, sockets, connection pools, rate limits, and the remote service. A semaphore caps how many tasks enter a critical region.
+
+```python
+async def fetch_all(urls: list[str], limit: int = 20) -> list[bytes]:
+    semaphore = asyncio.Semaphore(limit)
+
+    async def one(url: str) -> bytes:
+        async with semaphore:
+            return await http_get(url)
+
+    async with asyncio.TaskGroup() as group:
+        tasks = [group.create_task(one(url)) for url in urls]
+
+    return [task.result() for task in tasks]
+```
+
+This bounds active HTTP calls but still creates one task for every URL. For ten million inputs, ten million tasks wait around the semaphore. Concurrency is bounded; admitted demand is not.
+
+Place the semaphore around the scarce operation, not around preprocessing that can run freely or postprocessing that needs a different limit. Do not hold it while retry backoff sleeps, because that wastes a permit while no scarce resource is used.
+
+A semaphore is not a rate limiter. It controls simultaneous occupancy. If requests finish quickly, the same permits can admit far more than a provider's allowed requests per second.
+
+## Backpressure bounds work that has not started
+
+Backpressure makes a fast producer slow down when consumers reach capacity. `asyncio.Queue(maxsize=n)` does this because `await queue.put(item)` suspends while the queue is full.
+
+```python
+async def producer(source: AsyncIterable[Job], queue: asyncio.Queue[Job]) -> None:
+    async for job in source:
+        await queue.put(job)
+
+
+async def worker(queue: asyncio.Queue[Job]) -> None:
+    while True:
+        job = await queue.get()
+        try:
+            await process(job)
+        finally:
+            queue.task_done()
+
+
+async def run(source: AsyncIterable[Job], workers: int = 8) -> None:
+    queue: asyncio.Queue[Job] = asyncio.Queue(maxsize=workers * 4)
+    consumers = [asyncio.create_task(worker(queue)) for _ in range(workers)]
+    try:
+        await producer(source, queue)
+        await queue.join()
+    finally:
+        for consumer in consumers:
+            consumer.cancel()
+        await asyncio.gather(*consumers, return_exceptions=True)
+```
+
+Every successful `get()` must have exactly one `task_done()`, including failure and cancellation paths. `join()` waits for that unfinished-work counter to return to zero; it does not mean consumers have stopped.
+
+Queue size is a budget, not a magic number. Derive it from memory per item, acceptable queueing delay, burst size, and downstream throughput. Measure queue depth, put latency, service latency, rejection count, and oldest-item age.
+
+<WhyItMatters>
+
+An unbounded queue converts overload into delayed failure: memory rises, latency becomes stale, and the service may die far from the original spike. A bounded queue forces an explicit choice—wait, reject, shed low-priority work, or persist it durably.
+
+</WhyItMatters>
+
+## Shutdown is part of the protocol
+
+Producer completion does not automatically stop workers. Common protocols are cancellation after `join()`, one sentinel per worker, or—in Python versions that support it—explicit queue shutdown.
+
+Sentinels work only when their counting and propagation rules are precise. If a sentinel came from `get()`, it still needs `task_done()`. With several workers, one sentinel is insufficient unless each worker safely requeues it, which complicates the counter.
+
+Cancellation-based shutdown is compact for in-process workers. Put cleanup in `finally`, cancel every worker, then await them with a policy that observes expected cancellations and surfaces unexpected errors.
+
+Durable jobs need a durable broker, claim/ack semantics, visibility timeouts, and idempotency. An in-memory asyncio queue disappears with the process and cannot provide cross-process delivery guarantees.
+
+## Design from capacity outward
+
+Start with the scarce resource and its measured capacity. Set active concurrency no higher than the smallest real bottleneck: connection-pool size, GPU batch slots, provider concurrency, memory, or downstream saturation point.
+
+Then bound queued work according to the latency budget. If eight workers each finish two jobs per second, a queue of 800 represents roughly 50 seconds of waiting before service time. That may already violate a request deadline.
+
+Finally choose overload behavior. Interactive inference might reject quickly with a retry hint. Offline ingestion might block the producer or write durably. Telemetry may sample or shed low-priority events. Hiding the choice behind an unbounded list is still a policy—the worst one.
+
+## Exercises
+
+<Exercise id="asyncio-event-loop-easy" difficulty="easy">
+
+Why does replacing `time.sleep(1)` with `await asyncio.sleep(1)` allow another task to run, while merely placing `time.sleep(1)` inside `async def` does not?
+
+<Solution>
+
+`asyncio.sleep` returns an awaitable that suspends the current task and schedules its continuation. `time.sleep` blocks the event-loop thread itself, so no other task can be advanced during that second.
+
+</Solution>
+</Exercise>
+
+<Exercise id="asyncio-collection-medium" difficulty="medium">
+
+Choose between `gather`, `TaskGroup`, and `as_completed` for: ordered independent results; one operation whose sibling work should be cancelled on failure; streaming results as soon as each finishes.
+
+<Solution>
+
+Use `gather` for ordered independent aggregation, `TaskGroup` for a structured unit with sibling cancellation and grouped failures, and `as_completed` for completion-order consumption. The primitive encodes failure and lifetime policy, not only convenience.
+
+</Solution>
+</Exercise>
+
+<Exercise id="asyncio-semaphore-hard" difficulty="hard">
+
+A crawler creates one task per URL and puts only the HTTP call behind a semaphore. Explain why it can still run out of memory, then redesign it for a ten-million-URL input.
+
+<Solution>
+
+The semaphore limits active requests but all ten million task objects, coroutine frames, URLs, and results may still exist. Stream URLs into a bounded queue, run a fixed worker pool, and persist each result incrementally. Size both the worker count and queue from measured capacity.
+
+</Solution>
+</Exercise>
+
+<Exercise id="asyncio-cancellation-interview" difficulty="interview">
+
+What exactly happens when `Task.cancel()` is called, and why should most code re-raise `CancelledError` after cleanup?
+
+<Solution>
+
+Cancellation is requested; `CancelledError` is injected at the task's next suspension point. The coroutine may execute `finally` blocks and context-manager exits before completing. Swallowing cancellation makes the task appear successful and can break deadlines, shutdown, `TaskGroup`, and timeout coordination.
+
+</Solution>
+</Exercise>
+
+<Exercise id="asyncio-backpressure-real-world" difficulty="real-world">
+
+Design admission control for an embedding endpoint with 16 provider slots, a two-second response budget, and bursts above sustainable throughput. State what is bounded, measured, and returned on overload.
+
+<Solution>
+
+Use at most 16 active provider operations and a small bounded admission queue derived from measured service time and the two-second deadline. Measure queue age/depth, permit wait, provider latency, rejection, timeout, and cancellation. Reject before work becomes stale—typically with a retryable overload response and retry guidance—rather than accepting unlimited requests.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+You should now be able to trace when a coroutine starts, identify the owner of every task, predict sibling behavior after failure, and distinguish bounded concurrency from bounded demand.
+
+Before moving on, explain why `Semaphore(20)` plus one task per input is not backpressure, and why a timeout must include cleanup behavior in its design.
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="Does every await give other tasks a turn?">
+
+No. If the awaited operation completes immediately, the task may continue synchronously. Cooperative scheduling depends on reaching an awaitable that actually suspends.
+
+</Gotcha>
+
+<Gotcha question="Does gather cancel siblings when one fails?">
+
+Not by default. Its first propagated exception does not automatically cancel the other submitted awaitables. Use `TaskGroup` when sibling cancellation is the required policy.
+
+</Gotcha>
+
+<Gotcha question="Does a semaphore prevent an overload backlog?">
+
+No. It limits simultaneous entry to a region. An unlimited number of tasks can wait for permits and consume memory; bound admission with a queue or streaming worker pool.
+
+</Gotcha>
+
+<Gotcha question="Does queue.join() stop workers?">
+
+No. It waits until every enqueued item has a matching `task_done()`. Workers remain alive and must receive a shutdown signal or cancellation.
+
+</Gotcha>
+
+<Gotcha question="Is create_task fire-and-forget?">
+
+No task is truly ownerless. Retain a reference, observe its exception, define shutdown behavior, and prefer a structured scope when its lifetime belongs to the current operation.
+
+</Gotcha>
+
+<Gotcha question="Is asyncio a way to speed up CPU-bound Python?">
+
+No. It improves utilization during waiting. CPU-heavy work blocks the event-loop thread unless moved elsewhere, and threads do not remove the GIL for ordinary Python computation.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+- The event loop advances cooperative tasks; blocking the loop blocks the whole async service.
+- A coroutine describes work, while a task schedules work and creates a lifetime that somebody must own.
+- `gather`, `TaskGroup`, `wait`, and `as_completed` encode different result, failure, and cancellation policies.
+- Cancellation is injected control flow. Cleanup must finish and normally re-raise it.
+- Semaphores bound active use of a scarce resource; bounded queues apply backpressure to admitted demand.
+- Capacity, queue size, timeout, and overload behavior form one system and must be designed together.
