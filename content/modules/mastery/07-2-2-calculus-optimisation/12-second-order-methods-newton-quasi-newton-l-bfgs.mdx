@@ -1,0 +1,397 @@
+---
+id: "roadmap:phase-2-2.2:11"
+title: "Second-order methods: Newton, quasi-Newton, L-BFGS — and why we don't use them at scale"
+description: Derive Newton's curvature-scaled step, build BFGS and L-BFGS from secant information, and account for the memory, solve, stochasticity, and line-search costs that limit them at deep-learning scale.
+module: 2-2-calculus-optimisation
+order: 12
+estimatedMinutes: 145
+prerequisites: []
+learningObjectives:
+  - Derive Newton's step from the quadratic Taylor model and diagnose indefinite or ill-conditioned Hessians
+  - Derive the secant condition and explain how BFGS updates a positive-definite inverse-Hessian approximation
+  - Implement L-BFGS two-loop recursion and account for its memory and compute costs
+  - Explain precisely why full second-order methods are uncommon at deep-learning scale and where curvature methods remain useful
+---
+
+Gradient descent knows slope. Second-order methods also model how slope changes. Curvature can turn
+a long zig-zag into a direct step—but only if we can obtain, store, and safely use it.
+
+<TypeScriptComparison>
+
+- NumPy's `solve(H, g)` and a TypeScript linear-algebra solver should solve a system; computing
+  `inverse(H) @ g` is slower and usually less stable.
+- Automatic differentiation can compute Hessian-vector products without forming a Hessian. This is
+  an operator API: given `v`, return `Hv`, much like a callback in TypeScript.
+- L-BFGS state is a bounded queue of vector pairs. Its memory is `O(mn)`, not `O(n^2)`, but closure
+  semantics and repeated loss evaluations still need explicit engineering.
+
+</TypeScriptComparison>
+
+## Newton's step from the quadratic model
+
+Around `theta`, the second-order Taylor model for displacement `p` is
+
+`m(p) = f(theta) + g^T p + 0.5 p^T H p`.
+
+Differentiate with respect to `p`: `grad_p m = g + Hp`. Setting this to zero gives
+
+`Hp = -g`, so `p_N = -H^{-1}g`.
+
+Do not form the inverse. Solve the linear system. On a positive-definite quadratic, Newton reaches
+the minimiser in one exact step because the Taylor model is the function itself. Near a smooth
+minimiser it can converge quadratically: the number of correct digits can roughly double per step.
+
+```python
+import numpy as np
+
+def newton_step(gradient: np.ndarray, hessian: np.ndarray) -> np.ndarray:
+    return np.linalg.solve(hessian, -gradient)
+```
+
+## Why raw Newton can fail
+
+Newton finds a stationary point of the quadratic model, not necessarily a minimum. If `H` has a
+negative eigenvalue, `p_N` can point toward a saddle or maximum. If `H` is singular or nearly
+singular, the solve is undefined or amplifies numerical error. Far from the solution, the local
+quadratic can be a poor global model.
+
+Safeguards include:
+
+- **Damping:** solve `(H + lambda I)p = -g`, increasing `lambda` until the model is positive enough.
+- **Line search:** choose `alpha` satisfying sufficient decrease and curvature conditions, then use
+  `theta + alpha p`.
+- **Trust region:** minimise the model subject to `||p|| <= Delta` and resize `Delta` according to
+  actual reduction divided by predicted reduction.
+- **Modified curvature:** clip or otherwise repair unsafe eigenvalues when appropriate.
+
+<WhyItMatters>
+
+“Second order” does not mean “automatically stable.” Curvature is useful only when the step is
+globalised through a line search, damping, or trust region and verified by actual loss reduction.
+
+</WhyItMatters>
+
+## The secant idea
+
+Suppose consecutive iterates give
+
+`s_k = theta_(k+1) - theta_k`
+
+`y_k = g_(k+1) - g_k`.
+
+For a locally constant Hessian, `y_k approximately H s_k`. A Hessian approximation `B` should
+therefore satisfy the **secant condition** `B_(k+1)s_k = y_k`. An inverse approximation `C`
+satisfies `C_(k+1)y_k = s_k`.
+
+One vector equation cannot identify an entire matrix, so quasi-Newton methods choose a nearby
+symmetric update satisfying the secant equation. They learn useful curvature from gradient
+differences rather than computing second derivatives directly.
+
+## BFGS
+
+Let `rho = 1/(y^T s)` and let `C` approximate the inverse Hessian. BFGS updates
+
+`C_new = (I-rho s y^T) C (I-rho y s^T) + rho s s^T`.
+
+If `C` is positive definite and `y^T s > 0`, the update remains positive definite, so `-C g` is a
+descent direction. A suitable Wolfe line search helps enforce this curvature condition. BFGS stores
+an `n x n` matrix, requiring `O(n^2)` memory and work, so it is excellent for modest smooth
+problems but impossible for billions of parameters.
+
+## L-BFGS: remember pairs, not a matrix
+
+Limited-memory BFGS retains only the latest `m` pairs `(s_i, y_i)` and their dot products. It
+applies the implicit inverse approximation to a gradient with the two-loop recursion:
+
+```python
+def lbfgs_direction(g, history):
+    q = g.copy()
+    saved = []
+    for s, y in reversed(history):
+        rho = 1.0 / np.dot(y, s)
+        alpha = rho * np.dot(s, q)
+        q -= alpha * y
+        saved.append((s, y, rho, alpha))
+
+    if history:
+        s, y = history[-1]
+        gamma = np.dot(s, y) / np.dot(y, y)
+    else:
+        gamma = 1.0
+    r = gamma * q
+
+    for s, y, rho, alpha in reversed(saved):
+        beta = rho * np.dot(y, r)
+        r += s * (alpha - beta)
+    return -r
+```
+
+With `m` history pairs and `n` parameters, storage and application cost are `O(mn)`. Pair order is
+not cosmetic: the first loop runs newest to oldest; the second unwinds oldest to newest.
+
+## Curvature-pair safety
+
+When `y^T s` is tiny, `rho` explodes. When it is nonpositive, the positive-definite guarantee is
+lost. Implementations may skip the pair, damp it, or reset history. Log `y^T s`, pair norms, line-
+search acceptance, and actual versus predicted decrease rather than silently adding epsilon to a
+broken denominator.
+
+## Hessian-vector products and Newton-CG
+
+For scalar `f`, a Hessian-vector product can be computed as
+
+`Hv = grad_theta (grad f(theta)^T v)`.
+
+This costs roughly a small multiple of a gradient evaluation without storing `H`. Conjugate
+gradient can approximately solve `Hp=-g` using only this operator. Damping or trust-region variants
+are still needed when curvature is indefinite. Gauss–Newton and Fisher approximations provide
+positive-semidefinite structure for common losses, but they are approximations, not the full Hessian.
+
+## Why deep learning rarely uses full Newton or BFGS
+
+For `n` parameters:
+
+- a dense Hessian stores `n^2` numbers; at one million parameters that is one trillion entries;
+- forming it needs many differentiation operations;
+- factoring or solving a dense system is roughly cubic in `n`;
+- BFGS still stores a dense `n x n` approximation;
+- line searches reevaluate the model and can require synchronised full-batch-like loss comparisons;
+- mini-batch noise corrupts gradient differences `y`, weakening curvature pairs;
+- the objective is non-convex, so the Hessian is often indefinite;
+- accelerators excel at batched first-order tensor operations, while repeated irregular solves and
+  closures can underuse them.
+
+L-BFGS removes quadratic storage, not stochasticity, line-search, or repeated-evaluation costs. It
+remains valuable for small smooth deterministic problems, scientific inverse problems, calibration,
+final refinement, and models whose full objective and gradients are affordable.
+
+## Worked Newton example: curvature changes the units
+
+Take
+
+`f(x,y) = 0.5(100x^2 + y^2)`.
+
+At `(x,y)=(1,1)`, the gradient is `g=(100,1)` and the Hessian is
+
+`H = [[100,0],[0,1]]`.
+
+Gradient descent with rate `0.01` moves by `-0.01g=(-1,-0.01)`, reaching `(0,0.99)`. The steep
+coordinate is solved immediately, but the shallow coordinate barely changes. A larger common rate
+would overshoot the steep coordinate.
+
+Newton solves
+
+`Hp=-g`, giving `p=(-1,-1)`.
+
+The Hessian divides each gradient component by its curvature scale, so the new point is `(0,0)`.
+This is not magic acceleration: the objective is exactly quadratic and its Hessian is positive
+definite everywhere. Add a non-quadratic term or move into indefinite curvature and the unit-step
+conclusion disappears.
+
+Now change the objective to `f(x,y)=x^2-y^2` at `(1,1)`. Then `g=(2,-2)` and
+`H=diag(2,-2)`. Raw Newton again produces `p=(-1,-1)` and lands at the stationary point `(0,0)`,
+but that point is a saddle. The solve succeeded numerically while the optimisation goal failed.
+
+## Damping through the eigenvalue view
+
+Write a symmetric Hessian as `H=Q Lambda Q^T`. Along eigenvector `q_i`, Newton scales the gradient
+component by `1/lambda_i`. A tiny positive eigenvalue creates a huge step; a negative eigenvalue
+reverses the descent logic.
+
+Damping replaces each denominator with `lambda_i + mu`:
+
+`p_mu = -(H + mu I)^-1 g`.
+
+When `mu` is large, `p_mu approximately -(1/mu)g`, a small gradient step. As `mu` decreases, more
+curvature scaling is admitted. Levenberg–Marquardt-style schemes adapt `mu` from the agreement
+between actual and predicted reduction. Damping is therefore not merely “add epsilon so the solve
+works”; it changes the optimisation model deliberately.
+
+For a trust region, compute
+
+`rho = (f(theta)-f(theta+p)) / (m(0)-m(p))`.
+
+If `rho` is near one, the quadratic predicted reality well and the radius may grow. If it is small
+or negative, reject or shrink the step. The numerator requires a real objective evaluation; the
+denominator comes from the local model.
+
+## Deriving the inverse-BFGS update
+
+We want a symmetric inverse-Hessian approximation `C_new` satisfying `C_new y = s`. Define
+`rho=1/(y^Ts)` and `V=I-rho s y^T`. The inverse-BFGS update is
+
+`C_new = V C V^T + rho s s^T`.
+
+Verify the secant condition instead of memorising it. Since
+
+`V^T y = (I-rho y s^T)y = y-rho y(s^Ty)=0`,
+
+the first term vanishes when multiplied by `y`. The second becomes
+
+`rho s(s^Ty)=s`.
+
+So `C_new y=s` exactly. For any nonzero vector `z`,
+
+`z^T C_new z = (V^Tz)^T C(V^Tz) + rho(s^Tz)^2`.
+
+If `C` is positive definite and `rho>0`, this expression is positive. That is the reason the
+curvature condition `y^Ts>0` matters: it preserves a descent-producing geometry rather than merely
+avoiding division by zero.
+
+## A two-dimensional BFGS calculation
+
+Let the current inverse approximation be identity, `s=(1,0)`, and `y=(2,1)`. Then `y^Ts=2` and
+`rho=1/2`. The secant equation asks the new inverse approximation to map `(2,1)` back to `(1,0)`.
+
+Using the formula gives
+
+`C_new = [[0.75,-0.5],[-0.5,1.0]]`.
+
+Check it:
+
+`C_new y = (1,0) = s`.
+
+Its determinant is `0.5` and its leading diagonal entry is positive, so the matrix is positive
+definite. This hand calculation is an excellent unit-test fixture: it catches transposed outer
+products, a missing second term, and a sign error in `rho`.
+
+## Understanding L-BFGS two-loop recursion
+
+Dense BFGS repeatedly applies low-rank transformations to an initial inverse approximation. L-BFGS
+does not reconstruct the resulting matrix. The first loop computes how the current gradient projects
+onto stored displacement directions and removes corresponding `y` components. The middle scalar
+`gamma` supplies a crude scale for directions not represented in history. The second loop reapplies
+the stored displacement corrections in the reverse nesting order.
+
+For history size `m=10` and `n=100 million` float32 parameters, the pair vectors alone need roughly
+`2 * 10 * 100 million * 4 bytes = 8 GB`. That is linear rather than quadratic, but it is not small.
+The algorithm also reads those vectors during every two-loop application, creating significant
+memory bandwidth and distributed communication pressure.
+
+A correct implementation must decide what to do when:
+
+- `s` is zero because a line search accepted no movement;
+- either vector contains nonfinite values;
+- `y^Ts` is positive but tiny relative to `||s||||y||`;
+- model structure or parameter ordering changes after checkpoint restore;
+- the batch changes between the two gradients used to form `y`.
+
+Use a relative test such as `y^Ts > tau ||s||||y||`, not only `y^Ts > 0`. The tolerance must be
+chosen with dtype and noise in mind. Log rejected pairs rather than silently pretending the history
+is healthy.
+
+## Newton-CG without a matrix
+
+Conjugate gradient approximately solves a positive-definite linear system using matrix-vector
+products. Newton-CG supplies `v -> Hv` as that product. If CG takes `k` iterations, the direction
+costs roughly `k` HVPs plus bookkeeping, and no dense Hessian is stored.
+
+On an indefinite Hessian, ordinary CG assumptions fail. Truncated Newton variants stop when they
+detect nonpositive curvature `p^THp <= 0`, hit a trust-region boundary, or exhaust a residual budget.
+The stopping tolerance controls an important trade-off: solving the local model extremely accurately
+is wasteful when the model itself is inaccurate far from the current point.
+
+Gauss–Newton replaces the full Hessian of a least-squares-like composite with `J^T H_loss J`,
+dropping terms involving second derivatives of the model outputs. For convex output losses this is
+positive semidefinite. The Fisher information has related structure for probabilistic models. These
+operators avoid some negative curvature but do not equal the true Hessian in general.
+
+## Stochastic gradients break the secant measurement
+
+Suppose `g_k` is evaluated on batch A and `g_(k+1)` on batch B. Then
+
+`y = g_B(theta+s) - g_A(theta)`
+
+contains both parameter-induced gradient change and sampling noise. With small batches, the noise
+may dominate and make `y^Ts` negative even in a locally convex region. A line search is also hard to
+interpret when every closure evaluates a different random batch.
+
+Possible responses include using the same batch inside one line search, larger curvature batches,
+averaged gradients, damping, or stochastic quasi-Newton variants designed for noisy pairs. Each
+adds compute or changes statistical behaviour. Simply feeding ordinary deterministic L-BFGS fresh
+mini-batches does not preserve its textbook assumptions.
+
+## End-to-end cost comparison
+
+“Iterations to convergence” is a misleading metric because one iteration means different work:
+
+| Method | Persistent curvature state | Typical extra work per step | Main scale problem |
+|---|---:|---:|---|
+| SGD/AdamW | `O(n)` | one gradient | optimiser state and data parallel reduction |
+| Dense Newton | `O(n^2)` | Hessian plus factorisation/solve | impossible matrix size and cubic solve |
+| BFGS | `O(n^2)` | dense inverse action plus line search | quadratic state and bandwidth |
+| L-BFGS | `O(mn)` | two-loop passes plus line search | history bandwidth and repeated closures |
+| Newton-CG | `O(n)` vectors | several HVPs | repeated autodiff and synchronisation |
+
+Report examples processed, forward and backward evaluations, HVP count, collective communication,
+peak memory, wall time, energy if relevant, and held-out quality. Curvature wins only if its reduction
+in required parameter updates repays those additional costs.
+
+## Implementation verification ladder
+
+1. Use a one-dimensional quadratic where the exact Newton and secant answers are known.
+2. Use a diagonal positive-definite quadratic and compare every direction with a dense oracle.
+3. Use a rotated quadratic to expose element-wise approximations and loop-order mistakes.
+4. Introduce an indefinite eigenvalue and verify damping or negative-curvature handling.
+5. Mutate `rho`, transpose an outer product, reverse a loop, and confirm a named test fails.
+6. Save and restore history in the middle of a deterministic run and compare every subsequent step.
+7. Only then test noisy batches and a real model, retaining the deterministic suite forever.
+
+## Exercises
+
+<Exercise id="second-derive-newton" difficulty="easy">
+Derive `Hp=-g` from the quadratic Taylor model.
+<Solution>Differentiating `g^Tp + 0.5p^THp` gives `g+Hp` for symmetric `H`; setting it to zero gives the Newton system.</Solution>
+</Exercise>
+
+<Exercise id="second-solve-not-invert" difficulty="medium">
+Why should code solve `Hp=-g` instead of computing an inverse?
+<Solution>A factorisation-based solve uses less work and avoids materialising an inverse whose rounding error is then multiplied by `g`.</Solution>
+</Exercise>
+
+<Exercise id="second-debug-curvature" difficulty="hard">
+An L-BFGS run explodes after accepting a pair with `y^Ts` near zero. Diagnose it.
+<Solution>The reciprocal curvature becomes enormous. Check finiteness and a scale-aware positive threshold, then skip, damp, or reset the pair and preserve line-search evidence.</Solution>
+</Exercise>
+
+<Exercise id="second-interview-scale" difficulty="interview">
+Why does L-BFGS not solve every scaling problem of Newton?
+<Solution>It reduces storage to `O(mn)` but still needs gradient history, often repeated closure evaluations and line searches, and reliable gradient differences that stochastic batches do not provide.</Solution>
+</Exercise>
+
+<Exercise id="second-real-choice" difficulty="real-world">
+Choose a method for a 5,000-variable deterministic calibration problem and a billion-parameter transformer.
+<Solution>Test safeguarded Newton-CG or L-BFGS for the smooth calibration problem. Use scalable first-order methods for the transformer, perhaps with structured curvature approximations only when measured benefits justify their systems cost.</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Derive the Newton system from a quadratic model.
+2. What does the sign of `y^Ts` protect in BFGS?
+3. Why does L-BFGS use two loops in opposite history orders?
+4. What can an HVP compute without materialising?
+5. Which scaling costs remain after replacing BFGS with L-BFGS?
+
+## Gotchas
+
+<Gotchas>
+<Gotcha question="Newton moved toward a saddle.">An indefinite Hessian makes the stationary point of the model unsafe; use damping, trust regions, or repaired curvature.</Gotcha>
+
+<Gotcha question="I explicitly invert the Hessian.">Solve the system with a stable factorisation or iterative operator method.</Gotcha>
+
+<Gotcha question="My BFGS approximation lost positive definiteness.">Inspect `y^Ts`, line-search conditions, noise, and pair-handling policy.</Gotcha>
+
+<Gotcha question="L-BFGS uses little memory, so it must scale to any model.">Linear memory can still be huge, and repeated evaluations, communication, stochastic pairs, and non-convexity remain.</Gotcha>
+
+<Gotcha question="One lower final loss proves the method is faster.">Compare equal compute, data passes, wall time, memory, tuning effort, and validation quality.</Gotcha>
+</Gotchas>
+
+## Summary
+
+Newton minimises a local quadratic by solving `Hp=-g`. Safeguards turn that local stationary step
+into a usable global algorithm. BFGS reconstructs curvature from secant pairs while preserving
+positive definiteness under `y^Ts>0`; L-BFGS applies a bounded history through two-loop recursion.
+
+Hessian-vector products offer curvature actions without dense Hessians, but no technique erases
+non-convexity, noise, repeated evaluations, communication, and hardware costs. Second-order methods
+are powerful when problem size and determinism make their curvature information trustworthy.

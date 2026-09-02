@@ -123,8 +123,10 @@ because of catastrophic cancellation (its own lesson, 13). Use a *relative* erro
 an analytic derivative.
 
 A function evaluated with rounding is not exactly the mathematical function, so its computed
-derivative inherits that error. This is why gradient checks use a tolerance and why exact autodiff
-is preferred over finite differences everywhere it is available.
+derivative inherits that error. This is why gradient checks use a tolerance and why autodiff's
+chain-rule propagation is preferred over finite differences where the executed operations have
+defined derivative rules. Its numeric result still includes floating-point rounding and framework
+choices at nondifferentiable points.
 
 <ProductionNote>
 
@@ -210,17 +212,22 @@ networks that use it?"
 ReLU is differentiable everywhere except the single point `x = 0`, where it has a kink: the left
 derivative is `0`, the right derivative is `1`. At that point the derivative does not exist, but a
 **subgradient** does — any value in `[0, 1]` is a valid subgradient — and frameworks simply pick
-one, conventionally `0` (PyTorch, TensorFlow) or sometimes `1`.
+one according to a documented convention; major frameworks commonly use `0` at the kink.
 
-In practice this is harmless. The set of inputs landing exactly on `x = 0` has measure zero, so with
-real-valued activations it essentially never happens; when it does, the chosen subgradient still
-gives a descent direction. The loss as a function of the parameters is continuous and differentiable
-almost everywhere, which is all that (sub)gradient descent needs for its convergence theory.
+Under a continuous input distribution, an exact zero preactivation may have probability zero, but
+quantised/discrete data, zero initialisation, clipping, and model structure can create exact zeros.
+At a kink the framework's local derivative convention keeps backpropagation defined; it does not
+guarantee that the resulting direction decreases a non-convex network loss.
 
-The same reasoning covers L1 regularisation (kink at `0`, subgradient `[-1, 1]`), `max`-pooling, and
-hard attention: non-smooth at isolated points, handled by subgradients, fine in practice. If the
-non-smoothness were on a large set, or if it caused oscillation, you would switch to a smooth
-surrogate (softplus for ReLU, a smoothed L1).
+In practice optimisers
+usually cross or move along such piecewise-smooth boundaries without difficulty, but convergence
+claims still need assumptions on the objective and algorithm.
+
+L1 regularisation has subgradient `[-1, 1]` at zero. Max-pooling needs a tie-breaking rule when
+several inputs share the maximum. Discrete hard attention is different: ordinary derivatives do not
+pass through the discrete choice, so training may require a continuous relaxation, policy-gradient
+estimator, or straight-through estimator. Do not group every non-smooth operation under one
+subgradient explanation.
 
 </Solution>
 </Exercise>

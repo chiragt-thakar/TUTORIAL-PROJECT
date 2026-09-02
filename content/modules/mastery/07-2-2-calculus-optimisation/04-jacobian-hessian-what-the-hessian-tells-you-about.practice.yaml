@@ -25,14 +25,15 @@ exercises:
       ```
     hints:
       - "`H v` is the directional derivative of the gradient along `v`."
-      - Autodiff computes the same thing exactly.
+      - Autodiff avoids finite-difference truncation error, though floating-point rounding remains.
     solution: |
       It returns an approximation of `H @ v`, the Hessian of the scalar `f` (whose gradient is
       `grad`) applied to `v`. It works because `H` is the Jacobian of `grad`, so
       `H @ v = d/dt grad(x + t v)` at `t = 0`, and a central difference of `grad` along `v`
-      estimates that. Cost is two gradient evaluations here; the exact autodiff version
+      estimates that. Cost is two gradient evaluations here; the autodiff version
       (forward-over-reverse, or a second backward on `grad(x) @ v`) also costs a small constant times
-      one gradient and has no truncation error. Neither forms the `n x n` Hessian.
+      one gradient and has no finite-difference truncation error, though it still rounds. Neither
+      forms the `n x n` Hessian.
   - id: ljhp-write-hessian
     tier: normal
     kind: write-code
@@ -658,7 +659,7 @@ projects:
       - "`classify` labels constructed min / max / saddle / degenerate Hessians correctly, using a tolerance for the zero eigenvalue."
       - "`truncated_newton_step` returns a descent direction (`g @ p < 0`) even for an indefinite `H`, and allocates no `n x n` array."
     constraints:
-      - NumPy and the standard library for the core; a small autodiff (from lesson 2) or a framework for the exact HVP.
+      - NumPy and the standard library for the core; a small autodiff engine (from lesson 2) or a framework HVP without finite differencing.
       - Never form or invert an `n x n` Hessian in any function meant for scale.
       - Never use `A^T A` power iteration for a curvature eigenvalue.
       - Symmetrise any assembled Hessian before an eigenvalue computation and use `eigvalsh`.

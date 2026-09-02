@@ -1,0 +1,566 @@
+lessonId: "roadmap:phase-2-2.2:10"
+module: 2-2-calculus-optimisation
+lesson: 11-learning-rate-schedules-cosine-warmup-one-cycle-and
+title: "Learning rate schedules: cosine, warmup, one-cycle, and why warmup exists"
+summary: Derive time-varying learning rates, make boundary and resume semantics explicit, and diagnose what warmup can and cannot stabilise.
+mastery: {minAssessmentScore: 80, requireProject: true, requireInterview: true, requireDebug: true, revisitAfterDays: 21}
+exercises:
+  - id: sched-read-piecewise
+    tier: normal
+    kind: code-reading
+    title: Read a piecewise schedule
+    minutes: 10
+    requiredForMastery: true
+    concepts: [schedule, boundaries]
+    prompt: Explain which rates apply at steps 99 and 100 in base if step < 100 else base/10.
+    hints:
+      - "Evaluate the comparison literally."
+      - "Boundary equality takes the else branch."
+    solution: |
+      Step 99 uses `base`; step 100 uses `base/10`. The strict comparison makes the milestone the
+      first step of the new phase. Test steps 99, 100, and 101, plus a resumed run whose next step is
+      100. Checking only a plot can miss a one-step shift that changes every later rate.
+  - id: sched-derive-cosine
+    tier: normal
+    kind: explain
+    title: Derive cosine landmarks
+    minutes: 12
+    requiredForMastery: true
+    concepts: [cosine, derivation]
+    prompt: Derive the rate at progress zero, one half, and one for peak h and floor l.
+    hints:
+      - "Use cosine values at zero, pi over two, and pi."
+      - "Substitute into the affine cosine formula."
+    solution: |
+      Substitute `p=0`, `1/2`, and `1`. Since cosine is respectively `1`, `0`, and `-1`, the rates
+      are `h`, `(h+l)/2`, and `l`. Differentiating gives a factor `-sin(pi p)`, so the slope is zero
+      at both endpoints. These values catch reversed endpoints, a missing half, and incorrect phase scaling.
+  - id: sched-write-cosine
+    tier: normal
+    kind: write-code
+    title: Implement clamped cosine decay
+    minutes: 14
+    requiredForMastery: true
+    concepts: [cosine, implementation]
+    prompt: Write a pure cosine scheduler that stays at its floor after the budget.
+    hints:
+      - "Clamp progress into the unit interval."
+      - "Validate that decay steps is positive."
+    solution: |
+      Validate `T > 0`, compute `p = min(max(step/T, 0), 1)`, and return
+      `lo + 0.5*(hi-lo)*(1+cos(pi*p))`. Clamping prevents the periodic cosine from rising again
+      after the budget. Unit tests should cover a negative step, both endpoints, the midpoint, and
+      a step beyond `T`. Keep this value function pure; the separate training clock decides when
+      `step` advances.
+  - id: sched-warmup-table
+    tier: normal
+    kind: predict-output
+    title: Tabulate linear warmup
+    minutes: 10
+    requiredForMastery: true
+    concepts: [warmup, indexing]
+    prompt: Give multipliers for zero-based steps zero through three when four updates must end at the peak.
+    hints:
+      - "The first update should be nonzero here."
+      - "Use (step+1)/W."
+    solution: |
+      Use `(step+1)/4`, giving multipliers `0.25`, `0.5`, `0.75`, and `1.0` at steps zero through
+      three. Step four is the first decay-phase step. Saving the next optimiser-update index makes
+      this convention reproducible after a mid-epoch checkpoint. Also test the zero-warmup case so
+      the protective denominator does not accidentally alter the first decay rate.
+  - id: sched-join-phases
+    tier: intermediate
+    kind: design
+    title: Join warmup to cosine
+    minutes: 16
+    requiredForMastery: true
+    concepts: [piecewise, continuity]
+    prompt: Define phase coordinates so the warmup reaches the peak and the final planned update reaches the floor.
+    hints:
+      - "Test W-1, W, and T-1."
+      - "Give decay its own zero-to-one coordinate."
+    solution: |
+      For `t < W`, use `(t+1)/W`; this reaches the peak at `W-1`. For `W <= t < T`, use decay
+      progress `(t-W)/(T-W-1)`, mapping the first decay step to zero and `T-1` to one. Handle a
+      one-step decay explicitly because its denominator would be zero. Test both sides of the join.
+  - id: sched-explain-warmup
+    tier: intermediate
+    kind: explain
+    title: Explain warmup mechanistically
+    minutes: 14
+    requiredForMastery: true
+    concepts: [warmup, stability]
+    prompt: Name three early-training effects warmup can reduce and one defect it cannot repair.
+    hints:
+      - "Consider optimiser statistics and representation scale."
+      - "Separate transient sensitivity from a wrong recurrence."
+    solution: |
+      Warmup can limit movement while Adam's moment estimates have little history, while activation
+      and curvature scales change rapidly, and while a large-batch peak would create an excessive
+      update-to-weight ratio. It cannot repair wrong loss reduction, nonfinite forward operations,
+      missing bias correction, or an unsafe peak that remains unstable after warmup ends.
+  - id: sched-one-cycle
+    tier: intermediate
+    kind: explain
+    title: Explain one-cycle
+    minutes: 14
+    requiredForMastery: true
+    concepts: [one-cycle, momentum]
+    prompt: Describe the learning-rate and momentum movement in a common one-cycle policy.
+    hints:
+      - "The rate first rises and then falls."
+      - "Momentum commonly moves inversely."
+    solution: |
+      A one-cycle policy raises the rate from a low start to a maximum found with a disposable range
+      test, then lowers it to a very small final value. Momentum commonly moves inversely. The rise
+      encourages broad exploration; the longer fall refines. The entire cycle is defined over a fixed
+      optimiser-update budget, not merely an epoch label.
+  - id: sched-budget
+    tier: intermediate
+    kind: design
+    title: Recompute the update budget
+    minutes: 14
+    requiredForMastery: true
+    concepts: [accumulation, distributed-training]
+    prompt: A loader has 1,000 micro-batches per epoch and accumulation is four. How many scheduler advances per epoch normally occur?
+    hints:
+      - "Parameters change only after accumulation."
+      - "Assume no skipped final partial accumulation."
+    solution: |
+      Four micro-batches produce one parameter transition, so `1000/4 = 250` successful optimiser
+      updates and normally 250 scheduler advances occur. Advancing 1,000 times compresses warmup and
+      decay by a factor of four. Account separately for a partial final accumulation and any update
+      skipped by nonfinite-gradient handling.
+  - id: sched-debug-microbatch
+    tier: tricky
+    kind: debug
+    title: Schedule decays during accumulation
+    minutes: 15
+    requiredForMastery: true
+    concepts: [debugging, accumulation]
+    prompt: Diagnose code that advances the scheduler after every backward call but the optimiser every eight calls.
+    hints:
+      - "Compare the two counters."
+      - "Define schedule time as parameter transitions."
+    solution: |
+      The scheduler consumes eight time indices for every parameter transition, so warmup and decay
+      finish eight times too early. Move advancement next to the successful optimiser step. Test that
+      scheduler advances equal parameter transitions, including accumulation boundaries, skipped AMP
+      updates, and the first update after checkpoint restore.
+  - id: sched-debug-off-by-one
+    tier: tricky
+    kind: debug
+    title: Peak and floor are missed
+    minutes: 15
+    requiredForMastery: true
+    concepts: [off-by-one, testing]
+    prompt: A run of T zero-based steps divides progress by T, so its last rate stays above the floor. Fix it.
+    hints:
+      - "The final planned index is T-1."
+      - "Map that index to progress one."
+    solution: |
+      `T` indexed updates have only `T-1` intervals between the first and final endpoints. Divide by
+      `T-1` for a single phase. After `W` warmup updates, the decay phase has denominator `T-W-1`.
+      Define singleton and empty phases explicitly, then test the first, penultimate, final, and
+      post-budget steps.
+  - id: sched-debug-resume
+    tier: tricky
+    kind: debug
+    title: Resume repeats warmup
+    minutes: 16
+    requiredForMastery: true
+    concepts: [checkpoint, resume]
+    prompt: A mid-epoch restore derives schedule time only from completed epochs. Explain the failure and test.
+    hints:
+      - "Some optimiser updates within the epoch are lost."
+      - "Compare every rate with an uninterrupted trace."
+    solution: |
+      Reconstructing time from completed epochs discards the successful updates already performed in
+      the partial epoch. The restored run repeats earlier rates and permanently shifts its trajectory.
+      Persist the exact next optimiser-step index plus optimiser, scaler, RNG, and sampler state.
+      Compare every subsequent batch, rate, update, and parameter with an uninterrupted run.
+  - id: sched-skipped-step
+    tier: tricky
+    kind: design
+    title: Handle a skipped AMP update
+    minutes: 14
+    requiredForMastery: true
+    concepts: [mixed-precision, semantics]
+    prompt: The loss scaler skips a nonfinite optimiser update. Decide whether schedule time should advance.
+    hints:
+      - "Ask whether parameters transitioned."
+      - "Consistency and checkpointing matter more than hidden defaults."
+    solution: |
+      A defensible default is not to advance because no parameter transition occurred. This keeps
+      schedule time aligned with optimisation time. Frameworks can choose differently, so record the
+      policy, persist both attempted and successful counters, and test an interrupted trace containing
+      a deliberately skipped update. The next successful transition must receive the same rate as in
+      the uninterrupted reference run.
+  - id: sched-range-test
+    tier: challenge
+    kind: design
+    title: Design a learning-rate range test
+    minutes: 20
+    requiredForMastery: false
+    concepts: [tuning, experiment-design]
+    prompt: Design a short experiment to propose a one-cycle maximum without contaminating the real run.
+    hints:
+      - "Increase rate geometrically over a disposable run."
+      - "Inspect smoothed loss and instability rather than one minimum point."
+    solution: |
+      Clone the initial model and optimiser state, increase the rate geometrically over a short fixed
+      batch sequence, and log smoothed loss, gradient norm, update ratio, and nonfinite events. Choose
+      candidates below sustained deterioration rather than the single lowest noisy loss. Restart the
+      real run from untouched state and compare nearby maxima under equal budgets.
+  - id: sched-observability
+    tier: challenge
+    kind: performance
+    title: Audit schedule effectiveness
+    minutes: 20
+    requiredForMastery: false
+    concepts: [observability, update-ratio]
+    prompt: Specify metrics that reveal whether a nominal schedule controls real parameter movement.
+    hints:
+      - "The scalar rate is not the final update."
+      - "Measure by parameter group."
+    solution: |
+      Log the scheduled base rate and realised group rates, gradient norm, update norm, parameter norm,
+      `||delta theta||/(||theta||+eps)`, clipping threshold and frequency, scaler skips, decay
+      contribution, and attempted versus successful step counts. Correlate these traces with training
+      and validation loss; the configured scalar alone does not reveal actual movement.
+quizzes:
+  - id: sched-checkpoint
+    title: Checkpoint — schedule semantics
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - {id: sched-cp-cos, kind: mcq, prompt: Where does one monotone cosine decay finish?, options: [{id: floor, text: At its configured floor}, {id: peak, text: Back at its peak}], answer: [floor], explanation: Progress one maps cosine pi to the floor., concepts: [cosine]}
+      - {id: sched-cp-clock, kind: mcq, prompt: What normally advances schedule time with accumulation?, options: [{id: updates, text: Successful optimiser updates}, {id: forwards, text: Every forward pass}], answer: [updates], explanation: Optimisation time counts parameter transitions., concepts: [accumulation]}
+      - {id: sched-cp-warm, kind: mcq, prompt: What does warmup not repair?, options: [{id: wrong-rule, text: An incorrect optimiser recurrence}, {id: transient, text: Fragile early update scale}], answer: [wrong-rule], explanation: A ramp cannot make a wrong algorithm correct., concepts: [warmup]}
+      - {id: sched-cp-resume, kind: mcq, prompt: What scheduler state is essential at resume?, options: [{id: step, text: Exact optimiser-step position}, {id: epoch-only, text: Only completed epoch count}], answer: [step], explanation: Mid-epoch progress is otherwise lost., concepts: [checkpoint]}
+  - id: sched-assessment
+    title: Assessment — schedules under real training constraints
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: sched-as-cos
+        kind: explain
+        prompt: |
+          Derive cosine endpoints.
+        modelAnswer: |
+          Substitution of progress zero and one gives peak and floor because cosine is one and minus one.
+          At progress one half, cosine is zero and the rate is the arithmetic midpoint. The derivative
+          contains `sin(pi*p)`, so it vanishes at both endpoints. These landmarks form an independent
+          oracle for testing the implementation.
+        explanation: |
+          Endpoint algebra is the first correctness test.
+        concepts: [cosine]
+      - id: sched-as-warm
+        kind: explain
+        prompt: |
+          Why can warmup help Adam despite correction?
+        modelAnswer: |
+          Correction removes zero-state expectation bias but not early variance, changing curvature and scales, or excessive relative updates.
+          Warmup limits the update while moment estimates have little history and model statistics are
+          changing rapidly. It is not a substitute for correct loss scaling, finite gradients, or a
+          safe post-warmup peak.
+        explanation: |
+          Warmup controls transient step magnitude.
+        concepts: [warmup, adam]
+      - id: sched-as-cycle
+        kind: explain
+        prompt: |
+          Describe one-cycle.
+        modelAnswer: |
+          Raise rate to a tested maximum then lower it deeply, often moving momentum inversely, within one fixed update budget.
+          The rising phase is deliberately exploratory and can regularise; the falling phase refines.
+          Library variants differ in phase split and interpolation, so define the exact trace instead
+          of relying only on the policy name.
+        explanation: |
+          It contains an exploratory rise and refining fall.
+        concepts: [one-cycle]
+      - id: sched-as-acc
+        kind: scenario
+        prompt: |
+          Why schedule per optimiser update?
+        modelAnswer: |
+          Micro-batches do not individually change parameters during accumulation; advancing on them compresses schedule time.
+          The default clock should advance once per successful optimiser transition. With accumulation
+          factor eight, advancing after every backward call consumes the schedule eight times too fast.
+        explanation: |
+          The relevant clock is transitions.
+        concepts: [accumulation]
+      - id: sched-as-floor
+        kind: find-bug
+        prompt: |
+          Why does unclamped cosine rise after budget?
+        modelAnswer: |
+          Cosine is periodic; progress beyond one moves past pi, so clamp or explicitly restart.
+          A post-budget step would otherwise increase the learning rate even though a monotone decay was
+          intended. Test the final planned step and at least one later step.
+        explanation: |
+          Formula domain is part of the policy.
+        concepts: [cosine]
+      - id: sched-as-resume
+        kind: scenario
+        prompt: |
+          Specify resume evidence.
+        modelAnswer: |
+          Interrupted and uninterrupted runs must match step, batch, rate, optimiser state, update, and parameters after restore.
+          Restore the exact next-transition index rather than deriving it from epochs. Include scaler,
+          RNG, sampler, and data position so the comparison uses the same successful steps and batches.
+        explanation: |
+          Loading without trajectory parity is weak evidence.
+        concepts: [resume]
+      - id: sched-as-scale
+        kind: explain
+        prompt: |
+          Why inspect update-to-weight ratio?
+        modelAnswer: |
+          Momentum, adaptivity, clipping, decay, and scale turn the scheduled scalar into different actual movements across groups.
+          The ratio `||delta theta||/(||theta||+eps)` measures relative parameter movement. Log it before
+          claiming that warmup or decay produced the intended optimisation behaviour.
+        explanation: |
+          Nominal rate is not realised displacement.
+        concepts: [observability]
+      - id: sched-as-batch
+        kind: scenario
+        prompt: |
+          Does doubling batch size mandate doubling rate?
+        modelAnswer: |
+          No; linear scaling is a heuristic whose validity depends on optimiser, noise, curvature, warmup, and budget.
+          Changing batch size also changes updates per example and gradient variance. Retune peak rate
+          and warmup under an equal compute budget and inspect realised update ratios.
+        explanation: |
+          Retune and validate the changed regime.
+        concepts: [batch-size]
+      - id: sched-as-amp
+        kind: scenario
+        prompt: |
+          How should skipped updates affect time?
+        modelAnswer: |
+          Prefer advancing only on successful transitions, or document another policy and preserve it exactly.
+          Track attempted and successful updates separately. A checkpoint containing a skipped update
+          should reproduce the same next learning rate after restore.
+        explanation: |
+          Hidden call order causes drift.
+        concepts: [mixed-precision]
+      - id: sched-as-fair
+        kind: explain
+        prompt: |
+          Define a fair schedule comparison.
+        modelAnswer: |
+          Equal data and update budget, equal tuning effort, complete traces, constant baseline, and validation plus compute reporting.
+          Also keep augmentation, batch construction, checkpoint selection, and evaluation cadence
+          fixed. Report examples processed, wall time, and realised rates so a more expensive policy
+          does not win merely because it consumed more work.
+        explanation: |
+          A schedule cannot be judged from one default run.
+        concepts: [experiment-design]
+interview:
+  - id: sched-iv-family
+    level: basic
+    requiredForMastery: true
+    concepts: [schedules]
+    question: |
+      Compare constant, cosine, warmup-cosine, and one-cycle policies.
+    shortAnswer: |
+      Constant never changes; cosine falls smoothly; warmup-cosine first ramps; one-cycle deliberately rises to a high maximum then falls deeply.
+    fullAnswer: |
+      Each is a time-varying control policy with different exploration and refinement behaviour; boundaries and clock units are part of its definition.
+      A constant rate is the essential baseline. Cosine monotonically decays from peak to floor over a
+      declared interval. Warmup-cosine first enters that peak gradually. One-cycle intentionally rises
+      from a low rate to an experimentally chosen maximum and then falls deeply, often cycling momentum
+      inversely. Compare exact formulas, update clocks, and endpoint conventions—not names alone.
+    commonWrongAnswer: |
+      They differ only in plotting style.
+    followUps:
+      - "Which needs a separate peak search?"
+      - "Which is monotone after warmup?"
+  - id: sched-iv-warmup
+    level: internals
+    requiredForMastery: true
+    concepts: [warmup]
+    question: |
+      Give a mechanistic explanation for warmup.
+    shortAnswer: |
+      It limits fragile early relative updates while moment statistics, representations, and curvature change rapidly.
+    fullAnswer: |
+      Bias correction does not remove estimator variance or rapidly changing scales; a ramp reaches an otherwise useful peak without applying it abruptly, but cannot fix invalid math.
+      Early Adam moments contain little data, activations and curvature can change rapidly, and a
+      large-batch peak may create a destructive update-to-weight ratio. Warmup reduces this transient
+      risk. It cannot repair nonfinite forward operations, wrong loss reduction, a broken optimiser
+      recurrence, or a peak that remains unsafe after the ramp.
+    commonWrongAnswer: |
+      Warmup is needed because weights are literally cold.
+    followUps:
+      - "What metrics validate this?"
+      - "What bug can it hide?"
+  - id: sched-iv-boundary
+    level: advanced
+    requiredForMastery: true
+    concepts: [boundaries]
+    question: |
+      How do you prevent off-by-one scheduler bugs?
+    shortAnswer: |
+      Define step zero, phase inclusivity, total transitions, and post-budget behaviour, then snapshot every boundary.
+    fullAnswer: |
+      Test first step, warmup last, decay first, midpoint, final planned step, and one post-budget step against independent formulas.
+      State whether step zero is before or after the first transition and whether the join repeats the
+      peak. Test singleton phases and invalid budgets. On resume, persist the next transition index and
+      require the entire remaining rate trace to match an uninterrupted oracle.
+    commonWrongAnswer: |
+      A smooth plot proves the endpoints.
+    followUps:
+      - "How do singleton phases behave?"
+      - "Why clamp progress?"
+  - id: sched-iv-resume
+    level: debugging
+    requiredForMastery: true
+    concepts: [resume]
+    question: |
+      Diagnose a schedule that changes after checkpoint restore.
+    shortAnswer: |
+      Compare the first divergent optimiser-step counter, batch, rate, and saved scheduler state against an uninterrupted trace.
+    fullAnswer: |
+      Restore exact transition position plus optimiser, scaler, RNG, sampler, and data state; epoch-derived counters commonly repeat a partial epoch.
+      Binary-search the first divergent step and compare batch ID, attempted and successful counters,
+      learning rate, optimiser moments, and parameters. Accumulation and AMP skips mean epoch or
+      micro-batch count cannot safely reconstruct optimiser time. Confirm the saved counter means
+      “next transition,” because saving the last completed index introduces another one-step shift.
+    commonWrongAnswer: |
+      Reloading model weights is enough.
+    followUps:
+      - "How does accumulation affect it?"
+      - "What about skipped updates?"
+  - id: sched-iv-system
+    level: scenario
+    requiredForMastery: true
+    concepts: [distributed-training]
+    question: |
+      A larger distributed batch diverges at the old schedule. What do you inspect?
+    shortAnswer: |
+      Re-evaluate peak rate, warmup, gradient reduction, update ratios, clipping, loss scale, and exact update budget.
+    fullAnswer: |
+      Batch scaling changes noise and steps per example; heuristic rate scaling requires a controlled retune and end-to-end transition accounting.
+      Verify gradient reduction semantics, global batch, accumulation, loss normalisation, clipping,
+      scaler behaviour, peak rate, and warmup length. Hold examples processed and tuning effort fixed,
+      then compare realised group-wise update ratios and validation quality. Linear batch-size scaling
+      is only a starting hypothesis; keep a smaller-rate control and report instability or scaler skips.
+    commonWrongAnswer: |
+      Always multiply learning rate by worker count.
+    followUps:
+      - "What stays fixed in comparison?"
+      - "Which traces reveal failure?"
+  - id: sched-iv-choice
+    level: comparison
+    requiredForMastery: true
+    concepts: [selection]
+    question: |
+      How do you choose cosine versus one-cycle?
+    shortAnswer: |
+      Compare under equal budget and tuning; use cosine for monotone annealing and one-cycle when a tested high-rate exploratory phase helps.
+    fullAnswer: |
+      Choice depends on optimiser, budget, task, peak-rate range, stability, and validation; include constant-rate evidence rather than treating either as universal.
+      Cosine is a simple monotone annealing default after optional warmup. One-cycle is justified when
+      a controlled range test identifies a useful high-rate phase and the complete rise-and-fall fits
+      the budget. Compare multiple seeds and total compute because either policy can win by chance or
+      by receiving more tuning.
+    commonWrongAnswer: |
+      One-cycle always trains faster.
+    followUps:
+      - "How do you find maximum rate?"
+      - "What is the floor for?"
+projects:
+  - id: sched-project-engine
+    kind: major
+    title: Build a framework-independent schedule engine
+    minutes: 220
+    summary: Implement pure schedules, exact transition accounting, logging, and resume-parity tests.
+    problem: |
+      Build constant, step, polynomial, cosine, warmup-cosine, and one-cycle policies behind one pure
+      value-at-step interface. Integrate a separate clock that models gradient accumulation, partial
+      batches, AMP-skipped updates, parameter-group multipliers, and mid-epoch checkpoints. Compare
+      policies on controlled objectives while exporting every intended and realised learning rate.
+    requirements: [Pure value-at-step API, Explicit boundary conventions, Parameter-group support, Full trace export, Exact checkpoint resume, Equal-budget comparison]
+    constraints: [Use optimiser updates as the default clock, Test float64 reference values, Do not depend on wall-clock time]
+    expectedBehaviour: [All landmark values match hand calculations, Post-budget behaviour is stable, Interrupted traces equal uninterrupted traces]
+    structure: |
+      schedule_lab/
+        schedules.py
+        clock.py
+        trace.py
+      tests/
+        test_boundaries.py
+        test_resume.py
+    milestones: [{title: "1 — Pure formulas", detail: Implement and hand-check landmarks.}, {title: "2 — Training clock", detail: Add accumulation and skipped updates.}, {title: "3 — Resume proof", detail: Match uninterrupted traces.}]
+    testing: [First and last step of every phase, Invalid and degenerate budgets, Accumulation and resume parity]
+    failureCases: [Advancing per micro-batch, Losing mid-epoch position, Unclamped post-budget cosine]
+    bonus: [Add visual traces and property tests for bounds and monotonicity.]
+    architectureHints: [Keep schedule formulas pure and clocks separate., Version serialised schedule configuration.]
+    referenceOutline: Implement scalar formulas first, wrap them in one explicit update clock, and treat emitted traces as test artifacts.
+  - id: sched-final-audit
+    kind: final-challenge
+    title: Audit a silently shifted production schedule
+    minutes: 110
+    summary: Find why accumulated and resumed training consumes cosine decay too quickly.
+    problem: |
+      A production run completes warmup and cosine decay much earlier than its reference configuration,
+      then shifts again after a mid-epoch restore. Reconcile framework call order, accumulation,
+      successful optimiser transitions, AMP skips, parameter groups, and restored counters. Identify
+      the first mismatching rate and repair it without changing the intended schedule or retuning.
+    requirements: [Locate first divergent step, Add fail-before-fix tests, Preserve exact resume behaviour, Report update-ratio impact]
+    constraints: [Do not retune to mask clock errors., Compare every step rather than final loss only.]
+    expectedBehaviour: [Reference and runtime rates match, Successful transitions and clock advances agree, Resume stays aligned]
+    milestones: [{title: "1 — Trace", detail: Capture counters and boundaries.}, {title: "2 — Repair", detail: Fix call order and state.}, {title: "3 — Prove", detail: Run interruption parity.}]
+    testing: [Accumulation factors, Skipped updates, Mid-epoch restore, Final boundary]
+    failureCases: [Using epoch alone, Trusting scheduler names, Ignoring post-budget steps]
+    bonus: [Create a compatibility manifest for another framework.]
+    architectureHints: [Record both attempted and successful updates., Keep an independent oracle trace.]
+    referenceOutline: Binary-search the first mismatch, align transition semantics, then prove exact continuation after restore.
+resources:
+  - name: "Loshchilov and Hutter — SGDR"
+    type: article
+    difficulty: core
+    url: "https://arxiv.org/abs/1608.03983"
+    usefulness: 5
+    why: |
+      Primary paper introducing cosine annealing with warm restarts and its exact schedule.
+    covers: |
+      Cosine annealing, restarts, schedules, experiments.
+  - name: "Goyal et al. — Accurate Large Minibatch SGD"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1706.02677"
+    usefulness: 5
+    why: |
+      Primary large-batch training work explaining gradual warmup and scaling in a concrete system.
+    covers: |
+      Warmup, large batches, distributed optimisation, scaling.
+  - name: "Smith and Topin — Super-Convergence"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1708.07120"
+    usefulness: 5
+    why: |
+      Primary source for the one-cycle policy and high learning-rate regularisation argument.
+    covers: |
+      One-cycle, cyclical rates, momentum, super-convergence.
+  - name: "PyTorch documentation — OneCycleLR"
+    type: docs
+    difficulty: core
+    url: "https://docs.pytorch.org/docs/stable/generated/torch.optim.lr_scheduler.OneCycleLR.html"
+    usefulness: 4
+    why: |
+      Official documentation defines the complete phase and step behaviour, step, momentum, and total-step semantics used in practice.
+    covers: |
+      One-cycle configuration, call order, momentum cycling, total steps.
+  - name: "PyTorch documentation — CosineAnnealingLR"
+    type: docs
+    difficulty: core
+    url: "https://docs.pytorch.org/docs/stable/generated/torch.optim.lr_scheduler.CosineAnnealingLR.html"
+    usefulness: 4
+    why: |
+      Official implementation reference distinguishes recursive cosine annealing from restart policies.
+    covers: |
+      Cosine schedule, eta minimum, step semantics, implementation.

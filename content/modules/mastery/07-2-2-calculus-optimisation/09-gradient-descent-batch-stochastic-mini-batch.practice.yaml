@@ -1,0 +1,755 @@
+lessonId: "roadmap:phase-2-2.2:8"
+module: 2-2-calculus-optimisation
+lesson: 09-gradient-descent-batch-stochastic-mini-batch
+title: "Gradient descent: batch, stochastic, mini-batch"
+summary: Gradient descent follows the negative local slope; full-batch, stochastic, and mini-batch variants differ in estimator variance, update frequency, memory, and hardware efficiency. Correct reduction, shuffling, accumulation, and comparison budgets are part of the algorithm.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: gdbsm-read-update
+    tier: normal
+    kind: code-reading
+    title: Read a full-batch update
+    minutes: 10
+    requiredForMastery: true
+    concepts: [full-batch, mse, gradient-scaling]
+    prompt: |
+      Explain the objective whose gradient this function computes, including the factor `2/N`, and
+      give the shapes of every intermediate when `X` is `(N, D)` and `w` is `(D,)`.
+    code: |
+      def grad(X, y, w):
+          residual = X @ w - y
+          return (2.0 / len(X)) * X.T @ residual
+    hints:
+      - Start from `mean((X @ w - y)**2)`.
+      - Differentiate each squared residual and then average over examples.
+    solution: |
+      The objective is `J(w) = (1/N) sum_i (x_i . w - y_i)^2`. `X @ w` and `residual` both have
+      shape `(N,)`; `X.T` is `(D, N)`; therefore `X.T @ residual` is `(D,)`, matching `w`. Each
+      squared residual contributes `2(x_i.w-y_i)x_i`; summing gives `2 X.T residual`, and dividing
+      by `N` matches the mean reduction. Omitting `1/N` would make gradient magnitude and the
+      effective learning rate grow with batch size.
+  - id: gdbsm-derive-direction
+    tier: normal
+    kind: explain
+    title: Derive the negative-gradient direction
+    minutes: 12
+    requiredForMastery: true
+    concepts: [taylor-model, steepest-descent, cauchy-schwarz]
+    prompt: |
+      Starting from the first-order Taylor approximation, show why the steepest local decrease
+      inside `||delta||_2 <= epsilon` is opposite the gradient.
+    hints:
+      - Write `J(theta + delta) ~= J(theta) + grad J . delta`.
+      - Use the lower equality case of Cauchy-Schwarz for the inner product.
+    solution: |
+      The only displacement-dependent term in the local model is `g^T delta`, where `g = grad J`.
+      Cauchy-Schwarz gives `g^T delta >= -||g|| ||delta|| >= -epsilon ||g||`. Equality holds for
+      `delta = -epsilon g/||g||` when `g != 0`. Thus negative gradient minimises the Euclidean
+      first-order model under a step-length constraint. Writing its length as `eta ||g||` gives
+      the familiar update `theta <- theta - eta g`. This steepest direction depends on the chosen
+      norm and parameterisation.
+  - id: gdbsm-quadratic-rate
+    tier: normal
+    kind: predict-output
+    title: Predict a quadratic trajectory
+    minutes: 10
+    requiredForMastery: true
+    concepts: [learning-rate, stability, quadratic]
+    prompt: |
+      For `J(w)=5w^2`, gradient descent starts at `w0=2`. Predict the behaviour for learning rates
+      `0.05`, `0.1`, `0.15`, and `0.2` without running code.
+    hints:
+      - The recurrence is `w_(t+1) = (1 - 10*eta)w_t`.
+      - Classify the multiplier by whether its absolute value is below, equal to, or above one.
+    solution: |
+      At `eta=0.05`, the multiplier is `0.5`, so `w` shrinks monotonically to zero. At `eta=0.1`,
+      it is `0`, so the first update lands exactly at zero. At `eta=0.15`, it is `-0.5`, so signs
+      alternate while magnitudes shrink. At `eta=0.2`, it is `-1`, so the iterate alternates
+      forever between `2` and `-2`; it does not converge. The open stability interval is
+      `0 < eta < 0.2 = 2/10`.
+  - id: gdbsm-write-batches
+    tier: normal
+    kind: write-code
+    title: Write a reproducible mini-batch iterator
+    minutes: 12
+    requiredForMastery: true
+    concepts: [mini-batch, shuffling, reproducibility]
+    prompt: |
+      Implement `batches(X, y, batch_size, rng)` that visits every example exactly once in a newly
+      shuffled order and includes the final short batch.
+    hints:
+      - Permute integer indices rather than copying and shuffling `X` and `y` separately.
+      - Slice from `0` to `N` in strides of `batch_size`.
+    solution: |
+      Validate `batch_size > 0`, compute `order = rng.permutation(len(X))`, then loop
+      `for start in range(0, len(X), batch_size)`, set `idx = order[start:start+batch_size]`, and
+      yield `X[idx], y[idx]`. One index array keeps features and targets aligned, `range` naturally
+      retains the final short slice, and accepting an owned `Generator` makes the sequence
+      reproducible without mutating NumPy's global RNG. A test should concatenate yielded indices
+      and confirm they are a permutation of `range(N)`.
+  - id: gdbsm-unbiased-variance
+    tier: intermediate
+    kind: explain
+    title: Derive mini-batch bias and variance
+    minutes: 14
+    requiredForMastery: true
+    concepts: [gradient-estimator, unbiasedness, variance]
+    prompt: |
+      If independent uniformly sampled example gradients have mean `g` and covariance `Sigma`,
+      derive the mean and covariance of their batch mean of size `b`.
+    hints:
+      - Expectation distributes over the average.
+      - Independence removes covariance cross-terms, leaving `b` equal terms.
+    solution: |
+      For `g_B=(1/b)sum_j G_j`, linearity gives `E[g_B]=(1/b)sum_j E[G_j]=g`, so the estimator is
+      unbiased. Independence gives `Cov(g_B)=(1/b^2)sum_j Cov(G_j)=(1/b^2)b Sigma=Sigma/b`.
+      Therefore mean-squared noise is `trace(Sigma)/b` and RMS noise falls as `1/sqrt(b)`. Without
+      independence, covariance cross-terms remain; shuffled without-replacement batches also gain
+      a finite-population correction, but keep the same central averaging intuition.
+  - id: gdbsm-compare-budgets
+    tier: intermediate
+    kind: design
+    title: Compare batch sizes fairly
+    minutes: 16
+    requiredForMastery: true
+    concepts: [batch-size, experiment-design, compute-budget]
+    prompt: |
+      Design a fair comparison of batch sizes 32 and 256. State the budgets, hyperparameters, and
+      measurements needed before declaring a winner.
+    hints:
+      - Equal epochs do not mean equal update counts.
+      - Separate optimisation efficiency, statistical efficiency, and hardware efficiency.
+    solution: |
+      Run three declared comparisons: fixed examples processed, fixed optimiser steps, and fixed
+      wall time. Tune learning rate (and warmup if used) separately for each batch under an equal
+      tuning budget; keep splits, initialisation distribution, augmentations, optimiser family, and
+      loss reduction fixed. Use multiple paired seeds. Record train and validation metrics against
+      steps/examples/time, examples per second, peak memory, gradient norms, effective batch size,
+      and uncertainty across seeds. Batch 32 makes eight times more updates per epoch, while batch
+      256 may process examples faster, so no single epoch-only curve answers all three questions.
+  - id: gdbsm-accumulate-weighted
+    tier: intermediate
+    kind: write-code
+    title: Accumulate unequal micro-batches
+    minutes: 16
+    requiredForMastery: true
+    concepts: [gradient-accumulation, loss-reduction, effective-batch]
+    prompt: |
+      Write pseudocode that combines mean gradients from micro-batches of sizes 16, 16, and 5 into
+      exactly the mean gradient of the corresponding 37-example batch.
+    hints:
+      - A mean from a 5-example batch must not receive the same weight as one from 16 examples.
+      - Convert each mean back to a sum, add, then divide by total examples.
+    solution: |
+      Initialise `grad_sum = zeros_like(parameters)` and `count = 0`. For each micro-batch, compute
+      its mean gradient `g_mean`, then do `grad_sum += len(batch) * g_mean` and
+      `count += len(batch)`. After all three, use `g = grad_sum / count` and update once. In an
+      autograd system, equivalently multiply each mean loss by `len(batch)/37` before `backward()`.
+      Dividing each loss by three is wrong here because it assigns the five-example batch one third
+      of the weight instead of `5/37`.
+  - id: gdbsm-sampling-policy
+    tier: intermediate
+    kind: design
+    title: Choose a sampling policy for grouped data
+    minutes: 15
+    requiredForMastery: true
+    concepts: [sampling, leakage, grouped-data]
+    prompt: |
+      You train on medical visits, with many visits per patient. Explain how to split and batch the
+      data without leaking patient information, while still obtaining useful stochastic gradients.
+    hints:
+      - The train/validation boundary must be created at the patient level.
+      - Shuffling after the split is different from shuffling before the split.
+    solution: |
+      Assign whole patients—not visits—to train, validation, and test before fitting transforms or
+      constructing batches. Within the training patients, shuffle visit indices each epoch, or use
+      a patient-aware sampler if repeated visits otherwise dominate a batch. Fit normalisation only
+      on training data and apply it unchanged to validation/test. Never globally shuffle visits and
+      then split, because the same patient's correlated measurements can appear on both sides and
+      inflate validation performance. Report whether metrics are visit- or patient-weighted.
+  - id: gdbsm-debug-sum-loss
+    tier: tricky
+    kind: debug
+    title: Batch size secretly scales the learning rate
+    minutes: 14
+    requiredForMastery: true
+    concepts: [loss-reduction, batch-size, learning-rate]
+    prompt: |
+      Training is stable at batch 32 but diverges at batch 256 with the same learning rate. The
+      loss is `((pred-y)**2).sum()`. Diagnose the scaling bug and propose a regression test.
+    hints:
+      - A summed gradient grows roughly in proportion to the number of examples.
+      - Compare an update on duplicated examples at two batch sizes.
+    solution: |
+      The summed loss makes the gradient about eight times larger at batch 256, so keeping `eta`
+      fixed multiplies the effective step by eight. Use `.mean()` (or divide the summed gradient by
+      the actual batch length), then tune learning rate for statistical and throughput reasons
+      rather than accidental scaling. Regression: duplicate the same example 32 and 256 times,
+      compute mean-reduced gradients, and assert they match. Also test a final short batch to ensure
+      it divides by its actual length.
+  - id: gdbsm-debug-zero-grad
+    tier: tricky
+    kind: debug
+    title: Gradients leak across optimiser steps
+    minutes: 14
+    requiredForMastery: true
+    concepts: [autograd, zero-grad, accumulation]
+    prompt: |
+      An autograd loop calls `loss.backward(); optimizer.step()` for every batch but never clears
+      gradients. Loss initially falls, then explodes. Explain the state bug and the correct order.
+    hints:
+      - Many frameworks add new gradients into existing `.grad` buffers.
+      - Clearing once per update differs from clearing once per micro-batch during accumulation.
+    solution: |
+      Backward accumulates into parameter gradient buffers, so update `t` uses the sum of every
+      gradient seen so far instead of only the current batch. For ordinary mini-batch training use
+      `optimizer.zero_grad(); loss.backward(); optimizer.step()` each iteration (or clear after the
+      step consistently). For deliberate accumulation, clear before the first micro-batch, call
+      backward on correctly scaled micro-losses, step once after `k`, then clear. Regression: two
+      identical batches should produce identical parameter deltas when reset to the same state.
+  - id: gdbsm-debug-shuffle
+    tier: tricky
+    kind: debug
+    title: Sorted batches bias the training path
+    minutes: 14
+    requiredForMastery: true
+    concepts: [shuffling, correlated-gradients, classification]
+    prompt: |
+      A binary-classification dataset is sorted by label and consumed without shuffling. Per-batch
+      loss oscillates and the final classifier favours the last class seen. Diagnose and fix it.
+    hints:
+      - Consecutive gradients are not representative of the whole empirical objective.
+      - Shuffle aligned indices at every epoch, not `X` and `y` independently.
+    solution: |
+      Early batches contain only one class and push parameters toward that class; later batches
+      reverse the direction, so gradients are highly correlated and the final updates dominate.
+      Create one RNG-owned permutation of training indices each epoch and index both `X` and `y`
+      with it. Split before shuffling to preserve validation boundaries. For severe imbalance, use
+      a documented stratified or weighted sampler and correct any changed target distribution when
+      calibrating probabilities. Test that each epoch visits every training index exactly once.
+  - id: gdbsm-performance-knee
+    tier: challenge
+    kind: performance
+    title: Find the throughput knee
+    minutes: 22
+    requiredForMastery: false
+    concepts: [throughput, critical-batch-size, profiling]
+    prompt: |
+      Design a benchmark that finds where increasing batch size stops improving useful training
+      throughput on an accelerator.
+    hints:
+      - Raw examples per second is necessary but not sufficient.
+      - Include warmup, synchronisation, memory, and progress per unit time.
+    solution: |
+      Benchmark geometric batch sizes after warmup, synchronising the device around timing regions.
+      Measure median step time, examples/second, peak memory, host-to-device stalls, and utilisation.
+      Then run short learning-rate-tuned trials and measure validation improvement per wall minute
+      and per example across seeds. The useful knee is the largest region where throughput and
+      progress/time still improve without OOM or degraded statistical efficiency; beyond the
+      critical batch, extra examples reduce little gradient noise. Record software/hardware versions
+      and avoid including compilation or data-cache cold starts in steady-state timings.
+  - id: gdbsm-design-api
+    tier: challenge
+    kind: design
+    title: Design one API for all three variants
+    minutes: 24
+    requiredForMastery: false
+    concepts: [optimizer-api, iterator, observability]
+    prompt: |
+      Design a NumPy training API where batch, stochastic, and mini-batch descent are configurations
+      of one correct loop rather than three copied implementations.
+    hints:
+      - Treat full batch as `batch_size=N` and stochastic as `batch_size=1`.
+      - Keep sampling, gradient computation, schedules, and metrics as separate concerns.
+    solution: |
+      Use `fit(model, loss_grad, dataset, *, batch_size, epochs, schedule, sampler, seed, callbacks)`.
+      A sampler owns an RNG and yields index arrays; `batch_size=None` resolves to `N`, while `1` is
+      stochastic. The loop obtains `Xb,yb`, calls a gradient function whose contract is a batch
+      **mean**, evaluates `eta=schedule(step)`, updates once, and emits a record containing epoch,
+      step, examples, loss, gradient norm, learning rate, and wall time. Validation and checkpoint
+      callbacks run outside the update. Tests compare all configurations on a quadratic, verify
+      index coverage/reproducibility, and assert gradient scale is invariant under duplication.
+  - id: gdbsm-refactor-loop
+    tier: challenge
+    kind: refactor
+    title: Refactor an untestable training loop
+    minutes: 24
+    requiredForMastery: false
+    concepts: [training-loop, pure-functions, testing]
+    prompt: |
+      A training script owns global RNG state, loads data, computes gradients, updates parameters,
+      prints metrics, and evaluates validation inside one function. Refactor it for correctness tests.
+    hints:
+      - Extract a pure `train_step(parameters, batch, learning_rate)` boundary.
+      - Inject the RNG, batch iterator, schedule, and metrics sink.
+    solution: |
+      Separate `make_split`, `make_batch_iterator(rng)`, pure `loss_and_grad(params,batch)`,
+      `apply_update`, and `evaluate`. The orchestration loop receives these plus a schedule and
+      callback; it owns only counters and parameter state. Return structured history instead of
+      parsing prints. Unit-test gradients by finite differences, update arithmetic on a quadratic,
+      iterator coverage and deterministic seeds, no overlap between grouped splits, and exact
+      accumulated-versus-large-batch gradients. Integration-test that a tiny batch can be overfit.
+  - id: gdbsm-debug-distributed
+    tier: challenge
+    kind: debug
+    title: Distributed averaging changes the update
+    minutes: 20
+    requiredForMastery: false
+    concepts: [data-parallel, all-reduce, effective-batch]
+    prompt: |
+      Four workers each compute a mean gradient over 32 examples. The all-reduce sums worker
+      gradients, and training needs a learning rate four times smaller than the single-worker run.
+      Find the bug and state the effective batch size.
+    hints:
+      - The mean over 128 examples is the average, not the sum, of four equal worker means.
+      - Check whether the distributed library's reduction is SUM or AVG.
+    solution: |
+      Summing four local means creates four times the 128-example global mean, so the apparent need
+      to divide learning rate by four is compensating for a reduction bug. Divide the all-reduced
+      result by world size or configure an average reduction. With one local batch per update the
+      effective batch size is `4*32=128`; with `k` accumulation steps it is `4*32*k`. If local batch
+      lengths differ, weight local means by counts and divide by the global count instead.
+quizzes:
+  - id: gdbsm-checkpoint
+    title: Checkpoint — gradient estimates and scaling
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: gdbsm-cp-direction
+        kind: mcq
+        prompt: Under the Euclidean norm, which direction minimises the first-order model for a fixed step length?
+        options:
+          - {id: negative-gradient, text: Opposite the gradient}
+          - {id: positive-gradient, text: Along the gradient}
+          - {id: random-direction, text: Any random direction in expectation}
+        answer: [negative-gradient]
+        explanation: Cauchy-Schwarz reaches its minimum when the displacement is antiparallel to the gradient.
+        concepts: [steepest-descent]
+        points: 1
+      - id: gdbsm-cp-variance
+        kind: mcq
+        prompt: Under independent sampling, how does covariance of a batch-mean gradient scale with batch size `b`?
+        options:
+          - {id: inverse-b, text: It is `Sigma/b`}
+          - {id: inverse-square, text: It is `Sigma/b^2`}
+          - {id: unchanged, text: It remains `Sigma`}
+        answer: [inverse-b]
+        explanation: Averaging contributes `1/b^2`, while summing `b` independent covariances contributes `b`.
+        concepts: [gradient-variance]
+        points: 1
+      - id: gdbsm-cp-final-batch
+        kind: mcq
+        prompt: A final mini-batch has 7 examples although configured batch size is 32. What divisor keeps a summed gradient a mean?
+        options:
+          - {id: seven, text: Divide by 7}
+          - {id: thirty-two, text: Divide by 32}
+          - {id: none, text: Do not divide}
+        answer: [seven]
+        explanation: Reduction uses the number of examples that actually contributed.
+        concepts: [loss-reduction]
+        points: 1
+      - id: gdbsm-cp-compare
+        kind: multi
+        prompt: Which axes should be reported when comparing batch sizes?
+        options:
+          - {id: steps, text: Optimiser steps}
+          - {id: examples, text: Examples processed}
+          - {id: wall-time, text: Wall-clock time}
+          - {id: epoch-only, text: Epoch number only}
+        answer: [steps, examples, wall-time]
+        explanation: Batch size changes updates per epoch and throughput, so all three clocks are needed.
+        concepts: [experiment-design]
+        points: 1
+  - id: gdbsm-assessment
+    title: Assessment — batch, stochastic, and mini-batch descent
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: gdbsm-as-derive
+        kind: explain
+        prompt: Derive the gradient-descent update from a first-order Taylor model.
+        modelAnswer: |
+          `J(theta+delta) ~= J(theta)+g^T delta`. Inside `||delta||<=epsilon`, Cauchy-Schwarz makes
+          `g^T delta` smallest at `delta=-epsilon*g/||g||`. Absorbing the displacement length into
+          `eta` gives `theta <- theta-eta*g`. It is steepest descent specifically in Euclidean
+          parameter geometry.
+        explanation: Negative gradient minimises the constrained local linear model.
+        concepts: [taylor-model, steepest-descent]
+        points: 1
+      - id: gdbsm-as-stability
+        kind: scenario
+        prompt: For `J(w)=0.5*a*w^2`, what constant learning rates converge and why?
+        modelAnswer: |
+          The recurrence is `w_(t+1)=(1-eta*a)w_t`, hence `w_t=(1-eta*a)^t w_0`. Convergence from
+          every start requires `|1-eta*a|<1`, or `0<eta<2/a`. Above `1/a` the signs alternate; at
+          `2/a` they alternate without shrinking.
+        explanation: Quadratic curvature fixes the stable step interval.
+        concepts: [learning-rate, quadratic]
+        points: 1
+      - id: gdbsm-as-unbiased
+        kind: explain
+        prompt: Why is a uniformly sampled mini-batch mean an unbiased empirical-gradient estimator?
+        modelAnswer: |
+          Every sampled example gradient has expectation `(1/N)sum_i grad ell_i = grad J`.
+          Linearity makes the expectation of their mean the same value. Independence is not needed
+          for the mean, though it is used for the simple `Sigma/b` covariance result.
+        explanation: Uniform sampling and linearity of expectation recover the full gradient.
+        concepts: [unbiasedness]
+        points: 1
+      - id: gdbsm-as-variance
+        kind: scenario
+        prompt: What happens to variance and RMS noise when batch size grows from 16 to 64?
+        modelAnswer: |
+          Covariance scales as `1/b`, so it becomes one quarter as large. RMS noise is the square
+          root of variance, so it becomes one half as large. Four times the examples do not produce
+          four times less typical noise magnitude.
+        explanation: Variance and standard deviation scale differently.
+        concepts: [gradient-variance]
+        points: 1
+      - id: gdbsm-as-reduction
+        kind: find-bug
+        prompt: Why does a sum-reduced loss make batch-size changes alter the effective learning rate?
+        modelAnswer: |
+          The sum gradient grows roughly linearly with the example count, so doubling batch size
+          doubles the parameter delta at fixed `eta`. Mean reduction divides by the actual batch
+          length and keeps the scale comparable, including for a short final batch.
+        explanation: Accidental summed scaling is separate from intentional learning-rate tuning.
+        concepts: [loss-reduction, batch-size]
+        points: 1
+      - id: gdbsm-as-accumulation
+        kind: scenario
+        prompt: How do you exactly combine unequal mean-reduced micro-batches?
+        modelAnswer: |
+          Multiply each micro-batch mean gradient by its example count, sum those gradient sums,
+          and divide by the total count before one update. Equivalently weight each mean loss by
+          `n_i/sum n_i` before backward. Equal `1/k` weights work only for equal sizes.
+        explanation: Example-weighted aggregation reconstructs the global mean.
+        concepts: [gradient-accumulation]
+        points: 1
+      - id: gdbsm-as-shuffle
+        kind: find-bug
+        prompt: What goes wrong when label-sorted training data is batched without shuffling?
+        modelAnswer: |
+          Consecutive batches contain one class, creating correlated, unrepresentative gradients.
+          The model swings between classes and the last class can dominate. Shuffle one aligned
+          training-index permutation per epoch, after establishing leakage-safe splits.
+        explanation: Batch order changes the stochastic optimisation path.
+        concepts: [shuffling, correlated-gradients]
+        points: 1
+      - id: gdbsm-as-budget
+        kind: scenario
+        prompt: Why is comparing batch sizes after equal epochs insufficient?
+        modelAnswer: |
+          Updates per epoch are about `N/b`, so smaller batches make more updates; larger batches may
+          have higher hardware throughput and different useful learning rates. Report fixed-step,
+          fixed-example, and fixed-wall-time comparisons with retuning and multiple seeds.
+        explanation: Epochs alone confound optimisation and systems effects.
+        concepts: [experiment-design]
+        points: 1
+      - id: gdbsm-as-constant-lr
+        kind: explain
+        prompt: Why can constant-learning-rate SGD hover around a minimum?
+        modelAnswer: |
+          The gradient estimate contains nonzero noise even where the true gradient is small. A
+          constant step keeps converting that noise into parameter motion, yielding a stationary
+          neighbourhood whose scale grows with learning rate and gradient variance. Decay reduces
+          the noise floor and permits settling under suitable assumptions.
+        explanation: Stochastic noise does not vanish at the empirical optimum.
+        concepts: [noise-floor, learning-rate]
+        points: 1
+      - id: gdbsm-as-effective-batch
+        kind: scenario
+        prompt: Eight workers use local batch 16 and accumulate four micro-steps before one update. What is effective batch size?
+        modelAnswer: |
+          It is `8 * 16 * 4 = 512` examples per optimiser update, assuming every local batch has 16
+          examples and gradients are averaged correctly across workers and accumulation steps.
+        explanation: Effective batch multiplies local size, world size, and accumulation count.
+        concepts: [effective-batch, distributed-training]
+        points: 1
+interview:
+  - id: gdbsm-iv-variants
+    level: basic
+    requiredForMastery: true
+    concepts: [full-batch, stochastic, mini-batch]
+    question: Compare batch gradient descent, SGD, and mini-batch SGD.
+    shortAnswer: |
+      Full batch uses all `N` examples for an exact empirical gradient; SGD uses one cheap but noisy
+      example; mini-batch averages `b` examples to reduce variance while exploiting vectorised hardware.
+    fullAnswer: |
+      Full batch is deterministic for fixed parameters and data and makes one expensive update per
+      epoch. One-example SGD makes `N` inexpensive, high-variance updates and is statistically
+      responsive but hardware-inefficient. Mini-batch SGD makes about `ceil(N/b)` updates, has
+      covariance roughly `Sigma/b`, and maps well to matrix kernels. All target the same empirical
+      mean only when sampling and reduction are correct; changing `b` also changes update count,
+      throughput, memory, and the useful learning-rate range.
+    commonWrongAnswer: Mini-batch is merely full-batch gradient descent split to save memory.
+    followUps:
+      - Why can mini-batch noise help optimisation?
+      - What does one epoch mean for each variant?
+  - id: gdbsm-iv-derivation
+    level: internals
+    requiredForMastery: true
+    concepts: [descent-lemma, smoothness, curvature]
+    question: Derive gradient descent and state a smoothness-based descent guarantee.
+    shortAnswer: |
+      Negative gradient minimises the first-order Taylor model in a Euclidean ball. For an
+      `L`-smooth objective, an exact step decreases loss for `0 < eta < 2/L`.
+    fullAnswer: |
+      Taylor gives `J(theta+delta) ~= J(theta)+g^T delta`; Cauchy-Schwarz selects
+      `delta=-epsilon*g/||g||`, yielding `theta-=eta*g`. `L`-smoothness gives
+      `J(theta-eta*g) <= J(theta)-eta(1-L*eta/2)||g||^2`, which is strict away from stationary
+      points when `0<eta<2/L`. On a positive-definite quadratic, `L` is the largest Hessian
+      eigenvalue; badly conditioned curvature causes zig-zag and slow progress.
+    commonWrongAnswer: Any positive learning rate decreases the objective because the direction is downhill.
+    followUps:
+      - Why is `eta <= 1/L` commonly quoted?
+      - How does parameterisation affect steepest descent?
+  - id: gdbsm-iv-variance
+    level: advanced
+    requiredForMastery: true
+    concepts: [unbiasedness, variance, critical-batch-size]
+    question: How does batch size change gradient noise, and why do returns eventually diminish?
+    shortAnswer: |
+      Independent averaging leaves the mean unchanged and divides covariance by `b`, so RMS noise
+      falls as `1/sqrt(b)`. Beyond a problem-dependent critical batch, extra examples add little new
+      gradient information while reducing update frequency or increasing resource cost.
+    fullAnswer: |
+      If per-example gradients have mean `g` and covariance `Sigma`, their batch mean has expectation
+      `g` and covariance `Sigma/b`; correlated examples weaken this reduction. Larger batches can
+      support larger stable/useful steps and improve throughput, but noise falls only with a square
+      root and hardware eventually saturates. Past the critical batch size, progress per example
+      degrades: extra samples mostly agree with the current direction, while the run makes fewer
+      updates for a fixed data budget and consumes more memory.
+    commonWrongAnswer: Doubling batch size halves the typical gradient error and always doubles speed.
+    followUps:
+      - What assumptions lead to `Sigma/b`?
+      - How would you estimate the critical batch empirically?
+  - id: gdbsm-iv-accumulation
+    level: scenario
+    requiredForMastery: true
+    concepts: [gradient-accumulation, batch-normalisation, loss-reduction]
+    question: When is gradient accumulation equivalent to one large physical batch?
+    shortAnswer: |
+      When parameters and relevant state stay fixed and per-example gradients are aggregated into
+      one correctly weighted mean before a single update.
+    fullAnswer: |
+      Convert micro-batch mean gradients to sums, add them, divide by total examples, and step once;
+      clear gradients around the whole accumulation window. Exact equivalence can fail when batch
+      normalisation computes separate micro statistics, dropout masks differ from the large-batch
+      computation, clipping happens per micro-batch, state mutates, or the optimiser steps between
+      micros. Distributed workers need the same count-aware averaging rather than an unscaled sum.
+    commonWrongAnswer: Calling backward `k` times automatically equals a batch `k` times larger.
+    followUps:
+      - How do unequal micro-batches change the weights?
+      - What is the interaction with gradient clipping?
+  - id: gdbsm-iv-debugging
+    level: debugging
+    requiredForMastery: true
+    concepts: [training-debugging, finite-difference, tiny-batch]
+    question: A from-scratch SGD model does not learn. What is your debugging order?
+    shortAnswer: |
+      Freeze a tiny deterministic fixture, verify shapes/loss scaling, finite-difference the gradient,
+      overfit one tiny batch, then inspect shuffling, zeroing, learning rate, and data leakage.
+    fullAnswer: |
+      First make the run deterministic and assert inputs/targets are aligned. Compare analytic
+      gradients to central finite differences on a few parameters and verify mean reduction is
+      invariant to duplicating examples. Check gradients are cleared at the correct boundary and
+      the update sign is negative. Overfit one tiny batch to near-zero training loss. Then add the
+      real iterator and verify each epoch's index coverage, final short-batch scaling, split hygiene,
+      and validation. Finally sweep learning rate and inspect loss, gradient norm, and parameter
+      delta rather than changing several knobs together.
+    commonWrongAnswer: Increase model size and try Adam immediately.
+    followUps:
+      - Why is overfitting one batch a powerful test?
+      - What does a finite-difference mismatch isolate?
+  - id: gdbsm-iv-large-batch
+    level: comparison
+    requiredForMastery: true
+    concepts: [large-batch, linear-scaling, generalisation]
+    question: Should learning rate scale linearly with batch size?
+    shortAnswer: |
+      It is a useful empirical starting rule in some large-batch regimes, usually with warmup, but
+      not a universal theorem; it fails beyond curvature, optimisation, or critical-batch limits.
+    fullAnswer: |
+      Increasing `b` lowers gradient noise and reduces steps per epoch, so scaling `eta` roughly in
+      proportion can preserve parameter movement per examples processed in certain regimes. But
+      curvature still bounds stable steps, gradient statistics change during training, optimisers
+      differ, and beyond the critical batch extra examples give diminishing information. Treat
+      linear scaling plus warmup as a hypothesis to validate with learning-rate sweeps, fixed-budget
+      curves, multiple seeds, and validation metrics—not as automatic compensation.
+    commonWrongAnswer: Yes, doubling batch size always requires exactly doubling learning rate.
+    followUps:
+      - Why is warmup often paired with large learning rates?
+      - What would falsify the scaling rule in an experiment?
+projects:
+  - id: gdbsm-project-optimiser-lab
+    kind: major
+    title: Build a gradient-descent laboratory from scratch
+    minutes: 210
+    summary: Implement one tested NumPy engine for full-batch, stochastic, and mini-batch descent, then measure convergence, estimator variance, throughput, and effective-batch equivalence on linear and logistic regression.
+    problem: |
+      Build `gdlab`, a NumPy package that separates objectives, samplers, schedules, updates, and
+      metrics. Train linear regression and binary logistic regression with `batch_size=N`, `1`, and
+      configurable mini-batches. Demonstrate the descent bound on a quadratic, empirically verify
+      unbiasedness and `1/b` variance, reproduce a large batch using unequal micro-batch
+      accumulation, and publish fixed-step/example/time comparisons with multiple seeds.
+    requirements:
+      - One loop supports full-batch, stochastic, and mini-batch variants using a batch-mean gradient contract.
+      - Analytic linear and logistic gradients pass central finite-difference checks.
+      - Sampling is seedable, shuffles per epoch, visits every example exactly once, and retains the final short batch.
+      - An experiment estimates gradient bias and covariance trace across batch sizes and checks the expected `1/b` trend.
+      - Reports plot train/validation loss against steps, examples, and wall time and include throughput, memory, and seed variation.
+      - Unequal micro-batch accumulation matches a direct large-batch gradient to numerical tolerance.
+    constraints:
+      - NumPy and the standard library for optimisation; plotting may use Matplotlib.
+      - Do not use scikit-learn or an autograd library for gradients or updates.
+      - Split data before fitting transforms; keep validation out of samplers.
+      - Record reduction, seed, effective batch size, and learning-rate schedule in every run artifact.
+    expectedBehaviour:
+      - Stable quadratic runs obey the analytic recurrence and unstable learning rates fail as predicted.
+      - Mean gradients are invariant when identical examples are duplicated to a larger batch.
+      - Empirical covariance trace is approximately proportional to `1/b` until finite-population effects dominate.
+      - All three variants converge on well-conditioned fixtures with appropriately tuned learning rates.
+      - Repeating a seed reproduces batch order and histories; changing it changes stochastic paths.
+    structure: |
+      gdlab/
+        objectives.py
+        samplers.py
+        schedules.py
+        trainer.py
+        metrics.py
+      experiments/
+        quadratic.py
+        variance.py
+        batch_tradeoffs.py
+      tests/
+        test_gradients.py
+        test_sampler.py
+        test_scaling.py
+        test_accumulation.py
+        test_convergence.py
+    milestones:
+      - title: "1 — Objective and gradient contracts"
+        detail: Mean-reduced losses, analytic gradients, and finite-difference tests.
+      - title: "2 — Reproducible training engine"
+        detail: Owned RNG, sampler, schedules, counters, structured history, and three batch regimes.
+      - title: "3 — Scaling and accumulation evidence"
+        detail: Duplication invariance, short-batch correctness, variance curve, and accumulation equivalence.
+      - title: "4 — Fixed-budget study"
+        detail: Multi-seed convergence and throughput plots under three comparison clocks.
+    testing:
+      - Central finite differences agree with every analytic gradient on small random fixtures.
+      - Every epoch emits a permutation of training indices with no validation indices.
+      - Sum-reduction and missing-zero-grad mutant tests fail before the fixes.
+      - Direct and accumulated batch means agree within floating-point tolerance.
+      - Quadratic trajectories match closed form and detect the `2/L` stability boundary.
+    failureCases:
+      - The final short batch divides by configured rather than actual size.
+      - Feature and target arrays are shuffled independently.
+      - Equal-epoch curves are presented as the only batch-size comparison.
+      - A single seed or training loss is used to claim generalisation.
+    bonus:
+      - Add stratified and grouped samplers with explicit target-distribution semantics.
+      - Add a gradient-noise-scale estimate and predict the critical batch size.
+      - Compare float32 and float64 accumulation error.
+    architectureHints:
+      - Make `loss_and_grad(params, Xb, yb)` pure and require it to return batch means.
+      - Keep `step`, `examples_seen`, and elapsed time as independent trainer counters.
+      - Store index arrays in test histories so sampling claims are directly auditable.
+    referenceOutline: |
+      `trainer.fit` asks `sampler` for aligned index batches, calls an objective for mean loss and
+      gradient, gets `eta` from a schedule, applies `params -= eta*grad`, and emits a metrics record.
+      Experiments reuse this engine rather than implementing new loops. Variance sampling freezes
+      parameters and repeatedly draws batches; comparison runs vary only declared configuration.
+  - id: gdbsm-final-training-audit
+    kind: final-challenge
+    title: Audit a misleading batch-size experiment
+    minutes: 100
+    summary: Repair a training comparison that mixes sum reduction, unequal update counts, unseeded sorted data, and unscaled distributed gradients, then produce evidence that isolates each failure.
+    problem: |
+      A report claims batch 256 is unstable and batch 32 generalises better after ten epochs. Its
+      loss uses `sum`, data is label-sorted, four workers SUM local mean gradients, seeds are not
+      recorded, and only epoch curves are shown. Create fail-before-fix measurements, repair each
+      fault, retune learning rates under an equal budget, and publish an auditable conclusion.
+    requirements:
+      - Demonstrate how sum reduction and worker SUM change parameter-delta magnitude as batch/world size changes.
+      - Replace them with actual-count mean reduction and a correctly weighted global average.
+      - Shuffle aligned training indices with recorded RNGs after establishing leakage-safe splits.
+      - Compare at fixed steps, examples, and wall time with at least three paired seeds and per-batch learning-rate sweeps.
+      - State whether any remaining difference concerns optimisation, throughput, or held-out generalisation.
+    constraints:
+      - Change one fault at a time and preserve its fail-before-fix artifact.
+      - Do not use epoch number alone as the x-axis.
+      - Do not claim reproducibility from one library seed or quality from training loss alone.
+    expectedBehaviour:
+      - Duplicating identical examples or workers no longer changes a mean gradient.
+      - Training batches are mixed and reproducible while validation remains untouched.
+      - Effective batch size and reduction are visible in every run record.
+      - Conclusions include uncertainty and the budget under which each batch wins.
+    milestones:
+      - title: "1 — Scaling audit"
+        detail: Measure and fix sum reduction and distributed averaging independently.
+      - title: "2 — Sampling audit"
+        detail: Repair split, shuffle, alignment, and RNG ownership with index-coverage tests.
+      - title: "3 — Fair rerun"
+        detail: Retune and compare using steps, examples, wall time, validation, and paired seeds.
+    testing:
+      - Gradient duplication invariance locally and across simulated workers.
+      - Epoch index coverage, alignment, and leakage-safe group split checks.
+      - Repeated-seed equality and different-seed path divergence.
+      - Structured artifacts contain all three clocks and effective batch metadata.
+    failureCases:
+      - Fixing sum reduction but leaving worker gradients summed.
+      - Shuffling before the patient/group split and leaking correlated examples.
+      - Retuning only one batch size or using different tuning budgets.
+    bonus:
+      - Estimate gradient noise scale and relate it to the observed throughput knee.
+    architectureHints:
+      - Build a parameter-delta table after each isolated fix.
+      - Use the same initial weights and paired data seeds across batch-size trials.
+    referenceOutline: |
+      Begin with a tiny duplicated-example fixture: correct means must be invariant to local batch
+      and worker count. Then freeze split indices, add an owned per-epoch permutation, and emit run
+      manifests containing seed, reduction, world size, accumulation, effective batch, schedule,
+      steps, examples, and timing. Only then rerun the statistical comparison.
+resources:
+  - name: "Robbins and Monro — A Stochastic Approximation Method"
+    type: article
+    difficulty: deep
+    url: "https://projecteuclid.org/journals/annals-of-mathematical-statistics/volume-22/issue-3/A-Stochastic-Approximation-Method/10.1214/aoms/1177729586.full"
+    usefulness: 5
+    why: This is the foundational primary paper for stochastic approximation and the decreasing-step conditions behind SGD convergence.
+    covers: Stochastic approximation, noisy observations, learning-rate sequences, and convergence in probability.
+  - name: "Bottou, Curtis, and Nocedal — Optimization Methods for Large-Scale Machine Learning"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1606.04838"
+    usefulness: 5
+    why: This primary survey connects stochastic-gradient theory to large-scale machine-learning practice, including variance, convergence, and implementation trade-offs.
+    covers: Empirical risk, stochastic gradients, convergence rates, batch methods, variance reduction, and large-scale systems considerations.
+  - name: "Goyal et al. — Accurate, Large Minibatch SGD: Training ImageNet in 1 Hour"
+    type: article
+    difficulty: core
+    url: "https://arxiv.org/abs/1706.02677"
+    usefulness: 5
+    why: This primary experimental paper introduces the widely used linear learning-rate scaling and warmup recipe while documenting its assumptions and limits.
+    covers: Large mini-batches, distributed SGD, linear scaling, gradual warmup, and fixed-epoch ImageNet experiments.
+  - name: "Keskar et al. — On Large-Batch Training for Deep Learning"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1609.04836"
+    usefulness: 4
+    why: This primary study is useful for critically examining how batch size, sharp regions, and held-out generalisation can interact.
+    covers: Large-batch optimisation, sharp and flat minima, generalisation gap observations, and perturbation experiments.
+  - name: "PyTorch documentation — SGD"
+    type: docs
+    difficulty: core
+    url: "https://docs.pytorch.org/docs/stable/generated/torch.optim.SGD.html"
+    usefulness: 4
+    why: The official implementation contract makes the SGD update, momentum options, weight decay, and framework-specific semantics precise.
+    covers: SGD parameters and update pseudocode, momentum and Nesterov flags, weight decay, foreach and fused implementations.

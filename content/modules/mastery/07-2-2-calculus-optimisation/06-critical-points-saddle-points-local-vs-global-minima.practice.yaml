@@ -2,7 +2,7 @@ lessonId: "roadmap:phase-2-2.2:5"
 module: 2-2-calculus-optimisation
 lesson: 06-critical-points-saddle-points-local-vs-global-minima
 title: "Critical points, saddle points, local vs global minima"
-summary: Classify critical points with the gradient and Hessian, understand why a local minimum need not be global, see why saddles dominate critical points in high dimensions, and know how noisy first-order methods escape strict saddles.
+summary: Classify critical points with the gradient and Hessian, understand why a local minimum need not be global, assess conditional evidence that saddles are common in high dimensions, and state the assumptions under which noisy first-order methods escape strict saddles.
 mastery:
   minAssessmentScore: 80
   requireProject: true
@@ -135,14 +135,15 @@ exercises:
       - Near a critical point the deterministic step barely moves.
       - A random kick has a component along the negative-curvature direction.
     solution: |
-      `g = grad_f(x); if np.linalg.norm(g) < grad_tol: x = x + rng.standard_normal(x.shape) *
-      radius; g = grad_f(x)`; then `return x - eta * g`. At a strict saddle `grad f` is near zero so
+      Draw `u = rng.standard_normal(x.shape)`, normalise it, and when the gradient is small set
+      `x = x + radius * u`; recompute the gradient and return `x - eta * g`. At a strict saddle the
+      gradient is near zero so
       the plain step stalls, but the Hessian has a direction of strict negative curvature. A random
       perturbation almost surely has a nonzero component along that direction; once the iterate is
       off the flat centre, the gradient along the negative-curvature direction points *away* from
-      the saddle and grows, so subsequent gradient steps accelerate down it. SGD gets this for free:
-      mini-batch noise continually injects a component along every direction, so strict saddles are
-      not stable fixed points of SGD.
+      the saddle and grows, so subsequent steps can accelerate down it under strict-saddle and
+      smoothness assumptions. SGD noise can play this role only if it has sufficient variance along
+      that direction; it need not inject a component along every direction.
   - id: lcpt-manifold-of-minima
     tier: intermediate
     kind: explain
@@ -230,9 +231,10 @@ exercises:
           return x, "max iterations"
     solution: |
       A small gradient norm holds at every critical point — minima, maxima, and saddles — and across
-      a whole plateau, so it does not certify a minimum. Add a curvature check: when the gradient
+      a whole plateau, so it does not establish a minimum. Add a curvature check: when the gradient
       norm drops below `tol`, estimate `lambda_min(H)` (a few Lanczos or inverse-power iterations on
-      Hessian-vector products) and classify. Return `"minimum"` only if `lambda_min > tol`;
+      Hessian-vector products) and classify. Return `"local-minimum evidence"` only if the gradient
+      is small and a residual-aware lower bound keeps `lambda_min` above the curvature tolerance;
       `"saddle"` if `lambda_min < -tol` (and then take a negative-curvature step or a random
       perturbation and continue); `"degenerate/flat"` if `lambda_min ~ 0`. Also prefer a
       loss-plateau criterion (no improvement on a held-out metric over `k` steps) for the practical
@@ -574,19 +576,20 @@ interview:
     concepts: [saddle-prevalence, random-matrix, high-dimension]
     question: Why do people say the problem in deep learning is saddles, not local minima?
     shortAnswer: |
-      In high dimensions a local minimum needs every one of the many Hessian eigenvalues to be
-      positive, which random-matrix arguments and experiments say is exponentially unlikely, so
-      almost every critical point is a saddle. The minima that exist tend to sit at low loss.
+      A strict local minimum needs positive curvature in every direction, while one negative
+      direction makes a strict saddle. Random-matrix models and some empirical landscapes therefore
+      make saddles prominent, but they do not prove that almost every critical point of every deep
+      network is a saddle.
     fullAnswer: |
-      Modelling the Hessian at a critical point as a random symmetric matrix, its eigenvalues are
-      roughly sign-symmetric, so an all-positive spectrum (a local minimum) has probability decaying
-      exponentially with dimension. Refining with the loss level: higher-loss critical points have
-      the spectrum shifted negative (more downhill escape directions), and the rare all-positive ones
-      cluster near the global minimum. Empirical Hessian-spectrum studies of trained nets match this
-      — a near-zero bulk plus a few outliers, and negative eigenvalues away from convergence. The
-      practical consequence is that the obstacles are saddle plateaus (small gradient everywhere,
-      slow escape) and ill-conditioning, not getting trapped at a high-loss local minimum; and SGD
-      noise, momentum, and negative-curvature awareness are what get you past them.
+      A generic symmetric-matrix ensemble with eigenvalues on both sides of zero illustrates why
+      positive definiteness becomes restrictive as dimension grows. But eigenvalue signs are
+      correlated, and a Hessian conditioned on being at a critical point is not a generic matrix;
+      its law depends on the objective, data, parameterisation, regularisation, and loss level.
+      Certain random-landscape models predict more negative directions at higher loss, and empirical
+      network Hessians often show a near-zero bulk plus outliers and negative curvature away from
+      convergence. The sound conclusion is that saddle plateaus, flatness, and ill-conditioning are
+      important possible obstacles—not that bad local minima are impossible or that a universal
+      fraction of critical points has been established.
     commonWrongAnswer: Deep nets have many terrible local minima you must avoid.
     followUps:
       - What does the empirical Hessian spectrum of a trained net look like?
@@ -597,21 +600,19 @@ interview:
     concepts: [strict-saddle, perturbed-gd, sgd-noise, momentum]
     question: How do first-order methods get past saddle points?
     shortAnswer: |
-      Through noise. A strict saddle has a negative-curvature direction; a random perturbation
-      (perturbed GD) or SGD's mini-batch noise puts a component along it, and once off the flat
-      centre the gradient there grows and steps accelerate away. Momentum carries velocity through
-      the surrounding plateau.
+      Under strict-saddle and smoothness assumptions, a deliberately scaled random perturbation has
+      a component along a negative-curvature direction and can start escape. SGD noise may help only
+      when its covariance supplies enough variation in that direction; it is not automatic.
     fullAnswer: |
       At a strict saddle the deterministic gradient step stalls (gradient near zero) but the surface
       curves down along at least one eigenvector. Perturbed gradient descent monitors the gradient
       norm and injects a bounded random kick when it is small; the kick almost surely has a nonzero
       component along the escape direction, and the exponential instability of the saddle in that
-      direction does the rest, with a polynomial-in-dimension number of extra steps. Plain SGD gets
-      this for free because the gradient noise is present every step. Momentum reduces the plateau
-      time by accumulating velocity through the low-gradient region, and a well-scaled learning rate
-      avoids wasting the small signal. Second-order and negative-curvature-aware methods (saddle-free
-      Newton, trust region, a Lanczos eigenvector step) escape deterministically and faster but cost
-      more per step.
+      direction drives escape under the theorem's smoothness, scale, and strict-saddle assumptions.
+      Plain SGD does not automatically inherit that guarantee: mini-batch noise can be anisotropic,
+      too small, or zero along the needed eigenvector. Momentum and learning rate also change the
+      dynamics but are not universal escape guarantees. Negative-curvature-aware trust-region or
+      Lanczos-vector steps can act deliberately, at additional compute cost.
     commonWrongAnswer: You lower the learning rate until it works its way out.
     followUps:
       - Why does lowering the learning rate make a saddle plateau worse?
@@ -685,7 +686,7 @@ projects:
       - "`align_and_compare` reports one solution when given a network and a permuted-and-rescaled copy of it."
     constraints:
       - NumPy and the standard library only; a small autodiff or a framework for the HVP.
-      - Never certify a minimum without a curvature check.
+      - Never claim a minimum from a gradient norm alone; report numerical tolerances and spectral residuals.
       - Never use an absolute eigenvalue tolerance in the classifier or certifier.
       - Compare networks in function space or after canonicalisation, not raw weights.
     expectedBehaviour:

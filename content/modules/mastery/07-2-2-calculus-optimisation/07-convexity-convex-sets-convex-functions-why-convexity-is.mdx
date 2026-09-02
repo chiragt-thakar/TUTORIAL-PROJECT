@@ -13,9 +13,12 @@ learningObjectives:
   - Explain precisely why a deep network's loss is non-convex in its weights, and what convex structure survives
 ---
 
-Convexity is the property that makes an optimisation problem *solvable* — with global guarantees,
-efficient algorithms, and a duality theory. A convex function has no bad local minima and no
-saddles: find a stationary point and you have found the global optimum.
+Convexity gives powerful global structure: every local minimum is global, many important problem
+classes have efficient algorithms, and duality can provide certificates. It does not by itself give
+one universal runtime bound; tractability also depends on representation, constraints, smoothness,
+conditioning, and the available oracle. For an unconstrained differentiable convex function, a
+stationary point is global. With nonsmooth objectives or constraints, use the appropriate
+subgradient and normal-cone optimality condition instead.
 
 Deep networks deliberately give this up. Stacking linear maps and nonlinearities makes the loss
 non-convex in the weights even when the output loss is convex. Understanding what breaks — and what

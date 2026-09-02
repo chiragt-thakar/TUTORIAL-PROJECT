@@ -1,0 +1,583 @@
+lessonId: "roadmap:phase-2-2.2:12"
+module: 2-2-calculus-optimisation
+lesson: 13-numerical-stability-catastrophic-cancellation-log-sum-exp-trick
+title: "Numerical stability: catastrophic cancellation, log-sum-exp trick, gradient clipping"
+summary: Reformulate unstable arithmetic, derive log-domain probability computations, and make clipping and mixed-precision failures observable.
+mastery: {minAssessmentScore: 80, requireProject: true, requireInterview: true, requireDebug: true, revisitAfterDays: 21}
+exercises:
+  - id: stable-read-lse
+    tier: normal
+    kind: code-reading
+    title: "Read shifted exponentials"
+    minutes: 10
+    requiredForMastery: true
+    concepts: [logsumexp, overflow]
+    prompt: |
+      Explain why exp(x-max(x)) cannot overflow for finite inputs.
+    hints:
+      - "Every shifted input is nonpositive."
+      - "The largest exponential equals one."
+    solution: |
+      Each exponent argument is at most zero, so each finite exponential is positive and no greater than one; at least one term is one, preventing a zero sum.
+      Adding the removed maximum outside the logarithm preserves the exact real-number value. Very
+      negative shifted terms may underflow to zero, but their contribution is below working precision.
+      Test finite extremes, axes, `keepdims`, and the all-negative-infinity contract separately.
+  - id: stable-range-precision
+    tier: normal
+    kind: explain
+    title: "Separate range and precision"
+    minutes: 10
+    requiredForMastery: true
+    concepts: [floating-point, precision]
+    prompt: |
+      Distinguish overflow from x+1 == x at large finite x.
+    hints:
+      - "One leaves the finite range."
+      - "One rounds to an existing representable value."
+    solution: |
+      Overflow exceeds the maximum exponent and yields infinity; absorption remains finite but loses the increment because adjacent representable numbers are farther apart than one.
+      Range is controlled mainly by exponent bits; precision by significand bits. This is why float16
+      often overflows while bfloat16 keeps similar range to float32 but rounds more coarsely. Machine
+      epsilon describes spacing near one, not the smallest positive number or a universal tolerance.
+  - id: stable-rationalise
+    tier: normal
+    kind: explain
+    title: "Remove cancellation"
+    minutes: 12
+    requiredForMastery: true
+    concepts: [cancellation, algebra]
+    prompt: |
+      Stabilise sqrt(1+x)-1 and prove equivalence.
+    hints:
+      - "Multiply numerator and denominator by the conjugate."
+      - "Use difference of squares."
+    solution: |
+      Multiplication by the conjugate produces x divided by sqrt one plus x plus one. This equal expression avoids subtracting near-equal rounded values and retains the small result.
+      Algebraically, multiply numerator and denominator by `sqrt(1+x)+1`; the numerator becomes
+      `(1+x)-1=x`. Test tiny positive values against a high-precision reference and compare relative
+      error, not only whether both implementations return finite numbers.
+  - id: stable-welford
+    tier: normal
+    kind: write-code
+    title: "Stream stable variance"
+    minutes: 16
+    requiredForMastery: true
+    concepts: [variance, welford]
+    prompt: |
+      Implement one Welford update and explain why it beats E-of-x-squared minus mean-squared.
+    hints:
+      - "Update mean with the old deviation."
+      - "Update M2 using the new mean."
+    solution: |
+      Increment count and compute the old-mean deviation. Update the mean by deviation over count. Then add deviation times x minus the new mean to M2. These centred increments avoid subtracting large close raw moments.
+      Population variance is `M2/count`; sample variance is `M2/(count-1)` when count exceeds one.
+      Verify constant inputs, a large offset with small spread, stream concatenation, and agreement
+      with a high-precision two-pass reference.
+  - id: stable-derive-lse
+    tier: intermediate
+    kind: explain
+    title: "Derive log-sum-exp"
+    minutes: 14
+    requiredForMastery: true
+    concepts: [logsumexp]
+    prompt: |
+      Derive the max-shift formula from the naive expression.
+    hints:
+      - "Write each exponential as exp(m)exp(x_i-m)."
+      - "Take the common factor through logarithm."
+    solution: |
+      Factoring yields log(exp(m) sum exp(x_i-m)) = m + log sum exp(x_i-m), algebraically exact in real arithmetic.
+      Choose `m=max(x)`. Then all shifted arguments are nonpositive and one equals zero, so no
+      exponential exceeds one and their sum is at least one for a finite nonempty slice. Preserve the
+      reduction axis and define special-value behaviour explicitly.
+  - id: stable-cross-entropy
+    tier: intermediate
+    kind: explain
+    title: "Stay in the log domain"
+    minutes: 14
+    requiredForMastery: true
+    concepts: [softmax, cross-entropy]
+    prompt: |
+      Derive class cross-entropy directly from logits.
+    hints:
+      - "Write negative log probability."
+      - "Separate numerator log from denominator log."
+    solution: |
+      -log(exp(z_y)/sum exp(z_j)) = logsumexp(z)-z_y; this avoids materialising a probability that may round to zero.
+      Subtracting the target logit in log space also avoids taking `log(0)`. A fused implementation can
+      reuse stable intermediates and produce gradient `softmax(z)-one_hot(y)`. Check class axis,
+      masking, reduction convention, and target bounds.
+  - id: stable-softplus
+    tier: intermediate
+    kind: predict-output
+    title: "Stabilise softplus"
+    minutes: 12
+    requiredForMastery: true
+    concepts: [softplus, overflow]
+    prompt: |
+      Explain why max(x,0)+log1p(exp(-abs(x))) works for both signs.
+    hints:
+      - "For positive x factor out exp(x)."
+      - "For negative x the maximum term is zero."
+    solution: |
+      For positive x it equals x+log(1+exp(-x)); for negative x it equals log(1+exp(x)), and the exponential argument is never positive.
+      Combining both cases gives `max(x,0)+log1p(exp(-abs(x)))`. The exponential cannot overflow and
+      `log1p` retains accuracy when its argument is small. Compare extreme positive, extreme negative,
+      zero, and derivatives with a trusted implementation.
+  - id: stable-global-norm
+    tier: intermediate
+    kind: write-code
+    title: "Clip by global norm"
+    minutes: 14
+    requiredForMastery: true
+    concepts: [gradient-clipping, geometry]
+    prompt: |
+      Implement one scale across a list of gradients and state the geometric invariant.
+    hints:
+      - "Sum squared entries over every tensor."
+      - "Multiply every tensor by the same scale."
+    solution: |
+      Sum squared entries across every gradient and take the square root. Use the smaller of one and threshold divided by norm plus epsilon. Multiplying every gradient by this same positive factor preserves direction while bounding magnitude.
+      Use a stable norm kernel so squaring cannot overflow prematurely. In a sharded run, reduce local
+      squared norms before deriving one shared scale. Log pre-clip norm, scale, post-clip norm, and
+      activation frequency; persistent clipping indicates a changed optimisation regime.
+  - id: stable-debug-naive-lse
+    tier: tricky
+    kind: debug
+    title: "Finite logits produce infinite loss"
+    minutes: 14
+    requiredForMastery: true
+    concepts: [overflow, logsumexp]
+    prompt: |
+      Diagnose log(sum(exp(1000 and 999))) returning infinity.
+    hints:
+      - "Exponentiation fails before logarithm."
+      - "Shift by the largest logit."
+    solution: |
+      exp(1000) overflows; compute 1000 + log(1+exp(-1)) or call a tested logsumexp primitive.
+      The result is approximately `1000.313262`, which is finite even though neither naive exponential
+      is. Do not clamp logits, because that changes the function and gradient. Add a regression case
+      with a common logit shift to verify mathematical shift invariance.
+  - id: stable-debug-all-inf
+    tier: tricky
+    kind: debug
+    title: "All negative infinity becomes NaN"
+    minutes: 15
+    requiredForMastery: true
+    concepts: [edge-case, logsumexp]
+    prompt: |
+      Max shifting an all--inf slice computes -inf-(-inf). Define a repair.
+    hints:
+      - "The mathematical log-sum is negative infinity."
+      - "Detect the exceptional maximum before subtraction."
+    solution: |
+      Return -inf for an all-negative-infinity reduction according to contract while preserving normal max shifting for finite slices; test axes and keepdims.
+      The naive shift performs `-inf-(-inf)` and creates NaN before exponentiation. Branch on the
+      exceptional maximum or use a library primitive with documented semantics. Softmax for such a
+      slice is not uniquely defined, so the application must reject it or specify a policy.
+  - id: stable-debug-scaled-clip
+    tier: tricky
+    kind: debug
+    title: "Clipping sees scaled gradients"
+    minutes: 15
+    requiredForMastery: true
+    concepts: [mixed-precision, clipping]
+    prompt: |
+      A scaler multiplies gradients by 65536 and clipping runs first. Diagnose it.
+    hints:
+      - "Threshold and gradients use different units."
+      - "Put unscale before the norm."
+    solution: |
+      The scaled gradients and threshold use different units so nearly every update is clipped. Unscale first and check finiteness. Then compute and clip the true global norm before the optimiser transition.
+      With scale 65,536, a true norm `0.1` appears as `6553.6`; threshold one nearly erases the update.
+      The correct sequence is scaled backward, unscale, finite check, stable global norm and clipping,
+      optimiser step if finite, scaler update, and declared scheduler advancement.
+  - id: stable-debug-shards
+    tier: tricky
+    kind: debug
+    title: "Each shard clips itself"
+    minutes: 16
+    requiredForMastery: true
+    concepts: [distributed-training, global-norm]
+    prompt: |
+      Explain why independent shard norm clipping is not global clipping.
+    hints:
+      - "The full squared norm is a sum across shards."
+      - "Different shard scales rotate the joined vector."
+    solution: |
+      Reduce the sum of squared local norms across all shards and derive one scale from the resulting global norm. Apply that same scale everywhere so the joined gradient direction does not depend on its partitioning.
+      Independent per-shard thresholds allow the total norm to grow with shard count and apply different
+      multipliers to different coordinates. Test that repartitioning an identical logical gradient
+      produces the same scale, clipped vector, and post-clip global norm.
+  - id: stable-summation
+    tier: challenge
+    kind: performance
+    title: "Compare reduction algorithms"
+    minutes: 20
+    requiredForMastery: false
+    concepts: [summation, reproducibility]
+    prompt: |
+      Compare naive, pairwise, Kahan, and wider-dtype summation on mixed magnitudes.
+    hints:
+      - "Use a high-precision reference."
+      - "Vary order and parallel grouping."
+    solution: |
+      Measure absolute and relative error plus time; naive order usually loses small terms, pairwise lowers depth error, Kahan compensates it, and wider accumulation improves range or precision at a cost.
+      Use adversarial sequences such as `1e8, 1, -1e8`, random permutations, and long same-sign sums.
+      Compare against a higher-precision oracle. Report algorithm, accumulation dtype, reduction tree,
+      determinism, throughput, and error rather than declaring one method universally best.
+  - id: stable-first-bad
+    tier: challenge
+    kind: design
+    title: "Find the first nonfinite boundary"
+    minutes: 20
+    requiredForMastery: false
+    concepts: [observability, debugging]
+    prompt: |
+      Design instrumentation for intermittent mixed-precision NaNs.
+    hints:
+      - "Check boundaries in execution order."
+      - "Save the batch and state before the first failure."
+    solution: |
+      Record finite flags plus dtype and range at every execution boundary. Include scaler state and pre-clipping gradients plus moments and updates. Abort at the first bad operation and save its exact batch and random state for replay.
+      Check inputs, activations, logits, each loss component, scaled gradients, unscaled gradients,
+      clipping, optimiser moments, proposed updates, and parameters in causal order. Preserve the
+      failing checkpoint and avoid `nan_to_num`, which destroys evidence and converts a loud failure
+      into silent corruption.
+quizzes:
+  - id: stable-checkpoint
+    title: Checkpoint — stable computation
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - {id: stable-cp-lse, kind: mcq, prompt: What shift is normally used for log-sum-exp?, options: [{id: maximum, text: Subtract the maximum}, {id: minimum, text: Subtract the minimum}], answer: [maximum], explanation: Shifted exponentials are then at most one., concepts: [logsumexp]}
+      - {id: stable-cp-cross, kind: mcq, prompt: Which class loss is stable from logits?, options: [{id: direct, text: "logsumexp(z)-z_y"}, {id: probability, text: "-log(softmax(z)_y) after rounding"}], answer: [direct], explanation: It stays in the log domain., concepts: [cross-entropy]}
+      - {id: stable-cp-clip, kind: mcq, prompt: Which clipping preserves full gradient direction?, options: [{id: norm, text: One global-norm scale}, {id: value, text: Independent value truncation}], answer: [norm], explanation: Every component gets the same positive multiplier., concepts: [clipping]}
+      - {id: stable-cp-order, kind: mcq, prompt: When should scaled gradients be clipped?, options: [{id: after, text: After unscaling and finite checks}, {id: before, text: Before unscaling}], answer: [after], explanation: Norm and threshold must share units., concepts: [mixed-precision]}
+  - id: stable-assessment
+    title: Assessment — numerical stability in optimisation
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: stable-as-range
+        kind: explain
+        prompt: |
+          Contrast range and precision.
+        modelAnswer: |
+          Range bounds magnitudes before zero or infinity; precision bounds spacing and can erase increments while values remain finite.
+          Exponent bits mainly determine range while significand bits determine local resolution.
+          Float16 and bfloat16 illustrate the distinction: float16 has narrow range; bfloat16 keeps a
+          wider exponent range but rounds more coarsely.
+        explanation: |
+          They cause different failure modes.
+        concepts: [floating-point]
+      - id: stable-as-cancel
+        kind: scenario
+        prompt: |
+          Why is near-equal subtraction dangerous?
+        modelAnswer: |
+          Rounded operands share leading digits that cancel, magnifying their relative input error in the small result.
+          Reformulate with an invariant or specialised primitive: rationalise `sqrt(1+x)-1`, use
+          `log1p` and `expm1`, and use centred variance algorithms. Wider precision postpones but does
+          not fundamentally repair an unstable formula.
+        explanation: |
+          Reformulate before adding precision.
+        concepts: [cancellation]
+      - id: stable-as-lse
+        kind: explain
+        prompt: |
+          Derive log-sum-exp.
+        modelAnswer: |
+          Factor the exponential of the maximum and move its logarithm outside, leaving only nonpositive exponent arguments.
+          One shifted term equals zero before exponentiation and therefore contributes one. No finite
+          exponential exceeds one, so overflow is avoided and the sum cannot underflow to zero.
+          Preserve axis semantics and handle all-negative-infinity slices explicitly.
+        explanation: |
+          Algebra controls the range.
+        concepts: [logsumexp]
+      - id: stable-as-inf
+        kind: find-bug
+        prompt: |
+          Why does all-negative-infinity max shift fail?
+        modelAnswer: |
+          Subtracting negative infinity from itself is NaN; detect the slice and return its mathematically defined negative-infinity result.
+          Keep this branch separate from ordinary finite maximum shifting. Softmax on the same slice is
+          undefined without an application policy, so do not silently invent a uniform answer unless
+          that contract is explicit.
+        explanation: |
+          Edge contracts need explicit tests.
+        concepts: [edge-case]
+      - id: stable-as-softmax
+        kind: explain
+        prompt: |
+          Why is softmax shift invariant?
+        modelAnswer: |
+          Multiplying every numerator and denominator term by the same exp(-c) cancels exactly in real arithmetic.
+          Choosing `c=max(z)` makes every exponent argument nonpositive and the largest exponential one.
+          This preserves probabilities while preventing overflow; clipping individual logits would
+          instead change both the function and its gradients.
+        explanation: |
+          This permits maximum shifting.
+        concepts: [softmax]
+      - id: stable-as-var
+        kind: scenario
+        prompt: |
+          Why avoid E-of-x-squared minus mean-squared?
+        modelAnswer: |
+          For large means and small variance it subtracts close large rounded moments; centred online recurrences avoid that cancellation.
+          Welford updates the mean and centred sum of squares using deviations from the evolving mean.
+          Verify it against a high-precision two-pass reference on data with a huge offset and tiny
+          spread, where the raw-moment formula may become zero or negative.
+        explanation: |
+          Algebraic equivalence does not imply numerical equivalence.
+        concepts: [variance]
+      - id: stable-as-global
+        kind: explain
+        prompt: |
+          Derive global-norm clipping.
+        modelAnswer: |
+          Compute the Euclidean norm over all gradient components and multiply all by min(1,c/(G+eps)).
+          One positive scale preserves the full vector direction and bounds its norm by `c`. Compute a
+          stable norm, reduce squared local norms across shards, unscale mixed-precision gradients first,
+          and log pre-norm, scale, post-norm, and clipping frequency.
+        explanation: |
+          Uniform scaling bounds norm and preserves direction.
+        concepts: [clipping]
+      - id: stable-as-value
+        kind: scenario
+        prompt: |
+          When can value clipping change direction?
+        modelAnswer: |
+          Whenever some coordinates exceed the bound and others do not, their relative ratios change.
+          Global-norm clipping multiplies every component by one common factor, so it preserves direction.
+          Value clipping can still be useful when each coordinate has a meaningful physical bound, but
+          it is a different optimisation operation and must not be described as equivalent.
+        explanation: |
+          Coordinate truncation is geometrically different.
+        concepts: [clipping]
+      - id: stable-as-amp
+        kind: explain
+        prompt: |
+          State mixed-precision update order.
+        modelAnswer: |
+          Scaled backward, unscale, finite check, true-norm clipping, optimiser step if finite, scaler update, then declared scheduler advance.
+          Clipping before unscale compares scaled values with an unscaled threshold and can erase an
+          otherwise safe update. A skipped nonfinite transition should follow a documented scheduler
+          policy and should not contaminate optimiser moments.
+        explanation: |
+          Call order is correctness.
+        concepts: [mixed-precision]
+      - id: stable-as-trace
+        kind: scenario
+        prompt: |
+          How do you locate a NaN root cause?
+        modelAnswer: |
+          Replay a frozen failing batch and stop at the earliest nonfinite boundary while recording inputs, dtype, scale, norms, state, and operation.
+          Inspect activations, logits, loss components, scaled and unscaled gradients, clipping, moments,
+          proposed updates, and parameters in execution order. Preserve the checkpoint, batch IDs, RNG,
+          and autocast configuration; do not use blanket `nan_to_num` during diagnosis.
+        explanation: |
+          Later NaNs are consequences.
+        concepts: [debugging]
+interview:
+  - id: stable-iv-floating
+    level: basic
+    requiredForMastery: true
+    concepts: [floating-point]
+    question: |
+      Why can correct algebra fail on a computer?
+    shortAnswer: |
+      Floating point has finite range, finite spacing, rounding, and non-associative operations.
+    fullAnswer: |
+      Overflow, underflow, absorption, and cancellation depend on operation order and dtype; stable algorithms reshape the computation to respect those limits.
+      Floating-point numbers have finite exponent range and significand precision. Correct real algebra
+      can overflow, lose small increments, or amplify rounded input error. Conditioning describes the
+      mathematical problem; stability describes the algorithm. Use reformulations, stable primitives,
+      suitable accumulation dtypes, and scale-aware error tests rather than one universal epsilon.
+    commonWrongAnswer: |
+      Floating point is exact until overflow.
+    followUps:
+      - "What is machine epsilon?"
+      - "Why is it not a universal tolerance?"
+  - id: stable-iv-lse
+    level: internals
+    requiredForMastery: true
+    concepts: [logsumexp]
+    question: |
+      Derive and defend log-sum-exp.
+    shortAnswer: |
+      Subtract the maximum so all exponent arguments are nonpositive, then add it outside the logarithm.
+    fullAnswer: |
+      Factoring the largest exponential is algebraically exact; it prevents overflow and guarantees one shifted term equals one, with an explicit all-negative-infinity edge policy.
+      Starting from `log sum exp(x_i)`, write each term as `exp(m)exp(x_i-m)` and move `m` outside the
+      logarithm. With `m=max(x)`, shifted arguments are nonpositive. Cross-entropy becomes
+      `logsumexp(logits)-target_logit`, avoiding rounded probabilities and `log(0)`. Axis and special-value
+      semantics still require tests.
+    commonWrongAnswer: |
+      Clipping logits is equivalent.
+    followUps:
+      - "How does this yield cross-entropy?"
+      - "What can still underflow?"
+  - id: stable-iv-cancel
+    level: advanced
+    requiredForMastery: true
+    concepts: [cancellation]
+    question: |
+      Explain catastrophic cancellation with a repair.
+    shortAnswer: |
+      Near-equal rounded operands lose leading digits when subtracted; use a conjugate or specialised primitive.
+    fullAnswer: |
+      sqrt(1+x)-1 becomes x/(sqrt(1+x)+1); log1p and expm1 preserve small increments that naive formulas lose.
+      Cancellation removes shared leading digits from already rounded operands, so relative error in a
+      small result can explode. The raw variance formula has the same problem when the mean is large and
+      variance small; use Welford or a centred two-pass algorithm. Float64 helps but does not replace a
+      stable formulation.
+    commonWrongAnswer: |
+      Always switch the whole program to float64.
+    followUps:
+      - "Give a variance example."
+      - "When is wider precision still useful?"
+  - id: stable-iv-clipping
+    level: comparison
+    requiredForMastery: true
+    concepts: [clipping]
+    question: |
+      Compare global-norm and value clipping.
+    shortAnswer: |
+      Global norm rescales the whole vector and preserves direction; value clipping truncates coordinates and rotates it.
+    fullAnswer: |
+      Global clipping also requires a cross-shard norm in distributed runs. Both are guardrails whose activation frequency must be logged and diagnosed.
+      Global-norm clipping derives one scale from the Euclidean norm of the joined gradient and preserves
+      direction. Value clipping truncates coordinates independently and can rotate it. In sharded
+      training, reduce all squared local norms before applying one shared scale. Frequent clipping means
+      the guardrail has become a persistent part of the optimiser.
+    commonWrongAnswer: |
+      Clipping guarantees convergence.
+    followUps:
+      - "What if every step clips?"
+      - "How does sharding matter?"
+  - id: stable-iv-amp
+    level: debugging
+    requiredForMastery: true
+    concepts: [mixed-precision]
+    question: |
+      A mixed-precision job produces intermittent NaNs. What is your order of investigation?
+    shortAnswer: |
+      Freeze the batch, trace scaled backward through unscale, finite checks, clipping, optimiser state, and update, and stop at the first bad value.
+    fullAnswer: |
+      Record dtype, range, norms, scaler, batch and RNG; do not let clipping or nan-to-num erase evidence before the failing operation is identified.
+      Replay the exact batch and trace inputs, activations, logits, loss terms, scaled gradients,
+      unscaled gradients, clipping, moments, updates, and parameters. Unscale before measuring the true
+      norm. Stop at the first nonfinite boundary, preserve pre-operation inputs, and add a fail-before-fix
+      regression for the repaired formula or call order.
+    commonWrongAnswer: |
+      Lower the learning rate and ignore the trace.
+    followUps:
+      - "Why unscale first?"
+      - "Which state can overflow?"
+  - id: stable-iv-distributed
+    level: scenario
+    requiredForMastery: true
+    concepts: [distributed-training]
+    question: |
+      Why can distributed reductions change numerical results?
+    shortAnswer: |
+      Floating addition is non-associative, so different tree order, sharding, precision, and kernels round differently.
+    fullAnswer: |
+      Use stable reductions, appropriate accumulation dtype, deterministic kernels where needed, and scale-aware tolerances; global clipping needs one reduced squared norm.
+      Floating-point addition is non-associative, so a different tree, shard layout, or kernel changes
+      rounding. Pairwise or compensated algorithms and wider accumulators reduce error. Decide whether
+      the requirement is bitwise replay, numerical closeness, or statistical equivalence. For clipping,
+      all-reduce squared norms and apply one common multiplier.
+    commonWrongAnswer: |
+      The same mathematical sum must be bit-identical.
+    followUps:
+      - "What is pairwise summation?"
+      - "When require bitwise determinism?"
+projects:
+  - id: stable-project-library
+    kind: major
+    title: Build a numerical stability laboratory
+    minutes: 280
+    summary: Implement unstable and repaired numerical kernels with adversarial tests and precision-aware error reports.
+    problem: |
+      Implement deliberately naive and repaired versions of cancellation-prone expressions,
+      log-sum-exp, log-softmax cross-entropy, softplus, Welford variance, summation, global-norm
+      clipping, sharded clipping, and mixed-precision update order. Build adversarial inputs for every
+      failure and measure accuracy, finiteness, gradients, reproducibility, and performance against
+      independent high-precision or trusted-library references.
+    requirements: [High-precision references, Multiple floating dtypes, Explicit edge contracts, Property and adversarial tests, First-nonfinite tracing, Performance and error comparison]
+    constraints: [Do not hide NaNs with blanket replacement, Keep naive versions only as test subjects, Report error relative to conditioning]
+    expectedBehaviour: [Stable kernels remain finite over declared domains, Cross-entropy matches trusted fused references, Sharded clipping matches unsharded direction, Trace identifies injected faults]
+    structure: |
+      stable_lab/
+        transforms.py
+        reductions.py
+        clipping.py
+        amp_trace.py
+      tests/
+        test_adversarial.py
+        test_properties.py
+        test_distributed.py
+    milestones: [{title: "1 — Adversarial scalars", detail: Expose and repair cancellation and overflow.}, {title: "2 — Tensor kernels", detail: Add axes, dtypes, and edge cases.}, {title: "3 — Training trace", detail: Inject and localise mixed-precision failures.}]
+    testing: [Extreme logits and all negative infinity, Large means with tiny variance, Mixed magnitudes and orders, Scaled and sharded gradients]
+    failureCases: [Comparing only typical values, Applying epsilon without semantics, Clipping before unscale]
+    bonus: [Add compensated dot products and error-bound visualisations.]
+    architectureHints: [Keep reference and production paths independent., Record operation-level dtype and range.]
+    referenceOutline: Begin with adversarial scalar fixtures, generalise across axes and dtypes, then integrate an instrumented toy trainer.
+  - id: stable-final-incident
+    kind: final-challenge
+    title: Diagnose a mixed-precision NaN incident
+    minutes: 120
+    summary: Reproduce an intermittent production failure and identify the first unstable operation.
+    problem: |
+      A distributed mixed-precision job intermittently produces NaN parameters while ordinary batches
+      remain healthy. Using preserved checkpoints and batch IDs, reproduce the incident and trace
+      logits, loss components, scaled and unscaled gradients, reductions, clipping order, cross-shard
+      norm computation, optimiser moments, proposed updates, scaler decisions, and scheduler timing to
+      the first unstable operation.
+    requirements: [Deterministic replay, First-failure evidence, Fail-before-fix regression, No blanket sanitisation, Post-fix parity]
+    constraints: [Do not call clipping the root cause without upstream evidence., Preserve failing artifacts.]
+    expectedBehaviour: [The earliest nonfinite boundary is named, Repair remains finite under adversarial replay, Normal-range accuracy is unchanged]
+    milestones: [{title: "1 — Reproduce", detail: Freeze exact state and batch.}, {title: "2 — Localise", detail: Trace boundaries in order.}, {title: "3 — Repair", detail: Reformulate and prove.}]
+    testing: [Original incident, Nearby magnitudes, Different loss scales, Distributed and single-process parity]
+    failureCases: [Inspecting final loss only, Casting after overflow, Losing the incident checkpoint]
+    bonus: [Automate compact numerical incident reports.]
+    architectureHints: [Abort on the first bad boundary., Save pre-operation inputs for replay.]
+    referenceOutline: Reproduce without changes, identify the earliest divergence, repair that operation, then expand adversarial coverage.
+resources:
+  - name: "Goldberg — What Every Computer Scientist Should Know About Floating-Point Arithmetic"
+    type: article
+    difficulty: core
+    url: "https://docs.oracle.com/cd/E19957-01/806-3568/ncg_goldberg.html"
+    usefulness: 5
+    why: Foundational explanation of representation, rounding, guard digits, and numerical error.
+    covers: IEEE floating point, rounding, cancellation, and error analysis.
+  - name: "Higham — Accuracy and Stability of Numerical Algorithms"
+    type: book
+    difficulty: deep
+    url: "https://nhigham.com/accuracy-and-stability-of-numerical-algorithms/"
+    usefulness: 5
+    why: Authoritative reference for stability, conditioning, summation, and error analysis.
+    covers: Forward and backward error, stability, summation, and linear algebra.
+  - name: "Blanchard, Higham, and Higham — Accurately computing the log-sum-exp and softmax functions"
+    type: article
+    difficulty: deep
+    url: "https://arxiv.org/abs/1909.03469"
+    usefulness: 5
+    why: Primary numerical analysis of shifted log-sum-exp and softmax variants.
+    covers: Log-sum-exp, softmax, rounding error, and algorithms.
+  - name: "PyTorch documentation — clip_grad_norm_"
+    type: docs
+    difficulty: core
+    url: "https://docs.pytorch.org/docs/stable/generated/torch.nn.utils.clip_grad_norm_.html"
+    usefulness: 4
+    why: Official API defines total-norm aggregation, in-place scaling, and nonfinite handling.
+    covers: Global norm clipping, norm types, and error handling.
+  - name: "PyTorch Automatic Mixed Precision examples"
+    type: docs
+    difficulty: core
+    url: "https://docs.pytorch.org/docs/stable/notes/amp_examples.html"
+    usefulness: 5
+    why: Official examples document the required unscale-before-clipping sequence.
+    covers: Loss scaling, unscale, gradient clipping, and multiple optimisers.

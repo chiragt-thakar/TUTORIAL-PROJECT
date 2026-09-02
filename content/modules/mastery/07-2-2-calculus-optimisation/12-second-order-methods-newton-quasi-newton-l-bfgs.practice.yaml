@@ -1,0 +1,610 @@
+lessonId: "roadmap:phase-2-2.2:11"
+module: 2-2-calculus-optimisation
+lesson: 12-second-order-methods-newton-quasi-newton-l-bfgs
+title: "Second-order methods: Newton, quasi-Newton, L-BFGS — and why we don't use them at scale"
+summary: Derive curvature-aware steps, implement bounded-memory inverse-Hessian actions, and judge their reliability and systems cost.
+mastery: {minAssessmentScore: 80, requireProject: true, requireInterview: true, requireDebug: true, revisitAfterDays: 21}
+exercises:
+  - id: second-read-solve
+    tier: normal
+    kind: code-reading
+    title: "Read a Newton solve"
+    minutes: 10
+    requiredForMastery: true
+    concepts: [newton, linear-solve]
+    prompt: |
+      Explain p = solve(H, -g) and why it is not written with inv(H).
+    hints:
+      - "Relate it to a stationary quadratic model."
+      - "Compare solving with materialising an inverse."
+    solution: |
+      Solving H p equals negative g gives the stationary point of the Taylor quadratic. A factorised solve avoids materialising an inverse and normally uses less work with better numerical stability.
+      A Cholesky solve is appropriate only when the matrix is symmetric positive definite; an
+      indefinite or singular Hessian needs damping, a different factorisation, or an iterative
+      safeguarded method. The implementation should check residual `||Hp+g||` and actual objective decrease.
+  - id: second-derive-step
+    tier: normal
+    kind: explain
+    title: "Derive Newton's step"
+    minutes: 12
+    requiredForMastery: true
+    concepts: [taylor, newton]
+    prompt: |
+      Differentiate the quadratic model and derive the update.
+    hints:
+      - "Differentiate with respect to displacement."
+      - "Use Hessian symmetry."
+    solution: |
+      The displacement gradient is g+Hp; setting it to zero yields Hp=-g, and a nonsingular Hessian gives p=-H^-1g.
+      This derivation assumes Hessian symmetry. Positive definiteness makes the stationary point the
+      unique minimum of the local model. In code, solve the system rather than form the inverse, and
+      globalise the result because the Taylor model is only local.
+  - id: second-quadratic
+    tier: normal
+    kind: predict-output
+    title: "One step on a quadratic"
+    minutes: 12
+    requiredForMastery: true
+    concepts: [quadratic, convergence]
+    prompt: |
+      Explain why exact Newton reaches the minimiser of a positive-definite quadratic in one step.
+    hints:
+      - "Its second-order Taylor model is exact."
+      - "Substitute g=H theta-b."
+    solution: |
+      Solving Hp=-(Htheta-b) gives theta+p=H^-1b, exactly the unique minimiser, absent solve error.
+      The result holds because a quadratic has no neglected higher-order Taylor terms and positive
+      definiteness makes the minimiser unique. It does not imply one-step convergence on a general
+      nonlinear objective, with an approximate Hessian, or after damping and line search.
+  - id: second-secant
+    tier: normal
+    kind: explain
+    title: "Derive the secant relation"
+    minutes: 12
+    requiredForMastery: true
+    concepts: [secant, quasi-newton]
+    prompt: |
+      Derive why consecutive differences satisfy y approximately Hs.
+    hints:
+      - "Apply a first-order expansion to the gradient."
+      - "Define parameter and gradient differences."
+    solution: |
+      grad f(theta+s) approximately grad f(theta)+Hs; subtracting gradients gives y approximately Hs, the information encoded by a curvature pair.
+      Here `s` is the parameter displacement and `y` is the gradient difference measured at its two
+      endpoints. BFGS chooses a symmetric matrix update satisfying this one directional equation.
+      Comparable gradients are essential; changing stochastic batches contaminates `y` with sampling noise.
+  - id: second-damping
+    tier: intermediate
+    kind: design
+    title: "Repair indefinite curvature"
+    minutes: 14
+    requiredForMastery: true
+    concepts: [damping, indefinite-hessian]
+    prompt: |
+      A Hessian has a negative eigenvalue. Explain why raw Newton is unsafe and propose a safeguard.
+    hints:
+      - "The quadratic need not have a minimum."
+      - "Shift or constrain the model."
+    solution: |
+      The Newton stationary point may be a maximum or saddle direction; solve with sufficient damping, use a trust region, or otherwise modify curvature and verify actual decrease.
+      Damping shifts eigenvalues through `H+lambda I` and approaches a small gradient-like step as
+      lambda grows. A trust region constrains displacement and updates its radius from actual versus
+      predicted reduction. Neither safeguard should silently accept a nonfinite solve or an ascent step.
+  - id: second-bfgs-positive
+    tier: intermediate
+    kind: explain
+    title: "Protect BFGS definiteness"
+    minutes: 14
+    requiredForMastery: true
+    concepts: [bfgs, curvature-condition]
+    prompt: |
+      Why is y^Ts>0 central to BFGS?
+    hints:
+      - "It appears in reciprocal curvature."
+      - "Recall the positive-definite inheritance result."
+    solution: |
+      Positive curvature keeps rho positive and lets a positive-definite approximation remain positive definite, making the negative approximate-inverse-gradient a descent direction.
+      Use a scale-aware condition such as `y^Ts > tau||y||||s||`, not merely positivity, because a
+      tiny denominator makes reciprocal curvature explode. Wolfe line-search conditions help obtain
+      acceptable pairs on smooth deterministic objectives; unsafe pairs should be logged and skipped or damped.
+  - id: second-two-loop
+    tier: intermediate
+    kind: write-code
+    title: "Implement two-loop recursion"
+    minutes: 20
+    requiredForMastery: true
+    concepts: [lbfgs, algorithm]
+    prompt: |
+      Implement the implicit inverse-Hessian action from ordered (s,y) history.
+    hints:
+      - "First traverse newest to oldest and save alpha."
+      - "Apply initial scaling then unwind oldest to newest."
+    solution: |
+      Compute backward alphas while subtracting alpha*y; scale by a positive scalar approximation; in forward order add s*(alpha-rho*y dot r) and negate the result.
+      The first loop traverses newest to oldest because it applies nested inverse updates backward.
+      The second loop unwinds oldest to newest using the matching saved alpha values. Validate the
+      direction against an explicitly formed small BFGS matrix before trusting the scalable version.
+  - id: second-hvp
+    tier: intermediate
+    kind: explain
+    title: "Build a Hessian-vector product"
+    minutes: 14
+    requiredForMastery: true
+    concepts: [hvp, autodiff]
+    prompt: |
+      Express Hv using gradients without forming H.
+    hints:
+      - "First form a scalar dot product with the gradient."
+      - "Differentiate that scalar with respect to parameters."
+    solution: |
+      Compute grad_theta((grad f(theta))^T v) with v treated as constant; automatic differentiation returns the Hessian action directly.
+      This uses the identity `grad_theta(g^Tv)=Hv` for a twice-differentiable scalar objective. It
+      avoids `O(n^2)` storage but still costs differentiation work. Check it against a finite-difference
+      directional gradient and a dense Hessian on a small smooth fixture.
+  - id: second-debug-rho
+    tier: tricky
+    kind: debug
+    title: "Reciprocal curvature explodes"
+    minutes: 15
+    requiredForMastery: true
+    concepts: [lbfgs, numerical-stability]
+    prompt: |
+      Diagnose rho=1/(y dot s) when the denominator is tiny.
+    hints:
+      - "Compare it with pair norms."
+      - "Do not hide bad curvature using arbitrary epsilon."
+    solution: |
+      The update becomes enormous and unreliable; require finite scale-aware positive curvature, then skip, damp, or reset and log the decision.
+      Compare `y^Ts` with `||y||||s||` so the decision is invariant to simple rescaling. Adding an
+      arbitrary epsilon hides a bad measurement and changes the operator unpredictably. A regression
+      test should feed a near-orthogonal pair and assert the documented rejection policy.
+  - id: second-debug-order
+    tier: tricky
+    kind: debug
+    title: "Two-loop history is reversed"
+    minutes: 15
+    requiredForMastery: true
+    concepts: [lbfgs, ordering]
+    prompt: |
+      A clone iterates history oldest-to-newest in both loops. Find the semantic error.
+    hints:
+      - "The first loop applies nested inverse updates backward."
+      - "The second loop must unwind that nesting."
+    solution: |
+      Run the first loop newest-to-oldest and the second oldest-to-newest using the paired saved alphas; same-order traversal applies a different operator.
+      Use two non-collinear curvature pairs and compare the returned direction with a dense reference;
+      a single pair cannot expose every ordering bug. Store history chronologically and make traversal
+      direction explicit rather than relying on container iteration accidents.
+  - id: second-debug-stale
+    tier: tricky
+    kind: debug
+    title: "Curvature pairs cross a model reset"
+    minutes: 15
+    requiredForMastery: true
+    concepts: [state, checkpoint]
+    prompt: |
+      Training restores weights but retains pairs from another parameter state. Diagnose it.
+    hints:
+      - "Pairs describe local gradient change."
+      - "Ask whether they belong to current coordinates."
+    solution: |
+      Stale pairs approximate curvature along unrelated displacements; restore matching history and step or clear history, and verify uninterrupted-versus-resumed directions.
+      Parameter ordering, dtype, device layout, and model version must also match. If exact history
+      cannot be restored, clearing it is safer than pretending it belongs to the new state, although
+      convergence will temporarily behave like the initial approximation.
+  - id: second-linesearch
+    tier: tricky
+    kind: design
+    title: "Verify a line search"
+    minutes: 18
+    requiredForMastery: true
+    concepts: [line-search, wolfe]
+    prompt: |
+      Design checks for a quasi-Newton line search rather than trusting a success flag.
+    hints:
+      - "Check sufficient decrease and curvature."
+      - "Count closure evaluations."
+    solution: |
+      Independently evaluate Armijo and curvature inequalities, finite values, descent direction, accepted alpha, actual reduction, evaluation budget, and failure fallback.
+      Keep the batch and stochastic state fixed across closure evaluations so the inequalities compare
+      one objective. Record every attempted alpha and function/gradient evaluation. On failure, reject
+      the pair and use a documented fallback rather than accepting the last trial silently.
+  - id: second-memory
+    tier: challenge
+    kind: performance
+    title: "Account for curvature memory"
+    minutes: 18
+    requiredForMastery: false
+    concepts: [memory, scale]
+    prompt: |
+      Compare dense Hessian, BFGS, and L-BFGS storage for n parameters and history m.
+    hints:
+      - "Dense matrices have two parameter axes."
+      - "Each pair contains two vectors."
+    solution: |
+      Dense Hessian and BFGS approximation need O(n^2) values; L-BFGS keeps about 2mn values plus parameters and gradients, linear but still material at large n.
+      With `n=100 million`, `m=10`, and float32 pairs, history alone is about 8 GB. Two-loop recursion
+      streams that state each step, so bandwidth and distributed communication matter as well as
+      capacity. Count closure activations, gradients, and framework buffers separately.
+  - id: second-method-choice
+    tier: challenge
+    kind: design
+    title: "Choose curvature responsibly"
+    minutes: 20
+    requiredForMastery: false
+    concepts: [method-selection, systems]
+    prompt: |
+      Define a decision rubric for Newton-CG, L-BFGS, and AdamW.
+    hints:
+      - "Include problem smoothness and evaluation cost."
+      - "Compare end-to-end resources."
+    solution: |
+      Prefer safeguarded curvature when objectives are smooth, gradients reliable, dimension manageable, and evaluations affordable; prefer first-order scaling when data noise, model size, communication, or closure cost dominates, then prove via equal-budget experiments.
+      Compare Newton-CG when HVPs and deterministic full objectives are affordable, L-BFGS for modest
+      smooth problems with useful repeated evaluations, and AdamW for large noisy accelerator training.
+      Report evaluations, HVPs, examples, memory, communication, wall time, tuning effort, and held-out quality.
+quizzes:
+  - id: second-checkpoint
+    title: Checkpoint — curvature steps
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - {id: second-cp-system, kind: mcq, prompt: What system defines a Newton displacement?, options: [{id: hp, text: "H p = -g"}, {id: pg, text: "p = -g"}], answer: [hp], explanation: It minimises the quadratic model., concepts: [newton]}
+      - {id: second-cp-secant, kind: mcq, prompt: What is the Hessian secant condition?, options: [{id: bs-y, text: "B s = y"}, {id: by-s, text: "B y = s"}], answer: [bs-y], explanation: Gradient change is locally Hessian times displacement., concepts: [secant]}
+      - {id: second-cp-memory, kind: mcq, prompt: What is L-BFGS state complexity?, options: [{id: linear, text: "O(mn)"}, {id: quadratic, text: "O(n^2)"}], answer: [linear], explanation: It stores a bounded number of vector pairs., concepts: [lbfgs]}
+      - {id: second-cp-hvp, kind: mcq, prompt: What does an HVP avoid?, options: [{id: matrix, text: Materialising the full Hessian}, {id: gradient, text: All differentiation}], answer: [matrix], explanation: It computes only the Hessian action on a vector., concepts: [hvp]}
+  - id: second-assessment
+    title: Assessment — second-order reasoning
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: second-as-newton
+        kind: explain
+        prompt: |
+          Derive Newton from Taylor expansion.
+        modelAnswer: |
+          Differentiate g^Tp+0.5p^THp, set g+Hp=0, and solve for displacement.
+          Symmetry makes the quadratic derivative `g+Hp`. Positive definiteness makes this stationary
+          point the model minimum. Implement it as a linear solve and add line search, damping, or a
+          trust region because the local model need not predict the full objective globally.
+        explanation: |
+          Newton minimises a local quadratic model.
+        concepts: [newton]
+      - id: second-as-indef
+        kind: scenario
+        prompt: |
+          Why can Newton seek a saddle?
+        modelAnswer: |
+          An indefinite quadratic has no local minimum in negative-curvature directions; its stationary solution is not guaranteed descent.
+          Newton can therefore move toward a saddle or maximum while solving its equations exactly.
+          Detect curvature sign or failed descent and use damping, modified curvature, or a trust-region
+          method that handles negative curvature explicitly.
+        explanation: |
+          Curvature sign matters.
+        concepts: [indefinite-hessian]
+      - id: second-as-damp
+        kind: explain
+        prompt: |
+          What does damping do?
+        modelAnswer: |
+          Adding lambda I shifts eigenvalues and interpolates toward a smaller gradient-like step, improving conditioning and definiteness.
+          As lambda grows, `(H+lambda I)^-1` approaches a scaled identity and the step approaches
+          `-g/lambda`. Adapt damping from actual versus predicted reduction rather than adding an
+          arbitrary constant only to suppress a solver error.
+        explanation: |
+          Damping regularises the local solve.
+        concepts: [damping]
+      - id: second-as-secant
+        kind: explain
+        prompt: |
+          Explain a curvature pair.
+        modelAnswer: |
+          s records parameter displacement and y gradient change; locally y approximately Hs, providing directional curvature.
+          A quasi-Newton update chooses a symmetric matrix satisfying this secant equation while staying
+          close to its previous approximation. Both gradients should measure comparable objectives;
+          unrelated mini-batches turn the difference into curvature plus sampling noise.
+        explanation: |
+          Quasi-Newton learns from first-order observations.
+        concepts: [secant]
+      - id: second-as-bfgs
+        kind: scenario
+        prompt: |
+          What must be checked before accepting a BFGS pair?
+        modelAnswer: |
+          Finiteness, meaningful norms, and sufficiently positive y^Ts, normally supported by line-search conditions.
+          Compare the dot product with `||y||||s||` so near-zero curvature is rejected at the relevant
+          scale. Confirm the line search used a fixed objective, then log whether the pair was accepted,
+          damped, skipped, or caused history reset.
+        explanation: |
+          Bad pairs destroy the approximation.
+        concepts: [bfgs]
+      - id: second-as-loop
+        kind: explain
+        prompt: |
+          State L-BFGS loop order.
+        modelAnswer: |
+          Process pairs newest-to-oldest to compute alphas, scale, then unwind oldest-to-newest.
+          The reverse traversal applies the nested inverse updates; the forward traversal reconstructs
+          their corrections using matching saved coefficients. Compare against a dense BFGS operator on
+          a multi-pair quadratic fixture to catch swapped ordering.
+        explanation: |
+          Order implements the nested inverse updates.
+        concepts: [lbfgs]
+      - id: second-as-hvp
+        kind: explain
+        prompt: |
+          Derive an HVP expression.
+        modelAnswer: |
+          Differentiate the scalar inner product of gradient and fixed vector with respect to parameters.
+          The identity is `grad_theta((grad f)^T v)=Hv` when `v` is treated as constant. It avoids
+          materialising the Hessian but still costs automatic-differentiation work and should be checked
+          against dense or finite-difference references on small smooth problems.
+        explanation: |
+          This yields Hv without dense storage.
+        concepts: [hvp]
+      - id: second-as-cost
+        kind: scenario
+        prompt: |
+          Why is a dense Hessian impossible at one million parameters?
+        modelAnswer: |
+          It contains one trillion entries before factorisation or communication, exceeding practical memory and compute.
+          Float32 storage alone is about four terabytes decimal, before gradients, factors, workspaces,
+          or replication. Dense factorisation is roughly cubic and does not map to a feasible
+          billion-parameter training system.
+        explanation: |
+          Quadratic storage fails first.
+        concepts: [scale]
+      - id: second-as-noise
+        kind: explain
+        prompt: |
+          How does mini-batch noise hurt quasi-Newton pairs?
+        modelAnswer: |
+          Gradient differences contain batch-change noise rather than only local curvature, so y may violate positive curvature and mislead the model.
+          Use the same batch within a line search, a larger curvature batch, averaging, damping, or a
+          method designed for stochastic pairs. Ordinary deterministic BFGS assumptions do not survive
+          arbitrary fresh mini-batches automatically.
+        explanation: |
+          Pair quality assumes comparable gradients.
+        concepts: [stochasticity]
+      - id: second-as-fair
+        kind: scenario
+        prompt: |
+          Compare L-BFGS and AdamW fairly.
+        modelAnswer: |
+          Match data and compute budgets and report closure evaluations, communication, memory, tuning, wall time, and validation—not iterations alone.
+          One L-BFGS iteration may invoke several forward and backward closures. Also report examples
+          processed, HVPs if any, peak state memory, failed line searches, and multiple-seed held-out
+          quality under equal hyperparameter-search effort.
+        explanation: |
+          One quasi-Newton iteration can cost many evaluations.
+        concepts: [benchmarking]
+interview:
+  - id: second-iv-newton
+    level: basic
+    requiredForMastery: true
+    concepts: [newton]
+    question: |
+      Derive Newton's optimisation step.
+    shortAnswer: |
+      Minimise the local quadratic by solving Hp=-g.
+    fullAnswer: |
+      Taylor expansion supplies gradient and Hessian; stationarity gives the system. Solve it rather than invert, and globalise because the model is local.
+      The quadratic model is `f + g^Tp + 0.5p^THp`. Its displacement gradient is `g+Hp`, so Newton
+      solves `Hp=-g`. On a positive-definite quadratic the step is the exact minimiser. For general
+      objectives, inspect definiteness and conditioning and use damping, line search, or a trust region
+      before assuming the unit step decreases the true loss.
+    commonWrongAnswer: |
+      Newton is gradient descent with a larger learning rate.
+    followUps:
+      - "When is one step exact?"
+      - "Why can it fail?"
+  - id: second-iv-global
+    level: internals
+    requiredForMastery: true
+    concepts: [trust-region, line-search]
+    question: |
+      How do you make Newton globally safer?
+    shortAnswer: |
+      Use damping, a line search, or trust region and compare actual with predicted reduction.
+    fullAnswer: |
+      These mechanisms limit or scale a locally attractive step when curvature is indefinite, ill-conditioned, or the quadratic is inaccurate far away.
+      A line search scales a descent direction until sufficient-decrease and curvature conditions hold.
+      Damping shifts Hessian eigenvalues and approaches a small gradient step as damping grows. A trust
+      region constrains the displacement and adapts its radius from actual divided by predicted
+      reduction. Each mechanism needs a documented failure fallback.
+    commonWrongAnswer: |
+      A Hessian guarantees decrease.
+    followUps:
+      - "What is a trust ratio?"
+      - "What does damping shift?"
+  - id: second-iv-bfgs
+    level: advanced
+    requiredForMastery: true
+    concepts: [bfgs]
+    question: |
+      Explain BFGS without memorising its formula.
+    shortAnswer: |
+      It makes the smallest structured symmetric curvature update that satisfies observed secant information and preserves positive definiteness under positive curvature.
+    fullAnswer: |
+      Parameter and gradient differences define a directional Hessian equation; BFGS updates the matrix or inverse while maintaining useful geometry.
+      With `s=theta_next-theta` and `y=g_next-g`, local Taylor expansion gives `y approximately Hs`.
+      BFGS chooses a symmetric rank-two update satisfying that secant condition. If the old inverse is
+      positive definite and `y^Ts>0`, the new inverse remains positive definite and its negative-gradient
+      action is a descent direction. One pair does not recover the exact Hessian.
+    commonWrongAnswer: |
+      BFGS computes the exact Hessian from one gradient pair.
+    followUps:
+      - "Why y^Ts>0?"
+      - "What does Wolfe help enforce?"
+  - id: second-iv-lbfgs
+    level: internals
+    requiredForMastery: true
+    concepts: [lbfgs]
+    question: |
+      How does L-BFGS apply curvature without a matrix?
+    shortAnswer: |
+      It stores a bounded queue of secant pairs and uses two-loop recursion to apply an implicit inverse approximation.
+    fullAnswer: |
+      A backward pass computes coefficients, scalar initial scaling approximates missing curvature, and a forward pass reconstructs the inverse action in linear memory.
+      Store only the latest `m` displacement and gradient-difference pairs. Traverse newest to oldest
+      to compute alpha coefficients, apply a positive scalar initial inverse, then unwind oldest to
+      newest. State and work are `O(mn)`, but pair bandwidth, line-search closures, noise, and distributed
+      communication can still make the method expensive.
+    commonWrongAnswer: |
+      It stores a compressed exact Hessian.
+    followUps:
+      - "What is complexity?"
+      - "Why does order matter?"
+  - id: second-iv-scale
+    level: comparison
+    requiredForMastery: true
+    concepts: [scale]
+    question: |
+      Why are full second-order methods rare in deep learning?
+    shortAnswer: |
+      Quadratic matrices and costly solves collide with huge dimension, noisy batches, indefinite curvature, repeated evaluations, and accelerator systems.
+    fullAnswer: |
+      L-BFGS fixes dense storage but not every closure, line-search, communication, stochastic-pair, or non-convexity problem; usefulness is workload-specific.
+      A dense Hessian or BFGS matrix costs `O(n^2)`, while factorisation is roughly cubic. HVPs avoid
+      storage but require repeated autodiff; L-BFGS uses linear history but streams it and often reevaluates
+      the loss. Mini-batch noise corrupts secant pairs and the Hessian can be indefinite. Accelerators are
+      usually better utilised by batched first-order updates.
+    commonWrongAnswer: |
+      Second derivatives are simply unavailable in autodiff.
+    followUps:
+      - "What do HVPs fix?"
+      - "What remains?"
+  - id: second-iv-debug
+    level: debugging
+    requiredForMastery: true
+    concepts: [debugging]
+    question: |
+      An L-BFGS implementation diverges. What do you inspect first?
+    shortAnswer: |
+      Descent, line search, pair order, y^Ts, scaling, finite state, and matching gradients at pair endpoints.
+    fullAnswer: |
+      Use a deterministic quadratic oracle, compare every direction and accepted alpha, reject unsafe pairs visibly, and then test checkpoint parity.
+      Verify pair definitions, loop order, initial scaling, descent, finite values, relative `y^Ts`,
+      and fixed-batch closure behaviour. Inject mutants for reversed loops and near-zero curvature.
+      Once one-step parity holds, compare an uninterrupted run with a restored run containing identical
+      pair history, parameter ordering, and line-search state.
+    commonWrongAnswer: |
+      Increase history indefinitely.
+    followUps:
+      - "Which mutant catches reversed loops?"
+      - "When reset history?"
+  - id: second-iv-choice
+    level: scenario
+    requiredForMastery: true
+    concepts: [method-selection]
+    question: |
+      Where would you still use L-BFGS or Newton-CG?
+    shortAnswer: |
+      Smooth modest deterministic optimisation, inverse problems, calibration, or refinement where reliable full gradients and repeated evaluations are affordable.
+    fullAnswer: |
+      The end-to-end evidence must show curvature saves enough iterations to repay memory, solves, line search, and synchronisation.
+      Good candidates are smooth deterministic calibration, inverse problems, moderate full-batch models,
+      or final refinement where accurate gradients and repeated evaluations are affordable. Newton-CG
+      is attractive when HVPs are reliable; L-BFGS when bounded history is sufficient. Measure evaluations,
+      memory, communication, wall time, tuning, and validation against first-order baselines.
+    commonWrongAnswer: |
+      Never use second order because neural networks are large.
+    followUps:
+      - "Which evidence would change your choice?"
+      - "How compare compute?"
+projects:
+  - id: second-project-suite
+    kind: major
+    title: Build a safeguarded curvature optimiser lab
+    minutes: 280
+    summary: Implement Newton, damped Newton, BFGS, L-BFGS, and Newton-CG against deterministic reference objectives.
+    problem: |
+      Build Newton, damped Newton, BFGS, L-BFGS, and Newton-CG from explicit state transitions.
+      Begin with scalar and rotated-quadratic oracles, then add line search or trust-region
+      globalisation, curvature-pair rejection, two-loop recursion, HVP-based conjugate gradient,
+      exact checkpoint resume, and equal-budget comparisons on deterministic and noisy objectives.
+    requirements: [Solve rather than invert, Safeguard indefinite curvature, Verify secant equations, Log pair acceptance, Prove two-loop against dense BFGS, Compare end-to-end cost]
+    constraints: [Use float64 oracles, No silent epsilon repair of invalid pairs, Count every objective and gradient evaluation]
+    expectedBehaviour: [Newton solves positive quadratics exactly, Damping prevents unsafe raw steps, L-BFGS matches its dense implicit reference, Resume preserves history]
+    structure: |
+      curvature_lab/
+        objectives.py
+        newton.py
+        bfgs.py
+        lbfgs.py
+        cg.py
+      tests/
+        test_quadratics.py
+        test_pairs.py
+        test_resume.py
+    milestones: [{title: "1 — Oracles", detail: Derive quadratics and exact steps.}, {title: "2 — Quasi-Newton", detail: Add pair validation and two-loop parity.}, {title: "3 — Systems comparison", detail: Measure evaluations, time, and memory.}]
+    testing: [Positive and indefinite quadratics, Tiny and negative curvature pairs, Reversed-loop mutant, Interrupted trajectory]
+    failureCases: [Explicit inversion, Trusting line-search flags, Comparing iteration counts only]
+    bonus: [Add trust-region CG and Gauss-Newton operator experiments.]
+    architectureHints: [Separate direction generation from globalisation., Store diagnostics as structured records.]
+    referenceOutline: Start with hand-solvable quadratics, prove each operator, then add noisy and non-convex failures only after deterministic parity.
+  - id: second-final-framework
+    kind: final-challenge
+    title: Reconcile an L-BFGS framework closure
+    minutes: 120
+    summary: Explain why a framework run evaluates the model repeatedly and diverges from a custom two-loop implementation.
+    problem: |
+      A framework L-BFGS run reevaluates its closure several times and diverges from a custom two-loop
+      implementation after the first accepted step. Freeze the objective and audit closure purity,
+      gradient zeroing, line-search trials, pair definitions and ordering, curvature rejection,
+      initial scaling, stochastic batches, parameter order, and saved history until every transition agrees.
+    requirements: [Find first direction mismatch, Freeze data during a step, Add regression tests, Match resume semantics]
+    constraints: [Do not compare iteration counts without closure counts., Do not mask mismatch by retuning.]
+    expectedBehaviour: [Directions and accepted steps match reference, Closure is repeatable, History restore is exact]
+    milestones: [{title: "1 — Trace", detail: Capture every closure and pair.}, {title: "2 — Align", detail: Repair semantics.}, {title: "3 — Resume", detail: Prove continued parity.}]
+    testing: [Deterministic closure, Pair rejection, Multiple evaluations, Save and restore]
+    failureCases: [Changing mini-batch inside line search, Accumulating gradients across closures, Stale pair state]
+    bonus: [Publish a framework compatibility record.]
+    architectureHints: [Make closure inputs immutable., Record evaluation IDs separately from optimiser steps.]
+    referenceOutline: Freeze a quadratic and batch, compare each closure and vector operation, then expand to a tiny model.
+resources:
+  - name: "Nocedal and Wright — Numerical Optimization"
+    type: book
+    difficulty: deep
+    url: "https://link.springer.com/book/10.1007/978-0-387-40065-5"
+    usefulness: 5
+    why: |
+      This authoritative text derives Newton and globalisation methods, line search, trust regions, BFGS, and limited-memory methods.
+    covers: |
+      Newton methods, globalisation, quasi-Newton theory, constrained optimisation.
+  - name: "Liu and Nocedal — On the limited memory BFGS method"
+    type: article
+    difficulty: deep
+    url: "https://doi.org/10.1007/BF01589116"
+    usefulness: 5
+    why: |
+      Primary L-BFGS paper analysing the bounded-memory method for large-scale optimisation.
+    covers: |
+      L-BFGS, memory, convergence, numerical experiments.
+  - name: "Martens — Deep learning via Hessian-free optimization"
+    type: article
+    difficulty: deep
+    url: "https://www.cs.utoronto.ca/~jmartens/docs/Deep_HessianFree.pdf"
+    usefulness: 5
+    why: |
+      Primary deep-learning curvature work using matrix-free products and iterative solves.
+    covers: |
+      Hessian-free optimisation, conjugate gradients, damping, neural networks.
+  - name: "Pearlmutter — Fast Exact Multiplication by the Hessian"
+    type: article
+    difficulty: deep
+    url: "https://www.bcl.hamilton.ie/~barak/papers/nc-hessian.pdf"
+    usefulness: 5
+    why: |
+      Primary source for efficient exact Hessian-vector products.
+    covers: |
+      HVPs, automatic differentiation, matrix-free curvature.
+  - name: "PyTorch documentation — LBFGS"
+    type: docs
+    difficulty: core
+    url: "https://docs.pytorch.org/docs/stable/generated/torch.optim.LBFGS.html"
+    usefulness: 4
+    why: |
+      Official production documentation explains closure and state behaviour, memory, history, and device limitations.
+    covers: |
+      L-BFGS API, closures, memory cost, line search.

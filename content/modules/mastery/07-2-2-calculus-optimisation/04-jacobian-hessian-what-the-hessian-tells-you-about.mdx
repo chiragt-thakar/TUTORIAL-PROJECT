@@ -139,28 +139,38 @@ assert np.allclose(newton, [-1.0, -0.01])
 
 <WhyItMatters>
 
-The Hessian eigenvalue spectrum of a trained network is a few large outliers plus a dense bulk near
-zero — so the loss is very anisotropic, which is why raw gradient descent needs momentum and
-adaptive scaling. Sharpness (large `λ_max`, or large `trace(H)`) correlates with worse
-generalisation, motivating methods like SAM that explicitly seek flat minima.
+Many trained networks show a few Hessian outliers plus a bulk near zero, revealing anisotropy that
+can make plain gradient descent slow. Raw `λ_max` or `trace(H)` is not a parameterisation-invariant
+measure of function-space flatness: rescaling equivalent network parameters can change it without
+changing predictions.
+
+Sharpness measures sometimes correlate with generalisation under controlled parameterisation and
+scale, and methods such as SAM are motivated by neighbourhood robustness. The correlation is not a
+universal causal law.
 
 </WhyItMatters>
 
 ## Hessian–vector products without the Hessian
 
 `H v` is the derivative of `∇f` in the direction `v`, so you get it by differentiating the scalar
-`∇f(x)·v` again — a second reverse pass, or forward-over-reverse autodiff. Cost is a small constant
-times one gradient; memory is `O(n)`. This is the primitive behind:
+`∇f(x)·v` again — a second reverse pass, or forward-over-reverse autodiff. Cost is usually a small
+constant times one gradient.
+
+Parameter-vector storage is `O(n)`, but total memory also includes the forward/autodiff graph and
+saved activations; it is not generally only `O(n)`. This is the primitive behind:
 
 - **Truncated Newton / Hessian-free**: solve `H p = −g` with conjugate gradients using only HVPs.
 - **Lanczos**: estimate the top and bottom Hessian eigenvalues from a few HVPs.
-- **Gauss–Newton / GGN**: replace `H` with `Jᵀ J` (`J` the Jacobian of the network outputs) — always
-  PSD, and equal to the Hessian when the residuals are zero.
+- **Gauss–Newton / GGN**: for least squares, use `J_rᵀ J_r`, where `J_r` is the residual Jacobian.
+  For a composite loss `L(h(θ))`, the generalised Gauss–Newton matrix is
+  `J_hᵀ H_L J_h`. It is PSD when the loss Hessian `H_L` is PSD. For least squares it equals the true
+  Hessian when the residual-weighted second-derivative term vanishes (in particular at an exact fit).
 - **Fisher information**: the expected outer product of the log-likelihood gradient — PSD, used by
-  natural gradient; equals the GGN for exponential-family losses.
+  natural gradient. Its equality to a GGN needs compatible exponential-family likelihood,
+  parameterisation, and expectation conventions; empirical and model-expected Fishers can differ.
 
 ```python
-# HVP by finite difference of the gradient (autodiff is exact and preferred)
+# HVP by finite difference of the gradient (autodiff avoids differencing error and is preferred)
 def hvp_fd(grad, x, v, h=1e-6):
     return (grad(x + h * v) - grad(x - h * v)) / (2 * h)
 ```
@@ -271,8 +281,10 @@ From HVPs you get everything practical:
 - **A Newton-like step** by running conjugate gradients on `H p = −g` using only HVPs, truncated
   after a handful of iterations (truncated Newton / Hessian-free optimisation).
 
-For a PSD surrogate I would use the Gauss–Newton matrix `Jᵀ J` or the Fisher information, both of
-which also only need Jacobian–vector and vector–Jacobian products and avoid negative curvature.
+For a PSD surrogate I would use the least-squares Gauss–Newton matrix `J_rᵀ J_r`, the generalised
+form `J_hᵀ H_L J_h` when `H_L` is PSD, or a suitable Fisher information matrix. They can be applied
+with Jacobian–vector and vector–Jacobian products and deliberately discard true-Hessian negative
+curvature; that can stabilise a solve but also removes potentially useful escape directions.
 
 </Solution>
 </Exercise>

@@ -85,13 +85,19 @@ easy because in the eigenbasis they do not.
 ## Powers and long-run behaviour
 
 `A^k = V Lambda^k V_inv`, and `Lambda^k` just raises each eigenvalue to the `k`-th power. So the
-behaviour of `A^k` as `k` grows is governed entirely by the eigenvalues: it converges to zero
-exactly when every `|lambda| < 1`, blows up if any `|lambda| > 1`, and the largest `|lambda|` (the
-spectral radius) sets the rate.
+asymptotic behaviour of the matrix powers is governed by the eigenvalues: `A^k -> 0` exactly when
+the spectral radius is below 1. If an eigenvalue has magnitude above 1, the operator grows along a
+corresponding invariant direction, although a particular starting vector can miss that direction.
 
-The dominant eigenvector is the direction that survives repeated multiplication, which is why power
-iteration converges to it and why a Markov chain's stationary distribution is the eigenvector for
-eigenvalue 1.
+Jordan blocks add polynomial factors and non-normal matrices can have large transient growth even
+when every eigenvalue is inside the unit circle, so the spectral radius gives the asymptotic
+exponential rate rather than the whole finite-time story.
+
+When there is a unique eigenvalue of largest magnitude and the starting vector has a nonzero
+component in its eigenvector direction, power iteration converges to that direction (with extra
+caveats for defective/non-normal matrices). A finite Markov chain's stationary distributions are
+eigenvectors for eigenvalue 1; uniqueness and convergence from every initial distribution require
+additional conditions such as irreducibility and aperiodicity.
 
 ```python
 M = np.array([[0.9, 0.2],
@@ -142,10 +148,14 @@ assert np.allclose(Q @ np.diag(w) @ Q.T, S)
 <WhyItMatters>
 
 PCA is the eigendecomposition of a covariance matrix: eigenvectors are principal directions,
-eigenvalues are variances. The eigenvalues of a loss Hessian are the local curvatures, and their
-ratio is the condition number that sets gradient descent's speed. An RNN is stable only if its
-recurrent weight's spectral radius is below 1. Spectral clustering uses the smallest eigenvectors of
-a graph Laplacian.
+eigenvalues are variances. The eigenvalues of a positive-definite quadratic loss Hessian are the
+curvatures, and their ratio controls plain gradient descent's rate. For a linear autonomous
+recurrence, spectral radius below 1 gives asymptotic state stability.
+
+Nonlinear RNN state and
+gradient stability instead depend on products of input-dependent Jacobians; the recurrent weight's
+spectral radius alone is not a complete test. Spectral clustering uses selected small-eigenvalue
+eigenvectors of a graph Laplacian, with the exact choice depending on the Laplacian convention.
 
 </WhyItMatters>
 

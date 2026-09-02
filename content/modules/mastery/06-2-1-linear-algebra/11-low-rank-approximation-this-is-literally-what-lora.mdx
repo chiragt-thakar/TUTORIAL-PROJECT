@@ -96,8 +96,9 @@ A = rng.standard_normal((r, k)) * 0.01
 B = np.zeros((d, r))
 def lora_forward(x):
     return W0 @ x + (alpha / r) * (B @ (A @ x))
-assert np.allclose(lora_forward(rng.standard_normal(k)), W0 @ rng.standard_normal(k) * 0 + W0 @ np.zeros(k)) or True
-# at init, B is zero so the update contributes nothing
+x_test = rng.standard_normal(k)
+assert np.allclose(lora_forward(x_test), W0 @ x_test)
+# At initialisation B is zero, so the update contributes nothing.
 assert np.allclose((alpha / r) * (B @ A), 0.0)
 ```
 
@@ -156,17 +157,25 @@ values of similar size, the rank is a real constraint and a larger `r` may help;
 are significant, `r` is oversized. Keep `alpha/r` fixed when sweeping `r` so the comparison is fair.
 
 ```python
-# a fitted Delta W: are all r directions being used?
-Delta = B @ A + rng.standard_normal((d, k)) * 0   # placeholder
+# A concrete nonzero fitted adapter: are all r available directions being used?
+A_fitted = rng.standard_normal((r, k)) * 0.02
+B_fitted = rng.standard_normal((d, r)) * 0.02
+Delta = (alpha / r) * (B_fitted @ A_fitted)
 ds = np.linalg.svd(Delta, compute_uv=False)[:r]
-# a healthy LoRA uses most of its budget: ds[-1] / ds[0] not tiny
+rank_used = np.count_nonzero(ds > ds[0] * 1e-3)
+assert 1 <= rank_used <= r
+# Low rank_used says capacity is unused; using all r directions does not by itself prove quality.
 ```
 
 <ProductionNote>
 
 Before compressing a weight matrix, plot its singular values; if there is no knee, do not bother.
 For LoRA, log the rank utilisation of each adapter (`s_min / s_max` of `B A`) and the merged model's
-weight-norm change, and always merge the adapter for latency-sensitive inference.
+weight-norm change.
+
+Merging removes adapter matmuls for a fixed latency-sensitive deployment, but
+keep adapters separate when serving multiple adapters, switching them dynamically, or when the
+quantised base cannot be merged without changing the deployment format or precision.
 
 </ProductionNote>
 

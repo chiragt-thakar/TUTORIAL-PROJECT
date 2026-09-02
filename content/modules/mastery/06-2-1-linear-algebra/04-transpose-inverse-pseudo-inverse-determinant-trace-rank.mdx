@@ -192,7 +192,11 @@ the singular value spectrum whenever a fit or a solve misbehaves.
 
 ## Cost
 
-Transpose is free (a view). Trace is `O(n)`. Determinant, inverse, and a linear solve are all
+Creating `A.T` in NumPy is normally an `O(1)` strided view, but consuming that non-contiguous view
+may require a copy or use a slower memory-access pattern; a transpose is therefore not universally
+free end to end.
+
+Trace is `O(n)`. Determinant, inverse, and a linear solve are all
 `O(n^3)`, but the solve has the smallest constant and the best stability because it stops after
 elimination. Rank and pseudo-inverse go through the SVD at `O(m*n*min(m, n))`.
 

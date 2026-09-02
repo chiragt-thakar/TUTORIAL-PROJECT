@@ -144,8 +144,12 @@ assert grad_w.shape == w.shape and grad_x.shape == x.shape
 
 A numerical gradient costs `2n` function evaluations (central differences, one pair per coordinate)
 and inherits the finite-difference step-size trade-off from the previous lesson. It is a check, not
-the production gradient; autodiff computes `∇f` exactly for the cost of a constant times one forward
-pass.
+the production gradient. Autodiff applies symbolic chain-rule rules to the executed primitive
+operations, avoiding finite-difference truncation error.
+
+The numeric result still inherits floating-point rounding, nondifferentiable-point conventions,
+and any approximation inside those primitives. For a scalar output, reverse mode usually costs a
+small constant multiple of one forward pass.
 
 When comparing analytic and numerical gradients, use a relative error over the whole vector,
 `||g_a − g_n|| / (||g_a|| + ||g_n|| + eps)`, not per-component absolute errors, so components near

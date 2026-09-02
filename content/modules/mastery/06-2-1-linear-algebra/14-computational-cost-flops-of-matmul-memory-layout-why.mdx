@@ -42,7 +42,9 @@ The main layers follow:
 - Linear layer, batch `B`, `d_in -> d_out`: `2 * B * d_in * d_out`.
 - Attention scores, batch `B`, heads `H`, sequence `S`, head dim `d`: `2 * B * H * S^2 * d`, and the
   same again for the value mix.
-- Transformer forward pass, rule of thumb: about `2 * (number of parameters) * (number of tokens)`.
+- Dense transformer parameter matmuls, rule of thumb: about `2 * active parameters * tokens` per
+  forward pass. Attention's sequence-quadratic work, embeddings, normalisation, activations,
+  routing, and hardware utilisation are additional; the shortcut is not a full runtime model.
 
 ```python
 def linear_flops(B, d_in, d_out):
@@ -147,10 +149,14 @@ multiples, and keeping tensors contiguous are the standard levers.
 Activation checkpointing recomputes activations in the backward pass instead of storing them: more
 FLOPs (one extra forward), much less memory. It is the standard way to fit larger models or batches.
 
-Lower precision raises throughput: fp16 and bf16 roughly double FLOP/s versus fp32 and halve the
-bytes moved (so they help memory-bound ops too), and int8 more still. Accumulate the reduction in
-fp32 to keep accuracy. The cost model changes: `bytes_per` in the intensity formula drops, shifting
-the roofline knee.
+Lower precision halves storage bytes from fp32 to fp16/bf16 and can raise arithmetic throughput on
+hardware with suitable low-precision units; the speedup may be below, near, or above 2x depending on
+the operation, shapes, kernels, and bottleneck.
+
+Int8 can improve throughput further when supported.
+Many reductions accumulate in fp32, but the exact safe accumulation and scaling policy is
+operation- and hardware-dependent. The cost model changes as bytes per element and peak arithmetic
+rates change, shifting the roofline knee.
 
 ```python
 Wh = W.astype(np.float16); Xh = X.astype(np.float16)
@@ -183,9 +189,11 @@ A dense `(m, k) @ (k, n)` is `2*m*k*n` FLOPs and `~4*(m*k + k*n + m*n)` bytes in
 is roughly `2*m*k*n / (4*(m*k + k*n + m*n))`, which grows with the smallest dimension — so tall-thin
 and matvec shapes are memory-bound and square-large shapes are compute-bound.
 
-Elementwise ops (activations, layernorm, adds) are always memory-bound: `O(n)` FLOPs for `O(n)`
-bytes, intensity `~1`. Fusing them into an adjacent matmul or into each other removes round trips to
-memory and is often a bigger win than any change to the matmul itself.
+Simple elementwise adds and cheap activations have `O(n)` work and bytes and are commonly
+memory-bound. Expensive transcendental functions, small tensors, unfavourable kernels, or fused
+operations can shift the bottleneck, and layer normalisation also includes reductions. Fusing
+compatible operations removes memory round trips and launch overhead; profile to verify which
+resource actually limits the workload.
 
 ## Exercises
 

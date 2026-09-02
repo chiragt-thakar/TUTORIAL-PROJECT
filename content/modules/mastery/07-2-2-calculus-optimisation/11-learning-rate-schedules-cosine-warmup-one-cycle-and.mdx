@@ -1,0 +1,403 @@
+---
+id: "roadmap:phase-2-2.2:10"
+title: "Learning rate schedules: cosine, warmup, one-cycle, and why warmup exists"
+description: Treat the learning rate as a time-varying control signal, derive cosine decay and one-cycle policy, and understand warmup through unstable early statistics and update-to-weight ratios.
+module: 2-2-calculus-optimisation
+order: 11
+estimatedMinutes: 125
+prerequisites: []
+learningObjectives:
+  - Derive and implement piecewise, cosine, warmup, and one-cycle schedules with correct step boundaries
+  - Explain warmup using early optimiser state, representation scale, curvature, and update-to-weight ratios
+  - Distinguish per-step from per-epoch scheduling and resume without shifting the learning-rate sequence
+  - Choose and validate a schedule under a fixed training budget without hiding optimiser failures
+---
+
+An optimiser converts a gradient into a direction. A **learning-rate schedule** decides how far to
+travel in that direction at training step `t`. The learning rate is therefore a control signal,
+not merely a constant hyperparameter.
+
+<TypeScriptComparison>
+
+- In Python and TypeScript, make the schedule a pure function `lr(step, total_steps)`. Pure
+  functions remove framework call-order ambiguity and are easy to snapshot-test.
+- PyTorch schedulers often mutate optimiser parameter groups. A JavaScript training loop commonly
+  passes the returned scalar directly. Either design works only if the step convention is explicit.
+- A resumed run must restore the scheduler step just as it restores Adam moments. Recomputing from
+  an epoch number is wrong when the previous epoch ended mid-batch.
+
+</TypeScriptComparison>
+
+## The schedule is part of the optimisation algorithm
+
+With direction `d_t`, the update is `theta_(t+1) = theta_t - eta_t d_t`. A large `eta_t` explores
+quickly and can cross narrow basins; a small one makes precise late corrections. Too large violates
+the local approximation behind the update. Too small spends the compute budget barely moving.
+
+For a quadratic with largest Hessian eigenvalue `L`, plain gradient descent is stable only in the
+ideal deterministic case when `0 < eta < 2/L`. Deep networks change curvature throughout training,
+and stochastic gradients add noise, so a useful schedule usually moves from aggressive progress
+toward low-noise refinement.
+
+## Step, exponential, and polynomial decay
+
+A step schedule multiplies the rate at chosen milestones. Exponential decay uses
+`eta_t = eta_0 gamma^t`; polynomial decay uses
+`eta_t = eta_end + (eta_0-eta_end)(1-t/T)^p`.
+
+These are simple, but their coordinates matter. `gamma=0.99` per **epoch** is completely different
+from `0.99` per **batch**. Define the unit, inclusive endpoints, and what happens after `T`.
+
+## Cosine decay
+
+Let progress `p` run from zero to one over the decay interval. Cosine annealing is
+
+`eta(p) = eta_min + 0.5(eta_max-eta_min)(1 + cos(pi p))`.
+
+At `p=0`, `cos(0)=1`, so the rate is `eta_max`. At `p=1`, `cos(pi)=-1`, so it is `eta_min`.
+Its derivative is zero at both ends, avoiding a sudden initial or terminal slope. “Annealing” does
+not imply restarts: cosine with restarts is a separate policy that repeatedly resets progress.
+
+```python
+import math
+
+def cosine_lr(step: int, decay_steps: int, high: float, low: float = 0.0) -> float:
+    if decay_steps <= 0:
+        raise ValueError("decay_steps must be positive")
+    p = min(max(step / decay_steps, 0.0), 1.0)
+    return low + 0.5 * (high - low) * (1.0 + math.cos(math.pi * p))
+```
+
+Clamping makes the post-budget policy explicit. Without it, cosine rises again after `p=1`, which
+silently creates a restart-like increase.
+
+## Linear warmup
+
+For `W` warmup updates, one common convention is
+
+`eta_t = eta_peak * (t+1)/W`, for `t = 0, ..., W-1`.
+
+The first update is `eta_peak/W`; update `W-1` reaches the peak. The decay phase begins at step
+`W`. Another convention starts at zero. Neither is universally correct, but mixing conventions
+causes an off-by-one jump.
+
+```python
+def warmup_cosine(step: int, total: int, warmup: int, peak: float, floor: float = 0.0) -> float:
+    if not 0 <= warmup < total:
+        raise ValueError("require 0 <= warmup < total")
+    if step < warmup:
+        return peak * (step + 1) / max(warmup, 1)
+    decay_steps = total - warmup - 1
+    progress = min(max((step - warmup) / max(decay_steps, 1), 0.0), 1.0)
+    return floor + 0.5 * (peak - floor) * (1 + math.cos(math.pi * progress))
+```
+
+Here the first decay step remains at `peak`, and the final planned step reaches `floor`. Write
+boundary tests because a plausible formula can still skip the peak or miss the floor.
+
+## Why warmup exists
+
+“The model is cold” is not an explanation. Several concrete effects coincide early:
+
+1. Adam's moment estimates have little history. Bias correction fixes their expectation under a
+   stationary process, not the high variance of estimates from one or two batches.
+2. Activations, normalisation statistics, logits, and gradients can change rapidly before useful
+   representations form. The local curvature seen at initialisation may not resemble later curvature.
+3. A target peak rate can create a large update-to-weight ratio before parameter and optimiser
+   scales settle, especially with large batches or mixed precision.
+4. Distributed or very large-batch training reduces gradient noise and often uses a larger peak
+   rate. Warmup reaches that peak without applying it abruptly to fragile early dynamics.
+
+Warmup is a stabiliser, not a cure. It cannot repair wrong loss scaling, exploding activations,
+bad data, a missing Adam correction, or a peak learning rate that remains unsafe after warmup.
+
+<WhyItMatters>
+
+Log `||delta theta|| / (||theta|| + eps)` by parameter group. This update-to-weight ratio tells you
+what the scheduled scalar actually does after momentum, adaptivity, clipping, and decay.
+
+</WhyItMatters>
+
+## One-cycle policy
+
+One-cycle training increases the rate from a low start to a high maximum, then decreases it to a
+very small final rate within one run. Momentum is commonly varied inversely: lower momentum while
+the rate rises, then higher momentum while it falls.
+
+The rising phase searches broadly and supplies a regularising disturbance. The long falling phase
+refines. The maximum must be found experimentally—often with a short range test—and the complete
+cycle must fit the exact update budget. One-cycle is not “cosine plus warmup” by definition;
+libraries differ in phase split, interpolation, and whether there is a separate annihilation phase.
+
+## Scheduling with gradient accumulation
+
+If four micro-batches are accumulated before one optimiser update, the schedule should normally
+advance once per optimiser update, not four times. The meaningful clock is the number of parameter
+transitions. The same rule applies when an automatic mixed-precision scaler skips an invalid
+update: decide whether a skipped transition consumes schedule progress, document it, and test it.
+
+## Choosing a schedule fairly
+
+- Fix the number of optimiser updates, not just epochs.
+- Tune the optimiser, peak rate, warmup fraction, floor, and schedule together.
+- Compare validation quality at equal compute and log the full learning-rate trace.
+- Include a constant-rate baseline; schedules are not automatically better.
+- Treat batch-size changes as a new optimisation regime. Linear or square-root scaling rules are
+  heuristics, not laws.
+- Stop schedules from reading wall-clock time unless interruptions are intended to change training.
+
+## Worked trace: warmup joined to cosine
+
+Suppose training has exactly ten successful optimiser updates, indexed `0` through `9`. Use three
+warmup updates, peak `eta_max = 0.01`, and floor `eta_min = 0.001`.
+
+The warmup branch is `0.01(t+1)/3`, so the first three rates are:
+
+| Step | Phase | Calculation | Learning rate |
+|---:|---|---|---:|
+| 0 | warmup | `0.01(1/3)` | `0.003333` |
+| 1 | warmup | `0.01(2/3)` | `0.006667` |
+| 2 | warmup | `0.01(3/3)` | `0.010000` |
+
+There are seven decay updates, steps `3` through `9`, and therefore six intervals between the
+decay endpoints. Define `p=(t-3)/6`. The first decay update has `p=0`, so it deliberately repeats
+the peak. The final update has `p=1`, so it reaches the floor exactly.
+
+| Step | `p` | `cos(pi p)` | Learning rate |
+|---:|---:|---:|---:|
+| 3 | `0` | `1` | `0.010000` |
+| 6 | `1/2` | `0` | `0.005500` |
+| 9 | `1` | `-1` | `0.001000` |
+
+This table exposes a real design choice: steps `2` and `3` both use the peak. If you want exactly
+one peak update, choose a different join convention and test that convention. There is no value in
+arguing about which convention is “obvious”; the production bug comes from leaving it implicit.
+
+## What convergence theory actually asks of a schedule
+
+For noisy stochastic approximation on a suitable objective, a classical sufficient pattern is
+
+`sum_t eta_t = infinity` and `sum_t eta_t^2 < infinity`.
+
+The first condition prevents the total available travel from becoming finite too early. The second
+eventually controls accumulated gradient noise. A power schedule `eta_t proportional to 1/t^a`
+meets both when `1/2 < a <= 1`.
+
+Modern deep-learning runs are finite-budget optimisation problems, so cosine and one-cycle policies
+usually do not satisfy or need to satisfy an infinite-horizon theorem. The theorem still teaches an
+important distinction: decaying a rate is not enough. It matters how quickly it decays relative to
+the noise and how long the run lasts.
+
+For deterministic gradient descent on an `L`-smooth function, the descent lemma gives
+
+`f(theta - eta g) <= f(theta) - eta(1 - L eta/2)||g||^2`.
+
+The right-hand side guarantees descent when `0 < eta < 2/L`. A schedule changes `eta` over time,
+but no elegant curve rescues a peak that grossly violates the local curvature scale. This is why a
+range test, update-ratio trace, or short stability sweep should precede a long scheduled run.
+
+## Warmup is not one single mechanism
+
+Warmup is often explained too casually. Separate the mechanisms so the diagnosis remains useful:
+
+### Sparse optimiser history
+
+Adam bias correction makes a constant-gradient first moment unbiased in a narrow mathematical
+sense. It does not create a low-variance estimate from one batch. With `beta2=0.999`, the second
+moment's effective history develops over many updates. An abrupt peak can therefore interact with a
+noisy or rapidly changing denominator even when the correction formula is perfect.
+
+### Rapidly changing model scale
+
+At initialisation, attention logits, residual-stream norms, normalisation inputs, and output errors
+can move quickly. The Hessian and gradient covariance are not stationary. A rate that is sensible
+after these quantities settle may produce a destructive relative update during the first hundred
+steps.
+
+### Batch and distributed scaling
+
+Increasing the global batch reduces the number of optimiser updates per epoch and changes gradient
+noise. The popular linear-scaling heuristic increases the peak rate in proportion to batch size.
+Gradual warmup was introduced in large-batch systems to approach that more aggressive rate without
+applying it immediately. This is empirical engineering, not a universal law.
+
+### Mixed precision and loss scale
+
+Warmup may reduce overflow frequency because early updates are smaller, but it must not be used to
+hide invalid gradients. Log scaler skips and nonfinite values before deciding the warmup “fixed”
+training. If the underlying operation overflows during the forward or backward pass, the learning
+rate has not yet had a chance to help.
+
+## One-cycle as a complete experiment
+
+Consider 1,000 optimiser updates, a `30%` rising phase, start rate `peak/25`, peak `3e-3`, and final
+rate `peak/10_000`. A common policy uses:
+
+1. steps `0..299`: increase from `1.2e-4` to `3e-3` while momentum decreases;
+2. steps `300..999`: decrease from `3e-3` to `3e-7` while momentum increases.
+
+The high-rate phase is intentionally aggressive. It can move away from sharp regions and behaves
+like a regulariser, but it can also erase useful features or diverge. Find a plausible maximum with
+a disposable range test, restore the original model and optimiser state, and then begin the real
+cycle. Continuing from the range-test endpoint confounds the experiment because those weights have
+already experienced the largest rates.
+
+Do not compare one-cycle and cosine only by epoch count. One-cycle may perform more loss evaluations
+if the data pipeline or validation cadence differs. Fix optimiser-update count, examples processed,
+augmentation, evaluation frequency, and tuning budget.
+
+## A framework-safe scheduler contract
+
+The cleanest design separates a pure policy from the training clock:
+
+```python
+from dataclasses import dataclass
+
+@dataclass(frozen=True)
+class ScheduleState:
+    next_update: int
+
+def scheduled_step(optimizer, schedule, state, *, update_succeeded: bool):
+    if not update_succeeded:
+        return state
+    lr = schedule(state.next_update)
+    for group in optimizer.param_groups:
+        group["lr"] = lr * group.get("lr_scale", 1.0)
+    return ScheduleState(next_update=state.next_update + 1)
+```
+
+This example chooses to advance only after a successful optimiser transition. Some frameworks set
+the rate before the transition rather than after it. Either ordering can work, but the checkpoint
+must store `next_update` with the same meaning and the parity test must reproduce the first rate
+after restore.
+
+Parameter groups add another layer. A backbone may use `0.1 * base_lr` while a new head uses
+`base_lr`. Apply a stable multiplier to the scheduled base rather than scheduling each group with
+independent counters. Log both base and realised group rates.
+
+## Diagnostic decision tree
+
+If loss diverges during warmup:
+
+1. check the first nonfinite activation or gradient;
+2. verify loss reduction and gradient scaling;
+3. verify optimiser step indexing and scheduler call order;
+4. inspect pre-clip and post-clip gradient norms;
+5. inspect update-to-weight ratios by parameter group;
+6. only then lower the peak or lengthen warmup and rerun from identical initial state.
+
+If loss improves but plateaus too early, confirm the schedule did not advance per micro-batch, per
+worker, or during skipped updates. Then inspect whether the floor was reached thousands of useful
+updates before the budget ended. If late validation oscillates, compare a lower floor or longer
+tail while keeping the earlier trajectory fixed.
+
+## Exercises
+
+<Exercise id="sched-cosine-boundaries" difficulty="easy">
+
+Evaluate cosine decay at progress `0`, `0.5`, and `1` with peak `1e-3` and floor `1e-5`.
+
+<Solution>
+
+The rates are `1e-3`, `(1e-3+1e-5)/2 = 5.05e-4`, and `1e-5`. These three points are useful
+boundary tests because they catch reversed endpoints and a missing half factor.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sched-warmup-index" difficulty="medium">
+
+With four warmup steps and zero-based step indices, design a convention that reaches the peak on
+the fourth update and state the four multipliers.
+
+<Solution>
+
+Use `(step+1)/4` for steps `0..3`, giving `0.25, 0.5, 0.75, 1.0`. Start decay at step four. Saving
+the next optimiser-update index makes resume semantics unambiguous.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sched-debug-accumulation" difficulty="hard">
+
+A run accumulates eight micro-batches but calls `scheduler.step()` after every micro-batch. Diagnose
+the training change.
+
+<Solution>
+
+The schedule runs eight times too quickly relative to parameter updates, so warmup and decay end
+early. Advance it only after the optimiser performs a parameter transition, and test scheduler
+step count equals successful optimiser-step count.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sched-interview-warmup" difficulty="interview">
+
+Explain why Adam bias correction does not make warmup redundant.
+
+<Solution>
+
+Bias correction removes the zero-initialisation expectation bias of the EMAs under assumptions; it
+does not eliminate early estimator variance, changing representations and curvature, large
+update-to-weight ratios, batch-scaling effects, or implementation instability.
+
+</Solution>
+</Exercise>
+
+<Exercise id="sched-real-resume" difficulty="real-world">
+
+Design a test proving that a warmup-cosine run resumes without shifting the schedule.
+
+<Solution>
+
+Compare an uninterrupted trace with a run stopped after a non-epoch-aligned optimiser step. Restore
+model, optimiser, scheduler, scaler, RNG, and data position; assert identical batch IDs, rates,
+updates, and parameters for every remaining step.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Derive cosine decay's two endpoints and midpoint.
+2. Why should schedule time usually count optimiser updates rather than micro-batches?
+3. Name two mechanisms that make warmup useful even with Adam bias correction.
+4. How does one-cycle differ from monotone cosine decay?
+5. Which trace proves the schedule actually delivered the intended update scale?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="My cosine rate starts rising again after training should end.">
+Clamp progress to one, or explicitly implement and name cosine restarts.
+</Gotcha>
+
+<Gotcha question="Warmup never reaches the configured peak.">
+Specify whether step zero is the first update and test `W-1`, `W`, and the final planned step.
+</Gotcha>
+
+<Gotcha question="Gradient accumulation changed my schedule.">
+Advance on successful optimiser transitions, not on every forward/backward micro-batch.
+</Gotcha>
+
+<Gotcha question="Resume loads but validation quality changes.">
+Restore the exact scheduler counter and all state controlling update and batch order; epoch alone is
+not enough for a mid-epoch checkpoint.
+</Gotcha>
+
+<Gotcha question="Longer warmup hides divergence.">
+Inspect loss scaling, finite gradients, update ratios, and the peak rate. Warmup only delays an
+unsafe configuration if the post-warmup update remains unstable.
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+A schedule makes the learning rate a deterministic function of optimiser-update time. Cosine decay
+moves smoothly from peak to floor; warmup ramps into a fragile early regime; one-cycle deliberately
+rises before a long fall. Correctness depends on boundaries, step units, accumulation, skipped
+updates, and restored state. The schedule must be evaluated through both validation quality and the
+actual update-to-weight ratios it produces.

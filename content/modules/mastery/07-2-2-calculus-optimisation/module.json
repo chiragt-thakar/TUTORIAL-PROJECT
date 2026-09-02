@@ -1,1 +1,228 @@
-{"slug":"2-2-calculus-optimisation","track":"mastery","number":7,"title":"2.2 Calculus & Optimisation","description":"Roadmap 2.2 — 13 topics, in the document's own order.","status":"planned","estimatedMinutes":585,"prerequisites":[],"learningOutcomes":["Take every topic in this section to pass 3 of the roadmap's rule: intuition, then derived on paper, then implemented from scratch."],"lessons":[{"id":"roadmap:phase-2-2.2:0","slug":"01-limits-continuity-derivatives-refresh-only","title":"Limits, continuity, derivatives — refresh only","order":1,"estimatedMinutes":90,"prerequisites":[],"learningObjectives":["Evaluate limits including one-sided limits, limits at infinity, and the standard indeterminate forms","State the three ways continuity fails at a point and why continuity underwrites optimisation guarantees","Use the limit definition of the derivative and explain why differentiability implies continuity but not the reverse","Classify a function by smoothness (C0, C1, C-infinity) and say where common activations sit and what a subgradient is"],"status":"available","description":"A fast refresh of the single-variable calculus that everything else in this section stands on — limits and indeterminate forms, the three ways continuity can fail, the limit definition of the derivative, and the smoothness classes that decide whether a loss has a gradient everywhere."},{"id":"roadmap:phase-2-2.2:1","slug":"02-chain-rule-deeply-in-multiple-variables-backprop-is","title":"Chain rule — deeply, in multiple variables. Backprop is this and nothing more.","order":2,"estimatedMinutes":110,"prerequisites":[],"learningObjectives":["State the single-variable and multivariable chain rule and the sum over paths interpretation","Write the chain rule for a composition as a product of Jacobians and evaluate it on a computational graph","Contrast forward-mode (Jacobian-vector products) and reverse-mode (vector-Jacobian products) accumulation and their costs","Derive backpropagation for a small network as the reverse-mode chain rule and gradient-check it"],"status":"available","description":"The chain rule for compositions of multivariable functions, stated as a product of Jacobians, evaluated over a computational graph, and run right-to-left as reverse-mode automatic differentiation — which is all backpropagation is."},{"id":"roadmap:phase-2-2.2:2","slug":"03-partial-derivatives-gradients-directional-derivatives","title":"Partial derivatives, gradients, directional derivatives","order":3,"estimatedMinutes":100,"prerequisites":[],"learningObjectives":["Compute partial derivatives and assemble the gradient, and state what its direction and magnitude mean","Explain why the gradient is perpendicular to level sets and equals the direction of steepest ascent","Use the directional derivative D_u f = grad f dot u and identify the direction that maximises it","Distinguish partials exist from differentiable, and connect the gradient to steepest descent and input-gradient methods"],"status":"available","description":"The partial derivative holds the other variables fixed; the gradient collects the partials into the direction of steepest ascent, perpendicular to the level sets; the directional derivative is the gradient projected onto a direction — and negative grad f is what gradient descent follows."},{"id":"roadmap:phase-2-2.2:3","slug":"04-jacobian-hessian-what-the-hessian-tells-you-about","title":"Jacobian, Hessian; what the Hessian tells you about curvature","order":4,"estimatedMinutes":110,"prerequisites":[],"learningObjectives":["Define the Jacobian and Hessian, and explain why the Hessian is symmetric and equals the Jacobian of the gradient","Read the Hessian eigenvalues and eigenvectors as curvatures and principal directions in the second-order Taylor model","Use the Hessian to classify critical points and to bound the gradient-descent step size via its condition number","Compute a Hessian-vector product without forming the Hessian and name the Gauss-Newton and Fisher approximations"],"status":"available","description":"The Jacobian collects first partials of a vector function; the Hessian collects second partials of a scalar function and is the Jacobian of the gradient. Its eigenvalues are the local curvatures — they classify critical points, set the safe step size, and define a Newton step."},{"id":"roadmap:phase-2-2.2:4","slug":"05-taylor-expansion-1st-and-2nd-order-the-basis","title":"Taylor expansion (1st and 2nd order) — the basis of every optimiser","order":5,"estimatedMinutes":110,"prerequisites":[],"learningObjectives":["Write the first- and second-order multivariate Taylor expansions with the remainder and state how the error scales with step size","Derive gradient descent as minimising the linear model over a trust ball and Newton as minimising the quadratic model","Use the descent lemma (L-smoothness) to justify the learning rate bound eta <= 1/L and backtracking line search","Explain when the quadratic model is unreliable and how a trust region adapts to that"],"status":"available","description":"The local polynomial model of a function — linear (gradient) and quadratic (gradient plus Hessian) — with its remainder term. Minimising the linear model gives gradient descent; minimising the quadratic model gives Newton; the remainder is why the step size is bounded."},{"id":"roadmap:phase-2-2.2:5","slug":"06-critical-points-saddle-points-local-vs-global-minima","title":"Critical points, saddle points, local vs global minima","order":6,"estimatedMinutes":100,"prerequisites":[],"learningObjectives":["Apply the first-order (grad f = 0) and second-order (Hessian sign) conditions to classify a critical point","Explain why a local minimum need not be global and what extra structure certifies globality","Describe why saddle points dominate critical points in high dimensions and how noise-driven first-order methods escape them","Recognise degenerate minima, manifolds of minima, and the symmetry-induced multiplicity of deep-net optima"],"status":"available","description":"A critical point has zero gradient; the Hessian eigenvalue signs say whether it is a minimum, a maximum, or a saddle. In high dimensions almost every critical point is a saddle, which reframes what makes deep-net optimisation hard."},{"id":"roadmap:phase-2-2.2:6","slug":"07-convexity-convex-sets-convex-functions-why-convexity-is","title":"Convexity, convex sets, convex functions, why convexity is nice and why DL isn't convex","order":7,"estimatedMinutes":110,"prerequisites":[],"learningObjectives":["Define convex sets and convex functions three ways (chord, first-order, second-order) and check each","Explain why convexity makes every local minimum global and rules out saddles","List the operations that preserve convexity and identify the convex losses and regularisers in ML","Explain precisely why a deep network loss is non-convex in its weights, and what convex structure survives"],"status":"available","description":"A convex set contains every chord; a convex function graph lies below every chord and above every tangent. Convexity makes local optima global and optimisation tractable — which is exactly what deep networks give up by composing linear and nonlinear layers."},{"id":"roadmap:phase-2-2.2:7","slug":"08-lagrange-multipliers-kkt-conditions-constrained-optimisation","title":"Lagrange multipliers, KKT conditions, constrained optimisation","order":8,"estimatedMinutes":120,"prerequisites":[],"learningObjectives":["Derive the Lagrange condition grad f = sum lam_i grad g_i for equality constraints and interpret it geometrically","State the four KKT conditions for inequality-constrained problems and check them","Interpret a multiplier as the sensitivity of the optimal value to relaxing its constraint","Recognise SVMs, max-entropy softmax, PCA, and the trust-region subproblem as Lagrangian problems and connect to duality"],"status":"available","description":"At a constrained optimum the objective gradient is a combination of the active constraint gradients. Lagrange multipliers make that precise for equalities; the KKT conditions extend it to inequalities and give the multipliers a shadow-price meaning — the machinery behind SVMs, max-entropy softmax, PCA, and trust regions."},{"id":"roadmap:phase-2-2.2:8","slug":"09-gradient-descent-batch-stochastic-mini-batch","title":"Gradient descent: batch, stochastic, mini-batch","order":9,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-2-2.2:9","slug":"10-momentum-nesterov-adagrad-rmsprop-adam-adamw-derive-each","title":"Momentum, Nesterov, AdaGrad, RMSProp, Adam, AdamW — derive each update rule","order":10,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-2-2.2:10","slug":"11-learning-rate-schedules-cosine-warmup-one-cycle-and","title":"Learning rate schedules: cosine, warmup, one-cycle, and why warmup exists","order":11,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-2-2.2:11","slug":"12-second-order-methods-newton-quasi-newton-l-bfgs","title":"Second-order methods: Newton, quasi-Newton, L-BFGS — and why we don't use them at scale","order":12,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]},{"id":"roadmap:phase-2-2.2:12","slug":"13-numerical-stability-catastrophic-cancellation-log-sum-exp-trick","title":"Numerical stability: catastrophic cancellation, log-sum-exp trick, gradient clipping","order":13,"estimatedMinutes":45,"prerequisites":[],"learningObjectives":["Pass 1 — watch or read for intuition, and accept the confusion","Pass 2 — derive it on paper","Pass 3 — implement it from scratch"]}],"group":"phase-2","roadmapPhase":2,"roadmapGroup":"2.2","roadmapSectionId":"phase-2-2.2","roadmapRef":"2.2"}
+{
+  "slug": "2-2-calculus-optimisation",
+  "track": "mastery",
+  "number": 7,
+  "title": "2.2 Calculus & Optimisation",
+  "description": "Roadmap 2.2 — 13 topics, in the document's own order.",
+  "status": "available",
+  "estimatedMinutes": 1535,
+  "prerequisites": [],
+  "learningOutcomes": [
+    "Take every topic in this section to pass 3 of the roadmap's rule: intuition, then derived on paper, then implemented from scratch."
+  ],
+  "lessons": [
+    {
+      "id": "roadmap:phase-2-2.2:0",
+      "slug": "01-limits-continuity-derivatives-refresh-only",
+      "title": "Limits, continuity, derivatives — refresh only",
+      "order": 1,
+      "estimatedMinutes": 90,
+      "prerequisites": [],
+      "learningObjectives": [
+        "Evaluate limits including one-sided limits, limits at infinity, and the standard indeterminate forms",
+        "State the three ways continuity fails at a point and why continuity underwrites optimisation guarantees",
+        "Use the limit definition of the derivative and explain why differentiability implies continuity but not the reverse",
+        "Classify a function by smoothness (C0, C1, C-infinity) and say where common activations sit and what a subgradient is"
+      ],
+      "status": "available",
+      "description": "A fast refresh of the single-variable calculus that everything else in this section stands on — limits and indeterminate forms, the three ways continuity can fail, the limit definition of the derivative, and the smoothness classes that decide whether a loss has a gradient everywhere."
+    },
+    {
+      "id": "roadmap:phase-2-2.2:1",
+      "slug": "02-chain-rule-deeply-in-multiple-variables-backprop-is",
+      "title": "Chain rule — deeply, in multiple variables. Backprop is this and nothing more.",
+      "order": 2,
+      "estimatedMinutes": 110,
+      "prerequisites": [],
+      "learningObjectives": [
+        "State the single-variable and multivariable chain rule and the sum over paths interpretation",
+        "Write the chain rule for a composition as a product of Jacobians and evaluate it on a computational graph",
+        "Contrast forward-mode (Jacobian-vector products) and reverse-mode (vector-Jacobian products) accumulation and their costs",
+        "Derive backpropagation for a small network as the reverse-mode chain rule and gradient-check it"
+      ],
+      "status": "available",
+      "description": "The chain rule for compositions of multivariable functions, stated as a product of Jacobians, evaluated over a computational graph, and run right-to-left as reverse-mode automatic differentiation — which is all backpropagation is."
+    },
+    {
+      "id": "roadmap:phase-2-2.2:2",
+      "slug": "03-partial-derivatives-gradients-directional-derivatives",
+      "title": "Partial derivatives, gradients, directional derivatives",
+      "order": 3,
+      "estimatedMinutes": 100,
+      "prerequisites": [],
+      "learningObjectives": [
+        "Compute partial derivatives and assemble the gradient, and state what its direction and magnitude mean",
+        "Explain why the gradient is perpendicular to level sets and equals the direction of steepest ascent",
+        "Use the directional derivative D_u f = grad f dot u and identify the direction that maximises it",
+        "Distinguish partials exist from differentiable, and connect the gradient to steepest descent and input-gradient methods"
+      ],
+      "status": "available",
+      "description": "The partial derivative holds the other variables fixed; the gradient collects the partials into the direction of steepest ascent, perpendicular to the level sets; the directional derivative is the gradient projected onto a direction — and negative grad f is what gradient descent follows."
+    },
+    {
+      "id": "roadmap:phase-2-2.2:3",
+      "slug": "04-jacobian-hessian-what-the-hessian-tells-you-about",
+      "title": "Jacobian, Hessian; what the Hessian tells you about curvature",
+      "order": 4,
+      "estimatedMinutes": 110,
+      "prerequisites": [],
+      "learningObjectives": [
+        "Define the Jacobian and Hessian, and explain why the Hessian is symmetric and equals the Jacobian of the gradient",
+        "Read the Hessian eigenvalues and eigenvectors as curvatures and principal directions in the second-order Taylor model",
+        "Use the Hessian to classify critical points and to bound the gradient-descent step size via its condition number",
+        "Compute a Hessian-vector product without forming the Hessian and name the Gauss-Newton and Fisher approximations"
+      ],
+      "status": "available",
+      "description": "The Jacobian collects first partials of a vector function; the Hessian collects second partials of a scalar function and is the Jacobian of the gradient. Its eigenvalues are the local curvatures — they classify critical points, set the safe step size, and define a Newton step."
+    },
+    {
+      "id": "roadmap:phase-2-2.2:4",
+      "slug": "05-taylor-expansion-1st-and-2nd-order-the-basis",
+      "title": "Taylor expansion (1st and 2nd order) — the basis of every optimiser",
+      "order": 5,
+      "estimatedMinutes": 110,
+      "prerequisites": [],
+      "learningObjectives": [
+        "Write the first- and second-order multivariate Taylor expansions with the remainder and state how the error scales with step size",
+        "Derive gradient descent as minimising the linear model over a trust ball and Newton as minimising the quadratic model",
+        "Use the descent lemma (L-smoothness) to justify the learning rate bound eta <= 1/L and backtracking line search",
+        "Explain when the quadratic model is unreliable and how a trust region adapts to that"
+      ],
+      "status": "available",
+      "description": "The local polynomial model of a function — linear (gradient) and quadratic (gradient plus Hessian) — with its remainder term. Minimising the linear model gives gradient descent; minimising the quadratic model gives Newton; the remainder is why the step size is bounded."
+    },
+    {
+      "id": "roadmap:phase-2-2.2:5",
+      "slug": "06-critical-points-saddle-points-local-vs-global-minima",
+      "title": "Critical points, saddle points, local vs global minima",
+      "order": 6,
+      "estimatedMinutes": 100,
+      "prerequisites": [],
+      "learningObjectives": [
+        "Apply the first-order (grad f = 0) and second-order (Hessian sign) conditions to classify a critical point",
+        "Explain why a local minimum need not be global and what extra structure certifies globality",
+        "Explain why saddles are common in many high-dimensional non-convex landscapes, what assumptions that claim needs, and when noisy first-order methods escape strict saddles",
+        "Recognise degenerate minima, manifolds of minima, and the symmetry-induced multiplicity of deep-net optima"
+      ],
+      "status": "available",
+      "description": "A critical point has zero gradient; under the second-order test, definite or indefinite Hessian curvature distinguishes strict minima, maxima, and saddles. High dimension creates many possible escape directions, but claims about how common saddles are require assumptions about the loss landscape."
+    },
+    {
+      "id": "roadmap:phase-2-2.2:6",
+      "slug": "07-convexity-convex-sets-convex-functions-why-convexity-is",
+      "title": "Convexity, convex sets, convex functions, why convexity is nice and why DL isn't convex",
+      "order": 7,
+      "estimatedMinutes": 110,
+      "prerequisites": [],
+      "learningObjectives": [
+        "Define convex sets and convex functions three ways (chord, first-order, second-order) and check each",
+        "Explain why convexity makes every local minimum global and rules out saddles",
+        "List the operations that preserve convexity and identify the convex losses and regularisers in ML",
+        "Explain precisely why a deep network loss is non-convex in its weights, and what convex structure survives"
+      ],
+      "status": "available",
+      "description": "A convex set contains every chord; a convex function graph lies below every chord and above every tangent. Convexity makes local optima global and optimisation tractable — which is exactly what deep networks give up by composing linear and nonlinear layers."
+    },
+    {
+      "id": "roadmap:phase-2-2.2:7",
+      "slug": "08-lagrange-multipliers-kkt-conditions-constrained-optimisation",
+      "title": "Lagrange multipliers, KKT conditions, constrained optimisation",
+      "order": 8,
+      "estimatedMinutes": 120,
+      "prerequisites": [],
+      "learningObjectives": [
+        "Derive the Lagrange condition grad f = sum lam_i grad g_i for equality constraints and interpret it geometrically",
+        "State the four KKT conditions for inequality-constrained problems and check them",
+        "Interpret a multiplier as the sensitivity of the optimal value to relaxing its constraint",
+        "Recognise SVMs, max-entropy softmax, PCA, and the trust-region subproblem as Lagrangian problems and connect to duality"
+      ],
+      "status": "available",
+      "description": "At a constrained optimum the objective gradient is a combination of the active constraint gradients. Lagrange multipliers make that precise for equalities; the KKT conditions extend it to inequalities and give the multipliers a shadow-price meaning — the machinery behind SVMs, max-entropy softmax, PCA, and trust regions."
+    },
+    {
+      "id": "roadmap:phase-2-2.2:8",
+      "slug": "09-gradient-descent-batch-stochastic-mini-batch",
+      "title": "Gradient descent: batch, stochastic, mini-batch",
+      "order": 9,
+      "estimatedMinutes": 120,
+      "prerequisites": [],
+      "learningObjectives": [
+        "Derive gradient descent from the first-order Taylor model and state when a smooth objective is guaranteed to decrease",
+        "Distinguish batch, stochastic, and mini-batch gradient estimates by bias, variance, cost, and update frequency",
+        "Implement all three variants from scratch with correct loss scaling, shuffling, batching, and reproducibility",
+        "Diagnose divergence, noisy learning curves, data leakage, and batch-size or learning-rate coupling in real training loops"
+      ],
+      "status": "available",
+      "description": "Gradient descent follows the negative local slope. Full-batch uses the exact empirical gradient, stochastic descent uses one noisy example, and mini-batch SGD balances estimator variance with update frequency, memory, and vectorised hardware throughput."
+    },
+    {
+      "id": "roadmap:phase-2-2.2:9",
+      "slug": "10-momentum-nesterov-adagrad-rmsprop-adam-adamw-derive-each",
+      "title": "Momentum, Nesterov, AdaGrad, RMSProp, Adam, AdamW — derive each update rule",
+      "order": 10,
+      "estimatedMinutes": 150,
+      "prerequisites": [],
+      "learningObjectives": [
+        "Derive momentum and Nesterov updates and explain their behaviour on noisy and ill-conditioned objectives",
+        "Derive AdaGrad and RMSProp as coordinate-wise preconditioners from accumulated squared gradients",
+        "Implement Adam with correct first and second moments, bias correction, epsilon placement, and step indexing",
+        "Distinguish L2 regularisation from decoupled weight decay and explain why AdamW is different from Adam plus L2"
+      ],
+      "status": "available",
+      "description": "Momentum filters gradient direction over time; AdaGrad and RMSProp adapt each coordinate using squared-gradient history; Adam combines both moments with zero-bias correction; and AdamW keeps parameter decay outside adaptive moment scaling."
+    },
+    {
+      "id": "roadmap:phase-2-2.2:10",
+      "slug": "11-learning-rate-schedules-cosine-warmup-one-cycle-and",
+      "title": "Learning rate schedules: cosine, warmup, one-cycle, and why warmup exists",
+      "order": 11,
+      "estimatedMinutes": 125,
+      "prerequisites": [],
+      "learningObjectives": [
+        "Derive and implement piecewise, cosine, warmup, and one-cycle schedules with correct step boundaries",
+        "Explain warmup using early optimiser state, representation scale, curvature, and update-to-weight ratios",
+        "Distinguish per-step from per-epoch scheduling and resume without shifting the learning-rate sequence",
+        "Choose and validate a schedule under a fixed training budget without hiding optimiser failures"
+      ],
+      "status": "available",
+      "description": "The learning rate is a time-varying control signal. Derive cosine decay and one-cycle, explain warmup through concrete early-training dynamics, and make optimiser-step clocks, accumulation, boundaries, and checkpoint resume exact."
+    },
+    {
+      "id": "roadmap:phase-2-2.2:11",
+      "slug": "12-second-order-methods-newton-quasi-newton-l-bfgs",
+      "title": "Second-order methods: Newton, quasi-Newton, L-BFGS — and why we don't use them at scale",
+      "order": 12,
+      "estimatedMinutes": 145,
+      "prerequisites": [],
+      "learningObjectives": [
+        "Derive Newton's step from the quadratic Taylor model and diagnose indefinite or ill-conditioned Hessians",
+        "Derive the secant condition and explain how BFGS updates a positive-definite inverse-Hessian approximation",
+        "Implement L-BFGS two-loop recursion and account for its memory and compute costs",
+        "Explain precisely why full second-order methods are uncommon at deep-learning scale and where curvature methods remain useful"
+      ],
+      "status": "available",
+      "description": "Newton solves a local quadratic model; BFGS learns curvature from secant pairs; L-BFGS applies bounded history through two-loop recursion. Safeguards and end-to-end memory, solve, line-search, stochasticity, and systems costs decide when curvature pays."
+    },
+    {
+      "id": "roadmap:phase-2-2.2:12",
+      "slug": "13-numerical-stability-catastrophic-cancellation-log-sum-exp-trick",
+      "title": "Numerical stability: catastrophic cancellation, log-sum-exp trick, gradient clipping",
+      "order": 13,
+      "estimatedMinutes": 145,
+      "prerequisites": [],
+      "learningObjectives": [
+        "Distinguish overflow, underflow, rounding, and catastrophic cancellation and construct stable alternatives",
+        "Derive log-sum-exp, stable softmax, softplus, and online mean or variance formulas from invariances",
+        "Implement global-norm and value clipping and explain their different geometry and limitations",
+        "Design mixed-precision and nonfinite diagnostics that expose the first unstable boundary instead of hiding it"
+      ],
+      "status": "available",
+      "description": "Finite arithmetic needs stable algorithms: reformulate cancellation, shift exponentials into range, stay in the log domain, reduce deliberately, clip gradients observably, and unscale mixed-precision gradients before finite checks and clipping."
+    }
+  ],
+  "group": "phase-2",
+  "roadmapPhase": 2,
+  "roadmapGroup": "2.2",
+  "roadmapSectionId": "phase-2-2.2",
+  "roadmapRef": "2.2"
+}

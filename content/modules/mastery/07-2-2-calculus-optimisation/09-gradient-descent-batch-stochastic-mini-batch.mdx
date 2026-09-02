@@ -1,0 +1,420 @@
+---
+id: "roadmap:phase-2-2.2:8"
+title: "Gradient descent: batch, stochastic, mini-batch"
+description: Gradient descent turns a local slope into an update. Full-batch uses the exact empirical gradient, stochastic gradient descent uses one noisy example, and mini-batch SGD trades gradient variance against throughput, memory, and update frequency.
+module: 2-2-calculus-optimisation
+order: 9
+estimatedMinutes: 120
+prerequisites: []
+learningObjectives:
+  - Derive gradient descent from the first-order Taylor model and state when a step is guaranteed to decrease a smooth objective
+  - Distinguish batch, stochastic, and mini-batch gradient estimates by bias, variance, cost, and update frequency
+  - Implement all three variants from scratch with correct loss scaling, shuffling, batching, and reproducibility
+  - Diagnose divergence, noisy learning curves, data leakage, and batch-size or learning-rate coupling in real training loops
+---
+
+Training a model means choosing parameters that make a loss small. Gradient descent supplies the
+most important move in machine learning: measure the local uphill direction, then step the other
+way. The mathematics fits on one line,
+
+`theta_(t+1) = theta_t - eta_t * g_t`,
+
+but almost every symbol hides a decision. Is `g_t` the gradient over the whole dataset, one
+example, or a mini-batch? Is the loss a sum or a mean? Was the data shuffled? Does the learning
+rate still make sense after changing batch size? This lesson derives the update and then treats
+those engineering choices as part of the algorithm, not incidental loop syntax.
+
+<TypeScriptComparison>
+
+- NumPy and TypeScript both require an explicit training loop: compute predictions, reduce a loss,
+  form gradients, then mutate or replace parameters. Python's array syntax is shorter, but the
+  shape and scaling rules are identical.
+- PyTorch's `loss.backward()` records gradients into `.grad`; TensorFlow.js uses
+  `tf.variableGrads`. Neither changes the core update `parameter -= learningRate * gradient`.
+- A JavaScript `for ... of batches` loop and a Python iterator have the same reproducibility trap:
+  shuffling with an unseeded global RNG makes reruns incomparable.
+- Typed arrays in JavaScript and NumPy arrays are contiguous numeric buffers. Vectorising a
+  mini-batch lets both runtimes spend time in compiled kernels instead of per-example interpreter
+  loops.
+
+</TypeScriptComparison>
+
+## Start with the objective
+
+For examples `z_i = (x_i, y_i)`, parameters `theta`, and per-example loss `ell(theta; z_i)`, the
+empirical risk is usually the **mean**
+
+`J(theta) = (1/N) * sum_(i=1)^N ell(theta; z_i)`.
+
+Its gradient is also a mean:
+
+`grad J(theta) = (1/N) * sum_i grad ell(theta; z_i)`.
+
+The word **batch** is overloaded. A *full-batch* step evaluates all `N` examples. A *mini-batch*
+is a subset `B_t` of size `b`. Pure *stochastic* gradient descent (SGD) uses `b = 1`, although in
+modern practice people often say “SGD” for any mini-batch method without adaptive moments.
+
+## Deriving the descent step
+
+For a small displacement `delta`, the first-order Taylor model says
+
+`J(theta + delta) ~= J(theta) + grad J(theta)^T delta`.
+
+Restrict `||delta||_2 <= epsilon`. Cauchy–Schwarz says the inner product is smallest when `delta`
+points exactly opposite the gradient, so `delta = -epsilon * grad J / ||grad J||`. Gradient
+descent absorbs the length into a learning rate `eta`:
+
+`theta_(t+1) = theta_t - eta * grad J(theta_t)`.
+
+This is not “following the valley.” It is repeatedly choosing the steepest local decrease in the
+Euclidean geometry of parameter space. A different parameterisation changes that geometry and can
+change the path even when it represents the same function.
+
+If `J` has an `L`-Lipschitz gradient, the descent lemma gives
+
+`J(theta - eta g) <= J(theta) - eta * (1 - L*eta/2) * ||g||^2`.
+
+Therefore an exact-gradient step decreases the objective for `0 < eta < 2/L`; the common
+conservative bound is `eta <= 1/L`. For the quadratic `J(theta) = 0.5 * theta^T A theta - b^T
+theta` with positive-definite `A`, the largest eigenvalue of `A` is `L`, and convergence is stable
+only for `eta < 2/lambda_max(A)`.
+
+```python
+import numpy as np
+
+def gradient_descent(grad, theta0, learning_rate, steps):
+    theta = np.asarray(theta0, dtype=np.float64).copy()
+    history = [theta.copy()]
+    for _ in range(steps):
+        theta -= learning_rate * grad(theta)
+        history.append(theta.copy())
+    return theta, np.stack(history)
+
+A = np.diag([1.0, 10.0])
+theta, path = gradient_descent(lambda t: A @ t, [4.0, 4.0], 0.1, 80)
+assert np.linalg.norm(theta) < 1e-3
+```
+
+<WhyItMatters>
+
+The learning rate is not an arbitrary “speed” control. It is measured against curvature. A step
+that is gentle along a flat direction can overshoot along a sharp direction; the condition number
+`lambda_max / lambda_min` explains the resulting zig-zag and slow progress.
+
+</WhyItMatters>
+
+## Full-batch gradient descent
+
+Full-batch gradient descent uses the exact empirical gradient:
+
+`g_t = (1/N) * sum_i grad ell(theta_t; z_i)`.
+
+For a fixed dataset and parameters it is deterministic. Its loss curve is smooth, and line-search
+or convergence theory applies directly. But each update costs `O(NP)` work for `P`-scale model
+computation, and the whole pass must finish before parameters improve. On a huge dataset this means
+few updates and poor accelerator utilisation if the full dataset does not fit in memory.
+
+```python
+def mse_gradient(X, y, w):
+    # J(w) = mean((Xw - y)^2); X shape (N, D), w shape (D,)
+    residual = X @ w - y
+    return (2.0 / X.shape[0]) * (X.T @ residual)
+
+def train_batch(X, y, w0, lr=0.05, epochs=100):
+    w = np.asarray(w0, dtype=np.float64).copy()
+    for _ in range(epochs):
+        w -= lr * mse_gradient(X, y, w)
+    return w
+```
+
+One epoch here means one update because the batch is the dataset.
+
+## Stochastic gradient descent
+
+Choose an index `i_t` uniformly and use
+
+`g_t = grad ell(theta_t; z_(i_t))`.
+
+This estimator is **unbiased**: `E[g_t | theta_t] = grad J(theta_t)`. It is not exact; its
+conditional variance can be large. A single update is cheap and arrives immediately, but Python
+or kernel-launch overhead makes one-example matrix operations inefficient on modern hardware.
+
+The noise causes the parameters to wander around a minimum under a constant learning rate.
+Convergence to a point generally needs a decreasing schedule satisfying, under standard assumptions,
+`sum eta_t = infinity` and `sum eta_t^2 < infinity`.
+
+```python
+def train_sgd(X, y, w0, lr=0.01, epochs=20, seed=0):
+    rng = np.random.default_rng(seed)
+    w = np.asarray(w0, dtype=np.float64).copy()
+    for _ in range(epochs):
+        for i in rng.permutation(len(X)):
+            residual = X[i] @ w - y[i]
+            w -= lr * (2.0 * residual * X[i])
+    return w
+```
+
+Sampling with replacement matches the clean unbiased-estimator proof. Shuffling and visiting each
+example once per epoch samples **without replacement**; updates within the epoch are dependent,
+but it usually works better and is the normal training-loop choice.
+
+## Mini-batch SGD
+
+For a batch `B_t` of `b` examples, use the mean gradient
+
+`g_t = (1/b) * sum_(i in B_t) grad ell(theta_t; z_i)`.
+
+With independent uniform samples, it remains unbiased and its variance is approximately
+`sigma^2 / b`. Doubling the batch does not halve the standard deviation; it multiplies it by
+`1/sqrt(2)`. Meanwhile, vectorisation makes a batch far faster than `b` individual examples. This
+creates the central trade-off:
+
+| Variant | Examples per update | Gradient variance | Updates per epoch | Typical strength |
+| --- | ---: | ---: | ---: | --- |
+| Full batch | `N` | `0` for empirical risk | `1` | deterministic analysis |
+| Stochastic | `1` | about `sigma^2` | `N` | immediate, noisy updates |
+| Mini-batch | `b` | about `sigma^2/b` | `ceil(N/b)` | hardware throughput + useful noise |
+
+```python
+def iter_minibatches(X, y, batch_size, rng):
+    order = rng.permutation(len(X))
+    for start in range(0, len(X), batch_size):
+        idx = order[start:start + batch_size]
+        yield X[idx], y[idx]
+
+def train_minibatch(X, y, w0, lr=0.05, batch_size=32, epochs=20, seed=0):
+    if batch_size <= 0:
+        raise ValueError("batch_size must be positive")
+    rng = np.random.default_rng(seed)
+    w = np.asarray(w0, dtype=np.float64).copy()
+    for _ in range(epochs):
+        for Xb, yb in iter_minibatches(X, y, batch_size, rng):
+            w -= lr * mse_gradient(Xb, yb, w)  # divides by actual len(Xb)
+    return w
+```
+
+Notice the final batch may be smaller than `batch_size`. Reducing with `mean`, or dividing by
+`len(Xb)`, keeps its gradient on the same scale. Dividing by the configured batch size silently
+shrinks the last update.
+
+## Batch size changes the optimisation problem you experience
+
+For a fixed epoch count, changing `b` changes the number of parameter updates. Comparing batch 32
+to batch 256 for ten epochs compares eight times as many updates to one eighth as many—not merely
+two estimates with different noise. Compare at a fixed example budget, update budget, and wall
+clock separately.
+
+Larger batches usually allow a larger learning rate because their gradient is less noisy. The
+**linear scaling rule** (`eta_new ~= eta_old * b_new / b_old`) is an empirical starting point,
+especially with warmup; it is not a theorem and eventually fails at a critical batch size where
+extra examples mostly duplicate gradient information. Large batches also need more activation
+memory and can generalise differently because they remove noise that sometimes helps leave sharp
+regions.
+
+<ProductionNote>
+
+Log three clocks: optimiser steps, examples processed, and wall time. Also log the effective batch
+size (micro-batch × gradient-accumulation steps × data-parallel workers), loss reduction (`mean` or
+`sum`), learning rate, and gradient norm. Without them, two training runs are not meaningfully
+comparable.
+
+</ProductionNote>
+
+## Loss reduction and gradient accumulation
+
+Suppose a framework returns the **mean** mini-batch loss. Calling backward on `k` micro-batches
+adds gradients. To reproduce one large-batch mean, divide each micro-batch loss by `k` before
+backward (when all micro-batches have equal size), then update once. Otherwise the accumulated
+gradient is `k` times too large. For unequal final micro-batches, weight each mean by its example
+count and divide by the total count.
+
+```python
+def accumulated_linear_gradient(microbatches, w):
+    total_grad = np.zeros_like(w, dtype=np.float64)
+    total_examples = 0
+    for Xb, yb in microbatches:
+        n = len(Xb)
+        total_grad += n * mse_gradient(Xb, yb, w)
+        total_examples += n
+    if total_examples == 0:
+        raise ValueError("at least one example is required")
+    return total_grad / total_examples
+```
+
+Gradient accumulation matches the gradient of a large batch only while parameters and stochastic
+model state stay fixed. Batch-normalisation statistics, dropout masks, clipping each micro-gradient,
+or stepping the optimiser between micro-batches breaks exact equivalence.
+
+## Convergence and noise
+
+Write a stochastic gradient as `g_t = grad J(theta_t) + xi_t`, where `E[xi_t | theta_t] = 0` and
+`E||xi_t||^2 <= sigma^2/b`. For an `L`-smooth objective, the expected one-step progress contains a
+useful descent term and a noise penalty proportional to `eta^2 L sigma^2 / b`. Smaller `eta` or
+larger `b` lowers the noise floor; both also change time-to-progress. This is why a constant
+learning rate descends quickly and then jitters, while learning-rate decay lets training settle.
+
+Data correlations can violate the simple zero-mean-noise picture. Never construct batches by
+taking sorted labels, adjacent time windows from one regime, or one customer at a time unless the
+sampling design intends that bias. Shuffle training data, but split time series or grouped data
+before shuffling so future or entity information does not leak across validation boundaries.
+
+## A trustworthy training loop
+
+1. Split data before fitting transforms or shuffling across boundaries.
+2. Seed and own the RNG; record the seed, but do not mistake one seed for evidence.
+3. Shuffle training indices each epoch; never shuffle validation into training.
+4. Compute the batch-mean loss and gradient using the actual batch length.
+5. Check gradients on a tiny deterministic fixture with finite differences.
+6. Log train loss frequently, validation loss per epoch, and examples/steps/wall time.
+7. Test overfitting one tiny batch. If the model cannot, suspect the implementation before tuning.
+8. Sweep learning rate logarithmically, then batch size under a stated comparison budget.
+
+## Exercises
+
+<Exercise id="gdbsm-derive-quadratic" difficulty="easy">
+
+For `J(w) = 0.5*a*w^2` with `a > 0`, derive the gradient-descent recurrence and the exact range of
+constant learning rates that converges from every starting point.
+
+<Solution>
+
+`J'(w) = a*w`, so `w_(t+1) = w_t - eta*a*w_t = (1 - eta*a)w_t`. Thus
+`w_t = (1 - eta*a)^t w_0`. It converges to zero exactly when `|1 - eta*a| < 1`, which gives
+`0 < eta < 2/a`. At `eta = 1/a` it reaches zero in one step; between `1/a` and `2/a` it alternates
+sign while shrinking; at or above `2/a` it fails to converge.
+
+</Solution>
+</Exercise>
+
+<Exercise id="gdbsm-variance" difficulty="medium">
+
+Independent per-example gradients have covariance `Sigma`. Derive the covariance and RMS noise
+scale of their mini-batch mean for batch size `b`.
+
+<Solution>
+
+For `g_B = (1/b) sum_i g_i`, independence makes covariance cross-terms vanish:
+`Cov(g_B) = (1/b^2) * b*Sigma = Sigma/b`. Consequently
+`E||g_B - grad J||^2 = trace(Sigma)/b`, so the RMS noise is
+`sqrt(trace(Sigma))/sqrt(b)`. Four times the batch size halves, rather than quarters, the RMS noise.
+
+</Solution>
+</Exercise>
+
+<Exercise id="gdbsm-debug-accumulation" difficulty="hard">
+
+A loop calls `backward()` on four mean-reduced micro-batch losses, then performs one optimiser
+step. Training diverges unless the learning rate is divided by four. Diagnose and fix it.
+
+<Solution>
+
+Backward accumulates gradients, so the buffer contains the **sum of four micro-batch means**, four
+times the gradient of their combined equal-sized batch. Divide each loss by four before backward,
+or sum gradients weighted by micro-batch counts and divide by total examples before stepping.
+Also zero gradients once before accumulation and after the optimiser step, never between
+micro-batches. This preserves the intended effective learning rate.
+
+</Solution>
+</Exercise>
+
+<Exercise id="gdbsm-interview-budget" difficulty="interview">
+
+An interviewer says batch 32 reached lower loss than batch 256 after ten epochs. What must you ask
+before concluding that smaller batches optimise better?
+
+<Solution>
+
+Batch 32 made roughly eight times as many parameter updates. Ask for comparisons at fixed examples,
+fixed optimiser steps, and fixed wall time; whether learning rate and warmup were retuned; whether
+loss reduction and gradient accumulation changed the effective scale; and the variance across
+seeds. Also inspect throughput, validation loss, and effective batch size across workers. Ten equal
+epochs alone do not isolate the effect of gradient noise.
+
+</Solution>
+</Exercise>
+
+<Exercise id="gdbsm-real-training" difficulty="real-world">
+
+Design an experiment choosing mini-batch size for a model under a fixed eight-hour compute budget.
+
+<Solution>
+
+Benchmark candidate sizes for examples/second and peak memory, then tune learning rate for each
+over a short logarithmic sweep with the same warmup policy. Run the survivors for eight hours,
+checkpointed by examples and wall time, across at least three seeds.
+
+Record train and validation metrics, steps, examples, throughput, gradient norm/noise estimates,
+and memory. Reject sizes that OOM or leave hardware underused; choose from the
+validation-versus-wall-time Pareto frontier, not the smoothest training curve. Preserve the data
+order and augmentation policy across candidates.
+
+</Solution>
+</Exercise>
+
+## Checkpoint
+
+1. Derive the gradient-descent direction from the first-order Taylor model.
+2. Why is a uniformly sampled mini-batch gradient unbiased, and how does its variance scale with `b`?
+3. What changes besides noise when batch size changes at fixed epoch count?
+4. How do you make gradient accumulation reproduce one large-batch mean gradient?
+5. Why can a constant-learning-rate stochastic method hover around rather than settle at a minimum?
+
+## Gotchas
+
+<Gotchas>
+
+<Gotcha question="My final short batch produces a smaller update.">
+
+You probably divided the summed gradient by the configured batch size instead of the actual number
+of examples. Use a mean over the batch that arrived, or explicitly divide by `len(Xb)`.
+
+</Gotcha>
+
+<Gotcha question="I increased batch size, so I kept every other setting fixed for fairness.">
+
+That is not automatically fair. You changed updates per epoch, gradient variance, throughput, and
+often the useful learning-rate range. Report results at fixed examples, steps, and wall time, and
+retune the learning rate under a declared protocol.
+
+</Gotcha>
+
+<Gotcha question="The mini-batch loss is noisy, so training must be broken.">
+
+Individual batch losses are noisy estimators. Plot an epoch-level, held-out, or moving-average
+metric, and inspect whether the long-run trend improves. A perfectly smooth per-step curve can
+actually indicate a batch so large that updates are unnecessarily expensive.
+
+</Gotcha>
+
+<Gotcha question="I seeded NumPy, therefore my framework run is reproducible.">
+
+There may be separate RNGs for the data loader, model initialisation, dropout, workers, and device
+kernels. Seed and record each relevant generator, and understand that some parallel kernels remain
+nondeterministic unless deterministic modes are enabled.
+
+</Gotcha>
+
+<Gotcha question="Gradient accumulation is always identical to a physically larger batch.">
+
+Only if parameters and relevant model state remain fixed and gradients are combined with correct
+example weighting. Batch-normalisation statistics, per-micro-batch clipping, different dropout
+masks, or optimiser steps between micro-batches change the result.
+
+</Gotcha>
+
+</Gotchas>
+
+## Summary
+
+Gradient descent minimises the local linear model by stepping opposite the gradient. For an
+`L`-smooth objective, exact-gradient descent decreases the loss when the learning rate respects the
+curvature scale. Full-batch descent uses the exact empirical gradient but pays for every example
+before each update. One-example SGD gives cheap, high-variance updates. Mini-batch SGD averages
+`b` examples, reducing gradient variance approximately as `1/b` while exposing vectorised hardware
+parallelism.
+
+The batch mean—not an accidental sum—keeps the learning-rate meaning stable. Shuffle with an owned
+RNG, scale the final short batch by its actual length, and weight accumulated micro-batches by their
+example counts. Compare configurations using steps, examples, and wall time; changing batch size
+changes all three. The Practice, Debug, Interview, Test, Project, and Review tabs turn these rules
+into an optimiser built from scratch and an evidence-based batch-size study.

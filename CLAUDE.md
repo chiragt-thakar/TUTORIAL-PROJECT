@@ -34,6 +34,39 @@ When asked to “implement next”:
    Confirm all seven generated tabs: Learn, Practice, Debug, Interview, Test, Project, Review.
 8. After success, strike through the completed topic here and move `NEXT` to the following topic.
 
+## Learner-reliability rules
+
+The learner expects this curriculum to be their main teaching source. A lesson is publishable only
+when it is accurate enough to build later topics on, not merely when its files parse.
+
+1. **Depth has no word or time limit.** Never shorten a derivation, prerequisite, worked example,
+   counterexample, or debugging explanation to hit a content-length target. Remove repetition, but
+   keep every step a careful beginner needs to advanced level.
+2. **Teach assumptions with the claim.** State domains, shapes, smoothness, rank, convexity,
+   independence, numerical, and asymptotic assumptions beside the theorem or rule. Do not turn a
+   useful heuristic, empirical observation, or special case into a universal fact.
+3. **Build from prerequisites, then intuition, derivation, implementation, and verification.** If a
+   lesson uses an earlier idea, briefly reconnect it. Define every new symbol before using it and
+   check dimensions at each important equation.
+4. **Use complete, executable teaching examples.** No placeholders, unexplained ellipses, hidden
+   variables, invented output, or code described as exact when floating-point rounding, library
+   conventions, randomness, or implementation details matter. Include edge and failure cases.
+5. **Prefer correctness over confident wording.** Distinguish mathematical guarantees from common
+   practice, and exact arithmetic from numerical computation. Say when experts use different
+   conventions or when evidence is conditional or mixed.
+6. **Practice must teach, not pad counts.** Solutions explain the reasoning and rejected alternatives;
+   hints progress without giving the answer away; assessments test transfer; projects have
+   observable acceptance evidence. Exercises must cover misconceptions and boundary cases.
+7. **Verify against primary sources and across neighbouring lessons.** Use textbooks, papers, and
+   official library documentation; keep notation and claims consistent with prerequisite and next
+   topics. A passing schema/test suite proves structure, not mathematical truth.
+8. **Report confidence honestly.** Never call content perfect. Record what was checked, correct every
+   discovered material issue before marking a topic available, and name any validation that still
+   needs a learner, browser, external library, or specialist review.
+9. **A phase is complete only as a learning path.** Every subsection, cumulative review, and roadmap
+   Proof Gate must be authored and pass validation. Completed modules do not make the whole phase
+   complete.
+
 ## Phase 1 topic status and recommended model
 
 ### 1.1 Python fluency beyond the basics — complete
@@ -81,7 +114,7 @@ When asked to “implement next”:
 - [x] ~~Tensors: what they actually are vs. what PyTorch calls them~~ — Sol
 - [x] ~~Computational cost: FLOPs of matmul, memory layout, why batching wins~~ — Sol
 
-### 2.2 Calculus & Optimisation — in progress
+### 2.2 Calculus & Optimisation — complete
 
 - [x] ~~Limits, continuity, derivatives — refresh only~~ — Terra
 - [x] ~~Chain rule — deeply, in multiple variables. Backprop is this and nothing more.~~ — Sol
@@ -91,11 +124,21 @@ When asked to “implement next”:
 - [x] ~~Critical points, saddle points, local vs global minima~~ — Sol
 - [x] ~~Convexity, convex sets, convex functions, why convexity is nice and why DL isn't convex~~ — Sol
 - [x] ~~Lagrange multipliers, KKT conditions, constrained optimisation~~ — Sol
-- [ ] Gradient descent: batch, stochastic, mini-batch — Sol ← **NEXT**
-- [ ] Momentum, Nesterov, AdaGrad, RMSProp, Adam, AdamW — derive each update rule — Sol
-- [ ] Learning rate schedules: cosine, warmup, one-cycle, and why warmup exists — Terra
-- [ ] Second-order methods: Newton, quasi-Newton, L-BFGS — and why we don't use them at scale — Sol
-- [ ] Numerical stability: catastrophic cancellation, log-sum-exp trick, gradient clipping — Sol
+- [x] ~~Gradient descent: batch, stochastic, mini-batch~~ — Sol
+- [x] ~~Momentum, Nesterov, AdaGrad, RMSProp, Adam, AdamW — derive each update rule~~ — Sol
+- [x] ~~Learning rate schedules: cosine, warmup, one-cycle, and why warmup exists~~ — Terra
+- [x] ~~Second-order methods: Newton, quasi-Newton, L-BFGS — and why we don't use them at scale~~ — Sol
+- [x] ~~Numerical stability: catastrophic cancellation, log-sum-exp trick, gradient clipping~~ — Sol
+
+### 2.3 Probability — the language of uncertainty — not started
+
+- [ ] Sample spaces, events, axioms of probability — Sol ← **NEXT**
+
+Continue the remaining 2.3 topics in the exact order recorded in
+`content/modules/mastery/08-2-3-probability-the-language-of-uncertainty/module.json`.
+
+Phase 2 is **not complete**: 2.1 and 2.2 are authored; 2.3, 2.4, 2.5, 2.6, and the Phase 2 Proof Gate
+still remain.
 
 ### 1.3 The scientific stack — complete
 

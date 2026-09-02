@@ -1,0 +1,665 @@
+lessonId: "roadmap:phase-2-2.2:9"
+module: 2-2-calculus-optimisation
+lesson: 10-momentum-nesterov-adagrad-rmsprop-adam-adamw-derive-each
+title: "Momentum, Nesterov, AdaGrad, RMSProp, Adam, AdamW — derive each update rule"
+summary: Momentum filters direction, AdaGrad and RMSProp adapt coordinate scales, Adam combines both moments with bias correction, and AdamW decouples parameter decay from the adaptive gradient.
+mastery:
+  minAssessmentScore: 80
+  requireProject: true
+  requireInterview: true
+  requireDebug: true
+  revisitAfterDays: 21
+exercises:
+  - id: opt-read-momentum
+    tier: normal
+    kind: code-reading
+    title: Read a momentum recurrence
+    minutes: 10
+    requiredForMastery: true
+    concepts: [momentum, exponential-moving-average, state]
+    prompt: |
+      Explain what this state stores, unroll it for three steps, and state how the two common
+      momentum conventions differ.
+    code: |
+      m = beta * m + (1 - beta) * g
+      theta -= lr * m
+    hints:
+      - Start from `m_0 = 0` and substitute the previous recurrence twice.
+      - Compare with `v = beta*v + g`; its state has a different scale.
+    solution: |
+      It stores an exponential moving average of directions. `m_3=(1-beta)(g_3+beta*g_2+
+      beta^2*g_1)`. Recent gradients carry more weight, consistent components accumulate, and
+      alternating components cancel. The convention `v=beta*v+g` omits `(1-beta)`, so after the
+      transient its state is about `1/(1-beta)` times larger. The same numeric learning rate does
+      not make these implementations equivalent.
+  - id: opt-derive-memory
+    tier: normal
+    kind: explain
+    title: Derive the momentum memory horizon
+    minutes: 12
+    requiredForMastery: true
+    concepts: [momentum, ema, timescale]
+    prompt: |
+      Derive the weight assigned to a gradient `k` steps old and explain why the memory horizon is
+      approximately `1/(1-beta)`.
+    hints:
+      - A gradient `k` steps old is multiplied by `(1-beta)beta^k`.
+      - Use `beta^k ~= exp(-(1-beta)k)` when `beta` is near one.
+    solution: |
+      Unrolling gives weights `(1-beta)beta^k`. Near one, `log beta ~= -(1-beta)`, hence
+      `beta^k ~= exp(-k(1-beta))`; the weight decays by `e` after about `1/(1-beta)` steps. This is
+      an effective horizon, not a hard window: every older gradient still has a nonzero geometric
+      weight. Larger beta smooths noise more but reacts more slowly to a changed direction.
+  - id: opt-compare-nesterov
+    tier: normal
+    kind: explain
+    title: Momentum versus Nesterov
+    minutes: 12
+    requiredForMastery: true
+    concepts: [nesterov, lookahead, momentum]
+    prompt: |
+      Explain the difference between measuring `grad J(theta_t)` and measuring the gradient at a
+      momentum look-ahead point. What correction can Nesterov make sooner?
+    hints:
+      - First carry the old velocity forward mentally.
+      - Ask where the gradient is evaluated relative to that predicted position.
+    solution: |
+      Classical momentum uses the current gradient and then applies the accumulated direction.
+      Nesterov first predicts where momentum would take the parameters and evaluates the gradient
+      there. If the carried velocity is about to overshoot or enter changing curvature, that
+      look-ahead gradient can oppose it before the full move is committed. Library recurrences may
+      be algebraically rearranged, so compare evaluation points and scaling rather than variable names.
+  - id: opt-write-adagrad
+    tier: normal
+    kind: write-code
+    title: Implement one AdaGrad step
+    minutes: 12
+    requiredForMastery: true
+    concepts: [adagrad, preconditioning, sparse-gradients]
+    prompt: |
+      Implement an in-place AdaGrad step for NumPy arrays and explain why the accumulator uses
+      element-wise squares rather than raw gradients.
+    hints:
+      - Update `s` before dividing by `sqrt(s)`.
+      - Squared values retain magnitude without sign cancellation.
+    solution: |
+      Use `s += grad*grad; theta -= lr*grad/(np.sqrt(s)+eps)`. Each coordinate receives its own
+      cumulative magnitude scale. Accumulating raw gradients would let positive and negative values
+      cancel and could produce negative entries whose square roots are invalid. AdaGrad is useful
+      for rare sparse coordinates, but `s` only grows, so effective step sizes can eventually vanish.
+  - id: opt-predict-rmsprop
+    tier: intermediate
+    kind: predict-output
+    title: RMSProp after a regime change
+    minutes: 14
+    requiredForMastery: true
+    concepts: [rmsprop, nonstationarity, second-moment]
+    prompt: |
+      A coordinate had large gradients for a long time, then gradients become tiny. Compare what
+      happens to its AdaGrad and RMSProp denominators.
+    hints:
+      - AdaGrad never removes a past square.
+      - RMSProp multiplies old state by `rho` each step.
+    solution: |
+      AdaGrad retains the lifetime sum, so the large historical denominator remains and the
+      coordinate may barely move. RMSProp's old contribution decays geometrically as `rho^k`, so
+      its denominator gradually tracks the new small-gradient regime and the effective step can
+      recover. A larger `rho` forgets more slowly; epsilon limits the maximum scaling near zero.
+  - id: opt-derive-adam-bias
+    tier: intermediate
+    kind: explain
+    title: Derive Adam bias correction
+    minutes: 16
+    requiredForMastery: true
+    concepts: [adam, bias-correction, moments]
+    prompt: |
+      Assume a constant scalar gradient `g` and zero state. Derive `m_t`, `v_t`, and both corrected
+      estimates.
+    hints:
+      - Each recurrence is a finite geometric series.
+      - For the second moment, the constant input is `g^2`.
+    solution: |
+      `m_t=(1-beta1)g sum_(j=0)^(t-1) beta1^j=(1-beta1^t)g`. Likewise
+      `v_t=(1-beta2^t)g^2`. Zero initialisation leaves the missing-mass factors, so
+      `mhat=m_t/(1-beta1^t)=g` and `vhat=v_t/(1-beta2^t)=g^2`. With tiny epsilon the corrected
+      direction is `g/|g|`; without correction early update scale depends strongly on the betas.
+  - id: opt-epsilon-placement
+    tier: intermediate
+    kind: predict-output
+    title: Epsilon inside or outside the square root
+    minutes: 12
+    requiredForMastery: true
+    concepts: [epsilon, numerical-stability, adam]
+    prompt: |
+      With `vhat=0` and `epsilon=1e-8`, compare `sqrt(vhat)+epsilon` with
+      `sqrt(vhat+epsilon)`. Why can checkpoint portability care?
+    hints:
+      - Compute both denominators numerically.
+      - Different denominators imply different effective updates near zero.
+    solution: |
+      Outside gives `1e-8`; inside gives `sqrt(1e-8)=1e-4`, ten thousand times larger. The
+      numerator may also be near zero, but finite-precision noise and sparse gradients make the
+      distinction observable. A checkpoint's moments do not uniquely determine future updates
+      unless the implementation variant, epsilon value, precision, and step semantics match.
+  - id: opt-decay-equivalence
+    tier: intermediate
+    kind: explain
+    title: When L2 equals weight decay
+    minutes: 14
+    requiredForMastery: true
+    concepts: [l2-regularisation, weight-decay, adamw]
+    prompt: |
+      Show why L2 regularisation equals multiplicative decay for SGD, then identify the operation
+      that breaks the equivalence in Adam.
+    hints:
+      - Expand `theta - eta*(g + lambda*theta)`.
+      - Adam transforms the combined gradient with moments and coordinate-wise division.
+    solution: |
+      SGD gives `theta'=(1-eta*lambda)theta-eta*g`, exactly a uniform decay followed by the data
+      gradient step. Adam instead feeds `g+lambda*theta` through first- and second-moment EMAs and
+      divides coordinates by their root second moments. The regulariser is therefore history- and
+      coordinate-dependent. AdamW restores direct decay: shrink `theta` separately and keep the
+      decay term out of `m` and `v`.
+  - id: opt-debug-step-zero
+    tier: tricky
+    kind: debug
+    title: Adam starts with NaN
+    minutes: 14
+    requiredForMastery: true
+    concepts: [adam, step-counter, bias-correction]
+    prompt: |
+      This implementation computes corrected moments using `t=0`, then increments `t`. Diagnose
+      the failure and design a one-step regression test.
+    hints:
+      - Evaluate `1-beta**0`.
+      - Use a constant nonzero scalar gradient for a transparent expected result.
+    solution: |
+      Both correction denominators are zero at `t=0`, causing division by zero and NaN/Inf. Advance
+      the counter before correction so the first update uses `t=1`. With zero state, constant
+      `g=4`, and negligible epsilon, assert `mhat=4`, `vhat=16`, and the update direction equals
+      `1`. Also assert the counter survives serialisation and resume.
+  - id: opt-debug-square
+    tier: tricky
+    kind: debug
+    title: Second moment becomes negative
+    minutes: 14
+    requiredForMastery: true
+    concepts: [second-moment, elementwise-operations, nan]
+    prompt: |
+      An RMSProp clone updates `v = rho*v + (1-rho)*g` and later takes `sqrt(v)`. It fails when
+      gradient signs change. Fix it and explain the invariant to test.
+    hints:
+      - A second raw moment estimates `E[g^2]`, not `E[g]`.
+      - A weighted average of nonnegative values remains nonnegative.
+    solution: |
+      Replace the input with the element-wise square: `v=rho*v+(1-rho)*g*g`. Raw signed gradients
+      belong in a first moment and can make `v` negative. Test that `v >= 0` element-wise for random
+      sign-changing sequences and compare the recurrence to a scalar reference. Small negative
+      values should not be hidden with clipping; they reveal a formula or precision bug.
+  - id: opt-debug-coupled-decay
+    tier: tricky
+    kind: debug
+    title: AdamW implemented as L2
+    minutes: 16
+    requiredForMastery: true
+    concepts: [adamw, weight-decay, parameter-groups]
+    prompt: |
+      Code named `AdamW` executes `grad += wd*theta` before updating moments. Diagnose it and give a
+      zero-data-gradient test that distinguishes coupled L2 from decoupled decay.
+    hints:
+      - AdamW must keep the decay term out of both moments.
+      - Set the data gradient to zero and inspect state as well as parameters.
+    solution: |
+      The code implements Adam with coupled L2, not AdamW. Apply `theta *= 1-lr*wd` separately and
+      compute moments from the original data gradient. With zero data gradient and zero state,
+      correct AdamW shrinks parameters while leaving `m=v=0`; the buggy version puts `wd*theta`
+      into both moments. Repeat for excluded bias/normalisation groups, which should not shrink.
+  - id: opt-checkpoint-state
+    tier: tricky
+    kind: design
+    title: Make resume exactly equivalent
+    minutes: 18
+    requiredForMastery: true
+    concepts: [checkpoint, reproducibility, optimiser-state]
+    prompt: |
+      Specify a test proving that an interrupted AdamW run resumes as the same training trajectory.
+    hints:
+      - Weights and moments are necessary but not sufficient.
+      - Compare uninterrupted and interrupted runs batch by batch after restoration.
+    solution: |
+      Compare a deterministic `K+M` run with a `K`, save/restore, `M` run. Persist weights, `m`,
+      `v`, step, parameter groups, scheduler, mixed-precision scaler, every RNG, sampler order/data
+      position, and relevant model buffers. After restore, assert batch IDs, learning rates, losses,
+      gradients, moments, and parameters match at every step within the declared tolerance. A
+      weights-only restore should intentionally fail, proving the test is sensitive.
+  - id: opt-memory-budget
+    tier: challenge
+    kind: performance
+    title: Budget optimiser-state memory
+    minutes: 20
+    requiredForMastery: false
+    concepts: [memory, optimiser-state, sharding]
+    prompt: |
+      Estimate persistent bytes for one billion parameters under float32 SGD, momentum, and Adam,
+      counting weights and optimiser state but not activations or gradients. Discuss mitigations.
+    hints:
+      - Float32 uses four bytes per scalar.
+      - Momentum adds one parameter-sized state; Adam adds two.
+    solution: |
+      Weights alone are 4 GB decimal. Momentum adds 4 GB, totalling 8 GB; Adam adds first and
+      second moments, totalling 12 GB. Gradients, master weights, allocator overhead, and framework
+      copies raise real use. Mitigations include state sharding, offload, lower-precision or
+      quantised states with error control, memory-efficient optimisers, and SGD/momentum when the
+      optimisation trade-off permits. Measure peak allocated and reserved memory rather than using
+      this lower bound as a deployment promise.
+  - id: opt-design-common-api
+    tier: challenge
+    kind: design
+    title: Design a testable optimiser API
+    minutes: 24
+    requiredForMastery: false
+    concepts: [api-design, pure-functions, parameter-groups]
+    prompt: |
+      Design one API supporting SGD, momentum, AdaGrad, RMSProp, Adam, and AdamW without hiding
+      state, update order, or parameter-group decay policy.
+    hints:
+      - Separate gradient production from state transition.
+      - Make serialisable state and step counters explicit return values.
+    solution: |
+      Define a pure `init(params, groups)->state` and `step(params, grads, state, config)->(new_params,
+      new_state, metrics)`. State mirrors parameter trees and includes an integer step. Groups carry
+      explicit learning rate and decay inclusion. Each algorithm owns a small tested transition;
+      AdamW applies decay outside moments. Reject shape/dtype mismatches, expose epsilon placement,
+      and emit update/moment norms. Version the serialised schema and test scalar recurrences,
+      tree equivalence, immutability/aliasing, save-load round trips, and framework parity.
+quizzes:
+  - id: opt-checkpoint
+    title: Checkpoint — state and update rules
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - id: opt-cp-momentum
+        kind: mcq
+        prompt: What does momentum's first moment preserve most strongly?
+        options:
+          - {id: persistent-direction, text: Gradient directions that persist across steps}
+          - {id: alternating-noise, text: Rapidly alternating gradient signs}
+          - {id: parameter-count, text: The number of model parameters}
+        answer: [persistent-direction]
+        explanation: EMA averaging reinforces persistent components and cancels alternating ones.
+        concepts: [momentum]
+      - id: opt-cp-adagrad
+        kind: mcq
+        prompt: Why can AdaGrad stop making useful progress late in training?
+        options:
+          - {id: accumulator-grows, text: Its squared-gradient accumulator never forgets}
+          - {id: no-square, text: It never squares gradients}
+          - {id: no-state, text: It has no persistent state}
+        answer: [accumulator-grows]
+        explanation: A monotonically growing denominator can drive effective steps toward zero.
+        concepts: [adagrad]
+      - id: opt-cp-bias
+        kind: mcq
+        prompt: What is Adam's first-moment correction at step `t`?
+        options:
+          - {id: correct-m, text: Divide by `1-beta1^t`}
+          - {id: correct-v, text: Divide by `1-beta2^t`}
+          - {id: multiply-beta, text: Multiply by `beta1^t`}
+        answer: [correct-m]
+        explanation: Zero initialisation leaves the first EMA short by the mass `1-beta1^t`.
+        concepts: [adam, bias-correction]
+      - id: opt-cp-adamw
+        kind: mcq
+        prompt: Where does AdamW apply the decay term?
+        options:
+          - {id: outside-moments, text: Directly to parameters, outside moment estimates}
+          - {id: first-moment, text: Only inside the first moment}
+          - {id: second-moment, text: Only inside the second moment}
+        answer: [outside-moments]
+        explanation: Decoupled decay must not contaminate either adaptive moment.
+        concepts: [adamw]
+  - id: opt-assessment
+    title: Assessment — deriving adaptive optimisers
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: opt-as-momentum
+        kind: explain
+        prompt: Derive the EMA form of momentum and explain its effect in a narrow valley.
+        modelAnswer: |
+          Unrolling gives `m_t=(1-beta)sum beta^(t-k)g_k`. Alternating steep-direction gradients
+          cancel while consistent shallow-direction gradients accumulate, reducing zig-zag and
+          accelerating progress. Larger beta smooths more but reacts more slowly.
+        explanation: Momentum is a temporal low-pass filter on gradient direction.
+        concepts: [momentum, ill-conditioning]
+      - id: opt-as-nesterov
+        kind: explain
+        prompt: What makes Nesterov different from classical momentum?
+        modelAnswer: |
+          It evaluates the gradient at a look-ahead point produced by carrying the old momentum,
+          so it can correct an impending overshoot before committing the whole move. Exact library
+          formulas vary by velocity convention.
+        explanation: The gradient evaluation point is the defining intuition.
+        concepts: [nesterov]
+      - id: opt-as-adagrad
+        kind: scenario
+        prompt: Why is AdaGrad attractive for sparse features and weak for changing regimes?
+        modelAnswer: |
+          Rare coordinates retain smaller accumulators and therefore larger effective steps, while
+          frequent coordinates shrink. But the lifetime sum never forgets early large gradients,
+          so later steps can become permanently tiny after the statistics change.
+        explanation: Persistent coordinate scaling is both AdaGrad's strength and weakness.
+        concepts: [adagrad, sparse-gradients]
+      - id: opt-as-rmsprop
+        kind: explain
+        prompt: Derive RMSProp from AdaGrad's main failure.
+        modelAnswer: |
+          Replace the lifetime sum with `v_t=rho*v_(t-1)+(1-rho)g_t^2`. Old squares fade, so the
+          denominator tracks recent scale and can recover after a regime change.
+        explanation: Exponential forgetting prevents permanent learning-rate collapse.
+        concepts: [rmsprop]
+      - id: opt-as-bias
+        kind: scenario
+        prompt: For constant `g`, derive Adam's bias-corrected first and second moments.
+        modelAnswer: |
+          Zero-state recurrences give `m_t=(1-beta1^t)g` and `v_t=(1-beta2^t)g^2`; division by the
+          respective factors yields `mhat=g`, `vhat=g^2`.
+        explanation: Correction divides out the missing geometric-series mass.
+        concepts: [adam, bias-correction]
+      - id: opt-as-step
+        kind: find-bug
+        prompt: Why is bias correction invalid when the first update uses `t=0`?
+        modelAnswer: |
+          `1-beta^0=0`, so both corrections divide by zero. Increment the persistent step before
+          correction so the first update is `t=1`.
+        explanation: Step indexing is part of Adam's state transition.
+        concepts: [step-counter]
+      - id: opt-as-epsilon
+        kind: scenario
+        prompt: Are `sqrt(v)+eps` and `sqrt(v+eps)` interchangeable?
+        modelAnswer: |
+          No. At `v=0`, `eps=1e-8`, the denominators are `1e-8` and `1e-4`. They define different
+          near-zero update scales and must be preserved for implementation parity.
+        explanation: Epsilon placement changes the algorithm.
+        concepts: [epsilon]
+      - id: opt-as-decay
+        kind: explain
+        prompt: Why does coupled L2 differ from AdamW?
+        modelAnswer: |
+          Coupled L2 adds `lambda*theta` before moments and coordinate scaling, producing
+          history-dependent shrinkage. AdamW applies `(1-eta*lambda)` directly and excludes decay
+          from `m` and `v`.
+        explanation: Adaptive preconditioning breaks the SGD equivalence.
+        concepts: [adamw, l2-regularisation]
+      - id: opt-as-memory
+        kind: scenario
+        prompt: How many parameter-sized state arrays do momentum and Adam add?
+        modelAnswer: |
+          Momentum adds one velocity/first-moment array. Adam adds two arrays, first and second
+          moments, plus a scalar step counter.
+        explanation: Adaptive optimisers materially affect model memory.
+        concepts: [memory, optimiser-state]
+      - id: opt-as-resume
+        kind: scenario
+        prompt: What must an exact AdamW resume restore beyond model weights?
+        modelAnswer: |
+          Restore first/second moments, step, parameter groups, scheduler, scaler, RNGs, sampler or
+          data position, and relevant buffers. Verify against an uninterrupted trajectory.
+        explanation: Training state is broader than model state.
+        concepts: [checkpoint, reproducibility]
+interview:
+  - id: opt-iv-family
+    level: basic
+    requiredForMastery: true
+    concepts: [optimiser-family, state]
+    question: Organise momentum, AdaGrad, RMSProp, Adam, and AdamW by the ideas they add.
+    shortAnswer: Momentum averages direction; AdaGrad and RMSProp scale coordinates by squared-gradient history; Adam combines both; AdamW decouples decay.
+    fullAnswer: |
+      Momentum stores a first-moment EMA. AdaGrad stores a lifetime sum of squares; RMSProp stores a
+      fading second moment. Adam uses first and second EMAs with zero-bias correction. AdamW leaves
+      Adam's moments intact and applies direct parameter shrinkage separately. This taxonomy makes
+      the family derivable instead of a list to memorise.
+    commonWrongAnswer: Each is unrelated and differs mainly by its default learning rate.
+    followUps:
+      - Which states have parameter shape?
+      - Which algorithm forgets old squared gradients?
+  - id: opt-iv-momentum
+    level: internals
+    requiredForMastery: true
+    concepts: [momentum, ema, nesterov]
+    question: Explain momentum as a filter and Nesterov as a look-ahead correction.
+    shortAnswer: Momentum suppresses alternating gradient components; Nesterov evaluates the correction where momentum predicts the parameters will be.
+    fullAnswer: |
+      The EMA gives persistent directions large cumulative weight and cancels high-frequency sign
+      changes. This damps ravine oscillation but introduces lag. Nesterov carries the old velocity
+      to a provisional point, measures slope there, and can brake earlier. Theoretical accelerated
+      Nesterov and constant library momentum should not be conflated without comparing recurrences.
+    commonWrongAnswer: Nesterov merely uses a larger beta.
+    followUps:
+      - What does `1/(1-beta)` mean?
+      - Why do library conventions change velocity scale?
+  - id: opt-iv-adam
+    level: advanced
+    requiredForMastery: true
+    concepts: [adam, bias-correction, scale-invariance]
+    question: Derive Adam and explain why both moments need correction.
+    shortAnswer: Zero-started EMAs miss mass `beta^t`; divide first and second moments by `1-beta1^t` and `1-beta2^t` before their ratio.
+    fullAnswer: |
+      Adam forms `m=beta1*m+(1-beta1)g` and `v=beta2*v+(1-beta2)g^2`. Constant-input unrolling
+      exposes factors `1-beta1^t` and `1-beta2^t`. Correcting both makes early estimates match the
+      underlying moments; then update by `eta*mhat/(sqrt(vhat)+eps)`. The ratio makes the direction
+      nearly invariant to positive coordinate rescaling, except where epsilon matters.
+    commonWrongAnswer: Bias correction compensates for biased stochastic gradients.
+    followUps:
+      - Why is the first step indexed one?
+      - When does epsilon dominate?
+  - id: opt-iv-decay
+    level: comparison
+    requiredForMastery: true
+    concepts: [adamw, weight-decay, parameter-groups]
+    question: Compare L2 regularisation, SGD weight decay, and AdamW.
+    shortAnswer: L2 and decay are equivalent for SGD, but adaptive scaling breaks that equality; AdamW restores direct decoupled shrinkage.
+    fullAnswer: |
+      SGD with `g+lambda*theta` expands to uniform multiplicative shrinkage plus the data step.
+      Adam transforms that combined gradient through moment history and per-coordinate division, so
+      shrinkage is uneven. AdamW applies decay to parameters independently and excludes it from
+      moments. Parameter groups commonly exempt biases and normalisation parameters.
+    commonWrongAnswer: AdamW is Adam with `lambda*theta` added to the gradient.
+    followUps:
+      - What zero-gradient test distinguishes them?
+      - Why record decay exclusions?
+  - id: opt-iv-debug
+    level: debugging
+    requiredForMastery: true
+    concepts: [debugging, scalar-reference, invariants]
+    question: A custom Adam diverges. What is your debugging order?
+    shortAnswer: Freeze a scalar fixture, verify update order and element-wise moments, compare bias correction and epsilon semantics, then inspect scale and state persistence.
+    fullAnswer: |
+      Use float64 and a constant scalar gradient. Assert `t` increments first, `m` tracks `g`, `v`
+      tracks `g^2`, corrections match closed form, and the first direction is unit magnitude. Then
+      test sign-changing vectors, zero gradient with AdamW decay, framework parity, and save/resume.
+      Finally inspect loss reduction, clipping, mixed precision, update/parameter norms, and schedules.
+    commonWrongAnswer: Lower the learning rate until it stops diverging.
+    followUps:
+      - Which invariant catches a missing square?
+      - How do you isolate coupled decay?
+  - id: opt-iv-systems
+    level: scenario
+    requiredForMastery: true
+    concepts: [memory, checkpoint, distributed-training]
+    question: Adam state no longer fits after scaling the model. What options preserve correctness?
+    shortAnswer: Shard or offload state, use validated lower-precision states, or change optimiser with retuning; preserve complete checkpoint semantics.
+    fullAnswer: |
+      Adam adds two parameter-sized arrays, often alongside gradients and master weights. Partition
+      states and updates across workers, offload with bandwidth accounting, or use quantised states
+      whose numerical error is measured. Momentum reduces state but changes optimisation and needs
+      a fair retune. Any scheme must save the logical moments and step and pass uninterrupted-versus-
+      resumed and distributed-versus-reference transition tests.
+    commonWrongAnswer: Delete the second moment after every update because it can be recomputed.
+    followUps:
+      - What is the lower-bound memory for one billion float32 parameters?
+      - What communication does sharding introduce?
+projects:
+  - id: opt-project-optimiser-suite
+    kind: major
+    title: Build and verify an optimiser suite from scratch
+    minutes: 260
+    summary: Implement six NumPy optimisers behind an explicit state-transition API and prove each recurrence, checkpoint, and decay policy against scalar references and controlled experiments.
+    problem: |
+      Build a small package implementing SGD, momentum, Nesterov, AdaGrad, RMSProp, Adam, and
+      AdamW. Train ill-conditioned quadratics, sparse logistic regression, and a tiny MLP. Produce
+      fail-before-fix tests for step indexing, missing squares, epsilon placement, state reset, and
+      coupled decay, then compare convergence, update scale, memory, and resume equivalence.
+    requirements:
+      - Pure, serialisable init/step contracts with explicit parameter trees, state, step, dtype, and groups.
+      - Every update is derived in documentation and matches a scalar closed-form or hand calculation.
+      - Adam implements both corrections and configurable documented epsilon placement.
+      - AdamW decay stays out of moments and supports explicit no-decay groups.
+      - Checkpoint restoration reproduces an uninterrupted trajectory, including schedule and data order.
+      - Reports compare loss, gradient norm, update norm, parameter norm, state memory, examples, and time.
+    constraints:
+      - NumPy and standard library for optimisation; no autograd or built-in optimiser.
+      - Use float64 reference tests before float32 experiments.
+      - Tune each optimiser under equal search and compute budgets.
+      - Never hide NaN or negative second moments with clipping.
+    expectedBehaviour:
+      - Momentum damps alternating directions on a rotated ill-conditioned quadratic.
+      - AdaGrad preserves larger steps for rare sparse coordinates while RMSProp recovers after a regime change.
+      - Constant-gradient Adam matches the bias-corrected closed form from its first update.
+      - Zero-data-gradient AdamW shrinks selected parameters without changing moments.
+      - Save/restore and uninterrupted runs produce matching trajectories.
+    structure: |
+      optlab/
+        tree.py
+        state.py
+        optimisers.py
+        checkpoint.py
+        metrics.py
+      experiments/
+        ravine.py
+        sparse.py
+        regime_change.py
+        tiny_mlp.py
+      tests/
+        test_scalar_rules.py
+        test_decay.py
+        test_resume.py
+        test_parity.py
+    milestones:
+      - title: "1 — Scalar recurrences"
+        detail: Hand-derived one- and multi-step fixtures for every optimiser.
+      - title: "2 — Tree state and parameter groups"
+        detail: Shape-safe transitions, decay exclusions, metrics, and serialisation.
+      - title: "3 — Failure-focused verification"
+        detail: Mutant tests for indexing, squaring, correction, epsilon, reset, and decay.
+      - title: "4 — Fair experiments"
+        detail: Equal-budget tuning and plots on curvature, sparsity, and regime-change fixtures.
+    testing:
+      - Scalar and vector updates match independent references in float64.
+      - Second moments remain nonnegative and state shapes match parameters.
+      - AdamW zero-gradient tests separate shrinkage from moment changes.
+      - Interrupted runs match uninterrupted histories after restore.
+      - Intentional mutant implementations fail a named regression test.
+    failureCases:
+      - Comparing optimisers only at their defaults.
+      - Recreating optimiser state every epoch.
+      - Calling coupled L2 AdamW.
+      - Saving weights without step, moments, schedule, and data position.
+    bonus:
+      - Add AMSGrad and derive its max-second-moment state.
+      - Add state sharding simulation and memory/communication accounting.
+      - Compare fused vectorised transitions with a scalar oracle.
+    architectureHints:
+      - Keep gradients immutable and return new logical state even if arrays are updated efficiently.
+      - Emit per-group norms and effective step summaries from every transition.
+      - Version checkpoint schemas and reject silently incompatible variants.
+    referenceOutline: |
+      Begin with scalar pure functions, then lift them over a parameter tree. Store per-leaf state
+      and one global step. Apply AdamW decay by parameter group outside the Adam transition.
+      Experiments consume one engine and output structured manifests so every curve is reproducible.
+  - id: opt-final-framework-audit
+    kind: final-challenge
+    title: Reconcile two disagreeing AdamW implementations
+    minutes: 120
+    summary: Audit a NumPy optimiser and a framework optimiser that diverge after resume, isolate every semantic mismatch, and produce parity evidence.
+    problem: |
+      Two runs start from identical weights and batches but differ from step one, and the gap grows
+      after checkpoint resume. Audit momentum convention, step order, bias correction, epsilon
+      placement, decay coupling/order, parameter exclusions, precision, scheduler timing, gradient
+      reduction, clipping, and saved state. Repair the custom implementation or document an
+      intentional incompatibility with a converter.
+    requirements:
+      - Produce one-step scalar traces containing input, moments, corrections, decay, update, and output.
+      - Isolate one semantic difference at a time with fail-before-fix evidence.
+      - Match parameter groups, loss scaling, schedule timing, clipping, and precision.
+      - Prove uninterrupted and resume parity for at least 100 deterministic updates.
+      - Publish a compatibility manifest defining the exact recurrence and checkpoint schema.
+    constraints:
+      - Do not tune learning rate to mask an update mismatch.
+      - Do not compare only final loss; compare state and parameters every step.
+      - Keep a test for every discovered mismatch.
+    expectedBehaviour:
+      - Scalar traces agree from the first corrected update.
+      - Zero-gradient decay changes only intended parameters and not moments.
+      - Step, schedule, and batch sequence remain aligned across resume.
+      - Vector and tiny-model trajectories match within declared precision tolerance.
+    milestones:
+      - title: "1 — Equation and trace inventory"
+        detail: Write both exact recurrences and capture scalar transitions.
+      - title: "2 — Semantic repairs"
+        detail: Fix each mismatch behind a regression test.
+      - title: "3 — Resume proof"
+        detail: Compare uninterrupted and restored trajectories with complete state.
+    testing:
+      - Constant, alternating, zero, sparse, and extreme-magnitude gradients.
+      - Decay inclusion/exclusion and epsilon-dominant cases.
+      - One-step, hundred-step, and save-load parity.
+      - Float64 oracle followed by declared float32 tolerance.
+    failureCases:
+      - Comparing variable names instead of equations.
+      - Ignoring scheduler or scaler state.
+      - Treating close loss as proof of optimiser parity.
+    bonus:
+      - Build a versioned checkpoint converter with round-trip tests.
+    architectureHints:
+      - Use a structured trace record rather than print statements.
+      - Binary-search the first divergent step, then compare each intermediate.
+    referenceOutline: |
+      Freeze data and gradients, use a scalar oracle, and align one semantic choice at a time.
+      Once one-step state matches, expand to vectors, parameter groups, schedules, and restore.
+resources:
+  - name: "Polyak — Some Methods of Speeding Up the Convergence of Iteration Methods"
+    type: article
+    difficulty: deep
+    url: "https://www.mathnet.ru/eng/zvmmf7713"
+    usefulness: 5
+    why: This is the primary source for the heavy-ball momentum idea and its convergence analysis.
+    covers: Heavy-ball iteration, momentum, quadratic objectives, and convergence acceleration.
+  - name: "Duchi, Hazan, and Singer — Adaptive Subgradient Methods for Online Learning and Stochastic Optimization"
+    type: article
+    difficulty: deep
+    url: "https://jmlr.org/papers/v12/duchi11a.html"
+    usefulness: 5
+    why: This primary AdaGrad paper derives adaptive geometry and explains its advantage for sparse and informative features.
+    covers: AdaGrad, regret bounds, diagonal preconditioning, sparsity, and online optimisation.
+  - name: "Kingma and Ba — Adam: A Method for Stochastic Optimization"
+    type: article
+    difficulty: core
+    url: "https://arxiv.org/abs/1412.6980"
+    usefulness: 5
+    why: The primary Adam paper states the moment recurrences, zero-bias correction, pseudocode, and motivation.
+    covers: Adam, first and second moments, bias correction, scale behaviour, and experiments.
+  - name: "Loshchilov and Hutter — Decoupled Weight Decay Regularization"
+    type: article
+    difficulty: core
+    url: "https://arxiv.org/abs/1711.05101"
+    usefulness: 5
+    why: This primary AdamW paper shows why L2 and weight decay cease to be equivalent for adaptive updates and proposes decoupling.
+    covers: AdamW, SGD equivalence, coupled L2, decoupled decay, and hyperparameter tuning.
+  - name: "PyTorch documentation — AdamW"
+    type: docs
+    difficulty: core
+    url: "https://docs.pytorch.org/docs/stable/generated/torch.optim.AdamW.html"
+    usefulness: 4
+    why: Official documentation exposes the implemented recurrence, parameter groups, flags, state semantics, and epsilon convention used in production code.
+    covers: AdamW update pseudocode, betas, epsilon, weight decay, AMSGrad, fused and foreach variants.

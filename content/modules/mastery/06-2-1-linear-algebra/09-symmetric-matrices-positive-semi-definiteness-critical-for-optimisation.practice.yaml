@@ -607,13 +607,15 @@ interview:
     concepts: [matrix-square-root, cholesky, whitening, sampling]
     question: What is a matrix square root of a PSD matrix and where is it used?
     shortAnswer: |
-      Any `M` with `M M.T = A` (or `M^2 = A`). The symmetric PSD root is `Q Lambda^{1/2} Q.T`; the
-      Cholesky factor `L` with `L L.T = A` is a cheaper triangular one. Used for whitening and for
-      sampling `x = mu + L z`.
+      A matrix square root satisfies `M^2 = A`. The principal PSD root is
+      `Q Lambda^{1/2} Q.T`. Cholesky instead gives a triangular covariance factor `L` satisfying
+      `L L.T = A`; it is generally not a square root. Roots are used in whitening, and either a
+      suitable root or covariance factor can generate `x = mu + M z`.
     fullAnswer: |
       For PSD `A`, the principal square root `A^{1/2} = Q diag(sqrt(w)) Q.T` is the unique symmetric
-      PSD `M` with `M^2 = A`. The Cholesky factor `L` is a non-symmetric square root, `L L.T = A`,
-      obtained in half the cost. Whitening applies `A^{-1/2}` to make a covariance the identity;
+      PSD `M` with `M^2 = A`. For PD `A`, the Cholesky factor `L` satisfies `L L.T = A` but generally
+      `L^2 != A`, so call it a covariance factor rather than a non-symmetric square root. Whitening
+      applies `A^{-1/2}` to make a covariance the identity;
       Gaussian sampling uses `x = mu + L z` with `z` standard normal; natural-gradient and some
       preconditioners use `A^{-1/2}` or `A^{1/2}` of a Fisher or curvature matrix. When `A` is only
       PSD you floor the eigenvalues before the inverse square root to cap the map's condition

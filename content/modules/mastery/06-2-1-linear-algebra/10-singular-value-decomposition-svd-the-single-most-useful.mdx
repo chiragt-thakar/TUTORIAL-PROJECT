@@ -15,7 +15,8 @@ learningObjectives:
 
 The singular value decomposition writes *any* matrix — square or not, full rank or not — as
 `A = U S V.T`, where `U` and `V` are orthogonal and `S` is diagonal with non-negative entries. It is
-the one factorisation that always exists and is always numerically stable.
+the one factorisation that always exists. Standard SVD algorithms are backward stable, but individual
+singular vectors can still be highly sensitive when singular values are repeated or tightly clustered.
 
 Almost every quantitative fact about a matrix is a one-line read from its SVD: its rank, its norms,
 its condition number, its pseudo-inverse, its four fundamental subspaces, its principal components,
@@ -78,8 +79,14 @@ space is `span(v_1, ..., v_r)`; the null space is `span(v_{r+1}, ..., v_n)`. Tha
 fundamental subspaces from one decomposition.
 
 The norms: `||A||_2 = s_1` (spectral), `||A||_F = sqrt(sum s_i^2)` (Frobenius),
-`||A||_* = sum s_i` (nuclear). The condition number is `s_1 / s_r`. The pseudo-inverse is
-`V S_plus U.T`, inverting the nonzero singular values.
+`||A||_* = sum s_i` (nuclear). In the 2-norm, `cond(A) = s_1 / s_min`, where `s_min` is the
+smallest singular value among all `min(m, n)` singular values. Therefore a rank-deficient matrix
+has infinite condition number.
+
+The restricted condition number `s_1 / s_r`, using the smallest
+nonzero value, describes sensitivity only on the rank-`r` row-space subproblem; it is not the
+condition number of the original rank-deficient solve. The pseudo-inverse is `V S_plus U.T`,
+inverting the nonzero singular values.
 
 ```python
 r = np.sum(s > 1e-10)
@@ -92,7 +99,11 @@ assert np.allclose(np.linalg.pinv(A), Vt.T @ np.diag(1/s) @ U.T)
 
 The singular values are a spectrum: a sorted list of how much the matrix stretches along each of its
 principal directions. A sharp drop in the spectrum is an effective rank; a flat tail near zero is
-noise; the ratio of first to last is how many digits a solve with this matrix will lose.
+possibly noise or weak signal, which only domain knowledge can distinguish. For a full-rank square
+system, the ratio of largest to smallest singular value controls worst-case relative sensitivity;
+
+roughly `log10(cond(A))` decimal digits may be lost in an adverse solve. Rank deficiency makes that
+worst-case sensitivity infinite.
 
 </Concept>
 
@@ -125,8 +136,9 @@ Total least squares and orthogonal Procrustes are SVD in one line each.
 
 ## Doing this in floating point
 
-The SVD is the gold standard: it is backward stable and always exists, so when any other
-linear-algebra computation looks wrong, computing the SVD of the inputs is the first diagnostic.
+Standard SVD algorithms are a gold-standard diagnostic because they are backward stable and the
+factorisation always exists. That means the computed factors exactly decompose a nearby matrix; it
+does not make an ill-conditioned rank decision or a clustered singular-vector basis insensitive.
 Never approximate it by eigendecomposing `A.T @ A`, which squares the condition number and can lose
 the small singular values entirely.
 
@@ -343,7 +355,8 @@ along the columns of `U`. The right singular vectors and squared singular values
 eigendecomposition of `A.T @ A`, computed without forming it.
 
 From one SVD you read the rank, all four fundamental subspaces, the spectral, Frobenius, and nuclear
-norms, the condition number `s_1 / s_r`, and the pseudo-inverse. Eckart–Young makes the truncated
+norms, the full condition number (infinite if rank deficient), the restricted nonzero-spectrum
+condition number, and the pseudo-inverse. Eckart–Young makes the truncated
 SVD the best low-rank approximation in spectral and Frobenius norm, which is PCA, LSA, recommender
 factorisation, and compression.
 

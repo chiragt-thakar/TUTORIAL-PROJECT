@@ -464,8 +464,10 @@ quizzes:
         prompt: How do you compute a Hessian-vector product `H @ v` for a scalar loss without forming `H`?
         modelAnswer: |
           Compute the gradient `g`, then take the gradient of the scalar `g @ v` with respect to the
-          parameters (a second backward); the result is `H @ v` exactly. Cost is a constant times
-          one gradient; memory is `O(p)`.
+          parameters (a second backward); the result is `H @ v` for the differentiated program, up
+          to floating-point rounding and framework derivative conventions. Cost is usually a small
+          constant times one gradient. Parameter-vector state is `O(p)`, while total memory also
+          includes saved activations and the autodiff graph.
         explanation: "`H @ v` is the directional derivative of the gradient along `v`."
         concepts: [hessian-vector-product]
         points: 1

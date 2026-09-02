@@ -1,0 +1,419 @@
+---
+id: "roadmap:phase-2-2.2:12"
+title: "Numerical stability: catastrophic cancellation, log-sum-exp trick, gradient clipping"
+description: Reason about finite floating-point range and precision, replace unstable but algebraically correct formulas, derive log-sum-exp and stable softmax, and use gradient clipping as an observable safety mechanism.
+module: 2-2-calculus-optimisation
+order: 13
+estimatedMinutes: 145
+prerequisites: []
+learningObjectives:
+  - Distinguish overflow, underflow, rounding, and catastrophic cancellation and construct stable alternatives
+  - Derive log-sum-exp, stable softmax, softplus, and online mean or variance formulas from invariances
+  - Implement global-norm and value clipping and explain their different geometry and limitations
+  - Design mixed-precision and nonfinite diagnostics that expose the first unstable boundary instead of hiding it
+---
+
+Real-number algebra is not floating-point computation. Computers represent a finite set of values,
+round after operations, overflow beyond a maximum magnitude, and underflow near zero. A formula can
+be mathematically correct and computationally useless.
+
+<TypeScriptComparison>
+
+- JavaScript `number` is usually IEEE-754 binary64; NumPy, PyTorch, and accelerator code often use
+  float32, float16, or bfloat16. Code that survives in TypeScript can overflow in model training.
+- `Math.log1p(x)` and NumPy's `np.log1p(x)` exist because `log(1+x)` loses small `x`; `expm1` serves
+  the matching exponential case. Prefer the semantic primitive.
+- Tensor libraries expose global-norm clipping, but call order matters: with loss scaling, unscale
+  gradients before measuring and clipping their true norm.
+
+</TypeScriptComparison>
+
+## Range and precision are different limits
+
+**Range** asks how large or small a magnitude can be represented before `inf` or zero. **Precision**
+asks how finely neighbouring values are spaced. Relative spacing grows with magnitude. If `x` is
+large enough, `x + 1 == x` in floating point even though neither value overflows.
+
+Machine epsilon is the gap from one to the next representable value in a given format. It is not a
+universal tolerance and not the smallest positive number. Mixed precision trades mantissa bits and
+exponent range differently: float16 has limited range; bfloat16 keeps float32-like exponent range
+but coarse precision.
+
+## Catastrophic cancellation
+
+Subtracting nearly equal rounded values removes their shared leading digits, leaving a result made
+mostly of rounding error. For small `x`, `sqrt(1+x)-1` is unstable. Rationalise it:
+
+`sqrt(1+x)-1 = x / (sqrt(1+x)+1)`.
+
+The second form avoids subtracting near equals. Similarly use `log1p(x)` for `log(1+x)`, `expm1(x)`
+for `exp(x)-1`, and stable library routines for norms and variance.
+
+The textbook one-pass variance `E[x^2] - E[x]^2` subtracts large close quantities when variance is
+small relative to the mean. Welford's recurrence updates mean and centred sum of squares without
+that cancellation:
+
+```python
+def update(count, mean, m2, x):
+    count += 1
+    delta = x - mean
+    mean += delta / count
+    m2 += delta * (x - mean)
+    return count, mean, m2
+```
+
+## Deriving log-sum-exp
+
+Directly computing `log(sum(exp(x_i)))` overflows when any `x_i` is large and underflows smaller
+terms. Let `m = max_i x_i`. Factor out `exp(m)`:
+
+`log sum_i exp(x_i) = m + log sum_i exp(x_i-m)`.
+
+Every shifted exponent is at most one, so overflow disappears. At least one is exactly one, so the
+sum cannot underflow to zero. Very negative contributions may underflow harmlessly because their
+true contribution is below working precision.
+
+```python
+import numpy as np
+
+def logsumexp(x, axis=None, keepdims=False):
+    m = np.max(x, axis=axis, keepdims=True)
+    out = m + np.log(np.sum(np.exp(x - m), axis=axis, keepdims=True))
+    return out if keepdims else np.squeeze(out, axis=axis)
+```
+
+All-negative-infinity slices need special handling: `-inf - (-inf)` is NaN. Production libraries
+define this edge case; test against the chosen contract.
+
+## Stable softmax and cross-entropy
+
+Softmax is shift invariant:
+
+`softmax(x)_i = exp(x_i-c) / sum_j exp(x_j-c)`.
+
+Choose `c=max(x)`. Never compute softmax and then take `log` for cross-entropy: a small probability
+may round to zero, producing `log(0)`. For class `y`, compute
+
+`loss = logsumexp(logits) - logits_y`.
+
+Fused framework cross-entropy kernels implement this stable log-domain route and often improve
+memory traffic too.
+
+Softplus has a similar repair:
+
+`log(1+exp(x)) = max(x,0) + log1p(exp(-abs(x)))`.
+
+The naive form overflows for large positive `x`; the stable one returns approximately `x`.
+
+## Summation and reduction order
+
+Floating-point addition is not associative. Parallel reductions, device kernels, or changed batch
+partitioning can produce slightly different sums. Pairwise summation reduces error relative to a
+long naive chain; Kahan summation compensates lost low-order bits. Accumulate reductions in a wider
+dtype when the performance and memory cost is justified.
+
+Deterministic algorithm selection can improve reproducibility, but bitwise equality across devices,
+libraries, and thread layouts is not always available. Use error tolerances derived from scale and
+conditioning, not one magic epsilon.
+
+## Gradient clipping by value
+
+Value clipping applies `g_i <- clip(g_i, -c, c)`. It truncates coordinates independently and can
+rotate the direction drastically. It is useful when individual components have a meaningful bound,
+but it is not the usual default for exploding recurrent or transformer gradients.
+
+## Gradient clipping by global norm
+
+Let `G = sqrt(sum_i ||g_i||_2^2)` over all parameters. Global-norm clipping uses
+
+`scale = min(1, c/(G+epsilon))`, then `g_i <- scale*g_i`.
+
+When clipping activates, every component receives the same positive scale, preserving the full
+gradient direction while limiting magnitude. Per-tensor norm clipping does not preserve the global
+direction and changes behaviour when parameters are regrouped or sharded.
+
+<WhyItMatters>
+
+Clipping is a guardrail and a diagnostic. Log the pre-clip norm, post-clip norm, threshold, scale,
+and clipping frequency. If nearly every step clips, the effective optimiser is different from the
+configured one and the underlying instability still needs diagnosis.
+
+</WhyItMatters>
+
+## Mixed-precision order of operations
+
+Loss scaling multiplies the loss so small float16 gradients survive backward. Before global-norm
+clipping, gradients must be **unscaled**; otherwise the norm and threshold live in different units.
+A robust order is:
+
+1. scaled backward;
+2. unscale gradients;
+3. check finiteness;
+4. compute and optionally clip the true global norm;
+5. optimiser step if finite;
+6. update the scaler;
+7. advance the schedule according to the declared successful-step policy.
+
+Keep numerically sensitive reductions and optimiser state in a suitable wider precision. Casting an
+overflowed value to float32 after the fact cannot recover it.
+
+## A practical floating-point model
+
+A normal binary floating-point number can be viewed as
+
+`sign * significand * 2^exponent`.
+
+The exponent controls range; significand bits control local precision. IEEE float32 has 24 bits of
+significand precision including the implicit leading bit, roughly seven decimal digits. Float64 has
+53 bits, roughly sixteen decimal digits. Float16 has only 11 significant bits and a small exponent
+range. bfloat16 has only 8 significant bits but uses the float32-sized exponent field.
+
+This explains two different mixed-precision behaviours:
+
+- float16 gradients can overflow or underflow because the exponent range is narrow;
+- bfloat16 often keeps values finite but rounds nearby values together because precision is coarse.
+
+For any basic operation, the standard mental model is
+
+`fl(a op b) = (a op b)(1 + delta)`, with `|delta| <= u`,
+
+when the exact result is normal and no overflow or underflow occurs. Here `u` is unit roundoff. The
+model says each operation is close to exact relative arithmetic; it does **not** say a long algorithm
+has small final error. Conditioning and the way local errors accumulate determine that.
+
+## Conditioning versus stability
+
+Conditioning belongs to the mathematical problem. Stability belongs to the algorithm.
+
+For subtraction `f(a,b)=a-b`, small relative input errors can cause a huge relative output error
+when `a` and `b` are close. The problem of recovering a tiny difference from inexact operands is
+ill-conditioned. A stable algorithm cannot reconstruct digits that were never present.
+
+For log-sum-exp, the mathematical function can be well behaved while the naive `exp`-then-sum
+algorithm overflows. Maximum shifting is a more stable algorithm for the same function. This
+distinction prevents a common debugging mistake: adding arbitrary precision to an unstable
+algorithm without asking whether an algebraic reformulation exists.
+
+## Worked cancellation examples
+
+Assume arithmetic rounds `1+x` to `1` for a sufficiently small positive `x`. Then the naive
+
+`log(1+x)`
+
+returns zero, losing the whole answer, while `log1p(x)` uses a dedicated approximation that retains
+the increment. Likewise, if `exp(x)` rounds to one near zero, `exp(x)-1` returns zero while
+`expm1(x)` retains the small result.
+
+For the quadratic formula, one root of `ax^2+bx+c=0` can suffer cancellation when
+`b` and `sqrt(b^2-4ac)` nearly match. Compute
+
+`q = -0.5(b + sign(b)sqrt(b^2-4ac))`,
+
+then roots `q/a` and `c/q`. The first expression chooses addition of same-sign magnitudes; the
+second root follows from the product-of-roots identity. This pattern—compute one accurate quantity
+and derive its fragile partner through an invariant—appears throughout numerical computing.
+
+## Worked log-sum-exp and softmax example
+
+Take logits `(1000, 999, 997)`. The naive exponentials overflow in common dtypes. Let `m=1000` and
+shift to `(0,-1,-3)`:
+
+`sum exp(x-m) = 1 + 0.367879 + 0.049787 = 1.417666`.
+
+Therefore
+
+`logsumexp(x) = 1000 + log(1.417666) approximately 1000.349012`.
+
+The stable softmax is
+
+`(1, 0.367879, 0.049787) / 1.417666`
+
+`approximately (0.705385, 0.259496, 0.035119)`.
+
+For target class two, using zero-based index `1`, cross-entropy is
+
+`1000.349012 - 999 = 1.349012`.
+
+No probability needed to be rounded and logged. The gradient remains `softmax(x)-one_hot(y)`, which
+a fused loss can compute using the same stable intermediates.
+
+The shift need not mathematically be the maximum; any constant cancels in softmax. The maximum is
+computationally useful because it makes the largest exponent exactly one and all others no larger.
+
+## Axis semantics and special cases
+
+For a batch of shape `(batch, classes)`, reduce over `classes`, not over the whole tensor. Preserve
+the reduced dimension while subtracting the maximum so broadcasting aligns with the original logits.
+
+Special values need an explicit contract:
+
+- a slice containing positive infinity may represent probability mass concentrated among its
+  positive-infinity entries; naive infinity-minus-infinity shifting produces NaN;
+- an all-negative-infinity slice has log-sum-exp negative infinity, but its softmax is undefined
+  unless the application chooses a policy;
+- any NaN input normally propagates because silently ignoring it hides upstream failure;
+- an empty reduction needs either an identity result or a deliberate error.
+
+Use a trusted library primitive unless implementing the kernel is itself the exercise. Test every
+axis, `keepdims`, dtype, special-value policy, and gradient—not only ordinary finite vectors.
+
+## Stable binary losses
+
+For binary target `y` and logit `z`, the naive formula uses a sigmoid followed by logarithms. A
+stable logits-space expression is
+
+`max(z,0) - zy + log1p(exp(-abs(z)))`.
+
+When `z` is a large positive number, `exp(-abs(z))` is safe and `max(z,0)-zy` captures the dominant
+linear term. When `z` is very negative, the same expression avoids forming `exp(-z)`. This is why
+framework APIs named “with logits” are usually preferable to separately calling sigmoid and binary
+cross-entropy.
+
+## Stable norms before clipping
+
+The naive norm `sqrt(sum(g_i^2))` can overflow during squaring even when the final norm is
+representable. A scaled sum-of-squares algorithm tracks a current maximum magnitude `s` and a
+dimensionless sum `q`, so the norm is `s*sqrt(q)`. Libraries commonly provide stable norm kernels;
+use them rather than assuming the textbook expression is safe.
+
+Suppose two parameter tensors have gradients `(3,4)` and `(0,12)`. Their global norm is
+
+`sqrt(3^2+4^2+12^2) = 13`.
+
+With threshold `5`, the common scale is `5/13`. The clipped joined gradient is
+
+`(15/13, 20/13, 0, 60/13)`
+
+and its norm is exactly `5`. The direction is unchanged because every component uses the same
+factor. Clipping the tensors independently would leave `(3,4)` unchanged and scale only `(0,12)`,
+rotating the joined vector.
+
+In data-parallel training, each worker may already hold the same all-reduced gradient. In sharded
+training, workers hold different pieces. For the sharded case, sum local squared norms across all
+workers, take one square root, derive one scale, and apply it to every shard. Clipping each shard to
+the threshold allows the full norm to grow with worker count.
+
+## Clipping changes the optimiser input
+
+For SGD, clipping replaces the gradient directly. For momentum and Adam, decide whether clipping
+occurs before moment updates; standard training usually clips the gradient before it enters the
+optimiser state. If clipping happens after the optimiser has updated its moments, the immediate
+parameter movement may be bounded while enormous values still pollute future state.
+
+Log at least:
+
+- pre-clip global norm;
+- threshold and applied scale;
+- post-clip norm;
+- fraction of successful steps clipped;
+- per-group gradient and update norms;
+- optimiser moment extrema and finite flags.
+
+If `90%` of steps clip, the threshold is functioning as a persistent nonlinear transformation, not
+an emergency guardrail. Compare lower learning rate, corrected loss scaling, data repairs, model
+normalisation, and a different threshold in controlled runs.
+
+## Loss scaling with a numeric example
+
+Suppose an unscaled float16 gradient component would be `2e-8`, too small for the working path and
+rounded to zero. Multiplying the loss by `S=65536` makes the backward component roughly `0.00131`,
+which is representable. Before the optimiser step, divide every gradient by `S` in a wider-safe
+operation.
+
+If the scaled backward pass overflows, skip the parameter transition and reduce the scale. If it
+remains finite for many steps, the scaler may cautiously grow. The scale is not a hyperparameter of
+the mathematical objective: after unscaling, the optimiser should see the same gradient it would
+have seen in a sufficiently precise unscaled computation.
+
+Clipping before unscale breaks that invariant. With scale `65536` and threshold `1`, an unscaled norm
+`0.1` appears as `6553.6` and is reduced by about that factor. After unscale, the effective gradient
+is nearly erased.
+
+## Reduction accuracy and reproducibility
+
+Consider summing `[1e8, 1, -1e8]` in a low-precision format. Left-to-right evaluation may first lose
+the `1` and return zero. Reordering to `(1e8-1e8)+1` returns one. The real sum is one; floating-point
+addition is not associative.
+
+Pairwise summation combines values in a balanced tree, reducing error growth from roughly linear to
+roughly logarithmic in the number of terms under standard assumptions. Kahan summation tracks a
+compensation for low-order bits lost in each addition. Wider accumulation often offers the best
+hardware-supported trade-off for tensor reductions.
+
+Parallel kernels naturally change grouping. Requiring deterministic kernels fixes some order and
+algorithm choices but may cost speed and still does not guarantee bitwise agreement across different
+hardware or library versions. Define whether the requirement is exact replay, close numerical
+agreement, or statistically equivalent training.
+
+## A first-nonfinite debugging protocol
+
+Install checks in causal order, not only at the final loss:
+
+1. validate input range, labels, masks, and padding sentinels;
+2. inspect layer outputs and attention logits before exponentials or divisions;
+3. inspect individual loss components before reduction;
+4. inspect scaled gradients immediately after backward;
+5. unscale and inspect true gradients;
+6. compute the stable global norm and clipping scale;
+7. inspect optimiser moments before and after update;
+8. inspect the proposed parameter delta and resulting parameters.
+
+On the first failure, save the exact batch IDs, model checkpoint, optimiser and scaler state, RNG
+states, dtype/autocast configuration, and the operation name. Reproduce on one device with the same
+kernel settings. Binary-search the network or use hooks to find the earliest layer that changes from
+finite to nonfinite.
+
+Do not insert `nan_to_num` during diagnosis. It destroys the evidence and turns a loud failure into
+silent model corruption. Sanitisation can be a deliberate product policy at an external-data
+boundary, but it is not a substitute for numerically valid training internals.
+
+## Find the first bad value
+
+NaN spreads, so the final loss rarely identifies the cause. Instrument boundaries: inputs,
+activations, logits, loss components, scaled and unscaled gradients, clipping scale, optimiser
+moments, parameter update, and parameters. Stop at the **first** nonfinite stage and record the
+batch, dtype, operation, min/max, norm, and reproduction seed.
+
+## Exercises
+
+<Exercise id="stable-rationalise" difficulty="easy">Stabilise `sqrt(1+x)-1` for small positive `x`.<Solution>Multiply by the conjugate to obtain `x/(sqrt(1+x)+1)`, avoiding subtraction of rounded near-equals.</Solution></Exercise>
+
+<Exercise id="stable-lse" difficulty="medium">Derive log-sum-exp after subtracting the maximum.<Solution>Factor `exp(m)` from the sum, take its log as `m`, and leave shifted exponents no greater than one.</Solution></Exercise>
+
+<Exercise id="stable-debug-amp" difficulty="hard">A trainer clips before unscaling loss-scaled gradients. Diagnose it.<Solution>The threshold is applied in scaled units and almost always clips; unscale, check finite values, then compute and clip the true norm.</Solution></Exercise>
+
+<Exercise id="stable-interview-clipping" difficulty="interview">Compare value and global-norm clipping.<Solution>Value clipping truncates coordinates and rotates direction; global-norm clipping uniformly rescales the vector and preserves direction when finite.</Solution></Exercise>
+
+<Exercise id="stable-real-trace" difficulty="real-world">Design a first-nonfinite investigation for a mixed-precision run.<Solution>Replay a frozen batch while checking each boundary in execution order, then record dtype, range, norm, scaler, batch ID, and the earliest failing operation.</Solution></Exercise>
+
+## Checkpoint
+
+1. Distinguish range error from precision loss.
+2. Why does subtracting the maximum stabilise log-sum-exp?
+3. Why is `log(softmax(x))` weaker than a fused log-softmax route?
+4. How does global-norm clipping preserve direction?
+5. Where does unscaling occur relative to clipping?
+
+## Gotchas
+
+<Gotchas>
+<Gotcha question="I used float64, so the formula is stable.">Higher precision postpones failure; it does not repair cancellation or unbounded exponentials.</Gotcha>
+
+<Gotcha question="Subtracting the maximum changes softmax.">Softmax is invariant to a common shift; numerator and denominator share the same cancelled factor.</Gotcha>
+
+<Gotcha question="I clamp probabilities before taking logs.">Use log-softmax or cross-entropy in the log domain; arbitrary clamps change the objective and gradients.</Gotcha>
+
+<Gotcha question="Gradient clipping fixed training.">If clipping is frequent, investigate learning rate, loss scale, data, activations, and optimiser state; clipping may only bound the symptom.</Gotcha>
+
+<Gotcha question="My global norm changed after sharding.">Compute the sum of squared norms across all shards before one common scale; independent shard clipping changes the algorithm.</Gotcha>
+</Gotchas>
+
+## Summary
+
+Numerical stability is algebra designed for finite arithmetic. Avoid cancellation with reformulated
+expressions and dedicated primitives; shift exponentials into a safe range; compute likelihoods in
+the log domain; choose reduction precision deliberately. Gradient clipping bounds updates, with
+global-norm clipping preserving direction, but it should remain observable. In mixed precision,
+
+operation order is part of correctness: unscale before finite checks and clipping, then trace the
+first bad boundary instead of treating the final NaN as the root cause.

@@ -250,6 +250,52 @@ test("an authored topic carries real practice depth, not a token exercise", asyn
   }
 });
 
+test("the final optimisation lessons retain deep parsed answers instead of silently truncating YAML", async () => {
+  const targetIds = new Set([
+    "roadmap:phase-2-2.2:10",
+    "roadmap:phase-2-2.2:11",
+    "roadmap:phase-2-2.2:12",
+  ]);
+  const exerciseKeys = new Set([
+    "id", "tier", "kind", "title", "minutes", "requiredForMastery", "concepts",
+    "prompt", "code", "starterCode", "language", "hints", "solution", "tests",
+  ]);
+  const words = (value: string) => value.trim().split(/\s+/).filter(Boolean).length;
+
+  for (const found of await loadPracticeFiles()) {
+    if (!targetIds.has(found.set.lessonId)) continue;
+
+    // YAML flow mappings can accept an unquoted comma as a new null-valued key. Zod strips that key,
+    // leaving valid but truncated learner content, so inspect the raw parsed object as well.
+    const raw = parse(await readFile(found.file, "utf8")) as { exercises: Array<Record<string, unknown>> };
+    for (const exercise of raw.exercises) {
+      const unexpected = Object.keys(exercise).filter((key) => !exerciseKeys.has(key));
+      assert.deepEqual(unexpected, [], `${found.file}: ${String(exercise.id)} has truncated YAML fields: ${unexpected.join(", ")}`);
+    }
+
+    for (const exercise of found.set.exercises) {
+      assert.ok(words(exercise.prompt) >= 5, `${found.file}: ${exercise.id} needs a complete prompt`);
+      assert.ok(words(exercise.solution) >= 45, `${found.file}: ${exercise.id} needs a teaching solution, not an answer key`);
+    }
+
+    const assessment = found.set.quizzes.find((quiz) => quiz.kind === "assessment");
+    assert.ok(assessment, `${found.file} needs an assessment`);
+    for (const question of assessment.questions) {
+      const modelAnswer = "modelAnswer" in question ? question.modelAnswer : undefined;
+      assert.ok(typeof modelAnswer === "string" && words(modelAnswer) >= 35, `${found.file}: ${question.id} needs a derived model answer`);
+    }
+
+    for (const question of found.set.interview) {
+      assert.ok(words(question.fullAnswer) >= 55, `${found.file}: ${question.id} needs an interview answer with reasoning and trade-offs`);
+    }
+
+    for (const project of found.set.projects) {
+      assert.ok(words(project.problem) >= 35, `${found.file}: ${project.id} needs a concrete project scenario`);
+      assert.ok(project.testing.length >= 3, `${found.file}: ${project.id} needs executable acceptance evidence`);
+    }
+  }
+});
+
 test("hints are progressive and no solution is given away before it is asked for", async () => {
   const files = await loadPracticeFiles();
   for (const { set, file } of files) {

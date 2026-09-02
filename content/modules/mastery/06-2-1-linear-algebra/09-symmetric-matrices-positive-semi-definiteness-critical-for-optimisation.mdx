@@ -26,7 +26,7 @@ Cholesky that succeeds, and a Newton step that points downhill.
 - A symmetric matrix stored as `number[][]` wastes half its entries; packed storage keeps only the triangle, and NumPy's `eigh` and `cholesky` assume you pass the whole thing but only read one triangle.
 - The definitive positive-definiteness test in any language is "try a Cholesky factorisation and see if it fails", not "compute all eigenvalues".
 - `x.T @ A @ x` is one line in NumPy; in TypeScript it is a double loop, and forgetting to symmetrise `A` first silently uses only its symmetric part anyway.
-- Sampling from a Gaussian needs a matrix square root; `np.linalg.cholesky` gives one, and the TypeScript equivalent would be a hand-rolled Cholesky with the same "fails if not PD" behaviour.
+- Sampling from a Gaussian needs a covariance factor `M` with `M M.T = A`; `np.linalg.cholesky` gives a triangular one. This is distinct from the principal square root satisfying `M^2 = A`. A TypeScript implementation would need the same positive-definiteness checks.
 
 </TypeScriptComparison>
 
@@ -133,9 +133,12 @@ assert tau > 0                                            # had to regularise
 
 <WhyItMatters>
 
-A kernel matrix that is not PSD breaks every kernel method — the optimisation is no longer convex
-and SVM duals become unbounded. A covariance estimate that is not PSD gives negative variances and
-breaks Gaussian sampling. BFGS deliberately maintains a PD Hessian approximation so its steps stay
+A non-PSD Gram matrix violates the assumptions of standard PSD-kernel methods; for an SVM it can
+make the dual non-concave, but box constraints may still keep the feasible objective bounded.
+
+A
+covariance estimate that is not PSD permits negative quadratic-form "variances" and breaks standard
+Gaussian sampling. BFGS deliberately maintains a PD Hessian approximation so its steps stay
 descent directions. Natural gradient and Gauss-Newton rely on a PSD Fisher or Gauss-Newton matrix.
 
 </WhyItMatters>
@@ -146,8 +149,12 @@ For a PD matrix the condition number is `w_max / w_min`, the ratio of the ellips
 shortest axis. It sets gradient descent's convergence rate and conjugate gradient's iteration count
 (`~ sqrt(cond)`), and it is what preconditioning tries to reduce.
 
-Every PSD matrix has a unique PSD square root `A^{1/2} = Q Lambda^{1/2} Q.T`, and a Cholesky factor
-is a cheaper non-symmetric square root. Both are used to whiten data (`Sigma^{-1/2} x`), to sample
+Every PSD matrix has a unique PSD square root `A^{1/2} = Q Lambda^{1/2} Q.T`. For a PD matrix,
+Cholesky gives a cheaper triangular **factor** `L` satisfying `A = L L.T`; `L` is generally not a
+matrix square root because usually `L @ L != A`. The symmetric root is used to whiten data
+(`Sigma^{-1/2} x`).
+
+Either an appropriate factor or root can be used to sample
 `x = mu + L z` from a Gaussian, and in natural-gradient preconditioning.
 
 ```python
@@ -156,7 +163,7 @@ w, Q = np.linalg.eigh(S)
 S_half = Q @ np.diag(np.sqrt(w)) @ Q.T
 assert np.allclose(S_half @ S_half, S)
 L = np.linalg.cholesky(S)
-assert np.allclose(L @ L.T, S)                            # a different, triangular square root
+assert np.allclose(L @ L.T, S)                            # triangular factor, not generally L @ L = S
 ```
 
 ## Doing this in floating point

@@ -223,7 +223,7 @@ exercises:
       time the function with and without the `ascontiguousarray` on a realistic shape and assert the
       contiguous version is faster.
     hints:
-      - Transpose is free but leaves the array non-contiguous.
+      - Creating the transpose view is usually O(1), but a later kernel may copy or run more slowly because it is non-contiguous.
       - A single `contiguous()` before the hot op fixes the stride pattern.
   - id: lten-debug-einsum-no-optimize
     tier: tricky

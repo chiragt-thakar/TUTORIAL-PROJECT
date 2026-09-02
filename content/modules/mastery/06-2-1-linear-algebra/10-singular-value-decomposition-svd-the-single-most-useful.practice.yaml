@@ -415,13 +415,15 @@ quizzes:
         points: 1
       - id: lsvd-as-reads
         kind: scenario
-        prompt: Given singular values `[12, 5, 0.001, 1e-15]`, give the numerical rank, spectral norm, condition number at that rank, and nuclear norm.
+        prompt: Given singular values `[12, 5, 0.001, 1e-15]`, give the numerical rank, spectral norm, restricted condition number at that rank, full condition number, and nuclear norm.
         modelAnswer: |
-          If the tolerance places the noise floor below `0.001`, numerical rank is 3, condition
+          If the tolerance places the noise floor below `0.001`, numerical rank is 3, restricted condition
           number `12 / 0.001 = 12000`, spectral norm `12`, nuclear norm `12 + 5 + 0.001 + ~0 ~
-          17.001`. If `0.001` is judged noise, rank is 2 and the condition number is `12 / 5 = 2.4`.
-          The choice of tolerance must be stated.
-        explanation: The reads depend on where the noise floor is drawn.
+          17.001`. If `0.001` is judged noise, rank is 2 and the restricted condition number is
+          `12 / 5 = 2.4`. The full mathematical condition number is `12 / 1e-15`, not the restricted
+          value (and becomes infinite if the last value is exactly zero). State the tolerance and
+          label which quantity you report.
+        explanation: Numerical rank changes the restricted problem, not the full matrix's sensitivity.
         concepts: [rank, condition-number, nuclear-norm]
         points: 1
       - id: lsvd-as-eckart-young
@@ -711,7 +713,7 @@ projects:
     requirements:
       - Demonstrate the zero-fill bias (predictions shrink toward zero for sparse rows) and replace it with mean-imputation or an alternating masked low-rank fit.
       - Select `k` from cumulative energy and the largest spectral gap, reporting both.
-      - Report the condition number using the smallest singular value above the tolerance, and state the tolerance.
+      - Report the restricted condition number using the smallest singular value above the tolerance, state the tolerance, and separately label the full matrix as singular or ill-conditioned.
       - Apply the sign convention so factors are reproducible across retrains.
       - Provide one fail-before-fix test per change plus a held-out RMSE or ranking metric before and after.
     constraints:
@@ -721,7 +723,7 @@ projects:
     expectedBehaviour:
       - Predictions for sparse users are no longer systematically shrunk toward zero after the imputation fix.
       - The chosen `k` is reported with its energy fraction and the gap that supports it.
-      - The condition number is finite and meaningful at the numerical rank.
+      - The restricted condition number is finite and meaningful at the numerical rank without being mislabelled as the full condition number.
       - Factors match across retrains after sign fixing.
       - The held-out metric improves and each change has a failing-first test.
     milestones:
@@ -738,7 +740,7 @@ projects:
     failureCases:
       - The masked fit still initialises from a zero-filled SVD and inherits the bias.
       - "`k` is chosen from energy alone and ignores an obvious spectral gap, or vice versa, without reporting both."
-      - The condition number is still computed over the full spectrum.
+      - The restricted condition number is presented as if thresholding changed the full matrix's mathematical condition number.
     bonus:
       - Add nuclear-norm-regularised matrix completion and compare with the truncated-SVD fit.
     architectureHints:

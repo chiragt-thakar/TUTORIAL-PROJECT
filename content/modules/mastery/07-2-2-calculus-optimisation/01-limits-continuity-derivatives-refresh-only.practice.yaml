@@ -415,13 +415,14 @@ quizzes:
         points: 1
       - id: lcl-as-subgradient
         kind: scenario
-        prompt: ReLU is not differentiable at `0`. How do optimisers cope, and why is it harmless?
+        prompt: ReLU is not differentiable at `0`. What convention does backpropagation use, and what can and cannot be guaranteed?
         modelAnswer: |
-          They use a subgradient — any value in `[0, 1]` — and frameworks pick one (usually `0`).
-          The set of inputs landing exactly on `0` has measure zero, so with real activations it
-          essentially never occurs, and the chosen value is still a descent direction. The loss is
-          differentiable almost everywhere, which is all (sub)gradient descent needs.
-        explanation: Isolated non-smooth points are handled by subgradients.
+          ReLU's convex subdifferential at `0` is `[0, 1]`, and frameworks choose a local derivative
+          convention, commonly `0`. Exact zeros have probability zero only under suitable continuous
+          distributions; discrete data and model structure can produce them. The convention keeps
+          backpropagation defined but does not guarantee descent for a composed non-convex network
+          loss. Practical success and convergence theorems are separate claims with assumptions.
+        explanation: A local derivative convention is not a universal descent guarantee.
         concepts: [subgradient, non-differentiable]
         points: 1
       - id: lcl-as-stepsize
@@ -531,16 +532,16 @@ interview:
       stays below the function. For ReLU at `0` it is any value in `[0, 1]`; for `|x|` at `0`, any
       value in `[-1, 1]`. Frameworks pick one.
     fullAnswer: |
-      Where a convex function has a kink, there is no unique tangent but a whole set of supporting
-      slopes — the subdifferential. Any element of it is a subgradient, and (sub)gradient descent
-      with a subgradient still converges under the usual step-size conditions. In deep learning this
-      covers ReLU and leaky-ReLU kinks, `max`-pooling, hard attention, L1 and group-lasso
-      penalties, and the hinge loss. Because the non-smooth points are isolated (measure zero for
-      real-valued inputs), the practical effect is nil; when non-smoothness genuinely causes
-      trouble, a smooth surrogate (softplus, smoothed L1, soft attention) is substituted.
+      Where a convex function has a kink, there is no unique tangent but a set of supporting slopes
+      called the subdifferential. Convex subgradient methods converge only under their stated
+      boundedness and step-size assumptions. ReLU, L1/group-lasso penalties, and hinge loss have
+      standard subgradients; max-pooling also needs a rule at ties. In a composed non-convex network,
+      the selected local rule is not automatically a global-loss descent direction. Discrete hard
+      attention is a separate case: it usually needs a relaxation or gradient estimator because an
+      ordinary derivative does not pass through its discrete choice.
     commonWrongAnswer: A subgradient is just the finite-difference derivative at the kink.
     followUps:
-      - Why is picking `0` versus `1` for ReLU's subgradient at `0` harmless?
+      - When can picking `0` versus `1` at a ReLU kink change training behaviour?
       - When would you switch to a smooth surrogate?
   - id: lcl-iv-finite-difference
     level: debugging

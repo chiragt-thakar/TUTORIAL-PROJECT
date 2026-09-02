@@ -1,7 +1,7 @@
 ---
 id: "roadmap:phase-2-2.2:5"
 title: "Critical points, saddle points, local vs global minima"
-description: A critical point has zero gradient; the Hessian's eigenvalue signs say whether it is a minimum, a maximum, or a saddle. In high dimensions almost every critical point is a saddle, which reframes what makes deep-net optimisation hard.
+description: A critical point has zero gradient; under the second-order test, definite or indefinite Hessian curvature distinguishes strict minima, maxima, and saddles. High dimension creates many possible escape directions, but claims about how common saddles are require assumptions about the loss landscape.
 module: 2-2-calculus-optimisation
 order: 6
 estimatedMinutes: 100
@@ -9,7 +9,7 @@ prerequisites: []
 learningObjectives:
   - Apply the first-order (∇f = 0) and second-order (Hessian sign) conditions to classify a critical point
   - Explain why a local minimum need not be global and what extra structure certifies globality
-  - Describe why saddle points dominate critical points in high dimensions and how noise-driven first-order methods escape them
+  - Explain why saddles are common in many high-dimensional non-convex landscapes, what assumptions that claim needs, and when noisy first-order methods escape strict saddles
   - Recognise degenerate minima, manifolds of minima, and the symmetry-induced multiplicity of deep-net optima
 ---
 
@@ -17,15 +17,19 @@ A critical point is where the gradient vanishes. It is the first-order necessary
 local extremum, but it does not distinguish a bottom from a top from a saddle — the Hessian does
 that.
 
-The reframing that matters for deep learning: in high dimensions, the overwhelming majority of
-critical points are saddles, not local minima. "Getting stuck in a bad local minimum" is mostly a
-low-dimensional intuition; the real obstacles are saddles and the flat plateaus around them.
+The useful reframing for deep learning is that a small gradient does not imply a minimum. Saddles,
+nearly flat directions, ill-conditioning, and genuine local minima can all occur. High dimension
+provides many possible negative-curvature directions, so saddles are common in several theoretical
+models and empirical loss landscapes.
+
+It does **not** prove that almost every critical point of an
+arbitrary deep network is a saddle, or that bad local minima cannot exist.
 
 <TypeScriptComparison>
 
 - Checking `∇f ≈ 0` in TypeScript is `norm(grad) < tol` — but a small gradient norm alone does not tell you it is a minimum; saddles have zero gradient too.
-- Certifying a minimum means the smallest Hessian eigenvalue is positive; the practical test in either language is a few Lanczos iterations on Hessian–vector products, not a dense eigendecomposition.
-- Simulating "most critical points are saddles" is a short experiment: sample random symmetric matrices and count how often all eigenvalues are positive — it drops off fast with dimension.
+- A positive smallest Hessian eigenvalue at a stationary point is sufficient for a strict local minimum; a zero value is inconclusive. Lanczos on Hessian–vector products supplies numerical evidence, not a proof without residual and regularity bounds.
+- Sampling random symmetric matrices shows that positive definiteness becomes rare in that matrix ensemble. It illustrates the geometry, but it does not sample Hessians conditioned on being critical points of a neural-network loss.
 - Newton's method converges to *any* stationary point; a TS or Python Newton loop can happily land on a saddle unless you add negative-curvature handling.
 
 </TypeScriptComparison>
@@ -57,13 +61,14 @@ assert classify(np.array([[2.0, 0.0], [0.0, -3.0]])) == "saddle"
 ## Local versus global
 
 A local minimum is a point that beats its neighbourhood. A **global** minimum beats everything. A
-generic smooth function has many local minima, and finding the global one is NP-hard in general —
-there is no first- or second-order test that certifies a local minimum is global.
+smooth non-convex function can have many local minima, and broad classes of globally optimising
+non-convex functions are computationally hard. There is no universal first- or second-order test
+that turns an arbitrary local minimum into a certified global one.
 
 Globality follows only from extra structure: **convexity** (every local minimum is global), or a
 **Polyak–Łojasiewicz / gradient-dominance** condition (`½||∇f||² ≥ μ(f − f*)`), or exhaustive
-enumeration for a discrete problem. Deep-net losses have none of these globally, yet training works —
-because of the landscape structure discussed below, not because the problem is convex.
+enumeration for a discrete problem. Typical deep-net losses are not globally convex and usually have
+no known global PL guarantee. Training success is empirical and architecture/problem dependent.
 
 ```python
 # f(x) = x**4 - 3x**2 + x : two local minima, one global
@@ -74,23 +79,28 @@ f = xs**4 - 3*xs**2 + xs
 
 <Concept>
 
-`∇f = 0` is cheap to check and tells you almost nothing on its own. To claim a minimum you also need
-`λ_min(H) > 0`; to claim a *global* minimum you need structure (convexity, PL) or a proof specific
-to the problem. Deep learning relies on the third option, empirically.
+`∇f = 0` is cheap to check and tells you almost nothing on its own. `λ_min(H) > 0` is sufficient for
+a strict local minimum; `λ_min(H) = 0` needs higher-order or problem-specific analysis. To establish
+a *global* minimum you need global structure such as convexity or a proof specific to the problem.
 
 </Concept>
 
-## Why saddles dominate in high dimensions
+## Why saddles are often prominent in high dimensions
 
-Model the Hessian at a random critical point as a random symmetric matrix. Its eigenvalues are
-roughly symmetric about some mean, so each one is positive or negative with probability near ½. For
-all `n` to be positive — a local minimum — you need `n` coin flips to come up the same way, which
-has probability that decays exponentially in `n`.
+As an intuition model, draw a symmetric matrix from an ensemble whose eigenvalue distribution spans
+both signs. As dimension grows, requiring every eigenvalue to be positive is increasingly
+restrictive, while one negative eigenvalue is enough for a saddle. This explains why high dimension
+can make indefinite curvature easy to encounter.
 
-So among the critical points of a high-dimensional function, minima are exponentially rare and
-saddles are the norm. Random-matrix theory sharpens this: critical points at higher loss have *more*
-negative eigenvalues (more downhill escape directions), and the few near the global minimum are the
-ones that are actually minima. This is the empirical picture of deep-net loss surfaces.
+But the eigenvalue signs are correlated, and a Hessian sampled **at a critical point** is not a
+generic random symmetric matrix. Its distribution depends on the objective, data, parameterisation,
+regularisation, and loss level. Some random-landscape models predict that high-loss critical points
+have more negative directions and low-loss critical points are more likely to be minima. Empirical
+neural-network Hessians often show many near-zero directions and, away from convergence, negative
+curvature.
+
+These are conditional theoretical and empirical observations—not a universal counting
+theorem for all deep networks.
 
 ```python
 rng = np.random.default_rng(0)
@@ -101,15 +111,17 @@ def frac_minima(n, trials=2000):
         if np.linalg.eigvalsh(A).min() > 0: c += 1
     return c / trials
 
-assert frac_minima(2) > frac_minima(6) > frac_minima(12)   # vanishes fast
+fractions = [frac_minima(n) for n in (2, 6, 12)]
+assert fractions[0] > fractions[-1]   # illustration for this ensemble, not a proof about losses
 ```
 
 ## Escaping saddles
 
-A **strict saddle** has `λ_min(H) < 0` — a direction of strict negative curvature. First-order
-methods with a source of randomness escape strict saddles: perturbed gradient descent adds a small
-random kick when the gradient is tiny, and SGD's mini-batch noise does the job for free, because the
-noise has a component along the escape direction that grows once you leave the saddle's flat centre.
+A **strict saddle** has `λ_min(H) < 0` — a direction of strict negative curvature. Under smoothness
+and strict-saddle assumptions, perturbed gradient descent can escape by adding an appropriately
+scaled random kick when the gradient is tiny. SGD noise can help when its covariance has a component
+along the escape direction, but mini-batch noise may be anisotropic, too small, or even vanish, so it
+is not an automatic perturbation guarantee.
 
 The cost is time on the **plateau**: near a saddle the gradient is small in every direction, so
 progress crawls until the negative-curvature direction is found. Momentum helps by accumulating
@@ -117,20 +129,25 @@ velocity through the flat region; a well-scaled learning rate helps by not wasti
 signal.
 
 ```python
-def perturbed_gd_step(x, grad_f, eta, radius=1e-3, grad_tol=1e-4, rng=None):
+def perturbed_gd_step(x, grad_f, eta, noise_scale=1e-3, grad_tol=1e-4, rng=None):
+    rng = np.random.default_rng() if rng is None else rng
     g = grad_f(x)
     if np.linalg.norm(g) < grad_tol:                  # near a critical point
-        x = x + (rng or np.random).standard_normal(x.shape) * radius
+        direction = rng.standard_normal(x.shape)
+        direction /= np.linalg.norm(direction) + 1e-12
+        x = x + noise_scale * direction
         g = grad_f(x)
     return x - eta * g
 ```
 
 ## Degenerate minima and manifolds of minima
 
-Not every minimum is an isolated point. An over-parameterised network typically has a *manifold* of
-parameter settings achieving (near-)zero training loss — a connected valley floor, not a well. The
-Hessian there is positive semidefinite with a large null space (the directions along the manifold),
-so it is degenerate, not a strict minimum.
+Not every minimum is an isolated point. Continuous parameter symmetries can create a *manifold* (or
+orbit) of equivalent parameter settings with the same function and loss. At a smooth local minimum,
+the Hessian is positive semidefinite; tangent directions generated by a continuous symmetry are
+zero-curvature directions, so that minimum is not strict. Over-parameterisation often adds many
+nearly flat directions, but it does not guarantee that every low-loss solution belongs to one
+connected manifold.
 
 Symmetries multiply optima: permuting hidden units, or rescaling a ReLU layer up and a following one
 down, gives a different parameter vector with the *same* function and loss. So deep nets have a
@@ -145,27 +162,32 @@ are connected by low-loss paths (mode connectivity).
 ## Doing this in floating point
 
 A small gradient norm is an ambiguous stopping criterion: it is small at minima, maxima, and
-saddles, and near-zero across a whole plateau. To *certify* a minimum, estimate `λ_min(H)` with a
-few Lanczos or inverse-power iterations on Hessian–vector products and require it clearly positive;
-`λ_min ≈ 0` means degenerate, `λ_min < 0` means saddle.
+saddles, and near-zero across a whole plateau. For numerical second-order evidence, estimate
+`λ_min(H)` with Lanczos on Hessian–vector products and inspect the Ritz residual. A clearly negative
+value exposes negative curvature; a near-zero estimate leaves the test inconclusive. A positive
+estimate is a rigorous certificate only with suitable approximation-error and neighbourhood bounds.
 
 Newton's method drives `∇f` to zero, so it converges to *whichever* stationary point is nearby — a
-saddle included. Saddle-free Newton replaces `H` with `|H|` (absolute eigenvalues), so the step
-always descends; trust-region methods detect and exploit negative curvature.
+saddle included. With zero modes regularised, replacing `H` by `|H|` makes `-|H|^{-1}g` a descent
+direction when `g` is nonzero. Trust-region methods can instead detect and exploit negative curvature.
 
 ```python
 # certify: lambda_min via a few HVP inverse-iteration or Lanczos steps
-def near_minimum(hvp, n, tol=1e-6):
-    # returns True only if the smallest curvature is clearly positive
-    ...
+def second_order_evidence(grad, smallest_ritz_value, grad_tol=1e-6, curvature_tol=1e-5):
+    """Numerical evidence, not a formal certificate between sampled points."""
+    return np.linalg.norm(grad) <= grad_tol and smallest_ritz_value > curvature_tol
 ```
 
 <ProductionNote>
 
-Do not stop training on gradient norm alone. If progress stalls with a small gradient, check whether
-you are on a saddle plateau (estimate `λ_min(H)`; a negative value confirms it) versus a genuine
-degenerate minimum. On a saddle, add noise (or rely on SGD noise), increase momentum, or take a
-negative-curvature step; on a degenerate minimum, you are done.
+Do not stop training on gradient norm alone. If progress stalls with a small gradient, estimate
+bottom curvature: a reliably negative Ritz value is evidence of a descent direction, while a value
+near zero leaves the second-order test inconclusive. A positive estimate plus a small gradient is
+local numerical evidence only; rigorous certification also needs error bounds and neighbourhood
+regularity.
+
+On a saddle, an explicit perturbation, a negative-curvature step, or a trust-region
+method may help. Do not assume ordinary SGD noise or more momentum will always escape it.
 
 </ProductionNote>
 
@@ -224,29 +246,25 @@ two-way saddle.
 
 <Exercise id="lcp-saddle-fraction" difficulty="hard">
 
-Argue, using a random-matrix model of the Hessian, why the fraction of critical points that are
-local minima decays exponentially with dimension, and what this implies for the *loss level* of
-minima.
+Use a random-matrix model to explain why positive-definite Hessians can become rare with dimension.
+Then state why this toy model does not determine the fraction or loss level of minima in an arbitrary
+neural network.
 
 <Solution>
 
-Model the Hessian at a "typical" critical point as a random symmetric matrix whose eigenvalue
-distribution is roughly symmetric about zero (e.g. a scaled Gaussian orthogonal ensemble, or shifted
-by the loss level). Under this model each eigenvalue is positive with probability roughly `p`, and
-the signs are weakly dependent.
+As a toy model, draw a random symmetric matrix whose eigenvalue distribution is roughly symmetric
+about zero (for example, a scaled Gaussian orthogonal ensemble). The simplest sign-counting
+intuition treats each eigenvalue as positive with probability roughly `p`, although real random
+matrix eigenvalues are correlated.
 
 A critical point is a local minimum only if *all* `n` eigenvalues are positive. Treating them as
-approximately independent, that probability is about `p^n`, which decays exponentially in `n`. So
-among all critical points, minima are exponentially rare; almost all are saddles, and a saddle at a
-random critical point typically has a constant fraction of negative eigenvalues.
+approximately independent, that probability is about `p^n`, which decays exponentially in `n`.
+This conclusion belongs to the assumed ensemble. It does not count Hessians of a particular loss,
+because conditioning on `grad f = 0` changes their distribution.
 
-The refinement from random-matrix theory: shift the eigenvalue distribution so its mean tracks the
-loss. Higher-loss critical points have it shifted negative, so they have *more* negative eigenvalues
-— more downhill escape directions. Lower-loss ones have it shifted positive, so the rare true minima
-cluster near the global minimum.
-
-This is why gradient-following training tends to reach low loss: it keeps finding downhill directions
-(escaping saddles) until it is near the bottom, where minima actually live.
+Some random-landscape models additionally tie a spectral shift to loss level, producing more
+negative directions at high loss and more minima at low loss. That is a model-specific result to
+check against a real objective, not a proof that gradient-following training must reach low loss.
 
 </Solution>
 </Exercise>
@@ -258,17 +276,19 @@ optimisation hard?"
 
 <Solution>
 
-Mostly not bad local minima — that is a two- or three-dimensional intuition. In the very
-high-dimensional parameter space, random-matrix arguments and empirical studies show that the
-critical points a gradient method encounters are overwhelmingly **saddle points**, and the local
-minima that exist tend to sit at low loss, close in value to the global minimum. Over-parameterised
-networks also have connected manifolds of near-zero-loss solutions rather than isolated wells.
+I would not claim that bad local minima are impossible. Theory for some structured or random
+objectives and empirical Hessian studies show that **saddles** and nearly flat directions can be
+important in high-dimensional models. Continuous symmetries and over-parameterisation can also
+create equivalent or connected low-loss solutions. These findings depend on architecture, data,
+objective, and training regime; they are not a universal landscape theorem.
 
 So the hard parts are: (1) **saddle plateaus** — the gradient is tiny in every direction and progress
 crawls until a negative-curvature escape direction is found; (2) **ill-conditioning** — a wide
-spread of Hessian eigenvalues forcing a small learning rate and zig-zagging; (3)
+spread of Hessian eigenvalues forcing a small learning rate and zig-zagging.
+
+Other difficulties include (3)
 **vanishing/exploding gradients** from the product of layer Jacobians; (4) the **stochastic**
-gradient, which both helps (SGD noise escapes strict saddles) and hurts (variance slows the final
+gradient, whose noise can help when it excites a negative-curvature direction but also hurts (variance slows the final
 approach).
 
 Mitigations map onto these: momentum and adaptive methods carry velocity through plateaus and act as
@@ -370,14 +390,14 @@ positive), a maximum (all negative), a saddle (mixed), or degenerate (a zero eig
 minimum is not automatically global — that needs convexity, a PL condition, or a problem-specific
 argument.
 
-In high dimensions, minima are exponentially rare among critical points and saddles dominate;
-higher-loss critical points have more negative (escape) directions, and the minima that exist
-cluster near low loss. Strict saddles are escaped by noisy first-order methods — perturbed GD, or
-SGD's own noise — at the cost of time on the surrounding plateau, which momentum and a good learning
-rate shorten.
+High dimension makes all-positive curvature restrictive in broad random-matrix models, and many
+studied or observed non-convex landscapes contain saddle and nearly flat directions. That intuition
+does not establish the fraction of saddles in an arbitrary neural-network loss. Under explicit
+smoothness, strict-saddle, and perturbation assumptions, noisy first-order methods can escape strict
+saddles; ordinary SGD noise may help but is not guaranteed to have the needed direction or scale.
 
-Deep-net optima are not isolated: over-parameterised networks have connected manifolds of low-loss
-solutions, and permutation and rescaling symmetries produce combinatorially many equivalent global
-minima. Certify a minimum with `λ_min(H)` from Lanczos, not with the gradient norm. The Practice,
+Deep-net optima need not be isolated: continuous rescaling symmetries can produce manifolds, while
+permutation symmetries produce discrete families of equivalent solutions. Use a small gradient plus
+a bottom-curvature estimate as numerical evidence, not an unconditional certificate. The Practice,
 Debug, Interview, Test, Project, and Review tabs build the classification, the saddle experiments,
 and the escape strategies.
