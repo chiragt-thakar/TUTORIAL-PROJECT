@@ -130,9 +130,10 @@ when it is accurate enough to build later topics on, not merely when its files p
 - [x] ~~Second-order methods: Newton, quasi-Newton, L-BFGS — and why we don't use them at scale~~ — Sol
 - [x] ~~Numerical stability: catastrophic cancellation, log-sum-exp trick, gradient clipping~~ — Sol
 
-### 2.3 Probability — the language of uncertainty — not started
+### 2.3 Probability — the language of uncertainty — in progress
 
-- [ ] Sample spaces, events, axioms of probability — Sol ← **NEXT**
+- [x] ~~Sample spaces, events, axioms of probability~~ — Sol
+- [ ] Conditional probability, independence, Bayes' theorem — Sol ← **NEXT**
 
 Continue the remaining 2.3 topics in the exact order recorded in
 `content/modules/mastery/08-2-3-probability-the-language-of-uncertainty/module.json`.

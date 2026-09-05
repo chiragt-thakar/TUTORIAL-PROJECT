@@ -1,0 +1,262 @@
+---
+id: "roadmap:phase-2-2.3:0"
+title: "Sample spaces, events, axioms of probability"
+description: Model uncertain experiments with outcomes and measurable events, apply the probability axioms, derive their core consequences, and verify finite models by exact enumeration and simulation.
+module: 2-3-probability-the-language-of-uncertainty
+order: 1
+estimatedMinutes: 150
+prerequisites: []
+learningObjectives:
+  - Distinguish an experiment, outcome, sample space, event, event family, and probability measure
+  - Translate logical statements into set operations and derive complement, monotonicity, inclusion-exclusion, and union bounds from the axioms
+  - Construct and validate finite probability models without assuming outcomes are equally likely
+  - Implement exact enumeration and reproducible simulation while separating mathematical probability from empirical frequency
+---
+
+Probability starts before formulas. You first decide what one trial is, which complete outcomes it
+can produce, and which questions about those outcomes your model can answer. Only then may you assign
+probabilities. A vague sample space makes every later calculation fragile.
+
+<TypeScriptComparison>
+
+- A sample space is like the complete set of valid values of a TypeScript union, while an event is a
+  predicate selecting some of those values. The analogy helps, but probability also assigns mass.
+- JavaScript `Math.random()` produces pseudorandom values; it does not define the mathematical model.
+  A model can be analysed exactly without sampling, and a sampler can be buggy despite plausible output.
+- Python `set` operations are useful for finite events, but continuous probability uses mathematical
+  sets that should not be materialised point by point.
+
+</TypeScriptComparison>
+
+## The probability space
+
+A probability space is a triple `(Omega, F, P)`:
+
+- `Omega`, the **sample space**, contains every complete outcome of one declared experiment;
+- `F`, the **event space** or sigma-algebra, is a collection of allowed subsets of `Omega`;
+- `P` maps every event in `F` to a real number.
+
+An outcome `omega` is one complete result. An event `A` is a set of outcomes. After a trial, `A`
+occurs exactly when the observed outcome belongs to `A`.
+
+For two ordered coin tosses, `Omega = {HH, HT, TH, TT}`. The event “exactly one head” is `{HT, TH}`.
+`HT` and `TH` are different because order is part of the experiment. If you record only the number
+of heads, a different valid sample space is `{0, 1, 2}`. Those models answer different questions.
+
+## Events are logic written as sets
+
+For events `A` and `B`, union means inclusive “or,” intersection means “and,” complement means
+“not,” and `A minus B` means `A` but not `B`. Events are disjoint when their intersection is empty.
+“A or B but not both” is the symmetric difference, not the ordinary union.
+
+De Morgan's laws provide a useful translation check:
+
+`(A union B)^c = A^c intersection B^c`
+
+`(A intersection B)^c = A^c union B^c`.
+
+## Why an event space is needed
+
+For a finite or countable sample space, taking `F` as every subset is normally safe. On uncountable
+spaces such as the real line, standard continuous measures are instead defined on a sigma-algebra;
+not every imaginable subset is measurable under the usual regularity requirements. A sigma-algebra
+contains `Omega`, is closed under complements, and is closed under countable unions. These rules also
+give the empty set, countable intersections, and set differences.
+
+For practical ML work, Borel sets—generated from open intervals—cover familiar questions such as
+`X <= 3`. The important habit is to say that probabilities belong to measurable events, not
+silently claim that every subset has a probability.
+
+## The three axioms
+
+For events in `F`, a probability measure satisfies:
+
+1. **Non-negativity:** `P(A) >= 0`.
+2. **Normalisation:** `P(Omega) = 1`.
+3. **Countable additivity:** for pairwise-disjoint events `A_1, A_2, ...`,
+   `P(union_i A_i) = sum_i P(A_i)`.
+
+Countable additivity includes finite additivity. It does not permit adding probabilities of
+overlapping events; overlap would be counted repeatedly. These axioms constrain a model but do not
+choose one. Fairness, symmetry, measured frequencies, or domain knowledge supplies extra assumptions.
+
+<WhyItMatters>
+
+Many ML failures called “probability bugs” are model-definition bugs: outcomes overlap, a class is
+omitted, weights do not normalise, or an empirical sampler is mistaken for the target distribution.
+Validate the probability space before estimating anything.
+
+</WhyItMatters>
+
+## Deriving the basic consequences
+
+`Omega` and the empty set are disjoint and their union is `Omega`. Additivity gives
+`P(Omega)=P(Omega)+P(empty)`, so `P(empty)=0`.
+
+`A` and `A^c` are disjoint and partition `Omega`, so
+`1=P(A)+P(A^c)`. Therefore `P(A^c)=1-P(A)`, and non-negativity proves `P(A)<=1`.
+
+If `A` is a subset of `B`, then `B` is the disjoint union of `A` and `B minus A`. Hence
+`P(B)=P(A)+P(B minus A)>=P(A)`. This is **monotonicity**.
+
+Split `B` into `B minus A` and `A intersection B`. Eliminating the first piece from the two
+additivity equations gives
+
+`P(A union B)=P(A)+P(B)-P(A intersection B)`.
+
+Because the intersection term is non-negative, `P(A union B)<=P(A)+P(B)`. Repeated decomposition
+gives the **union bound** `P(union_i A_i)<=sum_i P(A_i)` even when events overlap. It needs no
+independence assumption.
+
+## Finite models: weights, not wishful symmetry
+
+Let finite outcomes have non-negative weights `w(omega)` summing to one. Then
+`P(A)=sum over omega in A of w(omega)`. Only when all `N` outcomes are equally likely does this
+simplify to `|A|/N`. Counting outcomes is not enough unless equiprobability has been justified.
+
+For two independent fair tosses, four ordered sequences each have weight `1/4`, so exactly one head
+has probability `2/4`. For the number-of-heads space `{0,1,2}`, the weights are `(1/4,1/2,1/4)`, not
+`(1/3,1/3,1/3)`. Coarsening outcomes changes their weights.
+
+```python
+from collections.abc import Callable, Hashable, Mapping
+from math import fsum, isclose
+
+Outcome = Hashable
+
+def validate_model(weights: Mapping[Outcome, float]) -> None:
+    if not weights:
+        raise ValueError("sample space must be nonempty")
+    if any(weight < 0 for weight in weights.values()):
+        raise ValueError("probabilities must be non-negative")
+    if not isclose(fsum(weights.values()), 1.0, rel_tol=0.0, abs_tol=1e-12):
+        raise ValueError("probabilities must sum to one")
+
+def probability(
+    weights: Mapping[Outcome, float], event: Callable[[Outcome], bool]
+) -> float:
+    validate_model(weights)
+    return fsum(weight for outcome, weight in weights.items() if event(outcome))
+
+two_tosses = {"HH": 0.25, "HT": 0.25, "TH": 0.25, "TT": 0.25}
+assert probability(two_tosses, lambda x: x.count("H") == 1) == 0.5
+```
+
+`math.fsum` reduces avoidable summation error. The tolerance validates floating computation, not the
+axiom itself; exact rational weights are another option when inputs are rational.
+
+## Exact enumeration before simulation
+
+When the space is small, enumerate it. This produces an exact reference and catches modelling bugs.
+
+```python
+from itertools import product
+
+omega = list(product(range(1, 7), repeat=2))
+event = [roll for roll in omega if sum(roll) >= 10]
+
+assert len(omega) == 36
+assert len(event) == 6
+assert len(event) / len(omega) == 1 / 6
+```
+
+The count formula works because ordered pairs from fair dice are equiprobable. If a die is loaded,
+attach weights and sum them instead.
+
+## Probability is not observed frequency
+
+`P(A)` belongs to the declared mathematical model. The empirical frequency after `n` trials is
+`count(A occurs)/n`. It is random and normally differs from `P(A)` at finite `n`. Later lessons will
+state conditions under which frequencies converge. For now, simulation is a diagnostic, not a proof.
+
+```python
+import numpy as np
+
+rng = np.random.default_rng(20260905)
+rolls = rng.integers(1, 7, size=(200_000, 2))
+estimate = np.mean(rolls.sum(axis=1) >= 10)
+assert abs(float(estimate) - 1 / 6) < 0.01
+```
+
+The seed makes this pseudorandom run reproducible. It does not make samples genuinely random,
+validate the generator for cryptography, or make a tolerance-free assertion sensible.
+
+## Zero probability does not mean impossible
+
+In a finite model with positive mass on every outcome, probability zero does mean impossible. In a
+continuous uniform model on `[0,1]`, however, every singleton such as `{0.5}` has probability zero,
+while the entire interval has probability one. Uncountably many zero-probability singletons cannot
+be combined by countable additivity into a contradiction.
+
+Likewise, probability one need not mean logically certain in an arbitrary continuous model. The
+safe words are **almost surely** for probability-one events and **null event** for probability-zero
+events. Physical attainability remains a separate modelling question.
+
+## Model boundaries and computational limits
+
+A sample space must be collectively exhaustive and its elementary outcomes mutually exclusive. It
+also needs enough detail for the question. Do not confuse an impossible outcome with an omitted one.
+If timeout, abstention, malformed input, or an unknown class can occur but is absent, weights may sum
+to one while the model still describes the wrong experiment.
+
+Explicit power sets require `2^n` events and are rarely stored. Represent a finite event as a
+predicate, boolean mask, symbolic constraint, or disjoint cases. Product spaces grow quickly: 20
+binary variables have `2^20` outcomes; 100 are far beyond brute-force enumeration. Exact dynamic
+programming, algebra, bounds, or sampling then replaces enumeration. This is a computational limit,
+not a change to the axioms.
+
+## A model-validation checklist
+
+1. State one trial and one complete outcome.
+2. Make outcomes mutually exclusive and collectively exhaustive.
+3. Ensure each event is a measurable subset of the declared space.
+4. Require finite, non-negative, normalised weights.
+5. Justify equal likelihood rather than inferring it from labels.
+6. Translate natural language into the correct set operation.
+7. Label exact answers, simulations, and production measurements separately.
+8. Represent failure, missing data, abstention, and other edge outcomes.
+
+## Exercises
+
+<Exercise id="prob-axioms-space" difficulty="easy">Write the ordered sample space for two coin tosses and the event of exactly one head.<Solution>The space is `HH, HT, TH, TT`; the event is `HT, TH`. Order is retained because each outcome records the first and second toss.</Solution></Exercise>
+
+<Exercise id="prob-axioms-derive" difficulty="medium">Derive `P(A complement)=1-P(A)` only from the axioms.<Solution>`A` and its complement are disjoint and their union is `Omega`; additivity and normalisation give `P(A)+P(A complement)=1`.</Solution></Exercise>
+
+<Exercise id="prob-axioms-loaded" difficulty="hard">A model uses weights `0.2, 0.5, 0.4`. Diagnose it.<Solution>The total is `1.1`, violating normalisation. Reject it rather than silently renormalising unless that transformation is an explicit input contract.</Solution></Exercise>
+
+<Exercise id="prob-axioms-interview" difficulty="interview">Why is an event space needed beyond a sample space?<Solution>Probability is defined on a sigma-algebra of measurable subsets. In uncountable spaces, using every subset conflicts with the regular measure properties probability needs.</Solution></Exercise>
+
+<Exercise id="prob-axioms-real" difficulty="real-world">Model an inference request that may predict, abstain, time out, or fail validation.<Solution>Make the four terminal states mutually exclusive and exhaustive, define operational events as unions, and keep measured frequencies separate from model probabilities.</Solution></Exercise>
+
+## Checkpoint
+
+1. What is the difference between an outcome and an event?
+2. Why may probabilities of disjoint events be added directly but overlapping events not?
+3. Derive `P(empty)=0` and the complement rule from the axioms.
+4. When is `P(A)=|A|/|Omega|` valid?
+5. Why can a possible continuous outcome have probability zero?
+
+## Gotchas
+
+<Gotchas>
+<Gotcha question="Every listed outcome is equally likely, right?">No. Labels define possibilities, not weights. Equiprobability needs symmetry or another modelling assumption.</Gotcha>
+
+<Gotcha question="Different events are mutually exclusive.">Different events can overlap. Mutual exclusivity means their intersection is empty.</Gotcha>
+
+<Gotcha question="My simulated frequency is the probability.">It is one random estimate. Compare it with an exact result or uncertainty analysis and preserve the RNG configuration.</Gotcha>
+
+<Gotcha question="Probability zero means impossible.">That implication holds in many finite positive-mass models, but not generally in continuous spaces.</Gotcha>
+
+<Gotcha question="The weights sum to one, so the model is valid.">Also check non-negativity, exhaustiveness, exclusivity, measurability, and whether the space matches the real process.</Gotcha>
+</Gotchas>
+
+## Summary
+
+A probability model is `(Omega, F, P)`: outcomes describe complete trial results, measurable events
+collect outcomes, and a probability measure obeys non-negativity, normalisation, and countable
+additivity. Complement, monotonicity, inclusion-exclusion, and the union bound follow from those
+axioms.
+
+Count equally likely outcomes only when equal likelihood is justified; otherwise sum weights.
+Prefer exact enumeration on small spaces, use seeded simulation as a reproducible check, and never
+confuse an empirical frequency with the probability it estimates.

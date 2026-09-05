@@ -1,0 +1,542 @@
+lessonId: "roadmap:phase-2-2.3:0"
+module: 2-3-probability-the-language-of-uncertainty
+lesson: 01-sample-spaces-events-axioms-of-probability
+title: "Sample spaces, events, axioms of probability"
+summary: Build valid probability spaces, derive consequences from the axioms, and verify finite models without confusing probability with observed frequency.
+mastery: {minAssessmentScore: 80, requireProject: true, requireInterview: true, requireDebug: true, revisitAfterDays: 21}
+exercises:
+  - id: prob-space-ordered-tosses
+    tier: normal
+    kind: explain
+    title: Define complete outcomes
+    minutes: 10
+    requiredForMastery: true
+    concepts: [sample-space, outcomes]
+    prompt: |
+      Define the sample space for two ordered coin tosses and the event of exactly one head.
+    hints:
+      - Record both toss positions in every outcome.
+      - An event is a subset, not a new elementary outcome.
+    solution: |
+      The sample space is `{HH, HT, TH, TT}` because each string records one complete ordered trial.
+      The event of exactly one head is `{HT, TH}`. Using `{zero heads, one head, two heads}` would be
+      a valid coarser space for count-only questions, but its outcomes would have weights one quarter,
+      one half, and one quarter rather than equal weights.
+  - id: prob-space-set-logic
+    tier: normal
+    kind: explain
+    title: Translate logic into events
+    minutes: 12
+    requiredForMastery: true
+    concepts: [events, set-operations]
+    prompt: |
+      Express inclusive or, and, not, and exclusive or using events A and B.
+    hints:
+      - Start with union, intersection, and complement.
+      - Exclusive or removes the intersection from the union.
+    solution: |
+      Inclusive “A or B” is `A union B`; “A and B” is `A intersection B`; “not A” is the complement
+      relative to `Omega`; exclusive or is `(A union B) minus (A intersection B)`. Different events
+      need not be disjoint. Always translate the sentence first because adding probabilities directly
+      is valid only for disjoint pieces.
+  - id: prob-space-read-validator
+    tier: normal
+    kind: code-reading
+    title: Read a finite-model validator
+    minutes: 12
+    requiredForMastery: true
+    concepts: [normalisation, validation]
+    prompt: |
+      A validator checks only `sum(weights) == 1`. Identify two invalid models it accepts.
+    hints:
+      - Think about the sign and numeric validity of individual weights.
+      - Ask whether the keys cover the actual experiment.
+    solution: |
+      It accepts weights such as `{-0.2, 1.2}`, which sum to one but violate non-negativity. It can
+      also accept a perfectly normalised table that omits a real terminal outcome such as timeout.
+      Production validation should require a nonempty declared space, finite non-negative weights,
+      tolerance-aware normalisation, unique exhaustive outcomes, and an explicit policy for unknown
+      or missing outcomes.
+  - id: prob-space-complement-proof
+    tier: normal
+    kind: explain
+    title: Derive the complement rule
+    minutes: 12
+    requiredForMastery: true
+    concepts: [axioms, complement]
+    prompt: |
+      Derive `P(A complement)=1-P(A)` from the probability axioms.
+    hints:
+      - A and its complement partition the sample space.
+      - Apply additivity and then normalisation.
+    solution: |
+      `A` and `A complement` are disjoint, and their union is `Omega`. Countable additivity, used for
+      these two events, gives `P(Omega)=P(A)+P(A complement)`. Normalisation replaces the left side by
+      one. Rearranging yields the complement rule. With non-negativity it also implies every event
+      probability is at most one.
+  - id: prob-space-inclusion-exclusion
+    tier: intermediate
+    kind: explain
+    title: Repair overlapping addition
+    minutes: 15
+    requiredForMastery: true
+    concepts: [inclusion-exclusion, overlap]
+    prompt: |
+      Derive the probability of `A union B` when A and B may overlap.
+    hints:
+      - Split B into its part outside A and its intersection with A.
+      - The intersection is counted twice by the naive sum.
+    solution: |
+      Write `A union B` as the disjoint union of `A` and `B minus A`, so its probability is their
+      sum. Separately, `P(B)=P(B minus A)+P(A intersection B)`. Substitute for `P(B minus A)` to get
+      `P(A union B)=P(A)+P(B)-P(A intersection B)`. The subtraction removes exactly the mass counted
+      twice by the naive sum.
+  - id: prob-space-loaded-die
+    tier: intermediate
+    kind: write-code
+    title: Sum weights instead of labels
+    minutes: 18
+    requiredForMastery: true
+    concepts: [finite-model, weights]
+    prompt: |
+      Implement the probability that a loaded die roll is even from a face-to-weight mapping.
+    hints:
+      - Validate all weights before filtering the event.
+      - Sum weights of outcomes satisfying the predicate.
+    solution: |
+      Check that the mapping is nonempty, every weight is finite and non-negative, and a precise sum
+      is close to one under a declared tolerance. Then sum weights for faces two, four, and six using
+      `math.fsum`. Dividing three favourable labels by six would silently assume fairness and can be
+      wrong even when the listed outcomes are otherwise complete.
+  - id: prob-space-dice-enumeration
+    tier: intermediate
+    kind: write-code
+    title: Enumerate an exact product space
+    minutes: 18
+    requiredForMastery: true
+    concepts: [enumeration, product-space]
+    prompt: |
+      Enumerate two fair ordered dice and calculate the probability that their sum is at least ten.
+    hints:
+      - Use the Cartesian product of faces one through six.
+      - Count only after justifying equal weight for ordered pairs.
+    solution: |
+      `itertools.product(range(1, 7), repeat=2)` creates 36 ordered pairs. Six satisfy the event:
+      `(4,6)`, `(5,5)`, `(6,4)`, `(5,6)`, `(6,5)`, and `(6,6)`. Independent fair dice make every
+      ordered pair equally likely, so the result is `6/36=1/6`. With loaded or dependent dice, attach
+      joint weights and sum those probabilities instead.
+  - id: prob-space-union-bound
+    tier: intermediate
+    kind: explain
+    title: Derive and interpret a union bound
+    minutes: 15
+    requiredForMastery: true
+    concepts: [union-bound, bounds]
+    prompt: |
+      Explain why `P(A union B) <= P(A)+P(B)` needs no independence assumption.
+    hints:
+      - Start from inclusion-exclusion.
+      - Probability of the intersection cannot be negative.
+    solution: |
+      Inclusion-exclusion subtracts `P(A intersection B)` from `P(A)+P(B)`. Non-negativity makes the
+      subtracted term at least zero, proving the inequality regardless of dependence. Extending the
+      disjoint decomposition gives the countable union bound. The result may be loose when events
+      overlap heavily, but it remains valid without knowing their joint structure.
+  - id: prob-space-debug-equiprobable
+    tier: tricky
+    kind: debug
+    title: Debug equal weights after coarsening
+    minutes: 16
+    requiredForMastery: true
+    concepts: [equiprobability, coarsening]
+    prompt: |
+      A developer assigns equal weight to zero, one, and two heads from two fair tosses. Diagnose it.
+    hints:
+      - Expand each count into ordered fine-grained outcomes.
+      - Coarsened outcomes can represent different numbers of fine outcomes.
+    solution: |
+      The count outcomes are not equiprobable. Zero heads corresponds only to `TT`, one head to `HT`
+      and `TH`, and two heads only to `HH`. Starting from four equally weighted ordered sequences and
+      summing within each count gives weights `(1/4, 1/2, 1/4)`. The bug confuses a short list of labels
+      with a symmetry argument for equal mass.
+  - id: prob-space-debug-overlap
+    tier: tricky
+    kind: debug
+    title: Debug a probability above one
+    minutes: 16
+    requiredForMastery: true
+    concepts: [overlap, inclusion-exclusion]
+    prompt: |
+      A dashboard computes any alert as `P(high temperature)+P(high pressure)` and reports 1.15.
+    hints:
+      - A request can satisfy both alert predicates.
+      - Measure or model the intersection before adding.
+    solution: |
+      The alert events overlap, so requests triggering both are counted twice. Use
+      `P(T union R)=P(T)+P(R)-P(T intersection R)`, or partition records into disjoint categories and
+      sum them. Clamping 1.15 to one hides the modelling error. No independence assumption is needed
+      for inclusion-exclusion; independence would only provide a particular intersection formula.
+  - id: prob-space-debug-simulation-proof
+    tier: tricky
+    kind: debug
+    title: Debug a flaky simulation test
+    minutes: 18
+    requiredForMastery: true
+    concepts: [simulation, reproducibility]
+    prompt: |
+      A test asserts that 100 simulated fair-die rolls have mean exactly 3.5. Repair its reasoning.
+    hints:
+      - A finite empirical statistic is random.
+      - Use exact analysis for truth and simulation for a tolerance-based diagnostic.
+    solution: |
+      The model's exact expected mean can be derived from its six equal weights, but a sample mean
+      from 100 rolls normally differs from 3.5. Keep an exact deterministic model test, seed a local
+      generator for reproducibility, and test simulation with a justified tolerance or distributional
+      check. Do not repeatedly widen the tolerance until one random run passes.
+  - id: prob-space-null-events
+    tier: tricky
+    kind: explain
+    title: Separate null from impossible
+    minutes: 16
+    requiredForMastery: true
+    concepts: [continuous-space, null-event]
+    prompt: |
+      Explain how choosing exactly 0.5 from a uniform model on [0,1] can have probability zero.
+    hints:
+      - Intervals receive probability through length.
+      - Countable additivity does not apply to an uncountable union term by term.
+    solution: |
+      A singleton has length and therefore uniform probability zero, while `[0,1]` has probability
+      one. The interval is an uncountable union of singletons, and the axiom guarantees additivity
+      only for countable disjoint collections. Thus zero probability need not mean logical
+      impossibility in continuous models; the precise term is a null event.
+  - id: prob-space-property-tests
+    tier: challenge
+    kind: design
+    title: Property-test a finite measure
+    minutes: 24
+    requiredForMastery: false
+    concepts: [property-testing, axioms]
+    prompt: |
+      Design property tests for a finite weighted probability implementation.
+    hints:
+      - Generate valid weights and random subsets of a fixed outcome space.
+      - Translate each axiom and derived identity into an invariant.
+    solution: |
+      Generate non-negative finite vectors, normalise them, and generate event masks over the same
+      outcomes. Check normalisation, non-negativity, empty mass, complements, monotonicity for nested
+      masks, additivity for disjoint masks, inclusion-exclusion for arbitrary masks, and the union
+      bound. Also generate invalid negative, nonfinite, incomplete, and misnormalised inputs and verify
+      that validation rejects rather than silently repairs them.
+  - id: prob-space-scale-boundary
+    tier: challenge
+    kind: performance
+    title: Find the enumeration boundary
+    minutes: 25
+    requiredForMastery: false
+    concepts: [complexity, product-space]
+    prompt: |
+      Compare explicit enumeration and lazy or algebraic computation for n binary outcomes.
+    hints:
+      - The full outcome count is exponential in n.
+      - Measure peak memory as well as runtime.
+    solution: |
+      Explicitly storing all bit strings costs proportional to `n*2^n` bits plus object overhead;
+      streaming removes most storage but still visits `2^n` cases. Benchmark both only at safe sizes,
+      then compute simple event counts using combinatorics or dynamic programming. Report the machine,
+      representation, runtime, peak memory, and crossover instead of claiming one universal cutoff.
+quizzes:
+  - id: prob-space-checkpoint
+    title: Checkpoint — probability foundations
+    kind: checkpoint
+    passScore: 75
+    questions:
+      - {id: prob-space-cp-outcome, kind: mcq, prompt: What is an event?, options: [{id: subset, text: A measurable subset of the sample space}, {id: weight, text: A probability weight}], answer: [subset], explanation: An event groups complete outcomes., concepts: [events]}
+      - {id: prob-space-cp-add, kind: mcq, prompt: When can probabilities be added directly?, options: [{id: disjoint, text: For pairwise-disjoint events}, {id: different, text: For any differently named events}], answer: [disjoint], explanation: Direct addition otherwise double-counts overlap., concepts: [additivity]}
+      - {id: prob-space-cp-count, kind: mcq, prompt: When does favourable count divided by total count apply?, options: [{id: equal, text: When elementary outcomes are equally likely}, {id: finite, text: For every finite space}], answer: [equal], explanation: Finite labels need not carry equal mass., concepts: [equiprobability]}
+      - {id: prob-space-cp-zero, kind: mcq, prompt: Can a possible continuous outcome have probability zero?, options: [{id: yes, text: Yes, a singleton can be a null event}, {id: no, text: No, zero always means impossible}], answer: [yes], explanation: Countable additivity does not sum uncountably many singleton masses., concepts: [null-event]}
+  - id: prob-space-assessment
+    title: Assessment — sample spaces, events, and axioms
+    kind: assessment
+    passScore: 80
+    questions:
+      - id: prob-space-as-triple
+        kind: explain
+        prompt: Explain every part of a probability space.
+        modelAnswer: |
+          `Omega` is the set of complete outcomes for one declared trial. `F` is a sigma-algebra of
+          measurable events, closed under complements and countable unions. `P` maps each event to a
+          real number while satisfying non-negativity, normalisation, and countable additivity. The
+          triple is a model; observations and pseudorandom samples are not additional axioms.
+        explanation: The three objects define what can happen, what can be asked, and how mass is assigned.
+        concepts: [probability-space]
+      - id: prob-space-as-axioms
+        kind: explain
+        prompt: State the probability axioms with their assumptions.
+        modelAnswer: |
+          Every measurable event has non-negative probability; the whole sample space has probability
+          one; and the probability of a countable union of pairwise-disjoint measurable events equals
+          the sum of their probabilities. Direct addition requires disjointness. The axioms constrain
+          a measure but do not assert that listed outcomes are fair, independent, or equally likely.
+        explanation: Assumptions belong beside the rule.
+        concepts: [axioms]
+      - id: prob-space-as-empty
+        kind: explain
+        prompt: Derive the probability of the empty event.
+        modelAnswer: |
+          `Omega` and the empty set are disjoint, and their union remains `Omega`. Additivity therefore
+          gives `P(Omega)=P(Omega)+P(empty)`. Normalisation makes both occurrences of `P(Omega)` equal
+          one, so subtraction yields `P(empty)=0`. This is a theorem derived from the axioms rather
+          than a separate fourth axiom.
+        explanation: Add an event that changes nothing.
+        concepts: [axioms, empty-event]
+      - id: prob-space-as-monotone
+        kind: explain
+        prompt: Prove probability is monotone under set inclusion.
+        modelAnswer: |
+          If `A` is a subset of `B`, decompose `B` into the disjoint events `A` and `B minus A`.
+          Additivity gives `P(B)=P(A)+P(B minus A)`. Non-negativity makes the second term at least zero,
+          so `P(B)>=P(A)`. The proof requires only measurability and the probability axioms, not
+          independence or a finite sample space.
+        explanation: The extra part of B cannot have negative mass.
+        concepts: [monotonicity]
+      - id: prob-space-as-union
+        kind: explain
+        prompt: Derive inclusion-exclusion and the union bound for two events.
+        modelAnswer: |
+          Decompose `B` into its part outside `A` and its intersection with `A`. Substitution into the
+          disjoint sum for `A union B` yields `P(A)+P(B)-P(A intersection B)`. Since the intersection
+          probability is non-negative, dropping it gives the upper bound `P(A union B)<=P(A)+P(B)`.
+          Neither statement requires independence.
+        explanation: Inclusion-exclusion corrects double counting.
+        concepts: [inclusion-exclusion, union-bound]
+      - id: prob-space-as-coarsen
+        kind: scenario
+        prompt: Why are head counts from two fair tosses not three equally likely outcomes?
+        modelAnswer: |
+          The fine ordered outcomes `HH`, `HT`, `TH`, and `TT` are equally weighted under the declared
+          fair independent model. Coarsening maps one fine outcome to zero heads, two to one head, and
+          one to two heads. Summing those masses produces `(1/4,1/2,1/4)`. Equal-looking category labels
+          do not create equal probabilities.
+        explanation: Coarsened cells can contain unequal fine-grained mass.
+        concepts: [coarsening, equiprobability]
+      - id: prob-space-as-frequency
+        kind: scenario
+        prompt: Separate an exact probability from a simulated frequency.
+        modelAnswer: |
+          Probability belongs to the declared measure. A frequency is a random statistic from a finite
+          run and normally differs from that probability. Use exact enumeration or algebra when
+          possible, and use a locally seeded generator plus a justified error criterion for simulation.
+          Reproducibility repeats one pseudorandom sequence; it does not turn the estimate into proof.
+        explanation: Model quantities and observations are different objects.
+        concepts: [simulation, frequency]
+      - id: prob-space-as-null
+        kind: explain
+        prompt: Why does probability zero not always mean impossible?
+        modelAnswer: |
+          In a continuous uniform model, each singleton has zero length and zero probability although
+          it belongs to the sample space. The whole interval is an uncountable, not countable, union
+          of such singletons, so countable additivity does not sum their zeros into the interval's mass.
+          Use “null” and “almost surely” instead of silently asserting impossibility or certainty.
+        explanation: Continuous models distinguish measure zero from logical impossibility.
+        concepts: [continuous-space, null-event]
+      - id: prob-space-as-sigma
+        kind: explain
+        prompt: Why does a probability space include a sigma-algebra?
+        modelAnswer: |
+          A sigma-algebra specifies the subsets for which probability is defined and keeps logical
+          operations measurable through closure under complements and countable unions. Every subset is
+          usually acceptable in finite spaces, but not in general uncountable spaces if we retain the
+          measure properties probability needs. Familiar real-valued events are handled by Borel or
+          completed sigma-algebras.
+        explanation: Not every imaginable subset must be measurable.
+        concepts: [sigma-algebra, measurability]
+      - id: prob-space-as-production
+        kind: scenario
+        prompt: Validate a probability model for an inference service.
+        modelAnswer: |
+          Declare one request as the trial and make prediction, abstention, validation failure, timeout,
+          and other terminal states mutually exclusive and exhaustive. Define operational events as
+          unions of these outcomes. Check finite non-negative normalised weights and model-to-telemetry
+          mappings. Report target probabilities, empirical frequencies, sampling error, and omitted or
+          unknown outcomes separately.
+        explanation: Numeric normalisation alone cannot validate the process boundary.
+        concepts: [model-validation]
+interview:
+  - id: prob-space-iv-model
+    level: basic
+    requiredForMastery: true
+    concepts: [probability-space]
+    question: What is a probability space, and why is each part necessary?
+    shortAnswer: It is `(Omega, F, P)` for outcomes, measurable events, and probability mass.
+    fullAnswer: |
+      `Omega` defines complete outcomes of one experiment. `F` defines which subsets are measurable
+      events and is closed under the set operations needed for probability reasoning. `P` assigns mass
+      while satisfying non-negativity, normalisation, and countable additivity. Keeping these roles
+      separate exposes omitted outcomes, invalid questions, and unsupported assumptions such as equal
+      likelihood before they contaminate later inference.
+    commonWrongAnswer: It is just a list of outcomes whose probabilities are guessed.
+    followUps: [Why not every subset in continuous spaces?, What changes when outcomes are coarsened?]
+  - id: prob-space-iv-axioms
+    level: internals
+    requiredForMastery: true
+    concepts: [axioms, derivation]
+    question: Derive useful probability rules from the axioms.
+    shortAnswer: Partition events into disjoint pieces, then use additivity, normalisation, and non-negativity.
+    fullAnswer: |
+      Adding the empty set to `Omega` derives zero empty mass. Partitioning `Omega` into `A` and its
+      complement derives the complement rule. Decomposing a superset into a subset and non-negative
+      remainder proves monotonicity. Decomposing overlapping events derives inclusion-exclusion, and
+      dropping the non-negative intersection gives the union bound. None of these derivations assumes
+      finite outcomes or independence.
+    commonWrongAnswer: These are extra axioms that must be memorised separately.
+    followUps: [Where is disjointness used?, Why does the union bound need no independence?]
+  - id: prob-space-iv-equal
+    level: tricky
+    requiredForMastery: true
+    concepts: [equiprobability, symmetry]
+    question: When may you use favourable outcomes divided by total outcomes?
+    shortAnswer: Only for a finite model whose elementary outcomes have justified equal weights.
+    fullAnswer: |
+      Counting computes probability only after equiprobability is established through the model, such
+      as symmetry plus fair independent dice. Merely listing categories does not equalise them. If fine
+      outcomes are grouped into coarse categories, sum their masses; category sizes may differ. With
+      loaded or dependent mechanisms, attach joint weights directly. State the fairness and independence
+      assumptions beside the calculation.
+    commonWrongAnswer: Any finite sample space makes all outcomes equally likely.
+    followUps: [Give a coarsening counterexample., What changes for loaded dice?]
+  - id: prob-space-iv-null
+    level: advanced
+    requiredForMastery: true
+    concepts: [null-event, countable-additivity]
+    question: How can a possible outcome have probability zero?
+    shortAnswer: Continuous measures can assign zero mass to each singleton while assigning one to their uncountable union.
+    fullAnswer: |
+      Under the uniform measure on `[0,1]`, each point is a measurable singleton with zero probability,
+      yet points belong to the sample space and the full interval has probability one. Countable
+      additivity does not apply term-by-term to an uncountable union, so there is no contradiction.
+      “Almost surely” and “null event” preserve this distinction better than the words certain and
+      impossible.
+    commonWrongAnswer: Zero probability proves the outcome is not in the sample space.
+    followUps: [Does probability one mean logical certainty?, What is different in a finite positive-mass model?]
+  - id: prob-space-iv-simulation
+    level: debugging
+    requiredForMastery: true
+    concepts: [simulation, testing]
+    question: How would you test a finite probability implementation?
+    shortAnswer: Combine exact fixtures and axiom properties with seeded, tolerance-aware simulation checks.
+    fullAnswer: |
+      First use exact rational or carefully summed weights to test normalisation, complements,
+      monotonicity, disjoint additivity, inclusion-exclusion, and invalid inputs. For small spaces,
+      enumerate an independent oracle. Simulation is secondary: isolate a seeded generator, record its
+      configuration, choose sample sizes and tolerances before observing results, and treat failures as
+      evidence to investigate rather than automatically rerunning.
+    commonWrongAnswer: Generate samples until their frequencies equal the expected probabilities exactly.
+    followUps: [Why can a seeded test still be conceptually wrong?, Which cases should be deterministic?]
+  - id: prob-space-iv-production
+    level: scenario
+    requiredForMastery: true
+    concepts: [model-boundary, observability]
+    question: A classifier's outcome probabilities sum to one. What else must you check?
+    shortAnswer: Check whether outcomes match the real process and whether weights and event mappings satisfy the full contract.
+    fullAnswer: |
+      Verify finite non-negative weights, mutually exclusive and exhaustive terminal outcomes, and
+      measurable operational events. Include abstention, invalid input, timeout, and unknown states if
+      they can occur. Audit whether telemetry categories map one-to-one to model outcomes and whether
+      any filtering conditions on the population are declared. Keep predicted probabilities separate
+      from empirical frequencies and calibration evidence.
+    commonWrongAnswer: Summing to one is sufficient proof that the model is valid.
+    followUps: [How can omitted outcomes remain hidden?, What evidence checks the telemetry mapping?]
+projects:
+  - id: prob-space-project-auditor
+    kind: major
+    title: Build a finite probability-space auditor
+    minutes: 260
+    summary: Implement exact event algebra, model validation, enumeration, and empirical diagnostics for weighted finite spaces.
+    problem: |
+      Build a Python package that accepts a declared outcome space and weights, represents events as
+      predicates or masks, and computes exact probabilities. It must validate the axioms, derive and
+      test complement, monotonicity, inclusion-exclusion, and union-bound properties, enumerate small
+      product spaces lazily, and compare exact results with reproducible simulations without presenting
+      empirical frequency as mathematical truth.
+    requirements: [Typed public API, Strict invalid-model rejection, Exact or precision-aware summation, Event algebra, Property-based tests, Seeded simulation reports]
+    constraints: [Do not silently renormalise invalid weights, Do not assume equal likelihood from labels, Do not materialise a power set]
+    expectedBehaviour: [Valid finite measures pass every axiom check, Invalid weights fail with specific messages, Derived identities agree for generated events, Simulation reports disclose seed and error]
+    structure: |
+      probability_auditor/
+        model.py
+        events.py
+        enumerate.py
+        simulate.py
+      tests/
+        test_axioms.py
+        test_examples.py
+        test_invalid.py
+    milestones:
+      - {title: "1 — Model contract", detail: Validate outcomes and weights with exact fixtures.}
+      - {title: "2 — Event algebra", detail: Add properties over generated event masks.}
+      - {title: "3 — Diagnostics", detail: Compare exact results with disclosed simulations.}
+    testing: [Fair and loaded dice, Coarsened coin counts, Overlapping events, Negative and nonfinite weights, Omitted terminal outcome fixture]
+    failureCases: [Equality-only float normalisation, Hidden reruns of simulation, Treating different labels as disjoint operational events]
+    bonus: [Add rational arithmetic and dynamic programming for selected product-space events.]
+    architectureHints: [Keep the mathematical model independent of the RNG., Make invalid states unrepresentable where practical.]
+    referenceOutline: Define the model invariant first, implement event queries over it, add independent exact fixtures, then layer reproducible simulations as diagnostics.
+  - id: prob-space-final-incident
+    kind: final-challenge
+    title: Audit an alert-probability incident
+    minutes: 120
+    summary: Diagnose a production probability above one and repair the model and its evidence pipeline.
+    problem: |
+      An inference dashboard reports a 115 percent chance of “any alert” by adding high-temperature
+      and high-pressure rates. Reconstruct the request-level sample space, identify overlap and omitted
+      outcomes, calculate the union correctly, and prove that telemetry aggregation matches the repaired
+      event definitions. Preserve the bad fixture and distinguish model probabilities, historical
+      frequencies, and uncertainty in estimated quantities.
+    requirements: [Fail-before-fix fixture, Explicit outcome and event definitions, Inclusion-exclusion calculation, Telemetry reconciliation, Post-fix regression]
+    constraints: [Do not clamp the result, Do not assume independence without evidence, Do not discard overlapping requests]
+    expectedBehaviour: [Any-alert probability remains within axiomatic bounds, Overlap is counted once, Missing outcomes are surfaced, Exact fixtures and aggregate telemetry reconcile]
+    milestones:
+      - {title: "1 — Reproduce", detail: Preserve the 1.15 calculation and source records.}
+      - {title: "2 — Remodel", detail: Define exhaustive disjoint outcomes and event unions.}
+      - {title: "3 — Verify", detail: Reconcile request-level and aggregate results.}
+    testing: [No-overlap control, Complete overlap, Partial overlap, Timeout and unknown states]
+    failureCases: [Clamping to one, Deleting duplicate-looking requests, Multiplying marginals as if independent]
+    bonus: [Add automated axiom and partition checks to dashboard metrics.]
+    architectureHints: [Keep raw terminal outcomes before deriving event aggregates., Version every event definition.]
+    referenceOutline: Reproduce from raw records, repair the event algebra, validate the expanded sample space, and compare old and new metrics on frozen data.
+resources:
+  - name: Berkeley Statistics — Lecture Notes for Introductory Probability
+    type: university
+    difficulty: core
+    url: "https://www.stat.berkeley.edu/users/aldous/134/gravner.pdf"
+    usefulness: 5
+    why: Gives a rigorous university treatment of outcomes, events, probability spaces, axioms, and their consequences.
+    covers: Sample spaces, sigma-algebras, probability measures, and derived rules.
+  - name: MIT OpenCourseWare — Introduction to Probability and Statistics
+    type: university
+    difficulty: core
+    url: "https://ocw.mit.edu/courses/18-05-introduction-to-probability-and-statistics-spring-2022/"
+    usefulness: 5
+    why: Provides a complete university course path with notes, problem sets, and solutions for probability foundations.
+    covers: Counting, probability axioms, events, and later statistical foundations.
+  - name: Stanford CS109 — Probability for Computer Scientists
+    type: university
+    difficulty: core
+    url: "https://web.stanford.edu/class/cs109/"
+    usefulness: 5
+    why: Connects formal probability foundations to computing examples and supplies exercises for independent verification.
+    covers: Sample spaces, events, counting, probability, and simulation.
+  - name: Python documentation — itertools
+    type: docs
+    difficulty: intro
+    url: "https://docs.python.org/3/library/itertools.html"
+    usefulness: 4
+    why: Officially documents lazy Cartesian-product tools used to enumerate small finite sample spaces correctly.
+    covers: Cartesian products, combinations, permutations, and lazy iteration.
+  - name: NumPy documentation — Random sampling
+    type: docs
+    difficulty: core
+    url: "https://numpy.org/doc/stable/reference/random/"
+    usefulness: 5
+    why: Officially documents Generator, seeding, pseudorandom state, and appropriate statistical simulation usage and limits.
+    covers: Reproducible generators, random sampling, state, and non-cryptographic use.

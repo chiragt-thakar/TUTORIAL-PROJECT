@@ -250,8 +250,9 @@ test("an authored topic carries real practice depth, not a token exercise", asyn
   }
 });
 
-test("the final optimisation lessons retain deep parsed answers instead of silently truncating YAML", async () => {
+test("selected advanced lessons retain deep parsed answers instead of silently truncating YAML", async () => {
   const targetIds = new Set([
+    "roadmap:phase-2-2.3:0",
     "roadmap:phase-2-2.2:10",
     "roadmap:phase-2-2.2:11",
     "roadmap:phase-2-2.2:12",
